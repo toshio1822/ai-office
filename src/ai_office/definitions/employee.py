@@ -84,7 +84,12 @@ def load_employees(directory: Path) -> list[LoadedEmployee]:
         raise EmployeeLoadError(f"{directory}: expected a directory")
 
     paths = sorted(
-        [*directory.glob("*.yaml"), *directory.glob("*.yml")],
+        (
+            path
+            for pattern in ("*.yaml", "*.yml")
+            for path in directory.glob(pattern)
+            if path.is_file()
+        ),
         key=lambda path: path.as_posix(),
     )
     loaded_employees = [load_employee_file(path) for path in paths]

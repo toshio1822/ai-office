@@ -52,11 +52,13 @@ def test_load_employees_loads_yaml_and_yml_in_path_order(tmp_path: Path) -> None
     assert [employee.definition.id for employee in loaded] == ["alpha", "zeta"]
 
 
-def test_load_employees_does_not_read_subdirectories(tmp_path: Path) -> None:
+def test_load_employees_ignores_subdirectories_and_yaml_named_directories(
+    tmp_path: Path,
+) -> None:
     write_employee(tmp_path / "direct.yaml", id="direct")
-    nested_directory = tmp_path / "nested"
-    nested_directory.mkdir()
-    write_employee(nested_directory / "nested.yaml", id="nested")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested.yaml").mkdir()
+    (tmp_path / "archive.yml").mkdir()
 
     loaded = load_employees(tmp_path)
 
