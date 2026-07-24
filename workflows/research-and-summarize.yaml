@@ -1,0 +1,16 @@
+id: research-and-summarize
+name: Research and Summarize
+description: Researches an assigned topic and produces a summary.
+
+steps:
+  - id: research
+    name: Research
+    employee: general-researcher
+    instructions: |
+      Gather and organize relevant information for the assigned topic.
+
+  - id: summarize
+    name: Summarize
+    employee: general-researcher
+    instructions: |
+      Summarize the information produced by the previous step.

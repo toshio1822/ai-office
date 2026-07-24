@@ -43,4 +43,4 @@ workflows/
 schemas/
 ```
 
-`employees/`、`workflows/`、`schemas/` は今後のテキスト定義用の配置場所であり、この Phase では定義や実行機能を実装しない。
+`employees/` と `workflows/` はテキスト定義の配置場所であり、定義の読込・検証とCLIによる確認を提供する。`schemas/`、実行エンジン、runtime、storage、toolsは今後のPhaseで扱う。
