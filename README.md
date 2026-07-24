@@ -37,3 +37,28 @@ ai-office employees list
 ai-office employees validate
 ai-office employees list --directory path/to/employees
 ```
+
+## ワークフロー定義
+
+ワークフロー定義は `workflows/` 直下の `.yaml` または `.yml` ファイルに記載します。`steps` の配列順が将来の実行順です。今回の段階では定義の読込・検証のみを行い、AI実行やstep間のデータ受渡しは行いません。
+
+```yaml
+id: research-and-summarize
+name: Research and Summarize
+description: Researches an assigned topic and produces a summary.
+
+steps:
+  - id: research
+    name: Research
+    employee: general-researcher
+    instructions: |
+      Gather and organize relevant information for the assigned topic.
+```
+
+一覧表示と事前検証には次を使用します。`--directory` と `--employees-directory` で別の定義ディレクトリを指定できます。
+
+```bash
+ai-office workflows list
+ai-office workflows validate
+ai-office workflows list --directory path/to/workflows --employees-directory path/to/employees
+```
