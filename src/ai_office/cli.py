@@ -10,6 +10,12 @@ from ai_office.definitions.workflow import (
     load_workflows,
     validate_workflow_employee_references,
 )
+from ai_office.planning.execution_plan import (
+    ExecutionPlan,
+    WorkflowSelectionError,
+    build_execution_plan,
+    find_workflow_by_id,
+)
 
 app = typer.Typer(
     name="ai-office",
@@ -59,17 +65,22 @@ def validate_employees(
     typer.echo(f"Validated {len(employees)} employee definition(s).")
 
 
-def _load_workflows_or_exit(
+def _load_validated_definitions_or_exit(
     directory: Path, employees_directory: Path
 ):
     try:
         workflows = load_workflows(directory)
         employees = load_employees(employees_directory)
         validate_workflow_employee_references(workflows, employees)
-        return workflows
+        return workflows, employees
     except (EmployeeLoadError, WorkflowLoadError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=1) from None
+
+
+def _load_workflows_or_exit(directory: Path, employees_directory: Path):
+    workflows, _ = _load_validated_definitions_or_exit(directory, employees_directory)
+    return workflows
 
 
 @workflows_app.command("list")
@@ -103,3 +114,41 @@ def validate_workflows(
     typer.echo(
         f"Validated {len(workflows)} workflow definition(s) with {step_count} step(s)."
     )
+
+
+def _display_execution_plan(plan: ExecutionPlan) -> None:
+    """Display a human-readable execution plan without modifying its values."""
+    typer.echo(f"Workflow: {plan.workflow_id}")
+    typer.echo(f"Name: {plan.workflow_name}")
+    typer.echo(f"Steps: {len(plan.steps)}")
+
+    for step in plan.steps:
+        typer.echo()
+        typer.echo(f"{step.index}. {step.step_id}")
+        typer.echo(f"   Name: {step.step_name}")
+        typer.echo(f"   Employee: {step.employee_id}")
+        typer.echo("   Instructions:")
+        for line in step.instructions.splitlines():
+            typer.echo(f"     {line}")
+
+
+@workflows_app.command("plan")
+def plan_workflow(
+    workflow_id: str,
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Build and display a validated workflow execution plan without running it."""
+    workflows, employees = _load_validated_definitions_or_exit(
+        directory, employees_directory
+    )
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        plan = build_execution_plan(workflow, employees)
+    except WorkflowSelectionError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _display_execution_plan(plan)
