@@ -1,0 +1,35 @@
+name: Feature request
+description: AI Office の機能を提案する
+title: "feat: "
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        実装対象と完了条件を明確にしてください。
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: 解決したい課題と目的
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 対象範囲
+      description: 実装する機能と変更箇所
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: 対象外
+      description: 今回は実装しない機能
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: 完了条件
+      description: 検証可能な条件を箇条書きで記載
+    validations:
+      required: true
