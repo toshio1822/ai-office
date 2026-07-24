@@ -73,3 +73,14 @@ ai-office workflows plan research-and-summarize \
 ```
 
 `workflows plan` はworkflowを実行しません。AIを呼び出さず、実行状態・履歴・成果物も保存しません。表示する計画には、workflowの順序、stepの担当employee ID、step instructionsのみを含めます。employee instructionsとの結合は行いません。
+
+特定stepの構造化された実行要求を確認するには、1始まりのstep indexを指定します。
+
+```bash
+ai-office workflows request research-and-summarize 1
+ai-office workflows request research-and-summarize 1 \
+  --directory path/to/workflows \
+  --employees-directory path/to/employees
+```
+
+`workflows request` は実行要求を表示するだけで、AIやtoolを呼び出しません。employee instructionsとstep instructionsは別々に保持・表示し、状態、履歴、成果物は保存しません。
