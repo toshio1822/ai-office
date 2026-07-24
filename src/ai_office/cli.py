@@ -16,6 +16,12 @@ from ai_office.planning.execution_plan import (
     build_execution_plan,
     find_workflow_by_id,
 )
+from ai_office.planning.step_execution_request import (
+    EmployeeSelectionError,
+    StepExecutionRequest,
+    StepSelectionError,
+    build_step_execution_request,
+)
 
 app = typer.Typer(
     name="ai-office",
@@ -132,6 +138,31 @@ def _display_execution_plan(plan: ExecutionPlan) -> None:
             typer.echo(f"     {line}")
 
 
+def _display_indented_value(value: str) -> None:
+    """Display a value line by line without modifying its contents."""
+    for line in value.splitlines():
+        typer.echo(f"  {line}")
+
+
+def _display_step_execution_request(request: StepExecutionRequest) -> None:
+    """Display one structured step execution request without running it."""
+    typer.echo(f"Workflow: {request.workflow_id}")
+    typer.echo(f"Name: {request.workflow_name}")
+    typer.echo(f"Step: {request.step_index}. {request.step_id}")
+    typer.echo(f"Step name: {request.step_name}")
+    typer.echo(f"Employee: {request.employee_id}")
+    typer.echo(f"Employee name: {request.employee_name}")
+    typer.echo("Role:")
+    _display_indented_value(request.employee_role)
+    typer.echo(f"Model: {request.model}")
+    tools = ", ".join(request.allowed_tools) if request.allowed_tools else "none"
+    typer.echo(f"Allowed tools: {tools}")
+    typer.echo("Employee instructions:")
+    _display_indented_value(request.employee_instructions)
+    typer.echo("Step instructions:")
+    _display_indented_value(request.step_instructions)
+
+
 @workflows_app.command("plan")
 def plan_workflow(
     workflow_id: str,
@@ -152,3 +183,31 @@ def plan_workflow(
         raise typer.Exit(code=1) from None
 
     _display_execution_plan(plan)
+
+
+@workflows_app.command("request", context_settings={"ignore_unknown_options": True})
+def request_workflow_step(
+    workflow_id: str,
+    step_index: int,
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Build and display one step request without executing it."""
+    workflows, employees = _load_validated_definitions_or_exit(
+        directory, employees_directory
+    )
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        plan = build_execution_plan(workflow, employees)
+        request = build_step_execution_request(plan, step_index, employees)
+    except (
+        WorkflowSelectionError,
+        StepSelectionError,
+        EmployeeSelectionError,
+    ) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _display_step_execution_request(request)
