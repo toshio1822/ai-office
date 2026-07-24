@@ -24,7 +24,10 @@ allowed_tools: []
 
 
 def write_valid_workflow(
-    directory: Path, *, employee: str = "general-researcher"
+    directory: Path,
+    *,
+    employee: str = "general-researcher",
+    research_instructions: str = "Gather relevant information.",
 ) -> None:
     (directory / "workflow.yaml").write_text(
         yaml.safe_dump(
@@ -37,7 +40,7 @@ def write_valid_workflow(
                         "id": "research",
                         "name": "Research",
                         "employee": employee,
-                        "instructions": "Gather relevant information.",
+                        "instructions": research_instructions,
                     },
                     {
                         "id": "summarize",
@@ -269,6 +272,105 @@ def test_workflows_plan_reports_invalid_workflow_id_to_stderr(tmp_path: Path) ->
     assert result.exit_code != 0
     assert "Error:" in result.stderr
     assert "invalid workflow id" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflows_plan_displays_multiline_instructions_with_equal_indentation(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(
+        workflows_directory,
+        research_instructions=(
+            "Gather relevant information.\nSeparate facts from assumptions."
+        ),
+    )
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "plan",
+            "research-and-summarize",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "     Gather relevant information.\n" in result.stdout
+    assert "     Separate facts from assumptions.\n" in result.stdout
+
+
+def test_workflows_plan_reports_empty_workflow_directory_to_stderr(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "plan",
+            "research-and-summarize",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflows_plan_reports_invalid_employee_definition_to_stderr(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    (employees_directory / "invalid-employee.yaml").write_text(
+        "id: [", encoding="utf-8"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "plan",
+            "research-and-summarize",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.stderr
+    assert "invalid-employee.yaml" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflows_help_lists_plan_command() -> None:
+    result = runner.invoke(app, ["workflows", "--help"])
+
+    assert result.exit_code == 0
+    assert "plan" in result.stdout
 
 
 def test_workflows_plan_validates_all_workflows_before_selection(

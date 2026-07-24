@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from ai_office.definitions.employee import EmployeeDefinition, LoadedEmployee
 from ai_office.definitions.workflow import (
@@ -112,6 +113,16 @@ def test_build_execution_plan_is_detached_from_definition_models() -> None:
     assert not hasattr(plan.steps[0], "definition")
 
 
+def test_execution_plan_models_are_frozen() -> None:
+    plan = build_execution_plan(loaded_workflow(), [loaded_employee()])
+
+    with pytest.raises(ValidationError):
+        plan.workflow_name = "Changed name"
+
+    with pytest.raises(ValidationError):
+        plan.steps[0].instructions = "Changed instructions"
+
+
 def test_build_execution_plan_rejects_undefined_employee() -> None:
     with pytest.raises(WorkflowLoadError, match="general-researcher"):
         build_execution_plan(loaded_workflow(), [])
@@ -127,7 +138,19 @@ def test_find_workflow_by_id_selects_requested_workflow() -> None:
     assert find_workflow_by_id([first, second], "other-workflow") is second
 
 
-@pytest.mark.parametrize("workflow_id", ["Uppercase", "contains_underscore", " bad"])
+@pytest.mark.parametrize(
+    "workflow_id",
+    [
+        "Uppercase",
+        "contains_underscore",
+        " bad",
+        "-workflow",
+        "workflow-",
+        "two--hyphens",
+        "workflow ",
+        " workflow",
+    ],
+)
 def test_find_workflow_by_id_rejects_invalid_id(workflow_id: str) -> None:
     with pytest.raises(WorkflowSelectionError, match="invalid workflow id"):
         find_workflow_by_id([loaded_workflow()], workflow_id)
