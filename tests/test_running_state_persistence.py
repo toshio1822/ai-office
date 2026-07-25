@@ -48,6 +48,50 @@ def test_directory_target_is_rejected(tmp_path) -> None:
         persist_prepared_running_state(start(), tmp_path)
 
 
+@pytest.mark.parametrize("invocation_request", [None, "invalid"])
+def test_rejects_missing_or_invalid_request_without_creating_target(
+    tmp_path, invocation_request
+) -> None:
+    value = PreparedStepExecutionStart(invocation_request, start().running_state)
+    path = tmp_path / "state.json"
+
+    with pytest.raises(RunningStatePersistenceInputError):
+        persist_prepared_running_state(value, path)
+    assert not path.exists()
+
+
+def test_rejects_invalid_running_state_type_without_creating_target(tmp_path) -> None:
+    value = PreparedStepExecutionStart(start().request, object())
+    path = tmp_path / "state.json"
+
+    with pytest.raises(RunningStatePersistenceInputError):
+        persist_prepared_running_state(value, path)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        WorkflowExecutionState("", "running", "step", 2, "employee", (), None),
+        WorkflowExecutionState("workflow", "running", None, 2, "employee", (), None),
+        WorkflowExecutionState("workflow", "running", 1, 2, "employee", (), None),
+        WorkflowExecutionState("workflow", "running", "step", 2, None, (), None),
+        WorkflowExecutionState("workflow", "running", "step", 2, 1, (), None),
+        WorkflowExecutionState("workflow", "running", "step", 2, "employee", [], None),
+    ],
+)
+def test_rejects_invalid_state_identity_without_modifying_target(
+    tmp_path, state
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_bytes(b"old")
+    value = PreparedStepExecutionStart(start().request, state)
+
+    with pytest.raises(RunningStatePersistenceInputError):
+        persist_prepared_running_state(value, path)
+    assert path.read_bytes() == b"old"
+
+
 def test_write_failure_preserves_original(tmp_path, monkeypatch) -> None:
     path = tmp_path / "state.json"
     path.write_bytes(b"old")

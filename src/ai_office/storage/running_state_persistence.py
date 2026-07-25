@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
 from ai_office.invocation import ModelInvocationRequest
 from ai_office.runtime import WorkflowExecutionState
@@ -43,27 +42,36 @@ class RunningStatePersistenceInputError(ValueError):
     """Raised for an incompatible proposed running state or target."""
 
 
-class _PreparedStepExecutionStart(Protocol):
-    request: ModelInvocationRequest
-    running_state: WorkflowExecutionState
-
-
 def persist_prepared_running_state(
-    start: _PreparedStepExecutionStart, state_path: Path
+    start: object, state_path: Path
 ) -> RunningStatePersistenceResult:
     """Safely replace one explicit state target without creating runtime events."""
+    # Import lazily: engine depends on storage history models, while storage owns
+    # this persistence boundary.  Phase 27's request has no workflow/step identity,
+    # so only its existing immutable model contract can be checked here.
+    from ai_office.engine.prepared_step_execution_start import (
+        PreparedStepExecutionStart,
+    )
+
+    if not isinstance(start, PreparedStepExecutionStart):
+        raise RunningStatePersistenceInputError(_INPUT_ERROR) from None
     state = start.running_state
     try:
         invalid = (
-            state_path.is_dir()
+            not isinstance(start.request, ModelInvocationRequest)
+            or not isinstance(state, WorkflowExecutionState)
+            or state_path.is_dir()
             or not state_path.parent.is_dir()
             or state.status != "running"
             or state.last_failure_category is not None
-            or state.current_step_id == ""
-            or state.current_employee_id == ""
+            or not _nonempty_string(state.workflow_id)
+            or not _nonempty_string(state.current_step_id)
+            or not _nonempty_string(state.current_employee_id)
             or isinstance(state.current_step_index, bool)
             or not isinstance(state.current_step_index, int)
             or state.current_step_index < 1
+            or not isinstance(state.completed_step_ids, tuple)
+            or not all(isinstance(item, str) for item in state.completed_step_ids)
         )
     except OSError:
         raise RunningStatePersistenceError("target") from None
@@ -88,3 +96,7 @@ def persist_prepared_running_state(
             raise RunningStatePersistenceRollbackError("rollback") from None
         raise RunningStatePersistenceError("verification") from None
     return RunningStatePersistenceResult(len(contents))
+
+
+def _nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
