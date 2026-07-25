@@ -190,3 +190,9 @@ templateは`POST`、`https://api.openai.com/v1/responses`、順序付きの`Cont
 `OPENAI_API_KEY`だけを読み、既存の不変・マスク済み`OpenAIApiKey`へ変換できます。caller-supplied mappingを渡す場合はそのmappingだけを参照するため決定的にテストでき、`None`の場合だけこの取得境界内で現在のprocess environmentを参照します。値はstripや正規化をせず、空文字列とCR/LFはPhase 13の検証で拒否されます。
 
 このPhaseにCLIはありません。credentialを表示・確認するだけのCLIには価値がなく、露出リスクを増やすためです。`.env`、設定ファイル、keyring、prompt、credential persistence、requestの自動認証、HTTP transport、response処理、tool実行、Runtimeは実装していません。
+
+## OpenAI Responses HTTPS Transport（Phase 15）
+
+認証済みの不変`OpenAIResponsesAuthenticatedHttpRequest`を、Python標準ライブラリの同期HTTPS接続で1回だけ送信し、不変の`OpenAIResponsesRawHttpResponse`としてstatus、reason、順序・重複を保持したheaders、未解析のbody bytesを返します。request headerはtuple順・重複を保持し、bodyはUTF-8へ1回だけencodeします。完了した3xx、4xx、5xxも解釈せずraw responseとして返し、transport failureは秘密値を含まないprovider固有エラーになります。connectionは成功・失敗のいずれでもcloseします。
+
+このPhaseにCLIはありません。実際の有料API実行を、response validation、出力処理、Runtime、人間向けsafeguardより先に公開しないためです。retry、timeout設定、redirect、response JSON parsing、OpenAI error解釈、usage、tools、Runtimeは実装していません。
