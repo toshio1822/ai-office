@@ -132,10 +132,16 @@ def persist_workflow_execution_transition(
     except OSError:
         raise WorkflowExecutionPersistenceError(_PERSISTENCE_ERROR_MESSAGE) from None
 
+    mutation_started = False
     try:
         _replace_state_bytes(targets.state_path, state_bytes)
+        mutation_started = True
         _append_event_bytes(targets.events_path, event_bytes)
     except OSError:
+        if not mutation_started:
+            raise WorkflowExecutionPersistenceError(
+                _PERSISTENCE_ERROR_MESSAGE
+            ) from None
         rollback_failures = _restore_targets(
             targets,
             original_state,
@@ -202,13 +208,15 @@ def _capture_original_target(path: Path) -> _OriginalTarget:
 
 def _replace_state_bytes(path: Path, contents: bytes) -> None:
     temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_created = False
     try:
         with temporary_path.open("xb") as temporary_file:
+            temporary_created = True
             temporary_file.write(contents)
             temporary_file.flush()
         os.replace(temporary_path, path)
     except OSError:
-        if temporary_path.exists():
+        if temporary_created and temporary_path.exists():
             temporary_path.unlink()
         raise
 

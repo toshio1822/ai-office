@@ -227,6 +227,98 @@ def test_second_original_target_capture_failure_changes_neither_target(
     assert value_targets.events_path.read_bytes() == b"events-before"
 
 
+def test_state_temporary_open_failure_does_not_mutate_or_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value_targets = targets(tmp_path)
+    value_targets.state_path.write_bytes(b"state-before")
+    value_targets.events_path.write_bytes(b"events-before")
+    original_open = Path.open
+    rollback_calls = 0
+
+    def fail_temporary_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path == tmp_path / ".workflow-state.json.tmp":
+            raise OSError("synthetic temporary open failure")
+        return original_open(path, *args, **kwargs)
+
+    def record_rollback(*_: object) -> tuple[object, ...]:
+        nonlocal rollback_calls
+        rollback_calls += 1
+        return ()
+
+    monkeypatch.setattr(Path, "open", fail_temporary_open)
+    monkeypatch.setattr(persistence, "_restore_targets", record_rollback)
+
+    with pytest.raises(WorkflowExecutionPersistenceError):
+        persist_workflow_execution_transition(transition(), value_targets)
+
+    assert rollback_calls == 0
+    assert value_targets.state_path.read_bytes() == b"state-before"
+    assert value_targets.events_path.read_bytes() == b"events-before"
+
+
+def test_state_temporary_write_failure_does_not_mutate_or_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value_targets = targets(tmp_path)
+    value_targets.state_path.write_bytes(b"state-before")
+    value_targets.events_path.write_bytes(b"events-before")
+    original_open = Path.open
+    rollback_calls = 0
+
+    class FailingTemporaryFile:
+        def __enter__(self) -> "FailingTemporaryFile":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def write(self, _: bytes) -> int:
+            raise OSError("synthetic temporary write failure")
+
+        def flush(self) -> None:
+            raise AssertionError("write failure must happen before flush")
+
+    def fail_temporary_write(path: Path, *args: object, **kwargs: object) -> object:
+        if path == tmp_path / ".workflow-state.json.tmp":
+            return FailingTemporaryFile()
+        return original_open(path, *args, **kwargs)
+
+    def record_rollback(*_: object) -> tuple[object, ...]:
+        nonlocal rollback_calls
+        rollback_calls += 1
+        return ()
+
+    monkeypatch.setattr(Path, "open", fail_temporary_write)
+    monkeypatch.setattr(persistence, "_restore_targets", record_rollback)
+
+    with pytest.raises(WorkflowExecutionPersistenceError):
+        persist_workflow_execution_transition(transition(), value_targets)
+
+    assert rollback_calls == 0
+    assert value_targets.state_path.read_bytes() == b"state-before"
+    assert value_targets.events_path.read_bytes() == b"events-before"
+
+
+def test_existing_temporary_file_is_not_removed_after_open_failure(
+    tmp_path: Path,
+) -> None:
+    value_targets = targets(tmp_path)
+    value_targets.state_path.write_bytes(b"state-before")
+    value_targets.events_path.write_bytes(b"events-before")
+    temporary_path = tmp_path / ".workflow-state.json.tmp"
+    temporary_path.write_bytes(b"pre-existing temporary bytes")
+
+    with pytest.raises(WorkflowExecutionPersistenceError):
+        persist_workflow_execution_transition(transition(), value_targets)
+
+    assert temporary_path.read_bytes() == b"pre-existing temporary bytes"
+    assert value_targets.state_path.read_bytes() == b"state-before"
+    assert value_targets.events_path.read_bytes() == b"events-before"
+
+
 def test_state_serialization_failure_changes_neither_target(tmp_path: Path) -> None:
     value = transition()
     invalid_index = object()
@@ -292,7 +384,7 @@ def test_absent_targets_are_removed_when_event_append_fails(
     assert not value_targets.events_path.exists()
 
 
-def test_state_replace_failure_restores_both_targets(
+def test_state_replace_succeeds_before_event_failure_restores_both_targets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -300,11 +392,11 @@ def test_state_replace_failure_restores_both_targets(
     value_targets.state_path.write_bytes(b"state-before")
     value_targets.events_path.write_bytes(b"events-before")
 
-    def fail_replace(path: Path, _: bytes) -> None:
-        path.write_bytes(b"partial-state")
-        raise OSError("synthetic")
+    def fail_append(path: Path, contents: bytes) -> None:
+        path.write_bytes(contents[:3])
+        raise OSError("synthetic event failure")
 
-    monkeypatch.setattr(persistence, "_replace_state_bytes", fail_replace)
+    monkeypatch.setattr(persistence, "_append_event_bytes", fail_append)
 
     with pytest.raises(WorkflowExecutionPersistenceError):
         persist_workflow_execution_transition(transition(), value_targets)
