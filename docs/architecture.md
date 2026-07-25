@@ -68,9 +68,11 @@ OpenAIResponsesRequest
                        ↓
  Pure Workflow State Transition and Runtime Event Boundary
                        ↓
- Compensatable State and Event Persistence Boundary
+    Compensatable State and Event Persistence Boundary
                        ↓
- future state/event loading and controlled progression
+ Strict State and Event Loading Boundary
+                       ↓
+      future controlled progression and replay validation
 
 explicit environment mapping or current process environment
                        ↓
@@ -117,6 +119,7 @@ explicit environment mapping or current process environment
 - Single-Step Runtime Execution Result Boundaryは、明示的な`StepExecutionRequest`、既存の`ModelInvocationRequest`、resolved tool tuple、approvalからなる不変inputを受け取る。model、employee instructions、step instructions、allowed toolsが既存のrequest生成契約どおり完全一致することを最初に検証し、不一致は詳細を露出しない`invalid_request` runtime failureへ正規化する。整合する入力だけを既存guarded OpenAI executionへ一度だけ委譲し、workflow ID、step ID、既存の1始まりstep index、employee IDと既存`ModelInvocationSuccess`または`ModelInvocationFailure`を不変wrapperとして保持する。API keyはinput/resultに保存しない。state transition、next-step selection、event/artifact保存、retry、tool実行、agent loop、CLI paid executionは扱わない。future state-transition boundaryがこのresultを消費する。
 - Pure Workflow State Transition and Runtime Event Boundaryは、completed `StepRuntimeExecutionResult`と明示的`running` `WorkflowExecutionState`のworkflow ID、step ID、既存の1始まりstep index、employee IDを完全一致で検証する純粋boundaryである。不一致は詳細を露出しないsafe input errorになる。successは`running -> succeeded`としてcurrent step IDを一度だけappendし、failureは`running -> failed`としてcompleted IDsを保持してfailure categoryを記録する。どちらもidentity、safe provider metadata、empty output textを含むevent dataを不変に返す。ここでの`succeeded`は単一step execution stateの完了であり、multi-step workflow final completionではない。timestamp、event ID、persistence、next-step selection、provider呼出、retry、tool execution、agent loop、CLI paid executionは扱わず、future persistence boundaryがstateとeventをatomicまたはcompensatableに保存する。
 - Compensatable State and Event Persistence Boundaryは、明示`WorkflowExecutionTransition`のnext stateを決定的UTF-8 JSONへ、runtime eventを1件の決定的UTF-8 JSONL recordへ保存する。workflow/step/employee identity、status、event type、distinct file targetを検証し、変更前に両targetの存在と正確なbytesを捕捉する。state replacement後のevent appendを行い、handled filesystem failureではevents、stateの決定順で両targetを元のbytesへ復元し、元は存在しなかったtargetを削除する。rollbackの一方が失敗しても両方を試み、safe rollback errorへ分類する。これはin-process compensationでありcrash-safe cross-file transaction、fsync保証、locks、concurrency、load/replay、next-step orchestration、provider呼出、retry、tool execution、CLI paid executionは扱わない。
+- Strict State and Event Loading Boundaryは、caller suppliedなPhase 23 target pathsからstate JSONとevent JSONLをread-onlyで読み、UTF-8、duplicate key、完全なfield集合、型、有限値、event意味制約を厳格に検証してPhase 22の不変`WorkflowExecutionState`と順序付き`RuntimeStepEvent` tupleへ再構築する。JSONLのblank record、未知field、欠損field、partial final recordは拒否する。regular fileを指すsymbolic linkは許可し、directory targetは拒否する。終端stateは最後のevent、identity、status、failure category、completed stepと照合し、安全なdata/load/inconsistency errorだけを返す。空event fileは明示的に`ready`または`running` stateに限り許可する。repair、migration、書込み、resume、next-step selection、retry、tool/provider実行、CLI paid execution、GUIは扱わない。Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadingはすべて別の明示呼出であり、後続boundaryだけがhuman-approvedなcontrolled next-step preparationを判断できる。
 - 依存方向は `provider-independent invocation model -> provider-specific adapter -> provider-specific request model -> future runtime` とする。Runtimeからdefinitionsやplanningのモデルへ逆依存させない。
 - provider共通抽象は、複数providerの実装から実際の共通点が確認されるまで作らない。Codex CLIは承認・sandbox・tool実行・agent loopを伴う実行基盤であるため、将来は別のAdapterとRuntime経路として検討する。
 - 人間承認が必要な遷移は、承認済みの明示的な入力なしに進めない。
