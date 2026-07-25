@@ -34,6 +34,11 @@ from ai_office.providers.openai.responses_json import (
     serialize_openai_responses_payload_dict_pretty,
     serialize_openai_responses_payload_from_invocation,
 )
+from ai_office.providers.openai.responses_output import (
+    OpenAIResponsesInvalidOutputError,
+    OpenAIResponsesOutputText,
+    extract_openai_responses_output_text,
+)
 from ai_office.providers.openai.responses_payload import (
     OpenAIResponsesPayload,
     build_openai_responses_payload,
@@ -82,6 +87,8 @@ __all__ = [
     "OpenAIResponsesHttpRequest",
     "OpenAIResponsesHttpResponse",
     "OpenAIResponsesInvalidResponseError",
+    "OpenAIResponsesInvalidOutputError",
+    "OpenAIResponsesOutputText",
     "OpenAIResponsesPayload",
     "OpenAIResponsesRawHttpResponse",
     "OpenAIResponsesRequest",
@@ -105,6 +112,7 @@ __all__ = [
     "build_openai_responses_tool_dict",
     "build_openai_responses_tool_dicts",
     "build_openai_responses_tools",
+    "extract_openai_responses_output_text",
     "load_openai_api_key_from_environment",
     "parse_openai_responses_http_response",
     "serialize_openai_responses_payload",

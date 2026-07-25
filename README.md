@@ -202,3 +202,9 @@ templateは`POST`、`https://api.openai.com/v1/responses`、順序付きの`Cont
 Phase 15の不変raw HTTP responseをUTF-8で1回だけdecodeし、JSONを1回だけparseして、2xxでは不変success response、非2xxでは不変API-error responseへ分類します。successは`id`、`object: "response"`、非空`status`、`output` arrayを最小検証し、API errorは非空messageとstringまたはnullのtype、param、codeを検証します。payloadは完全に保持しつつ再帰的に不変化し、最初の`x-request-id`を大文字小文字非区別で取得します。
 
 無効UTF-8、無効JSON、契約不一致はbodyやpayload内容を露出しない安全なinvalid-response errorになります。completed非2xxは例外化せずdataとして返します。このPhaseにCLIはありません。output text抽出、詳細output schema、usage、retry、tool handling、persistence、Runtimeは実装していません。
+
+## OpenAI Responses Output Text Boundary（Phase 17）
+
+Phase 16の不変`OpenAIResponsesSuccessResponse`から、対応するmessage output内の`output_text`だけを定義順に抽出し、不変`OpenAIResponsesOutputText`として返します。各textは空文字列、空白、改行、Unicodeを加工せずに`text_parts`へ保持し、`text`は区切り文字なしの連結です。対応しないoutput itemやcontent itemは無視しますが、messageの`content`や`output_text`の`text`が欠けるなど、対応すると主張する構造が不正な場合は安全な`OpenAIResponsesInvalidOutputError`になります。
+
+このPhaseにCLIはありません。raw HTTP response、JSON decode・parse、API errorの解釈、credentials、HTTP通信、usage、tool handling、persistence、Runtimeは扱いません。
