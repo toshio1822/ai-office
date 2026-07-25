@@ -8,6 +8,7 @@ ModelInvocationFailureCategory = Literal[
     "transport_error",
     "invalid_response",
     "invalid_output",
+    "invalid_request",
 ]
 
 

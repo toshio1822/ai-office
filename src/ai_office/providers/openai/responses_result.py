@@ -45,6 +45,17 @@ def build_model_invocation_failure_from_openai_api_error(
     )
 
 
+class OpenAIResponsesExecutionInputError(ValueError):
+    """Raised when explicit execution inputs are inconsistent."""
+
+
+def build_model_invocation_failure_from_openai_execution_input_error(
+    error: OpenAIResponsesExecutionInputError,
+) -> ModelInvocationFailure:
+    """Normalize the safe public message of an invalid execution input."""
+    return _build_safe_openai_exception_failure(error, "invalid_request")
+
+
 def build_model_invocation_failure_from_openai_transport_error(
     error: OpenAIResponsesTransportError,
 ) -> ModelInvocationFailure:
@@ -71,6 +82,7 @@ def _build_safe_openai_exception_failure(
         OpenAIResponsesTransportError
         | OpenAIResponsesInvalidResponseError
         | OpenAIResponsesInvalidOutputError
+        | OpenAIResponsesExecutionInputError
     ),
     category: ModelInvocationFailureCategory,
 ) -> ModelInvocationFailure:

@@ -214,3 +214,9 @@ Phase 16の不変`OpenAIResponsesSuccessResponse`から、対応するmessage ou
 OpenAI固有の安全なoutput text、API error、transport error、invalid-response error、invalid-output errorを、provider-independent かつ不変の`ModelInvocationSuccess`または`ModelInvocationFailure`へ正規化できます。successはresponse ID、request ID、status、text parts、textを無加工で保持し、failureは`api_error`、`transport_error`、`invalid_response`、`invalid_output`の安定したcategoryと安全な公開messageだけを保持します。API errorではrequest ID、HTTP status、provider error type、codeも保持しますが、payloadとparamはコピーしません。
 
 このPhaseにCLIはありません。retryability、transient/permanent分類、runtime orchestration、persistence、state transitions、tool handling、usage/cost accounting、人間向け表示は未実装です。HTTP、JSON parsing、credentials、環境変数、OpenAI SDK、通信も扱いません。
+
+## Guarded OpenAI Provider Execution Boundary（Phase 19）
+
+明示的な`ModelInvocationRequest`、位置順まで一致する解決済み`ToolDefinition` tuple、明示的な`OpenAIApiKey`を受け取り、既存のrequest、tool schema、payload、JSON、HTTP template、authentication、transport、response、output、result正規化の境界を順に合成できます。tool名がrequestの`allowed_tools`と位置・個数まで一致しない場合は、認証や通信の前に`invalid_request`結果として安全に返します。
+
+一致する入力では既存transportによるHTTPS requestをちょうど1回だけ実行し、success、API error、transport error、invalid response、invalid outputをprovider-independent な結果へ正規化します。このPhaseにCLIはありません。環境からのcredential取得、retry、tool execution、usage/cost、persistence、runtime state、human approval、CLIによる有料API実行は扱いません。

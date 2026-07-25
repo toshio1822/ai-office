@@ -56,9 +56,11 @@ OpenAIResponsesRequest
                        ↓
        OpenAIResponsesOutputText
                        ↓
-  Model Invocation Result Boundary
+ Model Invocation Result Boundary
                        ↓
  ModelInvocationSuccess | ModelInvocationFailure
+                       ↓
+ Guarded OpenAI Provider Execution Boundary
                        ↓
              future OpenAI runtime
 
@@ -101,7 +103,8 @@ explicit environment mapping or current process environment
 - OpenAI Responses HTTPS Transport Boundaryは、認証済みrequestをPython標準ライブラリで同期的に1回送信し、status、reason、順序・重複を保持したheaders、未解析body bytesからなる不変raw responseを返す。completed HTTP statusは解釈せず返し、transport failureは秘密を含まないprovider固有エラーにする。connectionは成功・失敗のどちらでもcloseし、retry、redirect、timeout設定、response JSON parsing、tool実行、Runtimeは扱わない。
 - OpenAI Responses HTTP Response Boundaryは、raw response bodyをUTF-8で1回decodeしJSONを1回parseして、2xxを最小検証済みsuccess responseへ、非2xxを最小検証済みAPI-error responseへ分類する。payloadは完全に保持し再帰的に不変化し、最初の`x-request-id`を取得する。completed非2xxを例外化せず、無効なbodyや契約は安全なinvalid-response errorにする。usage、tool call、retry、persistence、Runtimeは扱わない。
 - OpenAI Responses Output Text Boundaryは、`OpenAIResponsesSuccessResponse.output`を順に走査して、`message`の`content`にある`output_text`の文字列だけを加工せず不変の`OpenAIResponsesOutputText`へ抽出する。対応しないitemは無視し、対応すると主張するmessage/content構造が不正な場合はpayloadやtextを露出しない安全なinvalid-output errorにする。raw response、JSON decode・parse、API error、credentials、HTTP通信、usage、tool call、persistence、Runtimeは扱わない。
-- Model Invocation Result Boundaryは、provider固有の安全なsuccess output、API error、transport error、invalid-response error、invalid-output errorを、provider-independent かつ不変の`ModelInvocationSuccess`または`ModelInvocationFailure`へ正規化する。failure categoryは`api_error`、`transport_error`、`invalid_response`、`invalid_output`だけであり、retryabilityやtransient/permanentを推測しない。raw payload、request body、headers、credential、exception internals、usage、tool、persistence、runtime stateは保持・解釈しない。
+- Model Invocation Result Boundaryは、provider固有の安全なsuccess output、API error、transport error、invalid-response error、invalid-output error、invalid execution inputを、provider-independent かつ不変の`ModelInvocationSuccess`または`ModelInvocationFailure`へ正規化する。failure categoryは`api_error`、`transport_error`、`invalid_response`、`invalid_output`、`invalid_request`だけであり、retryabilityやtransient/permanentを推測しない。raw payload、request body、headers、credential、exception internals、usage、tool、persistence、runtime stateは保持・解釈しない。
+- Guarded OpenAI Provider Execution Boundaryは、明示的な`ModelInvocationRequest`、位置順まで一致する解決済み`ToolDefinition` tuple、明示的な`OpenAIApiKey`だけを入力にして、既存のrequest、tool schema、payload、JSON、HTTP template、authentication、HTTPS transport、response、output、result正規化の境界を順に一度だけ合成する。tool一致失敗は通信前に安全な`invalid_request`結果へ正規化し、expected provider-specific safe errorだけを正規化する。環境credential取得、retry、tool実行、usage、persistence、runtime state、CLI API実行は扱わない。
 - 依存方向は `provider-independent invocation model -> provider-specific adapter -> provider-specific request model -> future runtime` とする。Runtimeからdefinitionsやplanningのモデルへ逆依存させない。
 - provider共通抽象は、複数providerの実装から実際の共通点が確認されるまで作らない。Codex CLIは承認・sandbox・tool実行・agent loopを伴う実行基盤であるため、将来は別のAdapterとRuntime経路として検討する。
 - 人間承認が必要な遷移は、承認済みの明示的な入力なしに進めない。
