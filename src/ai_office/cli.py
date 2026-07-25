@@ -10,6 +10,10 @@ from ai_office.definitions.workflow import (
     load_workflows,
     validate_workflow_employee_references,
 )
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    build_model_invocation_request,
+)
 from ai_office.planning.execution_plan import (
     ExecutionPlan,
     WorkflowSelectionError,
@@ -163,6 +167,21 @@ def _display_step_execution_request(request: StepExecutionRequest) -> None:
     _display_indented_value(request.step_instructions)
 
 
+def _display_model_invocation_request(request: ModelInvocationRequest) -> None:
+    """Display a provider-independent invocation request without running it."""
+    typer.echo(f"Model: {request.model}")
+    typer.echo("Allowed tools:")
+    if request.allowed_tools:
+        for tool in request.allowed_tools:
+            typer.echo(f"  {tool}")
+    else:
+        typer.echo("  none")
+    typer.echo("System instructions:")
+    _display_indented_value(request.system_instructions)
+    typer.echo("Task instructions:")
+    _display_indented_value(request.task_instructions)
+
+
 @workflows_app.command("plan")
 def plan_workflow(
     workflow_id: str,
@@ -211,3 +230,31 @@ def request_workflow_step(
         raise typer.Exit(code=1) from None
 
     _display_step_execution_request(request)
+
+
+@workflows_app.command("invocation", context_settings={"ignore_unknown_options": True})
+def invocation_workflow_step(
+    workflow_id: str,
+    step_index: int,
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Build and display one provider-independent model invocation request."""
+    workflows, employees = _load_validated_definitions_or_exit(
+        directory, employees_directory
+    )
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        plan = build_execution_plan(workflow, employees)
+        step_request = build_step_execution_request(plan, step_index, employees)
+    except (
+        WorkflowSelectionError,
+        StepSelectionError,
+        EmployeeSelectionError,
+    ) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _display_model_invocation_request(build_model_invocation_request(step_request))
