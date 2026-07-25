@@ -1220,3 +1220,134 @@ def test_workflows_provider_request_reports_definition_errors_without_stdout(
     assert result.exit_code != 0
     assert expected_error in result.stderr
     assert result.stdout == ""
+
+
+def test_workflows_resolve_tools_displays_resolved_catalog_definitions(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory, allowed_tools=["web_search", "FileRead"])
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "resolve-tools",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "Resolved tools:\n"
+        "  web_search\n"
+        "    Description: Search the web for relevant information.\n"
+        "    Parameters:\n"
+        "      query\n"
+        "        Type: string\n"
+        "        Required: yes\n"
+        "        Description: The search query.\n"
+        "  FileRead\n"
+        "    Description: Read the contents of a file.\n"
+        "    Parameters:\n"
+        "      path\n"
+        "        Type: string\n"
+        "        Required: yes\n"
+        "        Description: The path of the file to read.\n"
+    )
+    assert "Provider:" not in result.stdout
+    assert '"tools"' not in result.stdout
+
+
+def test_workflows_resolve_tools_displays_none_for_empty_tools(tmp_path: Path) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "resolve-tools",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "Resolved tools:\n  none\n"
+
+
+@pytest.mark.parametrize("step_index", ["0", "3", "not-an-index"])
+def test_workflows_resolve_tools_reports_invalid_step_without_stdout(
+    tmp_path: Path, step_index: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "resolve-tools",
+            "research-and-summarize",
+            step_index,
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflows_resolve_tools_reports_unknown_tool_without_stdout(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory, allowed_tools=["UnknownTool"])
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "resolve-tools",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == "Error: Tool not found: UnknownTool\n"
