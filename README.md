@@ -273,4 +273,4 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 
 ## Pure Prepared-Step Execution Start Boundary（Phase 27）
 
-`prepare_prepared_step_execution_start()`はPhase 26の不変prepared stepとloaded historyを再検証し、正確なprovider-independent execution requestと、実行前に別boundaryで保存すべきproposed `running` stateを返します。completed step historyはそのまま保持し、failure categoryはclearします。provider request、credential lookup、tool resolution、execution、event creation、persistence、retry、automatic continuation、paid CLI execution、GUIは行いません。
+`prepare_prepared_step_execution_start()`はPhase 26の不変prepared stepとloaded historyを再検証し、既存の`ModelInvocationRequest`と、実行前に別boundaryで保存すべきproposed `running` stateを返します。completed step historyはそのまま保持し、failure categoryはclearします。`StepExecutionRequest`はprepared dataにないemployee name/roleを必要とするため、このPhaseで捏造しません。provider request、credential lookup、tool resolution、execution、event creation、persistence、retry、automatic continuation、paid CLI execution、GUIは行いません。

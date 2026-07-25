@@ -10,7 +10,6 @@ from ai_office.engine.next_step_preparation import (
     prepare_approved_next_workflow_step,
 )
 from ai_office.engine.prepared_step_execution_start import (
-    PreparedStepExecutionRequest,
     PreparedStepExecutionStart,
     PreparedStepExecutionStartCompatibilityError,
     PreparedStepExecutionStartError,
@@ -39,7 +38,6 @@ __all__ = [
     "NextStepPreparationFailureDetail",
     "PreparedWorkflowStep",
     "prepare_approved_next_workflow_step",
-    "PreparedStepExecutionRequest",
     "PreparedStepExecutionStart",
     "PreparedStepExecutionStartCompatibilityError",
     "PreparedStepExecutionStartError",

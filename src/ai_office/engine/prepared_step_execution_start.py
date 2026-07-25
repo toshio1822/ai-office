@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.invocation import ModelInvocationRequest
 from ai_office.runtime import WorkflowExecutionState
 from ai_office.storage.workflow_execution_history import LoadedWorkflowExecutionHistory
 
@@ -14,24 +15,10 @@ _ERROR_MESSAGE = "prepared-step execution start inputs are incompatible"
 
 
 @dataclass(frozen=True)
-class PreparedStepExecutionRequest:
-    """Provider-independent request data for one already prepared step."""
-
-    workflow_id: str
-    step_id: str
-    step_index: int
-    employee_id: str
-    employee_instructions: str
-    step_instructions: str
-    model: str
-    allowed_tool_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class PreparedStepExecutionStart:
     """Exact execution request and proposed state before a later explicit execution."""
 
-    request: PreparedStepExecutionRequest
+    request: ModelInvocationRequest
     running_state: WorkflowExecutionState
 
 
@@ -72,15 +59,11 @@ def prepare_prepared_step_execution_start(
         _raise("step_index")
     if not _valid_request_data(prepared_step):
         _raise("request_data")
-    request = PreparedStepExecutionRequest(
-        prepared_step.workflow_id,
-        prepared_step.step_id,
-        prepared_step.step_index,
-        prepared_step.employee_id,
-        prepared_step.employee_instructions,
-        prepared_step.step_instructions,
-        prepared_step.model,
-        tuple(prepared_step.allowed_tool_names),
+    request = ModelInvocationRequest(
+        model=prepared_step.model,
+        system_instructions=prepared_step.employee_instructions,
+        task_instructions=prepared_step.step_instructions,
+        allowed_tools=tuple(prepared_step.allowed_tool_names),
     )
     return PreparedStepExecutionStart(
         request,

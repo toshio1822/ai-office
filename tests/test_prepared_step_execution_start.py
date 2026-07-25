@@ -9,6 +9,7 @@ from ai_office.engine import (
     prepare_prepared_step_execution_start,
 )
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.invocation import ModelInvocationRequest
 from ai_office.runtime import WorkflowExecutionState
 from ai_office.storage import LoadedWorkflowExecutionHistory
 
@@ -36,18 +37,13 @@ def history(status: str = "succeeded") -> LoadedWorkflowExecutionHistory:
 
 def test_returns_exact_request_and_proposed_running_state_immutably() -> None:
     result = prepare_prepared_step_execution_start(prepared(), history())
-    assert result.request.workflow_id == "workflow"
     assert (
-        result.request.step_id,
-        result.request.step_index,
-        result.request.employee_id,
-    ) == ("next", 2, "employee")
-    assert (
-        result.request.employee_instructions,
-        result.request.step_instructions,
+        result.request.system_instructions,
+        result.request.task_instructions,
         result.request.model,
-        result.request.allowed_tool_names,
+        result.request.allowed_tools,
     ) == ("system", "task", "model", ("a", "b"))
+    assert isinstance(result.request, ModelInvocationRequest)
     assert result.running_state == WorkflowExecutionState(
         "workflow", "running", "next", 2, "employee", ("old", "old"), None
     )
