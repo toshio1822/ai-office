@@ -196,3 +196,9 @@ templateは`POST`、`https://api.openai.com/v1/responses`、順序付きの`Cont
 認証済みの不変`OpenAIResponsesAuthenticatedHttpRequest`を、Python標準ライブラリの同期HTTPS接続で1回だけ送信し、不変の`OpenAIResponsesRawHttpResponse`としてstatus、reason、順序・重複を保持したheaders、未解析のbody bytesを返します。request headerはtuple順・重複を保持し、bodyはUTF-8へ1回だけencodeします。完了した3xx、4xx、5xxも解釈せずraw responseとして返し、transport failureは秘密値を含まないprovider固有エラーになります。connectionは成功・失敗のいずれでもcloseします。
 
 このPhaseにCLIはありません。実際の有料API実行を、response validation、出力処理、Runtime、人間向けsafeguardより先に公開しないためです。retry、timeout設定、redirect、response JSON parsing、OpenAI error解釈、usage、tools、Runtimeは実装していません。
+
+## OpenAI Responses HTTP Response Boundary（Phase 16）
+
+Phase 15の不変raw HTTP responseをUTF-8で1回だけdecodeし、JSONを1回だけparseして、2xxでは不変success response、非2xxでは不変API-error responseへ分類します。successは`id`、`object: "response"`、非空`status`、`output` arrayを最小検証し、API errorは非空messageとstringまたはnullのtype、param、codeを検証します。payloadは完全に保持しつつ再帰的に不変化し、最初の`x-request-id`を大文字小文字非区別で取得します。
+
+無効UTF-8、無効JSON、契約不一致はbodyやpayload内容を露出しない安全なinvalid-response errorになります。completed非2xxは例外化せずdataとして返します。このPhaseにCLIはありません。output text抽出、詳細output schema、usage、retry、tool handling、persistence、Runtimeは実装していません。
