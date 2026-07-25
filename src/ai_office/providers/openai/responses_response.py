@@ -64,6 +64,10 @@ def _find_request_id(headers: tuple[tuple[str, str], ...]) -> str | None:
     return None
 
 
+def _reject_nonstandard_json_constant(constant: str) -> object:
+    raise ValueError(constant)
+
+
 def _decode_response_payload(
     response: OpenAIResponsesRawHttpResponse,
 ) -> dict[str, object]:
@@ -75,8 +79,11 @@ def _decode_response_payload(
         ) from None
 
     try:
-        payload = json.loads(decoded_body)
-    except json.JSONDecodeError:
+        payload = json.loads(
+            decoded_body,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError):
         raise OpenAIResponsesInvalidResponseError(
             "invalid JSON response body"
         ) from None

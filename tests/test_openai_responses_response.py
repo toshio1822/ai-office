@@ -154,6 +154,27 @@ def test_invalid_body_errors_are_safe(
     assert "test-secret" not in str(error.value)
 
 
+@pytest.mark.parametrize("status_code", [200, 400])
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_nonstandard_json_constants_are_rejected_safely(
+    status_code: int,
+    constant: str,
+) -> None:
+    body = (
+        b'{"id":"resp","object":"response","status":"completed",'
+        b'"output":[],"error":{"message":"synthetic"},"value":'
+        + constant.encode()
+        + b"}"
+    )
+    response = OpenAIResponsesRawHttpResponse(status_code, "reason", (), body)
+
+    with pytest.raises(OpenAIResponsesInvalidResponseError) as error:
+        parse_openai_responses_http_response(response)
+
+    assert str(error.value) == "invalid JSON response body"
+    assert constant not in str(error.value)
+
+
 def test_body_is_decoded_and_json_is_parsed_once_per_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,10 +191,10 @@ def test_body_is_decoded_and_json_is_parsed_once_per_response(
     calls = 0
     original_loads = response_boundary.json.loads
 
-    def loads_once(value: str) -> object:
+    def loads_once(value: str, **kwargs: object) -> object:
         nonlocal calls
         calls += 1
-        return original_loads(value)
+        return original_loads(value, **kwargs)
 
     monkeypatch.setattr(response_boundary.json, "loads", loads_once)
     body = CountingBytes(json.dumps(success_payload()).encode())
