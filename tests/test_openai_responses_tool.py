@@ -79,6 +79,23 @@ def test_build_function_property_preserves_parameter_values() -> None:
     assert parameter.required is True
 
 
+def test_build_function_property_preserves_empty_strings() -> None:
+    parameter = ToolParameterDefinition(
+        name="",
+        type="",
+        description="",
+        required=False,
+    )
+
+    property_definition = build_openai_responses_function_property(parameter)
+
+    assert property_definition == OpenAIResponsesFunctionProperty(
+        name="",
+        type="",
+        description="",
+    )
+
+
 def test_build_function_parameters_preserves_order_duplicates_and_required() -> None:
     parameters = (
         ToolParameterDefinition(" first ", "First.", " string ", True),
