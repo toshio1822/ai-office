@@ -208,3 +208,9 @@ Phase 15の不変raw HTTP responseをUTF-8で1回だけdecodeし、JSONを1回�
 Phase 16の不変`OpenAIResponsesSuccessResponse`から、対応するmessage output内の`output_text`だけを定義順に抽出し、不変`OpenAIResponsesOutputText`として返します。各textは空文字列、空白、改行、Unicodeを加工せずに`text_parts`へ保持し、`text`は区切り文字なしの連結です。対応しないoutput itemやcontent itemは無視しますが、messageの`content`や`output_text`の`text`が欠けるなど、対応すると主張する構造が不正な場合は安全な`OpenAIResponsesInvalidOutputError`になります。
 
 このPhaseにCLIはありません。raw HTTP response、JSON decode・parse、API errorの解釈、credentials、HTTP通信、usage、tool handling、persistence、Runtimeは扱いません。
+
+## Model Invocation Result Boundary（Phase 18）
+
+OpenAI固有の安全なoutput text、API error、transport error、invalid-response error、invalid-output errorを、provider-independent かつ不変の`ModelInvocationSuccess`または`ModelInvocationFailure`へ正規化できます。successはresponse ID、request ID、status、text parts、textを無加工で保持し、failureは`api_error`、`transport_error`、`invalid_response`、`invalid_output`の安定したcategoryと安全な公開messageだけを保持します。API errorではrequest ID、HTTP status、provider error type、codeも保持しますが、payloadとparamはコピーしません。
+
+このPhaseにCLIはありません。retryability、transient/permanent分類、runtime orchestration、persistence、state transitions、tool handling、usage/cost accounting、人間向け表示は未実装です。HTTP、JSON parsing、credentials、環境変数、OpenAI SDK、通信も扱いません。

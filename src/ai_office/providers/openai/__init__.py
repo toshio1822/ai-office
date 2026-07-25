@@ -55,6 +55,13 @@ from ai_office.providers.openai.responses_response import (
     OpenAIResponsesSuccessResponse,
     parse_openai_responses_http_response,
 )
+from ai_office.providers.openai.responses_result import (
+    build_model_invocation_failure_from_openai_api_error,
+    build_model_invocation_failure_from_openai_invalid_output_error,
+    build_model_invocation_failure_from_openai_invalid_response_error,
+    build_model_invocation_failure_from_openai_transport_error,
+    build_model_invocation_success_from_openai,
+)
 from ai_office.providers.openai.responses_tool import (
     OpenAIResponsesFunctionParameters,
     OpenAIResponsesFunctionProperty,
@@ -112,6 +119,11 @@ __all__ = [
     "build_openai_responses_tool_dict",
     "build_openai_responses_tool_dicts",
     "build_openai_responses_tools",
+    "build_model_invocation_failure_from_openai_api_error",
+    "build_model_invocation_failure_from_openai_invalid_output_error",
+    "build_model_invocation_failure_from_openai_invalid_response_error",
+    "build_model_invocation_failure_from_openai_transport_error",
+    "build_model_invocation_success_from_openai",
     "extract_openai_responses_output_text",
     "load_openai_api_key_from_environment",
     "parse_openai_responses_http_response",
