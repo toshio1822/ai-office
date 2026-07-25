@@ -117,16 +117,28 @@ def _validate_compatibility(
             completed_positions.append(step_positions[step_id])
         except KeyError:
             _raise_compatibility_error("completed_step_identity")
+    compressed_positions = _compress_consecutive_positions(completed_positions)
+    expected_last_position = (
+        state.current_step_index
+        if state.status == "succeeded"
+        else state.current_step_index - 1
+    )
+    if compressed_positions != tuple(range(1, expected_last_position + 1)):
+        _raise_compatibility_error("completed_step_order")
     if (
-        any(position > state.current_step_index for position in completed_positions)
-        or completed_positions != sorted(completed_positions)
+        state.status == "succeeded"
+        and state.completed_step_ids[-1] != state.current_step_id
     ):
         _raise_compatibility_error("completed_step_order")
-    if state.status == "succeeded" and (
-        not state.completed_step_ids
-        or state.completed_step_ids[-1] != state.current_step_id
-    ):
-        _raise_compatibility_error("completed_step_order")
+
+
+def _compress_consecutive_positions(positions: list[int]) -> tuple[int, ...]:
+    """Keep duplicate history while comparing its workflow-position prefix."""
+    compressed: list[int] = []
+    for position in positions:
+        if not compressed or compressed[-1] != position:
+            compressed.append(position)
+    return tuple(compressed)
 
 
 def _raise_compatibility_error(

@@ -117,7 +117,10 @@ def test_nonterminal_states_are_not_automatically_progressed(
 
 @pytest.mark.parametrize("index", [1, 2, 3])
 def test_failed_steps_stop_without_next_step(index: int) -> None:
-    decision = decide_workflow_progression(workflow(), history("failed", index))
+    completed = tuple(step.id for step in workflow().steps[: index - 1])
+    decision = decide_workflow_progression(
+        workflow(), history("failed", index, completed)
+    )
 
     assert decision.decision == "stopped_failed"
     assert decision.reason == "latest_step_failed"
@@ -243,3 +246,32 @@ def test_compatible_duplicate_completed_ids_are_preserved_and_deterministic() ->
 
     assert first == second
     assert value.state.completed_step_ids == ("first", "first", "second", "second")
+
+
+@pytest.mark.parametrize(
+    ("status", "index", "completed", "accepted"),
+    [
+        ("succeeded", 3, ("second",), False),
+        ("succeeded", 3, ("first", "third"), False),
+        ("succeeded", 3, ("first", "second", "third"), True),
+        ("succeeded", 2, ("first", "first", "second", "second"), True),
+        ("ready", 2, ("first",), True),
+        ("running", 2, ("first",), True),
+        ("failed", 2, ("first",), True),
+        ("ready", 2, ("first", "second"), False),
+        ("running", 2, ("first", "second"), False),
+        ("failed", 2, ("first", "second"), False),
+    ],
+)
+def test_completed_steps_must_form_the_state_specific_sequential_prefix(
+    status: str, index: int, completed: tuple[str, ...], accepted: bool
+) -> None:
+    value = history(status, index, completed)
+
+    if accepted:
+        decision = decide_workflow_progression(workflow(), value)
+        assert decision.current_step_index == index
+    else:
+        with pytest.raises(WorkflowProgressionCompatibilityError) as caught:
+            decide_workflow_progression(workflow(), value)
+        assert caught.value.detail.classification == "completed_step_order"
