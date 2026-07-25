@@ -13,12 +13,14 @@ planning: ExecutionPlan -> StepExecutionRequest
         |
         v
 invocation: ModelInvocationRequest
-        |
-        v
-providers.openai adapter: OpenAIResponsesRequest
-        |
-        v
-future OpenAI runtime
+        ├─→ providers.openai adapter: OpenAIResponsesRequest
+        │       ↓
+        │   future OpenAI runtime
+        └─→ tools: Tool Catalog
+                ↓
+            ToolDefinition
+                ↓
+            future provider tool adapter
 ```
 
 | 層 | 責務 |
@@ -30,7 +32,7 @@ future OpenAI runtime
 | `engine` | 定義済みの状態遷移、検証、再試行を決定的に管理する。 |
 | `runtime` | 実行状態とイベントを扱う。 |
 | `storage` | JSON の状態、JSONL のイベント、ファイルの成果物を永続化する。 |
-| `tools` | AI 実行方式などの外部機能との境界を提供する。初期実装の候補は Codex CLI。 |
+| `tools` | provider非依存の静的なTool Catalogを保持し、未解決tool名を完全一致で`ToolDefinition`へ決定的に解決する。`ToolDefinition`はHTTP payloadでも実行可能オブジェクトでもなく、provider schema変換、executor、Runtimeは後続Phaseで扱う。 |
 
 ## 境界と不変条件
 
@@ -42,6 +44,7 @@ future OpenAI runtime
 - 実行要求は実行アダプタへの不変の入力であり、runtime stateではない。元定義やファイル配置場所への参照を持たず、prompt組立、AI実行、tool解決、保存を扱わない。
 - モデル呼び出し要求はprovider adapterへの不変の入力であり、model、分離されたsystem instructionsとtask instructions、定義順のallowed toolsだけを持つ。
 - OpenAI Responses Adapterは純粋な変換層であり、`OpenAIResponsesRequest` はHTTP payloadでもwire formatでもない。model、instructions、input、未解決のallowed tool namesだけを保持し、SDK、認証、通信、tool schema解決、AI実行を扱わない。
+- Tool Catalogはprovider非依存であり、`ModelInvocationRequest.allowed_tools`や`OpenAIResponsesRequest.allowed_tool_names`を置き換えない。未解決名を順序・重複そのままで`ToolDefinition`へ解決するだけで、OpenAI tool schema、tool executor、Runtimeを扱わない。
 - 依存方向は `provider-independent invocation model -> provider-specific adapter -> provider-specific request model -> future runtime` とする。Runtimeからdefinitionsやplanningのモデルへ逆依存させない。
 - provider共通抽象は、複数providerの実装から実際の共通点が確認されるまで作らない。Codex CLIは承認・sandbox・tool実行・agent loopを伴う実行基盤であるため、将来は別のAdapterとRuntime経路として検討する。
 - 人間承認が必要な遷移は、承認済みの明示的な入力なしに進めない。

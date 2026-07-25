@@ -108,3 +108,16 @@ ai-office workflows provider-request openai research-and-summarize 1 \
 ```
 
 このコマンドはOpenAI APIを呼び出さず、APIキーも不要で、課金も発生しません。表示する`OpenAIResponsesRequest`はHTTP payloadやJSON wire formatではなく、将来のOpenAI Runtimeへ渡す不変の実行前モデルです。tool名はまだOpenAI固有のschemaへ解決されていません。Codex CLI対応はこのPhaseの対象外です。
+
+## Tool Catalog（Phase 7）
+
+workflow stepのallowed tool名を、プロバイダー非依存の静的なtool定義へ解決できます。
+
+```bash
+ai-office workflows resolve-tools research-and-summarize 1
+ai-office workflows resolve-tools research-and-summarize 1 \
+  --directory path/to/workflows \
+  --employees-directory path/to/employees
+```
+
+Tool名は完全一致で解決され、順序・重複・大文字小文字・空白を保持します。Tool Catalogは名前、説明、入力項目を確認するためのものであり、Catalogに登録されていてもtoolを実行できることを意味しません。`ToolDefinition`は実行可能オブジェクトやHTTP payloadではありません。OpenAI tool schema、JSON Schema、executor、Runtime、API、SDK、HTTP通信は未実装であり、APIキー不要で課金も発生しません。
