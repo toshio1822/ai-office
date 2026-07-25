@@ -955,3 +955,268 @@ def test_workflows_help_lists_invocation_command() -> None:
 
     assert result.exit_code == 0
     assert "invocation" in result.stdout
+
+
+def test_workflows_provider_request_displays_openai_values_without_combining(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(
+        workflows_directory,
+        research_instructions="  Write this.\n\nDo not trim.  \n",
+    )
+    write_valid_employee(
+        employees_directory,
+        instructions="\n  You are a writer.\n\nKeep  spaces.\t\n",
+        allowed_tools=["web_search", "FileRead"],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-request",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "Provider: openai\n"
+        "Model: codex\n"
+        "Allowed tool names:\n"
+        "  web_search\n"
+        "  FileRead\n"
+        "Instructions:\n"
+        "  \n"
+        "    You are a writer.\n"
+        "  \n"
+        "  Keep  spaces.\t\n"
+        "  \n"
+        "Input:\n"
+        "    Write this.\n"
+        "  \n"
+        "  Do not trim.  \n"
+        "  \n"
+    )
+    assert "System instructions:" not in result.stdout
+    assert "Task instructions:" not in result.stdout
+
+
+def test_workflows_provider_request_displays_none_for_empty_tools(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-request",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Allowed tool names:\n  none\n" in result.stdout
+
+
+def test_workflows_provider_request_reports_unsupported_provider_without_stdout(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-request",
+            "anthropic",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == "Error: unsupported provider: anthropic\n"
+
+
+@pytest.mark.parametrize("workflow_id", ["missing-workflow", "Invalid_ID"])
+def test_workflows_provider_request_reports_invalid_workflow_without_stdout(
+    tmp_path: Path, workflow_id: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-request",
+            "openai",
+            workflow_id,
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("step_index", ["0", "-1", "3", "not-an-index"])
+def test_workflows_provider_request_reports_invalid_step_without_stdout(
+    tmp_path: Path, step_index: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-request",
+            "openai",
+            "research-and-summarize",
+            step_index,
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflows_provider_request_validates_unselected_definitions(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+    (workflows_directory / "invalid.yml").write_text("id: [", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-request",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "invalid.yml" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "invalid_definition",
+    ["employee", "employee-reference"],
+)
+def test_workflows_provider_request_reports_definition_errors_without_stdout(
+    tmp_path: Path, invalid_definition: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+    if invalid_definition == "employee":
+        (employees_directory / "invalid.yml").write_text("id: [", encoding="utf-8")
+        expected_error = "invalid.yml"
+    else:
+        (workflows_directory / "unrelated.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "id": "unrelated",
+                    "name": "Unrelated",
+                    "description": "Uses an undefined employee.",
+                    "steps": [
+                        {
+                            "id": "unrelated-step",
+                            "name": "Unrelated Step",
+                            "employee": "missing-employee",
+                            "instructions": "Do unrelated work.",
+                        }
+                    ],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        expected_error = "missing-employee"
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-request",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert expected_error in result.stderr
+    assert result.stdout == ""
