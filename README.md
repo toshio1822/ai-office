@@ -240,3 +240,11 @@ OpenAI固有の安全なoutput text、API error、transport error、invalid-resp
 `transition_workflow_execution_from_step_result()`はcompleted `StepRuntimeExecutionResult`を既存`running` stateと完全一致で検証し、1つの`WorkflowExecutionTransition`（previous state、next state、runtime event）を返します。successは`running -> succeeded`、current step IDを一度だけappendし、empty output textを含む安全なsuccess metadataを保持します。failureは`running -> failed`、completed IDsを変えず、既存failure categoryとsafe messageを保持します。ここでの`succeeded`は明示的な単一step execution stateの完了であり、multi-step workflow全体の完了を意味しません。
 
 このPhaseは時刻、event ID、永続化、JSON/JSONL、next-step selection、retry、provider実行、tool execution、agent loop、CLI paid executionを扱いません。Phase 21 executionとPhase 22 transitionは別々の明示呼び出しです。次の境界が返されたstateとeventをatomicまたはcompensatableに保存します。
+
+## Compensatable State and Event Persistence Boundary（Phase 23）
+
+`persist_workflow_execution_transition()`は、完成済み`WorkflowExecutionTransition`をcaller suppliedな2つのpathへ保存します。next stateは決定的UTF-8 JSON（1 newline）、runtime eventは決定的compact UTF-8 JSONL record（正確に1 newline）です。state/event identity、status、target pathの整合性を先に検証し、completed step order、duplicate IDs、Unicode、empty output、`None`をそのまま保持します。
+
+保存前に両targetの存在と正確なbytesを捕捉し、state replacementの後にevent appendを行います。扱うfilesystem failureで部分更新が発生した場合は、events、stateの決定順で両targetを元のbytesへ復元し、元は存在しなかったtargetを削除します。rollback自体が失敗しても両復元を試み、distinct safe rollback errorを返します。これはin-process compensationであり、二つのfileに対するcrash-safe transactionではありません。
+
+このPhaseはlocks、fsync guarantee、database、crash recovery、state/event load、next-step orchestration、retry、provider実行、tool execution、CLI paid execution、GUIを扱いません。Phase 21 execution、Phase 22 transition、Phase 23 persistenceは別々の明示呼び出しです。
