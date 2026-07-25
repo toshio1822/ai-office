@@ -262,3 +262,11 @@ OpenAI固有の安全なoutput text、API error、transport error、invalid-resp
 返す不変`WorkflowProgressionDecision`は、`prepare_next_step`、`workflow_complete`、`stopped_failed`、`not_progressable`のいずれかです。成功した非終端stepでは定義上ただ1つの直後stepだけを選び、ready/runningは自動開始・再開せず、failedはretryせず、最後の成功stepはstateを書き換えず完了として知らせます。decisionはstateを変更せず、request構築、approval作成、provider/tool実行、persistence、paid CLI execution、GUIを行いません。
 
 Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loading、Phase 25 decisionはすべて別々の明示呼び出しです。後続boundaryだけが、明示承認された`prepare_next_step` decisionを決定的な次step preparation requestへ変換できますが、実行はしません。
+
+## Approved Next-Step Preparation Boundary（Phase 26）
+
+`prepare_approved_next_workflow_step()`は、Phase 25の`prepare_next_step` decisionと、そのcurrent/next step identityに完全に束縛された明示approvalだけを消費します。workflow、loaded history、decision、approval、selected employee definitionを再照合し、staleまたは不一致な入力は内容を露出しないsafe errorとして拒否します。
+
+返す不変`PreparedWorkflowStep`は、選択済みstepとemployeeのidentity、employee instructions、step instructions、model、allowed tool namesを定義順のまま保持します。provider-specific request、credential lookup、tool resolution、実行、state mutation、event creation、persistence、retry、automatic continuation、paid CLI execution、GUIは行いません。
+
+Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loading、Phase 25 decision、Phase 26 preparationは別々の明示呼び出しです。後続boundaryはprepared stepを正確なexecution requestとcontrolled running-state transitionへ変換できますが、executionやpersistenceを隠しません。
