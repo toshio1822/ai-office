@@ -211,8 +211,13 @@ def _parse_runtime_step_events(contents: bytes) -> tuple[RuntimeStepEvent, ...]:
         raise WorkflowExecutionDataError("events_parse") from None
     if not text:
         return ()
-    records = text.splitlines()
-    if not text.endswith(("\n", "\r")) or any(not record.strip() for record in records):
+    if not text.endswith("\n"):
+        raise WorkflowExecutionDataError("events_parse")
+    records = tuple(
+        record[:-1] if record.endswith("\r") else record
+        for record in text[:-1].split("\n")
+    )
+    if any(not record.strip() for record in records):
         raise WorkflowExecutionDataError("events_parse")
     try:
         return tuple(

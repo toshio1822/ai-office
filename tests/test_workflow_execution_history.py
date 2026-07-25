@@ -143,6 +143,57 @@ def test_preserves_event_and_completed_step_order_and_duplicates(
     assert loaded.state.completed_step_ids == ("old", "old", "step")
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_success_output_text_with_unicode_line_separator_is_preserved(
+    separator: str, tmp_path: Path
+) -> None:
+    value = targets(tmp_path)
+    event = replace(succeeded_event(), output_text=f"before{separator}after")
+    write_history(value, succeeded_state(), (event,))
+
+    assert load_workflow_execution_history(value).events == (event,)
+
+
+def test_failure_message_with_unicode_line_separator_is_preserved(
+    tmp_path: Path,
+) -> None:
+    value = targets(tmp_path)
+    state = failed_state("api_error")
+    event = replace(failed_event("api_error"), message="before\u2028after")
+    write_history(value, state, (event,))
+
+    assert load_workflow_execution_history(value).events == (event,)
+
+
+def test_lf_delimited_events_preserve_order(tmp_path: Path) -> None:
+    value = targets(tmp_path)
+    first = replace(succeeded_event(), output_text="first")
+    final = replace(succeeded_event(), output_text="final")
+    write_history(value, succeeded_state(), (first, final))
+
+    assert load_workflow_execution_history(value).events == (first, final)
+
+
+def test_partial_final_event_record_without_lf_is_rejected(tmp_path: Path) -> None:
+    value = targets(tmp_path)
+    value.state_path.write_text(json.dumps(build_workflow_execution_state_dict(succeeded_state())))
+    value.events_path.write_text(json.dumps(build_runtime_step_event_dict(succeeded_event())))
+
+    with pytest.raises(WorkflowExecutionDataError):
+        load_workflow_execution_history(value)
+
+
+def test_blank_event_record_is_rejected(tmp_path: Path) -> None:
+    value = targets(tmp_path)
+    value.state_path.write_text(json.dumps(build_workflow_execution_state_dict(succeeded_state())))
+    value.events_path.write_text(
+        json.dumps(build_runtime_step_event_dict(succeeded_event())) + "\n\n"
+    )
+
+    with pytest.raises(WorkflowExecutionDataError):
+        load_workflow_execution_history(value)
+
+
 def test_allows_empty_event_log_only_for_nonterminal_state(tmp_path: Path) -> None:
     value = targets(tmp_path)
     state = WorkflowExecutionState("workflow", "ready", "step", 1, "employee", (), None)
