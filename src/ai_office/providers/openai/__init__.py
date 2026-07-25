@@ -52,6 +52,12 @@ from ai_office.providers.openai.responses_tool import (
     build_openai_responses_tool,
     build_openai_responses_tools,
 )
+from ai_office.providers.openai.responses_transport import (
+    OpenAIResponsesRawHttpResponse,
+    OpenAIResponsesTransportError,
+    OpenAIResponsesTransportUrlError,
+    send_openai_responses_http_request,
+)
 
 __all__ = [
     "OPENAI_RESPONSES_CONTENT_TYPE",
@@ -67,7 +73,10 @@ __all__ = [
     "OpenAIResponsesFunctionTool",
     "OpenAIResponsesHttpRequest",
     "OpenAIResponsesPayload",
+    "OpenAIResponsesRawHttpResponse",
     "OpenAIResponsesRequest",
+    "OpenAIResponsesTransportError",
+    "OpenAIResponsesTransportUrlError",
     "authenticate_openai_responses_http_request",
     "build_openai_responses_function_parameters",
     "build_openai_responses_function_property",
@@ -90,4 +99,5 @@ __all__ = [
     "serialize_openai_responses_payload_dict",
     "serialize_openai_responses_payload_dict_pretty",
     "serialize_openai_responses_payload_from_invocation",
+    "send_openai_responses_http_request",
 ]
