@@ -1579,7 +1579,9 @@ def test_workflows_provider_tools_preserves_property_and_required_order(
     assert required_section == "      first\n      last\n"
 
 
-@pytest.mark.parametrize("provider", ["anthropic", "OpenAI", " openai", "openai "])
+@pytest.mark.parametrize(
+    "provider", ["anthropic", "OpenAI", "OPENAI", " openai", "openai "]
+)
 def test_workflows_provider_tools_rejects_unsupported_provider_without_stdout(
     tmp_path: Path, provider: str
 ) -> None:
