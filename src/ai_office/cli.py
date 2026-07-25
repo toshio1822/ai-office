@@ -27,8 +27,10 @@ from ai_office.planning.step_execution_request import (
     build_step_execution_request,
 )
 from ai_office.providers.openai import (
+    OpenAIResponsesFunctionTool,
     OpenAIResponsesRequest,
     build_openai_responses_request,
+    build_openai_responses_tools,
 )
 from ai_office.tools import (
     DEFAULT_TOOL_CATALOG,
@@ -236,6 +238,40 @@ def _display_resolved_tools(tools: tuple[ToolDefinition, ...]) -> None:
             typer.echo(f"        Description: {parameter.description}")
 
 
+def _display_openai_responses_tools(
+    tools: tuple[OpenAIResponsesFunctionTool, ...],
+) -> None:
+    """Display static OpenAI tool schema models without producing a payload."""
+    typer.echo("Provider: openai")
+    typer.echo("Tools:")
+    if not tools:
+        typer.echo("  none")
+        return
+    for tool in tools:
+        typer.echo(f"  Type: {tool.type}")
+        typer.echo(f"  Name: {tool.name}")
+        typer.echo(f"  Description: {tool.description}")
+        typer.echo(f"  Strict: {'yes' if tool.strict else 'no'}")
+        typer.echo("  Parameters:")
+        typer.echo(f"    Type: {tool.parameters.type}")
+        additional = "yes" if tool.parameters.additional_properties else "no"
+        typer.echo(f"    Additional properties: {additional}")
+        typer.echo("    Properties:")
+        if tool.parameters.properties:
+            for property_definition in tool.parameters.properties:
+                typer.echo(f"      {property_definition.name}")
+                typer.echo(f"        Type: {property_definition.type}")
+                typer.echo(f"        Description: {property_definition.description}")
+        else:
+            typer.echo("      none")
+        typer.echo("    Required:")
+        if tool.parameters.required:
+            for required_name in tool.parameters.required:
+                typer.echo(f"      {required_name}")
+        else:
+            typer.echo("      none")
+
+
 @workflows_app.command("plan")
 def plan_workflow(
     workflow_id: str,
@@ -397,3 +433,48 @@ def resolve_workflow_step_tools(
         raise typer.Exit(code=1) from None
 
     _display_resolved_tools(resolved_tools)
+
+
+@workflows_app.command(
+    "provider-tools", context_settings={"ignore_unknown_options": True}
+)
+def provider_workflow_step_tools(
+    provider: str,
+    workflow_id: str,
+    step_index: str,
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Build and display static provider-specific tool schema models."""
+    workflows, employees = _load_validated_definitions_or_exit(
+        directory, employees_directory
+    )
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        plan = build_execution_plan(workflow, employees)
+        step_request = build_step_execution_request(plan, int(step_index), employees)
+        invocation_request = build_model_invocation_request(step_request)
+        resolved_tools = resolve_tool_names(
+            DEFAULT_TOOL_CATALOG, invocation_request.allowed_tools
+        )
+    except (
+        WorkflowSelectionError,
+        StepSelectionError,
+        EmployeeSelectionError,
+        ToolCatalogError,
+        ValueError,
+    ) as error:
+        message = (
+            f"invalid step index: {step_index}"
+            if isinstance(error, ValueError) and not isinstance(error, ToolCatalogError)
+            else str(error)
+        )
+        typer.echo(f"Error: {message}", err=True)
+        raise typer.Exit(code=1) from None
+
+    if provider != "openai":
+        typer.echo(f"Error: unsupported provider: {provider}", err=True)
+        raise typer.Exit(code=1)
+    _display_openai_responses_tools(build_openai_responses_tools(resolved_tools))
