@@ -187,3 +187,68 @@ def test_employee_identity_mismatch_is_rejected() -> None:
         )
 
     assert caught.value.detail.classification == "employee_identity"
+
+
+@pytest.mark.parametrize(
+    "changed_state",
+    [
+        lambda state: replace(state, current_step_id="other"),
+        lambda state: replace(state, current_employee_id="other"),
+    ],
+)
+def test_history_current_identity_must_match_workflow_definition(
+    changed_state: object,
+) -> None:
+    changed_history = replace(history(), state=changed_state(history().state))  # type: ignore[operator]
+
+    with pytest.raises(NextStepPreparationCompatibilityError) as caught:
+        prepare_approved_next_workflow_step(
+            workflow(), changed_history, decision(), approval(), employee()
+        )
+
+    assert caught.value.detail.classification == "current_step_identity"
+
+
+@pytest.mark.parametrize("status", ["running", "ready", "failed"])
+def test_non_succeeded_history_rejects_forged_prepare_decision(status: str) -> None:
+    changed_history = replace(history(), state=replace(history().state, status=status))
+
+    with pytest.raises(NextStepPreparationCompatibilityError) as caught:
+        prepare_approved_next_workflow_step(
+            workflow(), changed_history, decision(), approval(), employee()
+        )
+
+    assert caught.value.detail.classification == "next_step_identity"
+
+
+def test_final_succeeded_history_rejects_forged_next_step_decision() -> None:
+    final_history = LoadedWorkflowExecutionHistory(
+        WorkflowExecutionState(
+            "workflow", "succeeded", "second", 2, "two", ("first", "second"), None
+        ),
+        (),
+    )
+    forged = replace(
+        decision(),
+        current_step_id="second",
+        current_step_index=2,
+        current_employee_id="two",
+        next_step_id="forged",
+        next_step_index=3,
+        next_employee_id="forged",
+    )
+
+    with pytest.raises(NextStepPreparationCompatibilityError) as caught:
+        prepare_approved_next_workflow_step(
+            workflow(), final_history, forged, approval(forged), employee()
+        )
+
+    assert caught.value.detail.classification == "next_step_identity"
+
+
+def test_succeeded_non_final_history_still_prepares_next_step() -> None:
+    prepared = prepare_approved_next_workflow_step(
+        workflow(), history(), decision(), approval(), employee()
+    )
+
+    assert prepared.step_id == "second"

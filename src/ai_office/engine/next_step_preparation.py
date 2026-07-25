@@ -113,6 +113,20 @@ def _validate_decision_and_history(
         _raise_compatibility_error("decision_type")
     if not (workflow.id == state.workflow_id == decision.workflow_id):
         _raise_compatibility_error("workflow_identity")
+    if (
+        isinstance(state.current_step_index, bool)
+        or not isinstance(state.current_step_index, int)
+        or not 1 <= state.current_step_index <= len(workflow.steps)
+    ):
+        _raise_compatibility_error("current_step_identity")
+    current_step = workflow.steps[state.current_step_index - 1]
+    if (
+        state.current_step_id != current_step.id
+        or state.current_employee_id != current_step.employee
+    ):
+        _raise_compatibility_error("current_step_identity")
+    if state.status != "succeeded" or state.current_step_index == len(workflow.steps):
+        _raise_compatibility_error("next_step_identity")
     if not (
         decision.current_step_id == state.current_step_id
         and decision.current_step_index == state.current_step_index
