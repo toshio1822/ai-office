@@ -120,4 +120,4 @@ ai-office workflows resolve-tools research-and-summarize 1 \
   --employees-directory path/to/employees
 ```
 
-Tool Catalogは名前、説明、入力項目を確認するためのものであり、Catalogに登録されていてもtoolを実行できることを意味しません。OpenAI tool schema、API、SDK、HTTP通信は生成・実行せず、APIキー不要で課金も発生しません。
+Tool名は完全一致で解決され、順序・重複・大文字小文字・空白を保持します。Tool Catalogは名前、説明、入力項目を確認するためのものであり、Catalogに登録されていてもtoolを実行できることを意味しません。`ToolDefinition`は実行可能オブジェクトやHTTP payloadではありません。OpenAI tool schema、JSON Schema、executor、Runtime、API、SDK、HTTP通信は未実装であり、APIキー不要で課金も発生しません。

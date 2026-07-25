@@ -6,7 +6,9 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+import ai_office.cli as cli_module
 from ai_office.cli import app
+from ai_office.tools import ToolCatalog, ToolDefinition
 
 runner = CliRunner()
 
@@ -1292,6 +1294,47 @@ def test_workflows_resolve_tools_displays_none_for_empty_tools(tmp_path: Path) -
 
     assert result.exit_code == 0
     assert result.stdout == "Resolved tools:\n  none\n"
+
+
+def test_workflows_resolve_tools_displays_none_for_empty_parameters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory, allowed_tools=["catalog_only"])
+    monkeypatch.setattr(
+        cli_module,
+        "DEFAULT_TOOL_CATALOG",
+        ToolCatalog(
+            tools=(
+                ToolDefinition(
+                    name="catalog_only",
+                    description="A static catalog entry.",
+                    parameters=(),
+                ),
+            )
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "resolve-tools",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Parameters:\n      none\n" in result.stdout
 
 
 @pytest.mark.parametrize("step_index", ["0", "3", "not-an-index"])
