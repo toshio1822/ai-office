@@ -699,3 +699,259 @@ def test_workflows_help_lists_request_command() -> None:
 
     assert result.exit_code == 0
     assert "request" in result.stdout
+
+
+def test_workflows_invocation_displays_provider_independent_values(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(
+        workflows_directory,
+        research_instructions="Gather relevant information.\n\nKeep facts separate.",
+    )
+    write_valid_employee(
+        employees_directory,
+        role="Organizes information.",
+        instructions="Work on the assigned step.\n\nFollow the evidence.",
+        allowed_tools=["search", "read"],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "invocation",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "Model: codex\n"
+        "Allowed tools:\n"
+        "  search\n"
+        "  read\n"
+        "System instructions:\n"
+        "  Work on the assigned step.\n"
+        "  \n"
+        "  Follow the evidence.\n"
+        "Task instructions:\n"
+        "  Gather relevant information.\n"
+        "  \n"
+        "  Keep facts separate.\n"
+    )
+    assert "research-and-summarize" not in result.stdout
+    assert "general-researcher" not in result.stdout
+    assert "Organizes information." not in result.stdout
+
+
+def test_workflows_invocation_displays_none_for_empty_allowed_tools(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "invocation",
+            "research-and-summarize",
+            "2",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Allowed tools:\n  none\n" in result.stdout
+    assert "Task instructions:\n  Summarize the information.\n" in result.stdout
+
+
+@pytest.mark.parametrize("workflow_id", ["missing-workflow", "Invalid_ID"])
+def test_workflows_invocation_reports_invalid_workflow_without_stdout(
+    tmp_path: Path, workflow_id: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "invocation",
+            workflow_id,
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("step_index", ["0", "-1", "3"])
+def test_workflows_invocation_reports_invalid_step_without_stdout(
+    tmp_path: Path, step_index: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "invocation",
+            "research-and-summarize",
+            step_index,
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Error:" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflows_invocation_rejects_unknown_options_without_stdout(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "invocation",
+            "research-and-summarize",
+            "1",
+            "--unknown-option",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "unexpected extra argument" in result.stderr.lower()
+    assert result.stdout == ""
+
+
+def test_workflows_invocation_validates_unselected_definitions(tmp_path: Path) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+    (employees_directory / "invalid-employee.yaml").write_text(
+        "id: [", encoding="utf-8"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "invocation",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "invalid-employee.yaml" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflows_invocation_validates_unselected_employee_references(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+    (workflows_directory / "unrelated.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": "unrelated",
+                "name": "Unrelated",
+                "description": "Uses an undefined employee.",
+                "steps": [
+                    {
+                        "id": "unrelated-step",
+                        "name": "Unrelated Step",
+                        "employee": "missing-employee",
+                        "instructions": "Do unrelated work.",
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "invocation",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "missing-employee" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflows_help_lists_invocation_command() -> None:
+    result = runner.invoke(app, ["workflows", "--help"])
+
+    assert result.exit_code == 0
+    assert "invocation" in result.stdout

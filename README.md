@@ -84,3 +84,14 @@ ai-office workflows request research-and-summarize 1 \
 ```
 
 `workflows request` は実行要求を表示するだけで、AIやtoolを呼び出しません。employee instructionsとstep instructionsは別々に保持・表示し、状態、履歴、成果物は保存しません。
+
+特定stepを将来のAIプロバイダーへ渡すための、provider非依存のモデル呼び出し要求として確認するには次を使用します。
+
+```bash
+ai-office workflows invocation research-and-summarize 1
+ai-office workflows invocation research-and-summarize 1 \
+  --directory path/to/workflows \
+  --employees-directory path/to/employees
+```
+
+`workflows invocation` はmodel、allowed tools、system instructions、task instructionsを分離したまま表示します。AIやtoolの呼び出しはまだ行わず、promptの結合、状態、履歴、成果物の保存も行いません。
