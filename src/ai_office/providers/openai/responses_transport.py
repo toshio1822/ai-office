@@ -35,30 +35,34 @@ def _create_https_connection(
 
 
 def _parse_openai_responses_transport_url(url: str) -> tuple[str, int | None, str]:
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        username = parsed.username
+        password = parsed.password
+        port = parsed.port
+    except ValueError:
+        raise OpenAIResponsesTransportUrlError(
+            "OpenAI Responses transport URL is invalid"
+        ) from None
+
     if parsed.scheme.lower() != "https":
         raise OpenAIResponsesTransportUrlError(
             "OpenAI Responses transport requires HTTPS"
         )
-    if not parsed.hostname:
+    if not hostname:
         raise OpenAIResponsesTransportUrlError(
             "OpenAI Responses transport URL requires a hostname"
         )
-    if parsed.username is not None or parsed.password is not None:
+    if username is not None or password is not None:
         raise OpenAIResponsesTransportUrlError(
             "OpenAI Responses transport URL must not include user information"
         )
-    try:
-        port = parsed.port
-    except ValueError:
-        raise OpenAIResponsesTransportUrlError(
-            "OpenAI Responses transport URL has an invalid port"
-        ) from None
 
     target = parsed.path or "/"
     if parsed.query:
         target = f"{target}?{parsed.query}"
-    return parsed.hostname, port, target
+    return hostname, port, target
 
 
 def send_openai_responses_http_request(

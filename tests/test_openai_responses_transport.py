@@ -164,6 +164,7 @@ def test_empty_path_and_explicit_https_port_are_preserved(
         "https:///path",
         "https://user@api.example.test/",
         "https://:password@api.example.test/",
+        "https://[::1",
     ],
 )
 def test_invalid_urls_are_rejected_before_connection_creation(
