@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 import ai_office.cli as cli_module
 from ai_office.cli import app
+from ai_office.invocation import ModelInvocationRequest
 from ai_office.tools import ToolCatalog, ToolDefinition, ToolParameterDefinition
 
 runner = CliRunner()
@@ -1698,3 +1699,180 @@ def test_workflows_provider_tools_validates_unselected_definitions(
     assert result.exit_code != 0
     assert result.stdout == ""
     assert "invalid.yml" in result.stderr
+
+
+def test_workflows_provider_payload_displays_static_payload(tmp_path: Path) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(
+        workflows_directory,
+        research_instructions="  Input line\n\n終端  \n",
+    )
+    write_valid_employee(
+        employees_directory,
+        instructions="\n  指示  ✨\n",
+        allowed_tools=["web_search", "FileRead"],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-payload",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "Provider: openai\n"
+        "Payload:\n"
+        "  Model: codex\n"
+        "  Instructions:\n"
+        "    \n"
+        "      指示  ✨\n"
+        "    \n"
+        "  Input:\n"
+        "      Input line\n"
+        "    \n"
+        "    終端  \n"
+        "    \n"
+        "  Tools:\n"
+        "    Type: function\n"
+        "    Name: web_search\n"
+        "    Description: Search the web for relevant information.\n"
+        "    Strict: no\n"
+        "    Parameters:\n"
+        "      Type: object\n"
+        "      Additional properties: no\n"
+        "      Properties:\n"
+        "        query\n"
+        "          Type: string\n"
+        "          Description: The search query.\n"
+        "      Required:\n"
+        "        query\n"
+        "    Type: function\n"
+        "    Name: FileRead\n"
+        "    Description: Read the contents of a file.\n"
+        "    Strict: no\n"
+        "    Parameters:\n"
+        "      Type: object\n"
+        "      Additional properties: no\n"
+        "      Properties:\n"
+        "        path\n"
+        "          Type: string\n"
+        "          Description: The path of the file to read.\n"
+        "      Required:\n"
+        "        path\n"
+    )
+    assert "{" not in result.stdout
+
+
+def test_workflows_provider_payload_displays_empty_values_and_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+    monkeypatch.setattr(
+        cli_module,
+        "build_model_invocation_request",
+        lambda _request: ModelInvocationRequest(
+            model="codex",
+            system_instructions="",
+            task_instructions="",
+            allowed_tools=(),
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-payload",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "  Instructions:\n    <empty>\n" in result.stdout
+    assert "  Input:\n    <empty>\n" in result.stdout
+    assert result.stdout.endswith("  Tools:\n    none\n")
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "OpenAI", " openai", "openai "])
+def test_workflows_provider_payload_rejects_unsupported_provider_without_stdout(
+    tmp_path: Path, provider: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-payload",
+            provider,
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == f"Error: unsupported provider: {provider}\n"
+
+
+def test_workflows_provider_payload_reports_unknown_tool_without_stdout(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory, allowed_tools=["UnknownTool"])
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-payload",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == "Error: Tool not found: UnknownTool\n"

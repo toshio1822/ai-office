@@ -13,18 +13,28 @@ planning: ExecutionPlan -> StepExecutionRequest
         |
         v
 invocation: ModelInvocationRequest
-        ├─→ providers.openai adapter: OpenAIResponsesRequest
+        ↓
+OpenAIResponsesRequest
+        │
+        ├─ allowed_tool_names
         │       ↓
-        │   future OpenAI runtime
-        └─→ tools: Tool Catalog
-                ↓
-            ToolDefinition
-                ↓
-            OpenAI Responses Tool Adapter
-                ↓
-            OpenAIResponsesFunctionTool
-                ↓
-            future request payload adapter
+        │   tools: Tool Catalog
+        │       ↓
+        │   ToolDefinition
+        │       ↓
+        │   OpenAI Responses Tool Adapter
+        │       ↓
+        │   OpenAIResponsesFunctionTool
+        │
+        └──────────────┐
+                       ↓
+          OpenAI Responses Payload Adapter
+                       ↓
+             OpenAIResponsesPayload
+                       ↓
+          future dictionary payload adapter
+                       ↓
+             future OpenAI runtime
 ```
 
 | 層 | 責務 |
@@ -32,7 +42,7 @@ invocation: ModelInvocationRequest
 | `definitions` | 社員・ワークフローのテキスト定義をモデル化する。 |
 | `planning` | 検証済み定義を、順序・担当employee・step instructionsを明示した不変の実行計画へ変換し、1 step分の構造化実行要求を生成する。AI実行、状態、保存は扱わない。 |
 | `invocation` | `StepExecutionRequest` を、モデル・system instructions・task instructions・allowed toolsだけからなるprovider非依存の不変なモデル呼び出し要求へ変換する。planning上のworkflow、step、employee文脈は持ち込まず、prompt結合、provider固有message形式、AI実行は扱わない。 |
-| `providers.openai` | `ModelInvocationRequest` をOpenAI Responses API用の不変な実行前情報 `OpenAIResponsesRequest` へ純粋に変換する。`system_instructions` は `instructions`、`task_instructions` は `input` に対応し、文字列を結合・加工しない。`allowed_tool_names` は定義順の未解決tool名である。別のOpenAI Responses Tool Adapterは、解決済み`ToolDefinition`を静的な`OpenAIResponsesFunctionTool`へ変換する。どちらもHTTP payloadやwire formatを生成しない。 |
+| `providers.openai` | `ModelInvocationRequest` をOpenAI Responses API用の不変な実行前情報 `OpenAIResponsesRequest` へ純粋に変換する。`system_instructions` は `instructions`、`task_instructions` は `input` に対応し、文字列を結合・加工しない。`allowed_tool_names` は定義順の未解決tool名である。OpenAI Responses Tool Adapterは解決済み`ToolDefinition`を静的な`OpenAIResponsesFunctionTool`へ変換し、OpenAI Responses Payload Adapterは基本request情報と解決済みtool schemaを`OpenAIResponsesPayload`へ統合する。いずれもHTTP payloadやwire formatを生成しない。 |
 | `engine` | 定義済みの状態遷移、検証、再試行を決定的に管理する。 |
 | `runtime` | 実行状態とイベントを扱う。 |
 | `storage` | JSON の状態、JSONL のイベント、ファイルの成果物を永続化する。 |
@@ -50,6 +60,7 @@ invocation: ModelInvocationRequest
 - OpenAI Responses Adapterは純粋な変換層であり、`OpenAIResponsesRequest` はHTTP payloadでもwire formatでもない。model、instructions、input、未解決のallowed tool namesだけを保持し、SDK、認証、通信、tool schema解決、AI実行を扱わない。
 - Tool Catalogはprovider非依存であり、`ModelInvocationRequest.allowed_tools`や`OpenAIResponsesRequest.allowed_tool_names`を置き換えない。未解決名を順序・重複そのままで`ToolDefinition`へ解決するだけで、provider schema、tool executor、Runtimeを扱わない。
 - OpenAI Responses Tool Adapterは、`ToolDefinition`を`OpenAIResponsesFunctionTool`へ変換する純粋なprovider固有層である。tool typeは`function`、parameters typeは`object`、`additional_properties`と`strict`は`False`に固定し、propertiesとrequired名は順序・重複を保持したtupleで保持する。dict、JSON文字列、HTTP request bodyを生成しない。後続のrequest payload adapterだけがHTTP送信用のdictまたはJSON payloadを担当し、さらに後続のRuntimeがAPI呼び出しと結果処理を担当する。
+- OpenAI Responses Payload Adapterは、`OpenAIResponsesRequest`と解決済み`OpenAIResponsesFunctionTool`を`OpenAIResponsesPayload`へ統合する純粋なprovider固有層である。payloadはmodel、instructions、input、toolsだけを保持し、未解決の`allowed_tool_names`、Catalog、HTTP情報、Runtime情報を保持しない。future dictionary payload adapterがPython dictまたはJSON互換構造への変換を、future runtimeがHTTP通信、API呼び出し、response処理を担当する。
 - 依存方向は `provider-independent invocation model -> provider-specific adapter -> provider-specific request model -> future runtime` とする。Runtimeからdefinitionsやplanningのモデルへ逆依存させない。
 - provider共通抽象は、複数providerの実装から実際の共通点が確認されるまで作らない。Codex CLIは承認・sandbox・tool実行・agent loopを伴う実行基盤であるため、将来は別のAdapterとRuntime経路として検討する。
 - 人間承認が必要な遷移は、承認済みの明示的な入力なしに進めない。
