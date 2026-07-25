@@ -61,6 +61,7 @@ from ai_office.providers.openai.responses_response import (
 )
 from ai_office.providers.openai.responses_result import (
     OpenAIResponsesExecutionInputError,
+    build_model_invocation_failure_from_execution_approval_error,
     build_model_invocation_failure_from_openai_api_error,
     build_model_invocation_failure_from_openai_execution_input_error,
     build_model_invocation_failure_from_openai_invalid_output_error,
@@ -128,6 +129,7 @@ __all__ = [
     "build_openai_responses_tool_dicts",
     "build_openai_responses_tools",
     "build_model_invocation_failure_from_openai_api_error",
+    "build_model_invocation_failure_from_execution_approval_error",
     "build_model_invocation_failure_from_openai_execution_input_error",
     "build_model_invocation_failure_from_openai_invalid_output_error",
     "build_model_invocation_failure_from_openai_invalid_response_error",

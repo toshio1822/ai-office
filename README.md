@@ -215,8 +215,14 @@ OpenAI固有の安全なoutput text、API error、transport error、invalid-resp
 
 このPhaseにCLIはありません。retryability、transient/permanent分類、runtime orchestration、persistence、state transitions、tool handling、usage/cost accounting、人間向け表示は未実装です。HTTP、JSON parsing、credentials、環境変数、OpenAI SDK、通信も扱いません。
 
-## Guarded OpenAI Provider Execution Boundary（Phase 19）
+## Explicit Paid-Execution Approval Boundary（Phase 20）
 
-明示的な`ModelInvocationRequest`、位置順まで一致する解決済み`ToolDefinition` tuple、明示的な`OpenAIApiKey`を受け取り、既存のrequest、tool schema、payload、JSON、HTTP template、authentication、transport、response、output、result正規化の境界を順に合成できます。tool名がrequestの`allowed_tools`と位置・個数まで一致しない場合は、認証や通信の前に`invalid_request`結果として安全に返します。
+有料のOpenAI provider executionには、callerが明示的に作成した不変`ModelInvocationExecutionApproval`が必要です。approvalはprovider、非秘密の`approved_by`と`approval_id`、およびrequest model・system/task instructions・ordered allowed tools・resolved tool definitionsの決定的SHA-256 fingerprintに束縛されます。fingerprintはAPI key、headers、body、環境、responseを含まず、入力順序と重複を保持します。
 
-一致する入力では既存transportによるHTTPS requestをちょうど1回だけ実行し、success、API error、transport error、invalid response、invalid outputをprovider-independent な結果へ正規化します。このPhaseにCLIはありません。環境からのcredential取得、retry、tool execution、usage/cost、persistence、runtime state、human approval、CLIによる有料API実行は扱いません。
+`approve_model_invocation_execution()`は明示metadataと現在の入力からapprovalを作る純粋helperであり、自動承認、prompt、保存、時刻、有効期限、retryは扱いません。実行時はtool整合性を先に確認してからapprovalを検証するため、tool mismatchは`invalid_request`、false・provider不一致・stale fingerprint・空metadataは安全な`approval_required`結果になります。認証とtransportは有効なapprovalの後にだけ進みます。このPhaseにCLIはありません。
+
+## Guarded OpenAI Provider Execution Boundary（Phase 19 + Phase 20）
+
+明示的な`ModelInvocationRequest`、位置順まで一致する解決済み`ToolDefinition` tuple、明示的な`OpenAIApiKey`、明示的なapprovalを受け取り、既存のrequest、tool schema、payload、JSON、HTTP template、authentication、transport、response、output、result正規化の境界を順に合成できます。unapprovedな公開実行経路はありません。tool名がrequestの`allowed_tools`と位置・個数まで一致しない場合は、approval、認証や通信の前に`invalid_request`結果として安全に返します。
+
+一致する入力では既存transportによるHTTPS requestをちょうど1回だけ実行し、success、API error、transport error、invalid response、invalid outputをprovider-independent な結果へ正規化します。このPhaseにCLIはありません。環境からのcredential取得、retry、tool execution、usage/cost、approval persistence、runtime state、CLIによる有料API実行は扱いません。

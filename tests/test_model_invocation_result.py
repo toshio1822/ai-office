@@ -42,6 +42,7 @@ def test_result_models_are_immutable_and_union_is_exported() -> None:
         "invalid_response",
         "invalid_output",
         "invalid_request",
+        "approval_required",
     }
     with pytest.raises(FrozenInstanceError):
         success.text = "changed"  # type: ignore[misc]

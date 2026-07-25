@@ -6,7 +6,12 @@ from collections.abc import Callable
 import pytest
 from pydantic import SecretStr
 
-from ai_office.invocation import ModelInvocationRequest, ModelInvocationSuccess
+from ai_office.invocation import (
+    ModelInvocationExecutionApproval,
+    ModelInvocationRequest,
+    ModelInvocationSuccess,
+    approve_model_invocation_execution,
+)
 from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesAuthenticatedHttpRequest,
@@ -42,6 +47,19 @@ def request(allowed_tools: tuple[str, ...] = ()) -> ModelInvocationRequest:
 
 def api_key() -> OpenAIApiKey:
     return OpenAIApiKey(value=SecretStr("synthetic-key"))
+
+
+def approval(
+    invocation: ModelInvocationRequest,
+    resolved_tools: tuple[ToolDefinition, ...],
+):
+    return approve_model_invocation_execution(
+        invocation,
+        resolved_tools,
+        provider="openai",
+        approved_by="test-user",
+        approval_id="test-approval",
+    )
 
 
 def raw_response(status_code: int, payload: object) -> OpenAIResponsesRawHttpResponse:
@@ -85,6 +103,7 @@ def test_success_composes_boundaries_once_and_preserves_exact_output() -> None:
         invocation,
         resolved_tools,
         api_key(),
+        approval(invocation, resolved_tools),
         transport=transport,
     )
 
@@ -103,10 +122,12 @@ def test_success_composes_boundaries_once_and_preserves_exact_output() -> None:
 
 
 def test_empty_supported_output_text_remains_success() -> None:
+    invocation = request()
     result = execute_openai_model_invocation(
-        request(),
+        invocation,
         (),
         api_key(),
+        approval(invocation, ()),
         transport=lambda _: raw_response(200, success_payload([])),
     )
 
@@ -116,10 +137,12 @@ def test_empty_supported_output_text_remains_success() -> None:
 
 
 def test_api_error_is_normalized_as_data() -> None:
+    invocation = request()
     result = execute_openai_model_invocation(
-        request(),
+        invocation,
         (),
         api_key(),
+        approval(invocation, ()),
         transport=lambda _: raw_response(
             429,
             {
@@ -168,10 +191,12 @@ def test_safe_errors_are_normalized(
     expected_category: str,
     expected_message: str,
 ) -> None:
+    invocation = request()
     result = execute_openai_model_invocation(
-        request(),
+        invocation,
         (),
         api_key(),
+        approval(invocation, ()),
         transport=transport,
     )
 
@@ -203,15 +228,65 @@ def test_tool_mismatch_fails_before_transport(
         calls += 1
         raise AssertionError("transport must not run")
 
+    invocation = request(allowed_tools)
     result = execute_openai_model_invocation(
-        request(allowed_tools),
+        invocation,
         resolved_tools,
         api_key(),
+        approval(invocation, resolved_tools),
         transport=transport,
     )
 
     assert result.category == "invalid_request"  # type: ignore[union-attr]
     assert result.message == "resolved tools do not match invocation request"  # type: ignore[union-attr]
+    assert calls == 0
+
+
+def test_rejected_approval_fails_before_transport() -> None:
+    invocation = request()
+    calls = 0
+
+    def transport(
+        _: OpenAIResponsesAuthenticatedHttpRequest,
+    ) -> OpenAIResponsesRawHttpResponse:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("transport must not run")
+
+    result = execute_openai_model_invocation(
+        invocation,
+        (),
+        api_key(),
+        ModelInvocationExecutionApproval(False, "openai", "stale", "reviewer", "id"),
+        transport=transport,
+    )
+
+    assert result.category == "approval_required"  # type: ignore[union-attr]
+    assert result.message == "model invocation execution is not approved"  # type: ignore[union-attr]
+    assert result.request_id is None  # type: ignore[union-attr]
+    assert result.status_code is None  # type: ignore[union-attr]
+    assert calls == 0
+
+
+def test_tool_mismatch_precedes_rejected_approval() -> None:
+    calls = 0
+
+    def transport(
+        _: OpenAIResponsesAuthenticatedHttpRequest,
+    ) -> OpenAIResponsesRawHttpResponse:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("transport must not run")
+
+    result = execute_openai_model_invocation(
+        request(("search",)),
+        (),
+        api_key(),
+        ModelInvocationExecutionApproval(False, "openai", "stale", "reviewer", "id"),
+        transport=transport,
+    )
+
+    assert result.category == "invalid_request"  # type: ignore[union-attr]
     assert calls == 0
 
 
@@ -222,9 +297,11 @@ def test_arbitrary_transport_exception_is_not_swallowed() -> None:
         raise RuntimeError("unexpected")
 
     with pytest.raises(RuntimeError, match="unexpected"):
+        invocation = request()
         execute_openai_model_invocation(
-            request(),
+            invocation,
             (),
             api_key(),
+            approval(invocation, ()),
             transport=transport,
         )

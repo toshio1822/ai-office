@@ -1,6 +1,7 @@
 """Normalize safe OpenAI outcome values into provider-independent results."""
 
 from ai_office.invocation import (
+    ModelInvocationExecutionApprovalError,
     ModelInvocationFailure,
     ModelInvocationFailureCategory,
     ModelInvocationSuccess,
@@ -56,6 +57,13 @@ def build_model_invocation_failure_from_openai_execution_input_error(
     return _build_safe_openai_exception_failure(error, "invalid_request")
 
 
+def build_model_invocation_failure_from_execution_approval_error(
+    error: ModelInvocationExecutionApprovalError,
+) -> ModelInvocationFailure:
+    """Normalize a rejected explicit approval into a safe failure result."""
+    return _build_safe_openai_exception_failure(error, "approval_required")
+
+
 def build_model_invocation_failure_from_openai_transport_error(
     error: OpenAIResponsesTransportError,
 ) -> ModelInvocationFailure:
@@ -83,6 +91,7 @@ def _build_safe_openai_exception_failure(
         | OpenAIResponsesInvalidResponseError
         | OpenAIResponsesInvalidOutputError
         | OpenAIResponsesExecutionInputError
+        | ModelInvocationExecutionApprovalError
     ),
     category: ModelInvocationFailureCategory,
 ) -> ModelInvocationFailure:
