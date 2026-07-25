@@ -177,4 +177,10 @@ Phase 11のcompact JSONを、未認証かつ不変のHTTP request templateへ配
 ai-office workflows provider-http-request openai research-and-summarize 1
 ```
 
-templateは`POST`、`https://api.openai.com/v1/responses`、順序付きの`Content-Type: application/json`、変更しないcompact JSON bodyだけを保持します。Authorization headerは含まず、API keyや環境変数を読まず、HTTP通信、API呼び出し、課金は発生しません。次Phaseで認証情報を安全に付加する境界を追加する予定です。
+templateは`POST`、`https://api.openai.com/v1/responses`、順序付きの`Content-Type: application/json`、変更しないcompact JSON bodyだけを保持します。Authorization headerは含まず、API keyや環境変数を読まず、HTTP通信、API呼び出し、課金は発生しません。Phase 13のAuthentication Boundaryが明示入力のAPI keyを安全に付加します。
+
+## OpenAI Responses Authentication Boundary（Phase 13）
+
+明示的に渡された不変の`OpenAIApiKey`から、未認証HTTP request templateへBearer Authorization headerを追加できます。API keyは通常の`repr()`と`str()`でマスクされ、空文字列や改行を含む値は拒否されます。認証済みrequestも不変で、既存headerの順序を保持したままAuthorizationを最後に1件だけ追加します。
+
+このPhaseにCLIはありません。CLI引数やoptionでのAPI key受取はshell historyやprocess inspectionで露出する可能性があるため、secure credential acquisitionは後続Phaseで設計します。環境変数・設定ファイル・keyringの読込、HTTP通信、API呼び出し、response処理、tool実行、Runtimeは実装していません。
