@@ -28,7 +28,9 @@ from ai_office.planning.step_execution_request import (
 )
 from ai_office.providers.openai import (
     OpenAIResponsesFunctionTool,
+    OpenAIResponsesPayload,
     OpenAIResponsesRequest,
+    build_openai_responses_payload_from_invocation,
     build_openai_responses_request,
     build_openai_responses_tools,
 )
@@ -272,6 +274,53 @@ def _display_openai_responses_tools(
             typer.echo("      none")
 
 
+def _display_openai_responses_payload(payload: OpenAIResponsesPayload) -> None:
+    """Display a static payload model without creating a wire-format payload."""
+    typer.echo("Provider: openai")
+    typer.echo("Payload:")
+    typer.echo(f"  Model: {payload.model}")
+    typer.echo("  Instructions:")
+    _display_payload_text(payload.instructions)
+    typer.echo("  Input:")
+    _display_payload_text(payload.input)
+    typer.echo("  Tools:")
+    if not payload.tools:
+        typer.echo("    none")
+        return
+    for tool in payload.tools:
+        typer.echo(f"    Type: {tool.type}")
+        typer.echo(f"    Name: {tool.name}")
+        typer.echo(f"    Description: {tool.description}")
+        typer.echo(f"    Strict: {'yes' if tool.strict else 'no'}")
+        typer.echo("    Parameters:")
+        typer.echo(f"      Type: {tool.parameters.type}")
+        additional = "yes" if tool.parameters.additional_properties else "no"
+        typer.echo(f"      Additional properties: {additional}")
+        typer.echo("      Properties:")
+        if tool.parameters.properties:
+            for property_definition in tool.parameters.properties:
+                typer.echo(f"        {property_definition.name}")
+                typer.echo(f"          Type: {property_definition.type}")
+                typer.echo(f"          Description: {property_definition.description}")
+        else:
+            typer.echo("        none")
+        typer.echo("      Required:")
+        if tool.parameters.required:
+            for required_name in tool.parameters.required:
+                typer.echo(f"        {required_name}")
+        else:
+            typer.echo("        none")
+
+
+def _display_payload_text(value: str) -> None:
+    """Display a payload string while preserving every newline line."""
+    if value == "":
+        typer.echo("    <empty>")
+        return
+    for line in value.split("\n"):
+        typer.echo(f"    {line}")
+
+
 @workflows_app.command("plan")
 def plan_workflow(
     workflow_id: str,
@@ -478,3 +527,48 @@ def provider_workflow_step_tools(
         typer.echo(f"Error: unsupported provider: {provider}", err=True)
         raise typer.Exit(code=1)
     _display_openai_responses_tools(build_openai_responses_tools(resolved_tools))
+
+
+@workflows_app.command(
+    "provider-payload", context_settings={"ignore_unknown_options": True}
+)
+def provider_workflow_step_payload(
+    provider: str,
+    workflow_id: str,
+    step_index: str,
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Build and display one static provider payload model."""
+    workflows, employees = _load_validated_definitions_or_exit(
+        directory, employees_directory
+    )
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        plan = build_execution_plan(workflow, employees)
+        step_request = build_step_execution_request(plan, int(step_index), employees)
+        invocation_request = build_model_invocation_request(step_request)
+        payload = build_openai_responses_payload_from_invocation(
+            invocation_request, DEFAULT_TOOL_CATALOG
+        )
+    except (
+        WorkflowSelectionError,
+        StepSelectionError,
+        EmployeeSelectionError,
+        ToolCatalogError,
+        ValueError,
+    ) as error:
+        message = (
+            f"invalid step index: {step_index}"
+            if isinstance(error, ValueError) and not isinstance(error, ToolCatalogError)
+            else str(error)
+        )
+        typer.echo(f"Error: {message}", err=True)
+        raise typer.Exit(code=1) from None
+
+    if provider != "openai":
+        typer.echo(f"Error: unsupported provider: {provider}", err=True)
+        raise typer.Exit(code=1)
+    _display_openai_responses_payload(payload)
