@@ -8,6 +8,12 @@ from ai_office.providers.openai.responses_dict_payload import (
     build_openai_responses_tool_dict,
     build_openai_responses_tool_dicts,
 )
+from ai_office.providers.openai.responses_json import (
+    serialize_openai_responses_payload,
+    serialize_openai_responses_payload_dict,
+    serialize_openai_responses_payload_dict_pretty,
+    serialize_openai_responses_payload_from_invocation,
+)
 from ai_office.providers.openai.responses_payload import (
     OpenAIResponsesPayload,
     build_openai_responses_payload,
@@ -46,4 +52,8 @@ __all__ = [
     "build_openai_responses_tool_dict",
     "build_openai_responses_tool_dicts",
     "build_openai_responses_tools",
+    "serialize_openai_responses_payload",
+    "serialize_openai_responses_payload_dict",
+    "serialize_openai_responses_payload_dict_pretty",
+    "serialize_openai_responses_payload_from_invocation",
 ]
