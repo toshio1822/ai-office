@@ -19,6 +19,10 @@ from ai_office.providers.openai.responses_environment import (
     OpenAIApiKeyEnvironmentError,
     load_openai_api_key_from_environment,
 )
+from ai_office.providers.openai.responses_execution import (
+    OpenAIResponsesTransport,
+    execute_openai_model_invocation,
+)
 from ai_office.providers.openai.responses_http import (
     OPENAI_RESPONSES_CONTENT_TYPE,
     OPENAI_RESPONSES_HTTP_METHOD,
@@ -56,7 +60,9 @@ from ai_office.providers.openai.responses_response import (
     parse_openai_responses_http_response,
 )
 from ai_office.providers.openai.responses_result import (
+    OpenAIResponsesExecutionInputError,
     build_model_invocation_failure_from_openai_api_error,
+    build_model_invocation_failure_from_openai_execution_input_error,
     build_model_invocation_failure_from_openai_invalid_output_error,
     build_model_invocation_failure_from_openai_invalid_response_error,
     build_model_invocation_failure_from_openai_transport_error,
@@ -88,6 +94,7 @@ __all__ = [
     "OpenAIResponsesAuthenticatedHttpRequest",
     "OpenAIResponsesApiErrorResponse",
     "OpenAIResponsesAuthenticationError",
+    "OpenAIResponsesExecutionInputError",
     "OpenAIResponsesFunctionParameters",
     "OpenAIResponsesFunctionProperty",
     "OpenAIResponsesFunctionTool",
@@ -101,6 +108,7 @@ __all__ = [
     "OpenAIResponsesRequest",
     "OpenAIResponsesSuccessResponse",
     "OpenAIResponsesTransportError",
+    "OpenAIResponsesTransport",
     "OpenAIResponsesTransportUrlError",
     "authenticate_openai_responses_http_request",
     "build_openai_responses_function_parameters",
@@ -120,11 +128,13 @@ __all__ = [
     "build_openai_responses_tool_dicts",
     "build_openai_responses_tools",
     "build_model_invocation_failure_from_openai_api_error",
+    "build_model_invocation_failure_from_openai_execution_input_error",
     "build_model_invocation_failure_from_openai_invalid_output_error",
     "build_model_invocation_failure_from_openai_invalid_response_error",
     "build_model_invocation_failure_from_openai_transport_error",
     "build_model_invocation_success_from_openai",
     "extract_openai_responses_output_text",
+    "execute_openai_model_invocation",
     "load_openai_api_key_from_environment",
     "parse_openai_responses_http_response",
     "serialize_openai_responses_payload",
