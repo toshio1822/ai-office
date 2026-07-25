@@ -270,3 +270,7 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 返す不変`PreparedWorkflowStep`は、選択済みstepとemployeeのidentity、employee instructions、step instructions、model、allowed tool namesを定義順のまま保持します。provider-specific request、credential lookup、tool resolution、実行、state mutation、event creation、persistence、retry、automatic continuation、paid CLI execution、GUIは行いません。
 
 Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loading、Phase 25 decision、Phase 26 preparationは別々の明示呼び出しです。後続boundaryはprepared stepを正確なexecution requestとcontrolled running-state transitionへ変換できますが、executionやpersistenceを隠しません。
+
+## Pure Prepared-Step Execution Start Boundary（Phase 27）
+
+`prepare_prepared_step_execution_start()`はPhase 26の不変prepared stepとloaded historyを再検証し、既存の`ModelInvocationRequest`と、実行前に別boundaryで保存すべきproposed `running` stateを返します。completed step historyはそのまま保持し、failure categoryはclearします。`StepExecutionRequest`はprepared dataにないemployee name/roleを必要とするため、このPhaseで捏造しません。provider request、credential lookup、tool resolution、execution、event creation、persistence、retry、automatic continuation、paid CLI execution、GUIは行いません。
