@@ -95,3 +95,16 @@ ai-office workflows invocation research-and-summarize 1 \
 ```
 
 `workflows invocation` はmodel、allowed tools、system instructions、task instructionsを分離したまま表示します。AIやtoolの呼び出しはまだ行わず、promptの結合、状態、履歴、成果物の保存も行いません。
+
+## OpenAI Responses Adapter（Phase 6）
+
+provider非依存のモデル呼び出し要求を、OpenAI Responses API向けの実行前情報へ決定的に変換できます。
+
+```bash
+ai-office workflows provider-request openai research-and-summarize 1
+ai-office workflows provider-request openai research-and-summarize 1 \
+  --directory path/to/workflows \
+  --employees-directory path/to/employees
+```
+
+このコマンドはOpenAI APIを呼び出さず、APIキーも不要で、課金も発生しません。表示する`OpenAIResponsesRequest`はHTTP payloadやJSON wire formatではなく、将来のOpenAI Runtimeへ渡す不変の実行前モデルです。tool名はまだOpenAI固有のschemaへ解決されていません。Codex CLI対応はこのPhaseの対象外です。
