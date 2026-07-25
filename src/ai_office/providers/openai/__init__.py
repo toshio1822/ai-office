@@ -14,6 +14,11 @@ from ai_office.providers.openai.responses_dict_payload import (
     build_openai_responses_tool_dict,
     build_openai_responses_tool_dicts,
 )
+from ai_office.providers.openai.responses_environment import (
+    OPENAI_API_KEY_ENVIRONMENT_VARIABLE,
+    OpenAIApiKeyEnvironmentError,
+    load_openai_api_key_from_environment,
+)
 from ai_office.providers.openai.responses_http import (
     OPENAI_RESPONSES_CONTENT_TYPE,
     OPENAI_RESPONSES_HTTP_METHOD,
@@ -52,7 +57,9 @@ __all__ = [
     "OPENAI_RESPONSES_CONTENT_TYPE",
     "OPENAI_RESPONSES_HTTP_METHOD",
     "OPENAI_RESPONSES_URL",
+    "OPENAI_API_KEY_ENVIRONMENT_VARIABLE",
     "OpenAIApiKey",
+    "OpenAIApiKeyEnvironmentError",
     "OpenAIResponsesAuthenticatedHttpRequest",
     "OpenAIResponsesAuthenticationError",
     "OpenAIResponsesFunctionParameters",
@@ -78,6 +85,7 @@ __all__ = [
     "build_openai_responses_tool_dict",
     "build_openai_responses_tool_dicts",
     "build_openai_responses_tools",
+    "load_openai_api_key_from_environment",
     "serialize_openai_responses_payload",
     "serialize_openai_responses_payload_dict",
     "serialize_openai_responses_payload_dict_pretty",
