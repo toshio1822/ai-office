@@ -254,3 +254,11 @@ OpenAI固有の安全なoutput text、API error、transport error、invalid-resp
 `load_workflow_execution_history()`は、Phase 23の明示的なstate/event target pathsをread-onlyで読み、`LoadedWorkflowExecutionHistory`として不変の`WorkflowExecutionState`と順序付き`RuntimeStepEvent` tupleを再構築します。state JSONとevent JSONLはUTF-8、完全なfield集合、厳格な型、有限status/category、event意味制約を検証し、duplicate key、未知field、欠損field、blank JSONL record、truncated recordを拒否します。regular fileを指すsymbolic linkは許可し、directory targetは拒否します。最後のeventはstateのidentity、status、failure category、completed stepと照合されます。空event fileは`ready`または`running` stateだけで許可します。
 
 この読み込みはrepair、migration、書込み、automatic resume、next-step selection、retry、tool/provider execution、paid CLI execution、GUIを行いません。Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadingはいずれも別の明示呼び出しです。後続のboundaryが、成功した読み込み結果がhuman-approvedなcontrolled next-step preparationに適格かを判断します。
+
+## Pure Workflow Progression Decision Boundary（Phase 25）
+
+`decide_workflow_progression()`は、検証済み`WorkflowDefinition`と読み込み済みの不変`LoadedWorkflowExecutionHistory`を受け、stateのworkflow/step/employee identityとcompleted step順序を現在の定義へ安全に照合します。不一致またはstaleな履歴は、内容を露出しない互換性errorとして拒否します。
+
+返す不変`WorkflowProgressionDecision`は、`prepare_next_step`、`workflow_complete`、`stopped_failed`、`not_progressable`のいずれかです。成功した非終端stepでは定義上ただ1つの直後stepだけを選び、ready/runningは自動開始・再開せず、failedはretryせず、最後の成功stepはstateを書き換えず完了として知らせます。decisionはstateを変更せず、request構築、approval作成、provider/tool実行、persistence、paid CLI execution、GUIを行いません。
+
+Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loading、Phase 25 decisionはすべて別々の明示呼び出しです。後続boundaryだけが、明示承認された`prepare_next_step` decisionを決定的な次step preparation requestへ変換できますが、実行はしません。
