@@ -16,10 +16,14 @@ class StepExecutionRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     workflow_id: str
-    workflow_name: str
+    # A persisted-start execution has no workflow display name.  Planning still
+    # supplies it, while later execution boundaries must not invent one.
+    workflow_name: str | None = None
     step_index: int = Field(ge=1)
     step_id: str
-    step_name: str
+    # A persisted-start execution has no step display name.  Planning still
+    # supplies it, while later execution boundaries must not invent one.
+    step_name: str | None = None
     employee_id: str
     employee_name: str
     employee_role: str
