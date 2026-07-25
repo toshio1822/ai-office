@@ -8,6 +8,15 @@ from ai_office.providers.openai.responses_dict_payload import (
     build_openai_responses_tool_dict,
     build_openai_responses_tool_dicts,
 )
+from ai_office.providers.openai.responses_http import (
+    OPENAI_RESPONSES_CONTENT_TYPE,
+    OPENAI_RESPONSES_HTTP_METHOD,
+    OPENAI_RESPONSES_URL,
+    OpenAIResponsesHttpRequest,
+    build_openai_responses_http_request,
+    build_openai_responses_http_request_from_invocation,
+    build_openai_responses_http_request_from_payload,
+)
 from ai_office.providers.openai.responses_json import (
     serialize_openai_responses_payload,
     serialize_openai_responses_payload_dict,
@@ -34,13 +43,20 @@ from ai_office.providers.openai.responses_tool import (
 )
 
 __all__ = [
+    "OPENAI_RESPONSES_CONTENT_TYPE",
+    "OPENAI_RESPONSES_HTTP_METHOD",
+    "OPENAI_RESPONSES_URL",
     "OpenAIResponsesFunctionParameters",
     "OpenAIResponsesFunctionProperty",
     "OpenAIResponsesFunctionTool",
+    "OpenAIResponsesHttpRequest",
     "OpenAIResponsesPayload",
     "OpenAIResponsesRequest",
     "build_openai_responses_function_parameters",
     "build_openai_responses_function_property",
+    "build_openai_responses_http_request",
+    "build_openai_responses_http_request_from_invocation",
+    "build_openai_responses_http_request_from_payload",
     "build_openai_responses_parameters_dict",
     "build_openai_responses_payload",
     "build_openai_responses_payload_dict",
