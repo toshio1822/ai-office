@@ -1,5 +1,12 @@
 """Persistent storage for runtime data and artifacts."""
 
+from ai_office.storage.running_state_persistence import (
+    RunningStatePersistenceError,
+    RunningStatePersistenceInputError,
+    RunningStatePersistenceResult,
+    RunningStatePersistenceRollbackError,
+    persist_prepared_running_state,
+)
 from ai_office.storage.workflow_execution_history import (
     LoadedWorkflowExecutionHistory,
     WorkflowExecutionDataError,
@@ -44,4 +51,9 @@ __all__ = [
     "parse_workflow_execution_state",
     "serialize_runtime_step_event_jsonl",
     "serialize_workflow_execution_state_json",
+    "RunningStatePersistenceError",
+    "RunningStatePersistenceInputError",
+    "RunningStatePersistenceRollbackError",
+    "RunningStatePersistenceResult",
+    "persist_prepared_running_state",
 ]
