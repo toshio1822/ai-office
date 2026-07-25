@@ -133,4 +133,4 @@ ai-office workflows provider-tools openai research-and-summarize 1 \
   --employees-directory path/to/employees
 ```
 
-このコマンドは、静的な`OpenAIResponsesFunctionTool`を人間向けに表示するだけです。dict payload、JSON文字列、HTTP request bodyは生成しません。`strict`はPhase 8では常に`False`です。`web_search`はOpenAI組み込みWeb Searchではなく通常のcustom function定義として扱い、`FileRead`も実行可能toolではありません。tool実行、OpenAI API、SDK、HTTP通信は行わないため、APIキーは不要で課金も発生しません。
+このコマンドは、静的な`OpenAIResponsesFunctionTool`を人間向けに表示するだけです。tool typeは常に`function`、parameters typeは常に`object`、`additional_properties`と`strict`は常に`False`です。toolとparameterの順序・重複・大文字小文字・空白・説明・型は保持します。dict payload、JSON文字列、HTTP request bodyは生成しません。`web_search`はOpenAI組み込みWeb Searchではなく通常のcustom function定義として扱い、`FileRead`も実行可能toolではありません。tool実行、OpenAI API、SDK、HTTP通信は行わないため、APIキーは不要で課金も発生しません。
