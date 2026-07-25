@@ -34,6 +34,7 @@ from ai_office.providers.openai import (
     build_openai_responses_payload_from_invocation,
     build_openai_responses_request,
     build_openai_responses_tools,
+    serialize_openai_responses_payload_dict_pretty,
 )
 from ai_office.providers.openai.responses_dict_payload import JsonValue
 from ai_office.tools import (
@@ -679,3 +680,50 @@ def provider_workflow_step_dict_payload(
         typer.echo(f"Error: unsupported provider: {provider}", err=True)
         raise typer.Exit(code=1)
     _display_openai_responses_dictionary_payload(payload)
+
+
+@workflows_app.command(
+    "provider-json", context_settings={"ignore_unknown_options": True}
+)
+def provider_workflow_step_json(
+    provider: str,
+    workflow_id: str,
+    step_index: str,
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Build and display one static provider payload as pretty JSON."""
+    workflows, employees = _load_validated_definitions_or_exit(
+        directory, employees_directory
+    )
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        plan = build_execution_plan(workflow, employees)
+        step_request = build_step_execution_request(plan, int(step_index), employees)
+        invocation_request = build_model_invocation_request(step_request)
+        payload_dict = build_openai_responses_payload_dict_from_invocation(
+            invocation_request, DEFAULT_TOOL_CATALOG
+        )
+    except (
+        WorkflowSelectionError,
+        StepSelectionError,
+        EmployeeSelectionError,
+        ToolCatalogError,
+        ValueError,
+    ) as error:
+        message = (
+            f"invalid step index: {step_index}"
+            if isinstance(error, ValueError) and not isinstance(error, ToolCatalogError)
+            else str(error)
+        )
+        typer.echo(f"Error: {message}", err=True)
+        raise typer.Exit(code=1) from None
+
+    if provider != "openai":
+        typer.echo(f"Error: unsupported provider: {provider}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("Provider: openai")
+    typer.echo("JSON payload:")
+    typer.echo(serialize_openai_responses_payload_dict_pretty(payload_dict))

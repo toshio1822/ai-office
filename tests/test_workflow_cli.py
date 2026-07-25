@@ -1,5 +1,6 @@
 """Tests for workflow definition CLI commands."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -2075,6 +2076,146 @@ def test_workflows_provider_dict_payload_reports_unknown_tool_without_stdout(
         [
             "workflows",
             "provider-dict-payload",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == "Error: Tool not found: UnknownTool\n"
+
+
+def test_workflows_provider_json_displays_parseable_pretty_json(tmp_path: Path) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(
+        workflows_directory, research_instructions="Input\nsecond line"
+    )
+    write_valid_employee(
+        employees_directory,
+        instructions="日本語 ✨",
+        allowed_tools=["web_search"],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-json",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code == 0
+    prefix = "Provider: openai\nJSON payload:\n"
+    assert result.stdout.startswith(prefix)
+    json_text = result.stdout.removeprefix(prefix)
+    payload = json.loads(json_text)
+    assert list(payload) == ["model", "instructions", "input", "tools"]
+    assert payload["instructions"] == "日本語 ✨"
+    assert payload["input"] == "Input\nsecond line"
+    assert payload["tools"][0]["strict"] is False
+    assert "  \"model\": \"codex\"" in json_text
+    assert "日本語 ✨" in json_text
+
+
+def test_workflows_provider_json_preserves_empty_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+    monkeypatch.setattr(
+        cli_module,
+        "build_model_invocation_request",
+        lambda _request: ModelInvocationRequest("codex", "", "", ()),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-json",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    payload = json.loads(
+        result.stdout.removeprefix("Provider: openai\nJSON payload:\n")
+    )
+    assert result.exit_code == 0
+    assert payload == {"model": "codex", "instructions": "", "input": "", "tools": []}
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "OpenAI", " openai", "openai "])
+def test_workflows_provider_json_rejects_unsupported_provider_without_stdout(
+    tmp_path: Path, provider: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-json",
+            provider,
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == f"Error: unsupported provider: {provider}\n"
+
+
+def test_workflows_provider_json_reports_unknown_tool_without_stdout(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory, allowed_tools=["UnknownTool"])
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-json",
             "openai",
             "research-and-summarize",
             "1",
