@@ -9,6 +9,7 @@ ModelInvocationFailureCategory = Literal[
     "invalid_response",
     "invalid_output",
     "invalid_request",
+    "approval_required",
 ]
 
 

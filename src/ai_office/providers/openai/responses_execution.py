@@ -2,7 +2,13 @@
 
 from collections.abc import Callable
 
-from ai_office.invocation import ModelInvocationRequest, ModelInvocationResult
+from ai_office.invocation import (
+    ModelInvocationExecutionApproval,
+    ModelInvocationExecutionApprovalError,
+    ModelInvocationRequest,
+    ModelInvocationResult,
+    validate_model_invocation_execution_approval,
+)
 from ai_office.providers.openai.responses_auth import (
     OpenAIApiKey,
     OpenAIResponsesAuthenticatedHttpRequest,
@@ -34,6 +40,7 @@ from ai_office.providers.openai.responses_response import (
 )
 from ai_office.providers.openai.responses_result import (
     OpenAIResponsesExecutionInputError,
+    build_model_invocation_failure_from_execution_approval_error,
     build_model_invocation_failure_from_openai_api_error,
     build_model_invocation_failure_from_openai_execution_input_error,
     build_model_invocation_failure_from_openai_invalid_output_error,
@@ -58,6 +65,7 @@ def execute_openai_model_invocation(
     request: ModelInvocationRequest,
     resolved_tools: tuple[ToolDefinition, ...],
     api_key: OpenAIApiKey,
+    approval: ModelInvocationExecutionApproval,
     *,
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
 ) -> ModelInvocationResult:
@@ -66,6 +74,16 @@ def execute_openai_model_invocation(
         _validate_resolved_tools(request, resolved_tools)
     except OpenAIResponsesExecutionInputError as error:
         return build_model_invocation_failure_from_openai_execution_input_error(error)
+
+    try:
+        validate_model_invocation_execution_approval(
+            request,
+            resolved_tools,
+            approval,
+            provider="openai",
+        )
+    except ModelInvocationExecutionApprovalError as error:
+        return build_model_invocation_failure_from_execution_approval_error(error)
 
     try:
         openai_request = build_openai_responses_request(request)
