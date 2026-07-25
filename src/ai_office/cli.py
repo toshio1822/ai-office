@@ -30,10 +30,12 @@ from ai_office.providers.openai import (
     OpenAIResponsesFunctionTool,
     OpenAIResponsesPayload,
     OpenAIResponsesRequest,
+    build_openai_responses_payload_dict_from_invocation,
     build_openai_responses_payload_from_invocation,
     build_openai_responses_request,
     build_openai_responses_tools,
 )
+from ai_office.providers.openai.responses_dict_payload import JsonValue
 from ai_office.tools import (
     DEFAULT_TOOL_CATALOG,
     ToolCatalogError,
@@ -312,6 +314,66 @@ def _display_openai_responses_payload(payload: OpenAIResponsesPayload) -> None:
             typer.echo("        none")
 
 
+def _display_dictionary_payload_text(value: str, indent: str) -> None:
+    """Display a dictionary string value without changing its line structure."""
+    if value == "":
+        typer.echo(f"{indent}<empty>")
+        return
+    for line in value.split("\n"):
+        typer.echo(f"{indent}{line}")
+
+
+def _display_openai_responses_dictionary_payload(
+    payload: dict[str, JsonValue],
+) -> None:
+    """Display a dictionary payload structurally without serializing it as JSON."""
+    typer.echo("Provider: openai")
+    typer.echo("Dictionary payload:")
+    typer.echo(f"  model: {payload['model']}")
+    typer.echo("  instructions:")
+    _display_dictionary_payload_text(payload["instructions"], "    ")
+    typer.echo("  input:")
+    _display_dictionary_payload_text(payload["input"], "    ")
+
+    tools = payload["tools"]
+    if not tools:
+        typer.echo("  tools: []")
+        return
+
+    typer.echo("  tools:")
+    for tool in tools:
+        typer.echo(f"    - type: {tool['type']}")
+        typer.echo(f"      name: {tool['name']}")
+        typer.echo(f"      description: {tool['description']}")
+        typer.echo("      parameters:")
+        parameters = tool["parameters"]
+        typer.echo(f"        type: {parameters['type']}")
+        properties = parameters["properties"]
+        if not properties:
+            typer.echo("        properties: {}")
+        else:
+            typer.echo("        properties:")
+            for property_name, property_value in properties.items():
+                typer.echo(f"          {property_name}:")
+                typer.echo(f"            type: {property_value['type']}")
+                typer.echo(
+                    f"            description: {property_value['description']}"
+                )
+        required = parameters["required"]
+        if not required:
+            typer.echo("        required: []")
+        else:
+            typer.echo("        required:")
+            for required_name in required:
+                typer.echo(f"          - {required_name}")
+        additional_properties = parameters["additionalProperties"]
+        typer.echo(
+            "        additionalProperties: "
+            f"{'true' if additional_properties else 'false'}"
+        )
+        typer.echo(f"      strict: {'true' if tool['strict'] else 'false'}")
+
+
 def _display_payload_text(value: str) -> None:
     """Display a payload string while preserving every newline line."""
     if value == "":
@@ -572,3 +634,48 @@ def provider_workflow_step_payload(
         typer.echo(f"Error: unsupported provider: {provider}", err=True)
         raise typer.Exit(code=1)
     _display_openai_responses_payload(payload)
+
+
+@workflows_app.command(
+    "provider-dict-payload", context_settings={"ignore_unknown_options": True}
+)
+def provider_workflow_step_dict_payload(
+    provider: str,
+    workflow_id: str,
+    step_index: str,
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Build and display one static provider dictionary payload."""
+    workflows, employees = _load_validated_definitions_or_exit(
+        directory, employees_directory
+    )
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        plan = build_execution_plan(workflow, employees)
+        step_request = build_step_execution_request(plan, int(step_index), employees)
+        invocation_request = build_model_invocation_request(step_request)
+        payload = build_openai_responses_payload_dict_from_invocation(
+            invocation_request, DEFAULT_TOOL_CATALOG
+        )
+    except (
+        WorkflowSelectionError,
+        StepSelectionError,
+        EmployeeSelectionError,
+        ToolCatalogError,
+        ValueError,
+    ) as error:
+        message = (
+            f"invalid step index: {step_index}"
+            if isinstance(error, ValueError) and not isinstance(error, ToolCatalogError)
+            else str(error)
+        )
+        typer.echo(f"Error: {message}", err=True)
+        raise typer.Exit(code=1) from None
+
+    if provider != "openai":
+        typer.echo(f"Error: unsupported provider: {provider}", err=True)
+        raise typer.Exit(code=1)
+    _display_openai_responses_dictionary_payload(payload)

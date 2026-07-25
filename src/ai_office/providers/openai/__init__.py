@@ -1,5 +1,13 @@
 """OpenAI-specific pre-runtime request conversion."""
 
+from ai_office.providers.openai.responses_dict_payload import (
+    build_openai_responses_parameters_dict,
+    build_openai_responses_payload_dict,
+    build_openai_responses_payload_dict_from_invocation,
+    build_openai_responses_property_dict,
+    build_openai_responses_tool_dict,
+    build_openai_responses_tool_dicts,
+)
 from ai_office.providers.openai.responses_payload import (
     OpenAIResponsesPayload,
     build_openai_responses_payload,
@@ -27,9 +35,15 @@ __all__ = [
     "OpenAIResponsesRequest",
     "build_openai_responses_function_parameters",
     "build_openai_responses_function_property",
+    "build_openai_responses_parameters_dict",
     "build_openai_responses_payload",
+    "build_openai_responses_payload_dict",
+    "build_openai_responses_payload_dict_from_invocation",
     "build_openai_responses_payload_from_invocation",
+    "build_openai_responses_property_dict",
     "build_openai_responses_request",
     "build_openai_responses_tool",
+    "build_openai_responses_tool_dict",
+    "build_openai_responses_tool_dicts",
     "build_openai_responses_tools",
 ]
