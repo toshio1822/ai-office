@@ -226,3 +226,9 @@ OpenAI固有の安全なoutput text、API error、transport error、invalid-resp
 明示的な`ModelInvocationRequest`、位置順まで一致する解決済み`ToolDefinition` tuple、明示的な`OpenAIApiKey`、明示的なapprovalを受け取り、既存のrequest、tool schema、payload、JSON、HTTP template、authentication、transport、response、output、result正規化の境界を順に合成できます。unapprovedな公開実行経路はありません。tool名がrequestの`allowed_tools`と位置・個数まで一致しない場合は、approval、認証や通信の前に`invalid_request`結果として安全に返します。
 
 一致する入力では既存transportによるHTTPS requestをちょうど1回だけ実行し、success、API error、transport error、invalid response、invalid outputをprovider-independent な結果へ正規化します。このPhaseにCLIはありません。環境からのcredential取得、retry、tool execution、usage/cost、approval persistence、runtime state、CLIによる有料API実行は扱いません。
+
+## Single-Step Runtime Execution Result Boundary（Phase 21）
+
+`StepRuntimeExecutionInput`は、すでに準備済みの`StepExecutionRequest`、`ModelInvocationRequest`、解決済みtool tuple、明示approvalだけを保持する不変inputです。API keyは保持せず、OpenAI-backed `execute_openai_runtime_step()`へ別の明示引数として渡します。runtimeはmodel、employee instructions、step instructions、allowed toolsの完全一致をprovider認証・通信前に検証し、不一致は詳細を露出しない`invalid_request`のruntime failureに正規化します。
+
+整合する入力では既存のapproval-gated OpenAI executionを一度だけ委譲し、`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`へwrapします。workflow ID、step ID、既存の1始まりstep index、employee ID、および既存のprovider-independent invocation resultを無加工で保持します。state transition、次step選択、event/artifact保存、retry、tool execution、agent loop、CLI paid execution、GUIは実装していません。次の境界が、このresultを明示的なworkflow state transitionとevent recordingへ使用します。
