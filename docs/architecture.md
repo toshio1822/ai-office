@@ -66,7 +66,9 @@ OpenAIResponsesRequest
                        ↓
  Single-Step Runtime Execution Result Boundary
                        ↓
- future workflow state transition and event recording
+ Pure Workflow State Transition and Runtime Event Boundary
+                       ↓
+ future atomic or compensatable persistence
 
 explicit environment mapping or current process environment
                        ↓
@@ -82,7 +84,7 @@ explicit environment mapping or current process environment
 | `invocation` | `StepExecutionRequest` を、モデル・system instructions・task instructions・allowed toolsだけからなるprovider非依存の不変なモデル呼び出し要求へ変換し、provider固有の安全なoutcomeをfuture runtime向けの不変なsuccess/failure結果へ正規化する。明示的paid-execution approvalは、provider、caller metadata、入力に束縛した決定的fingerprintだけを持ち、credential、HTTP、response、保存、時刻、policyを扱わない。planning上のworkflow、step、employee文脈は持ち込まず、prompt結合、provider固有message形式、AI実行、retry policy、state mutationは扱わない。 |
 | `providers.openai` | `ModelInvocationRequest` をOpenAI Responses API用の不変な実行前情報 `OpenAIResponsesRequest` へ純粋に変換する。`system_instructions` は `instructions`、`task_instructions` は `input` に対応し、文字列を結合・加工しない。`allowed_tool_names` は定義順の未解決tool名である。OpenAI Responses Tool Adapterは解決済み`ToolDefinition`を静的な`OpenAIResponsesFunctionTool`へ変換し、OpenAI Responses Payload Adapterは基本request情報と解決済みtool schemaを`OpenAIResponsesPayload`へ統合する。Dictionary Payload AdapterはそれをJSON互換Python辞書へ、JSON Serializerはその辞書を決定的なJSON文字列へ、HTTP Request Template Builderは非秘密headerを持つ未認証templateへ変換する。Authentication Boundaryは明示入力のAPI keyをBearer headerへ付加し、Environment Acquisition Boundaryだけが`OPENAI_API_KEY`を明示mappingまたはprocess environmentから取得する。HTTPS Transport Boundaryは認証済みrequestを1回だけ送信し、Response Boundaryはraw responseを不変successまたはAPI-error dataへ分類し、Output Text Boundaryはsuccess responseから対応するmessage output textだけを不変text結果へ抽出する。credential persistenceやruntime処理は扱わない。 |
 | `engine` | 定義済みの状態遷移、検証、再試行を決定的に管理する。 |
-| `runtime` | すでに準備済みかつ承認済みの単一step inputを、既存guarded OpenAI executionへ一度だけ委譲し、workflow/step/employee identityとprovider-independent resultを不変dataとして返す。state transition、次step選択、event/artifact保存、retry、tool実行は扱わない。 |
+| `runtime` | すでに準備済みかつ承認済みの単一step inputを、既存guarded OpenAI executionへ一度だけ委譲し、workflow/step/employee identityとprovider-independent resultを不変dataとして返す。completed resultを明示`running` stateと検証して、不変next stateと1つのsafe runtime eventへ純粋に変換する。next-step選択、event/artifact保存、retry、tool実行は扱わない。 |
 | `storage` | JSON の状態、JSONL のイベント、ファイルの成果物を永続化する。 |
 | `tools` | provider非依存の静的なTool Catalogを保持し、未解決tool名を完全一致で`ToolDefinition`へ決定的に解決する。`ToolDefinition`はHTTP payloadでも実行可能オブジェクトでもなく、provider schema変換、executor、Runtimeは後続Phaseで扱う。 |
 
@@ -111,6 +113,7 @@ explicit environment mapping or current process environment
 - Explicit Paid-Execution Approval Boundaryは、caller suppliedな不変`ModelInvocationExecutionApproval`を、provider、non-empty caller metadata、現在の`ModelInvocationRequest`とresolved `ToolDefinition` tupleから再計算するSHA-256 fingerprintへ束縛して検証する。fingerprintはmodel、system/task instructions、ordered allowed tool names、ordered tool definitionsとparameter定義を含み、API key、authorization、HTTP body、environment、response、時刻、random値を含まない。false、provider mismatch、stale fingerprint、空metadataは例外詳細を露出しない`approval_required`として正規化される。自動approval、approval persistence、expiration、role/policy、CLI paid executionは扱わない。
 - Guarded OpenAI Provider Execution Boundaryは、明示的な`ModelInvocationRequest`、位置順まで一致する解決済み`ToolDefinition` tuple、明示的な`OpenAIApiKey`、明示的なapprovalを入力にして、tool一致、approval検証、既存のrequest、tool schema、payload、JSON、HTTP template、authentication、HTTPS transport、response、output、result正規化の境界を順に一度だけ合成する。tool一致失敗はapproval前に安全な`invalid_request`結果へ、approval失敗は認証・通信前に安全な`approval_required`結果へ正規化し、expected provider-specific safe errorだけを正規化する。環境credential取得、retry、tool実行、usage、persistence、runtime state、CLI API実行は扱わない。
 - Single-Step Runtime Execution Result Boundaryは、明示的な`StepExecutionRequest`、既存の`ModelInvocationRequest`、resolved tool tuple、approvalからなる不変inputを受け取る。model、employee instructions、step instructions、allowed toolsが既存のrequest生成契約どおり完全一致することを最初に検証し、不一致は詳細を露出しない`invalid_request` runtime failureへ正規化する。整合する入力だけを既存guarded OpenAI executionへ一度だけ委譲し、workflow ID、step ID、既存の1始まりstep index、employee IDと既存`ModelInvocationSuccess`または`ModelInvocationFailure`を不変wrapperとして保持する。API keyはinput/resultに保存しない。state transition、next-step selection、event/artifact保存、retry、tool実行、agent loop、CLI paid executionは扱わない。future state-transition boundaryがこのresultを消費する。
+- Pure Workflow State Transition and Runtime Event Boundaryは、completed `StepRuntimeExecutionResult`と明示的`running` `WorkflowExecutionState`のworkflow ID、step ID、既存の1始まりstep index、employee IDを完全一致で検証する純粋boundaryである。不一致は詳細を露出しないsafe input errorになる。successは`running -> succeeded`としてcurrent step IDを一度だけappendし、failureは`running -> failed`としてcompleted IDsを保持してfailure categoryを記録する。どちらもidentity、safe provider metadata、empty output textを含むevent dataを不変に返す。ここでの`succeeded`は単一step execution stateの完了であり、multi-step workflow final completionではない。timestamp、event ID、persistence、next-step selection、provider呼出、retry、tool execution、agent loop、CLI paid executionは扱わず、future persistence boundaryがstateとeventをatomicまたはcompensatableに保存する。
 - 依存方向は `provider-independent invocation model -> provider-specific adapter -> provider-specific request model -> future runtime` とする。Runtimeからdefinitionsやplanningのモデルへ逆依存させない。
 - provider共通抽象は、複数providerの実装から実際の共通点が確認されるまで作らない。Codex CLIは承認・sandbox・tool実行・agent loopを伴う実行基盤であるため、将来は別のAdapterとRuntime経路として検討する。
 - 人間承認が必要な遷移は、承認済みの明示的な入力なしに進めない。

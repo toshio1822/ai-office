@@ -232,3 +232,11 @@ OpenAI固有の安全なoutput text、API error、transport error、invalid-resp
 `StepRuntimeExecutionInput`は、すでに準備済みの`StepExecutionRequest`、`ModelInvocationRequest`、解決済みtool tuple、明示approvalだけを保持する不変inputです。API keyは保持せず、OpenAI-backed `execute_openai_runtime_step()`へ別の明示引数として渡します。runtimeはmodel、employee instructions、step instructions、allowed toolsの完全一致をprovider認証・通信前に検証し、不一致は詳細を露出しない`invalid_request`のruntime failureに正規化します。
 
 整合する入力では既存のapproval-gated OpenAI executionを一度だけ委譲し、`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`へwrapします。workflow ID、step ID、既存の1始まりstep index、employee ID、および既存のprovider-independent invocation resultを無加工で保持します。state transition、次step選択、event/artifact保存、retry、tool execution、agent loop、CLI paid execution、GUIは実装していません。次の境界が、このresultを明示的なworkflow state transitionとevent recordingへ使用します。
+
+## Pure Workflow State Transition and Runtime Event Boundary（Phase 22）
+
+`WorkflowExecutionState`は、明示的な単一stepのworkflow ID、current step identity、ordered completed step IDs、有限status、last failure categoryだけを保持する不変stateです。`build_running_workflow_execution_state()`は既存の`StepExecutionRequest`から、1始まりstep indexを変換せずに`running` stateを作ります。
+
+`transition_workflow_execution_from_step_result()`はcompleted `StepRuntimeExecutionResult`を既存`running` stateと完全一致で検証し、1つの`WorkflowExecutionTransition`（previous state、next state、runtime event）を返します。successは`running -> succeeded`、current step IDを一度だけappendし、empty output textを含む安全なsuccess metadataを保持します。failureは`running -> failed`、completed IDsを変えず、既存failure categoryとsafe messageを保持します。ここでの`succeeded`は明示的な単一step execution stateの完了であり、multi-step workflow全体の完了を意味しません。
+
+このPhaseは時刻、event ID、永続化、JSON/JSONL、next-step selection、retry、provider実行、tool execution、agent loop、CLI paid executionを扱いません。Phase 21 executionとPhase 22 transitionは別々の明示呼び出しです。次の境界が返されたstateとeventをatomicまたはcompensatableに保存します。
