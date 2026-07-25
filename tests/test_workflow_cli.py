@@ -1579,7 +1579,9 @@ def test_workflows_provider_tools_preserves_property_and_required_order(
     assert required_section == "      first\n      last\n"
 
 
-@pytest.mark.parametrize("provider", ["anthropic", "OpenAI", " openai", "openai "])
+@pytest.mark.parametrize(
+    "provider", ["anthropic", "OpenAI", "OPENAI", " openai", "openai "]
+)
 def test_workflows_provider_tools_rejects_unsupported_provider_without_stdout(
     tmp_path: Path, provider: str
 ) -> None:
@@ -2216,6 +2218,117 @@ def test_workflows_provider_json_reports_unknown_tool_without_stdout(
         [
             "workflows",
             "provider-json",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == "Error: Tool not found: UnknownTool\n"
+
+
+def test_workflows_provider_http_request_displays_compact_json_body(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(
+        workflows_directory, research_instructions="Input\nsecond line"
+    )
+    write_valid_employee(
+        employees_directory,
+        instructions="日本語 ✨",
+        allowed_tools=["web_search"],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-http-request",
+            "openai",
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    prefix = (
+        "Provider: openai\n"
+        "HTTP request template:\n"
+        "Method: POST\n"
+        "URL: https://api.openai.com/v1/responses\n"
+        "Headers:\n"
+        "  Content-Type: application/json\n"
+        "Body:\n"
+    )
+    assert result.exit_code == 0
+    assert result.stdout.startswith(prefix)
+    body = result.stdout.removeprefix(prefix).removesuffix("\n")
+    assert json.loads(body)["instructions"] == "日本語 ✨"
+    assert json.loads(body)["input"] == "Input\nsecond line"
+    assert "\n  \"model\"" not in body
+    assert "Authorization" not in result.stdout
+    assert "api_key" not in result.stdout
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "OpenAI", " openai", "openai "])
+def test_workflows_provider_http_request_rejects_unsupported_provider_without_stdout(
+    tmp_path: Path, provider: str
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory)
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-http-request",
+            provider,
+            "research-and-summarize",
+            "1",
+            "--directory",
+            str(workflows_directory),
+            "--employees-directory",
+            str(employees_directory),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == f"Error: unsupported provider: {provider}\n"
+
+
+def test_workflows_provider_http_request_reports_unknown_tool_without_stdout(
+    tmp_path: Path,
+) -> None:
+    workflows_directory = tmp_path / "workflows"
+    employees_directory = tmp_path / "employees"
+    workflows_directory.mkdir()
+    employees_directory.mkdir()
+    write_valid_workflow(workflows_directory)
+    write_valid_employee(employees_directory, allowed_tools=["UnknownTool"])
+
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-http-request",
             "openai",
             "research-and-summarize",
             "1",
