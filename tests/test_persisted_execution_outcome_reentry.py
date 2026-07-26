@@ -11,6 +11,7 @@ from ai_office.engine import (
 )
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
+    LoadedWorkflowExecutionHistory,
     WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
     serialize_runtime_step_event_jsonl,
@@ -313,11 +314,86 @@ def test_rejects_and_restores_loader_mutation(tmp_path: Path) -> None:
     assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
 
 
+@pytest.mark.parametrize("deleted", ["state", "events", "both"])
+def test_restores_targets_deleted_by_safe_loader_error(
+    tmp_path: Path, deleted: str
+) -> None:
+    targets = write_history(tmp_path, state(), first_event(), event())
+    before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
+    expected = WorkflowExecutionLoadError("safe")
+
+    def loader(_: object) -> object:
+        if deleted in {"state", "both"}:
+            targets.state_path.unlink()
+        if deleted in {"events", "both"}:
+            targets.events_path.unlink()
+        raise expected
+
+    with pytest.raises(WorkflowExecutionLoadError) as error:
+        classify_persisted_execution_outcome_reentry(
+            workflow(), targets.state_path, targets.events_path, history_loader=loader
+        )  # type: ignore[arg-type]
+    assert error.value is expected
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("deleted", ["state", "events", "both"])
+def test_rejects_and_restores_targets_deleted_by_returning_loader(
+    tmp_path: Path, deleted: str
+) -> None:
+    targets = write_history(tmp_path, state(), first_event(), event())
+    before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
+
+    def loader(value: WorkflowExecutionPersistenceTargets) -> object:
+        from ai_office.storage import load_workflow_execution_history
+
+        history = load_workflow_execution_history(value)
+        if deleted in {"state", "both"}:
+            targets.state_path.unlink()
+        if deleted in {"events", "both"}:
+            targets.events_path.unlink()
+        return history
+
+    with pytest.raises(PersistedExecutionOutcomeCompatibilityError) as error:
+        classify_persisted_execution_outcome_reentry(
+            workflow(), targets.state_path, targets.events_path, history_loader=loader
+        )  # type: ignore[arg-type]
+    assert error.value.detail.classification == "history_data"
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        LoadedWorkflowExecutionHistory(state=object(), events=()),
+        LoadedWorkflowExecutionHistory(state=state(), events=object()),
+        LoadedWorkflowExecutionHistory(state=state(), events=(object(),)),
+    ],
+)
+def test_rejects_synthetic_or_altered_history_contents_safely(
+    tmp_path: Path, history: LoadedWorkflowExecutionHistory
+) -> None:
+    targets = write_history(tmp_path, state(), first_event(), event())
+    before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
+
+    def loader(_: object) -> object:
+        return history
+
+    with pytest.raises(PersistedExecutionOutcomeCompatibilityError) as error:
+        classify_persisted_execution_outcome_reentry(
+            workflow(), targets.state_path, targets.events_path, history_loader=loader
+        )  # type: ignore[arg-type]
+    assert error.value.detail.classification == "history_data"
+    assert str(targets.state_path) not in str(error.value)
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
+
+
 def test_unexpected_loader_failure_is_safe_and_does_not_write(tmp_path: Path) -> None:
     targets = write_history(tmp_path, state(), first_event(), event())
     before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
 
     def loader(_: object) -> object:
+        targets.events_path.unlink()
         raise RuntimeError("secret target details")
 
     with pytest.raises(PersistedExecutionOutcomeCompatibilityError) as error:

@@ -95,6 +95,7 @@ def classify_persisted_execution_outcome_reentry(
     _reject_changed_targets(state_path, events_path, original)
 
     _validate_history_type(history)
+    _validate_history_contents(history)
     _validate_terminal_state(history.state)
     _validate_workflow_identity(workflow, history.state)
     _validate_event_history(workflow, history.state, history.events)
@@ -139,10 +140,8 @@ def _restore_if_changed(
     state_path: Path, events_path: Path, original: tuple[bytes, bytes]
 ) -> None:
     try:
-        if state_path.read_bytes() != original[0]:
-            state_path.write_bytes(original[0])
-        if events_path.read_bytes() != original[1]:
-            events_path.write_bytes(original[1])
+        state_path.write_bytes(original[0])
+        events_path.write_bytes(original[1])
     except OSError:
         _raise("history_rollback")
 
@@ -156,7 +155,8 @@ def _reject_changed_targets(
             or events_path.read_bytes() != original[1]
         )
     except OSError:
-        _raise("history_rollback")
+        _restore_if_changed(state_path, events_path, original)
+        _raise("history_data")
     if changed:
         _restore_if_changed(state_path, events_path, original)
         _raise("history_data")
@@ -164,6 +164,15 @@ def _reject_changed_targets(
 
 def _validate_history_type(history: object) -> None:
     if type(history) is not LoadedWorkflowExecutionHistory:
+        _raise("history_data")
+
+
+def _validate_history_contents(history: LoadedWorkflowExecutionHistory) -> None:
+    if (
+        type(history.state) is not WorkflowExecutionState
+        or type(history.events) is not tuple
+        or any(type(event) is not RuntimeStepEvent for event in history.events)
+    ):
         _raise("history_data")
 
 
