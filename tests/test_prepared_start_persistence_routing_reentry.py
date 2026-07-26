@@ -176,6 +176,181 @@ def test_complete_returns_same_object_after_target_reads_without_phase35(
 
 
 @pytest.mark.parametrize(
+    "changed",
+    [
+        {"workflow_id": "other"},
+        {"current_step_id": "other"},
+        {"current_step_index": True},
+        {"current_step_index": 0},
+        {"current_step_index": 3},
+        {"current_employee_id": "other"},
+        {"status": "succeeded"},
+        {"last_failure_category": "runtime"},
+        {"completed_step_ids": ["first"]},
+        {"completed_step_ids": ("",)},
+        {"completed_step_ids": ("second",)},
+    ],
+)
+def test_start_prevalidation_contracts_have_zero_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path)
+    writes = []
+    original = Path.write_bytes
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda p, b: (writes.append(p), original(p, b))[1]
+    )
+    bad = PreparedStepExecutionStart(
+        start().request,
+        WorkflowExecutionState(**{**start().running_state.__dict__, **changed}),
+    )
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError):
+        route_prepared_start_persistence_reentry(
+            bad,
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_reentry_function=lambda *_: pytest.fail("called"),
+        )
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    "request_value",
+    [
+        ModelInvocationRequest("other", "employee", "b", ("tool",)),
+        ModelInvocationRequest("model", "other", "b", ("tool",)),
+        ModelInvocationRequest("model", "employee", "other", ("tool",)),
+        ModelInvocationRequest("model", "employee", "b", ()),
+    ],
+)
+def test_request_contract_prevalidation_has_zero_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request_value: ModelInvocationRequest,
+) -> None:
+    state, events = targets(tmp_path)
+    writes = []
+    original = Path.write_bytes
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda p, b: (writes.append(p), original(p, b))[1]
+    )
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError):
+        route_prepared_start_persistence_reentry(
+            PreparedStepExecutionStart(request_value, start().running_state),
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_reentry_function=lambda *_: pytest.fail("called"),
+        )
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"current_step_id": "first"},
+        {"current_step_index": 1},
+        {"current_employee_id": "one"},
+        {"next_step_id": "x"},
+        {"next_step_index": 1},
+        {"next_employee_id": "x"},
+        {"reason": "x"},
+    ],
+)
+def test_completion_contract_prevalidation_has_zero_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path)
+    writes = []
+    original = Path.write_bytes
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda p, b: (writes.append(p), original(p, b))[1]
+    )
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError):
+        route_prepared_start_persistence_reentry(
+            complete(**changed),
+            workflow(),
+            None,
+            state,
+            events,
+            persistence_reentry_function=lambda *_: pytest.fail("called"),
+        )
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "count",
+        "unchanged",
+        "delete",
+        "truncate",
+        "append",
+        "invalid",
+        "other",
+        "event_delete",
+        "event_truncate",
+        "event_append",
+        "both",
+    ],
+)
+def test_invalid_post_persistence_restores_both(tmp_path: Path, mode: str) -> None:
+    state, events = targets(tmp_path)
+    supplied = start()
+    calls = 0
+
+    def phase35(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        if mode == "delete":
+            state.unlink()
+        elif mode == "truncate":
+            state.write_bytes(b"")
+        elif mode == "append":
+            state.write_bytes(b"prior+")
+        elif mode == "invalid":
+            state.write_bytes(b"{")
+        elif mode == "other":
+            state.write_text(
+                serialize_workflow_execution_state_json(
+                    WorkflowExecutionState(
+                        "workflow", "running", "second", 2, "two", (), None
+                    )
+                )
+            )
+        elif mode == "event_delete":
+            events.unlink()
+        elif mode == "event_truncate":
+            events.write_bytes(b"")
+        elif mode == "event_append":
+            events.write_bytes(b"events+")
+        elif mode == "both":
+            state.write_bytes(b"changed")
+            events.write_bytes(b"changed")
+        elif mode == "count":
+            persist(supplied, state)
+            return RunningStatePersistenceResult(len(state.read_bytes()) + 1)
+        return RunningStatePersistenceResult(len(state.read_bytes()))
+
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError):
+        route_prepared_start_persistence_reentry(
+            supplied,
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_reentry_function=phase35,
+        )
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == (
+        b"prior",
+        b"events",
+    )
+
+
+@pytest.mark.parametrize(
     "result,definition,person,state_value,event_value,function",
     [
         (object(), None, None, None, None, None),
