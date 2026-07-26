@@ -298,3 +298,9 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 `prepare_approved_next_step_reentry()`は、Phase 31から得た正確な`prepare_next_step` decision、新規に明示されたその同一next stepへの`NextStepPreparationApproval`、検証済みworkflow/employee、明示state/event targetを受けます。Phase 24でpersisted succeeded historyと最新`step_succeeded` eventをread-onlyで再読込し、workflow順序、decisionのcurrent/next identity、approvalを再検証してから、既存Phase 26 `prepare_approved_next_workflow_step()`を一度だけ呼びます。返却する既存`PreparedWorkflowStep`もdecisionと照合し、同一objectをそのまま返します。
 
 順序は `Phase 25 progression decision → Phase 26 explicit approval/preparation → Phase 27 request + proposed running state → Phase 28 persist running state → Phase 29 verify persisted state + execute Phase 21 exactly once → Phase 30 transition + persistence → Phase 31 reload persisted success + Phase 25 decision exactly once → Phase 32 verify exact prepare_next_step decision + fresh human approval + Phase 26 preparation exactly once → later explicit Phase 27 start preparation` です。Phase 32はread-onlyで、provider request、running state、persistence、execution、retry、自動継続、paid CLI、GUIを作成しません。
+
+## Prepared-Step Start Reentry Boundary（Phase 33）
+
+`prepare_persisted_prepared_step_start()`は、正確なPhase 32 `PreparedWorkflowStep`、対応するemployee definition、workflow、明示state/event targetを受けます。Phase 24でpersisted successful historyをread-onlyで再読込し、prepared step のidentity、instructions、model、allowed toolsを定義と完全照合してから、既存Phase 27 `prepare_prepared_step_execution_start()`を一度だけ呼びます。返却された既存request/proposed running-state resultも照合し、同一objectを返します。
+
+順序は `Phase 31 persisted success + Phase 25 decision → Phase 32 exact prepare_next_step + fresh approval + Phase 26 → Phase 33 exact PreparedWorkflowStep + Phase 27 → later explicit Phase 28 running-state persistence` です。Phase 33はread-onlyで、running stateの保存、provider実行、credentials/tool resolution、retry、自動継続、paid CLI、GUIを行いません。

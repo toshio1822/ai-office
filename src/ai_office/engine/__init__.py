@@ -27,6 +27,12 @@ from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStartError,
     prepare_prepared_step_execution_start,
 )
+from ai_office.engine.prepared_step_start_reentry import (
+    PreparedStepStartReentryCompatibilityError,
+    PreparedStepStartReentryError,
+    PreparedStepStartReentryFailureDetail,
+    prepare_persisted_prepared_step_start,
+)
 from ai_office.engine.workflow_progression import (
     WorkflowProgressionCompatibilityDetail,
     WorkflowProgressionCompatibilityError,
@@ -70,6 +76,10 @@ __all__ = [
     "PreparedStepExecutionStartCompatibilityError",
     "PreparedStepExecutionStartError",
     "prepare_prepared_step_execution_start",
+    "PreparedStepStartReentryCompatibilityError",
+    "PreparedStepStartReentryError",
+    "PreparedStepStartReentryFailureDetail",
+    "prepare_persisted_prepared_step_start",
     "PersistedSuccessProgressionCompatibilityError",
     "PersistedSuccessProgressionError",
     "PersistedSuccessProgressionFailureDetail",
