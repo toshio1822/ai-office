@@ -308,3 +308,7 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 ## Prepared Running-State Persistence Reentry Boundary（Phase 34）
 
 `persist_prepared_running_state_reentry()`は、正確なPhase 33 start result、workflow/employee、明示state/event targetを受けます。Phase 24でpersisted successを再読込してstart resultを検証し、既存Phase 28 `persist_prepared_running_state()`を一度だけ呼びます。呼出し後はstrict state reloadでproposed running stateとの一致、結果byte count、event targetのbyte-for-byte不変を確認して同一result objectを返します。provider、credentials/tools、実行、retry、自動継続、paid CLI、GUIは扱いません。
+
+## Persisted-Running Execution Reentry Boundary（Phase 35）
+
+`execute_persisted_running_openai_step()`は正確なPhase 33 start、persisted `running` state、workflow/employee、resolved tools、credential、paid approvalを受け、既存Phase 29を一度だけ呼びます。state bytes は実行前後で不変を確認し、注入依存による改変は補償復元します。実行結果は保存・transition・event appendをせず、そのまま返します。

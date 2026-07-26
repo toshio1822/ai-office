@@ -7,6 +7,7 @@ from ai_office.runtime.step_runtime_execution import (
     StepRuntimeExecutionResult,
     StepRuntimeExecutionSuccess,
     execute_openai_runtime_step,
+    is_valid_step_runtime_execution_result,
 )
 from ai_office.runtime.workflow_execution_transition import (
     RuntimeStepEvent,
@@ -33,5 +34,6 @@ __all__ = [
     "WorkflowExecutionTransitionInputError",
     "build_running_workflow_execution_state",
     "execute_openai_runtime_step",
+    "is_valid_step_runtime_execution_result",
     "transition_workflow_execution_from_step_result",
 ]
