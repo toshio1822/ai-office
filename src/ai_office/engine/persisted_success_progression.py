@@ -72,7 +72,9 @@ def decide_persisted_success_progression(
     history = _load_history(state_path, events_path)
     _validate_persisted_success(history)
     _validate_workflow_identity(workflow, history)
-    return decision_function(workflow, history)
+    decision = decision_function(workflow, history)
+    _validate_decision_contract(decision, workflow, history)
+    return decision
 
 
 def _validate_explicit_inputs(
@@ -157,6 +159,41 @@ def _validate_workflow_identity(
     )
     if compressed != tuple(range(1, state.current_step_index + 1)):
         _raise("workflow_identity")
+
+
+def _validate_decision_contract(
+    decision: object,
+    workflow: WorkflowDefinition,
+    history: LoadedWorkflowExecutionHistory,
+) -> None:
+    if not isinstance(decision, WorkflowProgressionDecision):
+        _raise("decision_contract")
+    state = history.state
+    valid = (
+        decision.workflow_id == state.workflow_id
+        and decision.current_step_id == state.current_step_id
+        and decision.current_step_index == state.current_step_index
+        and decision.current_employee_id == state.current_employee_id
+    )
+    if state.current_step_index == len(workflow.steps):
+        valid = valid and (
+            decision.decision == "workflow_complete"
+            and decision.next_step_id is None
+            and decision.next_step_index is None
+            and decision.next_employee_id is None
+            and decision.reason == "last_step_succeeded"
+        )
+    else:
+        next_step = workflow.steps[state.current_step_index]
+        valid = valid and (
+            decision.decision == "prepare_next_step"
+            and decision.next_step_id == next_step.id
+            and decision.next_step_index == state.current_step_index + 1
+            and decision.next_employee_id == next_step.employee
+            and decision.reason == "next_step_available"
+        )
+    if not valid:
+        _raise("decision_contract")
 
 
 def _raise(classification: PersistedSuccessProgressionClassification) -> None:

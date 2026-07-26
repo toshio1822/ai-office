@@ -1,5 +1,6 @@
 """Tests for the read-only Phase 31 progression boundary."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -122,6 +123,66 @@ def test_final_success_returns_existing_complete_decision(tmp_path: Path) -> Non
         workflow(), targets.state_path, targets.events_path
     )
     assert result.decision == "workflow_complete"
+
+
+@pytest.mark.parametrize(
+    ("final", "change"),
+    [
+        (False, None),
+        (False, {"workflow_id": "other"}),
+        (False, {"decision": "workflow_complete"}),
+        (False, {"next_step_id": "other"}),
+        (False, {"next_step_index": 9}),
+        (False, {"next_employee_id": "other"}),
+        (
+            True,
+            {
+                "decision": "prepare_next_step",
+                "next_step_id": "step",
+                "next_step_index": 3,
+                "next_employee_id": "employee",
+                "reason": "next_step_available",
+            },
+        ),
+        (True, {"reason": "other"}),
+    ],
+)
+def test_invalid_decision_result_is_rejected_after_one_call(
+    tmp_path: Path, final: bool, change: object
+) -> None:
+    current = (
+        state()
+        if final
+        else state(
+            current_step_index=1, current_step_id="first", completed_step_ids=("first",)
+        )
+    )
+    current_event = event() if final else event(step_id="first", step_index=1)
+    targets = write_history(tmp_path, current, current_event)
+    before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
+    valid = decide_workflow_progression(
+        workflow(),
+        __import__(
+            "ai_office.storage", fromlist=["load_workflow_execution_history"]
+        ).load_workflow_execution_history(targets),
+    )
+    calls = 0
+
+    def returned(*_args: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object() if change is None else replace(valid, **change)  # type: ignore[arg-type]
+
+    with pytest.raises(PersistedSuccessProgressionCompatibilityError) as error:
+        decide_persisted_success_progression(
+            workflow(),
+            targets.state_path,
+            targets.events_path,
+            decision_function=returned,
+        )  # type: ignore[arg-type]
+    assert error.value.detail.classification == "decision_contract"
+    assert calls == 1
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
 
 
 @pytest.mark.parametrize(
