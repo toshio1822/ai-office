@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from ai_office.definitions.employee import EmployeeDefinition
+from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationRequest,
@@ -37,6 +38,8 @@ PersistedStartExecutionClassification = Literal[
     "state_data",
     "state_status",
     "state_identity",
+    "workflow_definition",
+    "workflow_identity",
     "employee_identity",
     "employee_contract",
     "request_data",
@@ -66,6 +69,7 @@ class PersistedStartExecutionCompatibilityError(PersistedStartExecutionError):
 def execute_persisted_start_openai_step(
     start: object,
     state_path: object,
+    workflow: object,
     employee: object,
     resolved_tools: object,
     api_key: object,
@@ -78,7 +82,14 @@ def execute_persisted_start_openai_step(
     This boundary deliberately does not persist the resulting success or failure.
     """
     _validate_in_memory_inputs(
-        start, state_path, employee, resolved_tools, api_key, approval, transport
+        start,
+        state_path,
+        workflow,
+        employee,
+        resolved_tools,
+        api_key,
+        approval,
+        transport,
     )
     # Narrowing follows the checked concrete contracts above.
     from ai_office.engine.prepared_step_execution_start import (
@@ -87,6 +98,7 @@ def execute_persisted_start_openai_step(
 
     assert isinstance(start, PreparedStepExecutionStart)
     assert isinstance(state_path, Path)
+    assert isinstance(workflow, WorkflowDefinition)
     assert isinstance(employee, EmployeeDefinition)
     assert isinstance(resolved_tools, tuple)
     assert isinstance(api_key, OpenAIApiKey)
@@ -95,7 +107,10 @@ def execute_persisted_start_openai_step(
     persisted_state = _load_running_state(state_path)
     if persisted_state != start.running_state:
         _raise("state_identity")
-    step_request = _build_step_request(persisted_state, employee, start.request)
+    workflow_step = _validate_workflow_state(workflow, persisted_state)
+    step_request = _build_step_request(
+        persisted_state, workflow, workflow_step, employee, start.request
+    )
     return execute_openai_runtime_step(
         StepRuntimeExecutionInput(
             step_request=step_request,
@@ -111,6 +126,7 @@ def execute_persisted_start_openai_step(
 def _validate_in_memory_inputs(
     start: object,
     state_path: object,
+    workflow: object,
     employee: object,
     resolved_tools: object,
     api_key: object,
@@ -126,6 +142,8 @@ def _validate_in_memory_inputs(
         _raise("start_type")
     if not isinstance(state_path, Path):
         _raise("state_target")
+    if not isinstance(workflow, WorkflowDefinition):
+        _raise("workflow_definition")
     if not isinstance(start.request, ModelInvocationRequest):
         _raise("request_data")
     if not _valid_running_state(start.running_state):
@@ -158,6 +176,8 @@ def _load_running_state(state_path: Path) -> WorkflowExecutionState:
 
 def _build_step_request(
     state: WorkflowExecutionState,
+    workflow: WorkflowDefinition,
+    workflow_step: WorkflowStepDefinition,
     employee: EmployeeDefinition,
     request: ModelInvocationRequest,
 ) -> StepExecutionRequest:
@@ -169,12 +189,12 @@ def _build_step_request(
         or tuple(employee.allowed_tools) != request.allowed_tools
     ):
         _raise("employee_contract")
-    # workflow_name and step_name are deliberately omitted: Phase 27 neither
-    # retains nor derives them, and this boundary must not fabricate values.
     return StepExecutionRequest(
         workflow_id=state.workflow_id,
+        workflow_name=workflow.name,
         step_index=state.current_step_index,
         step_id=state.current_step_id,
+        step_name=workflow_step.name,
         employee_id=state.current_employee_id,
         employee_name=employee.name,
         employee_role=employee.role,
@@ -183,6 +203,23 @@ def _build_step_request(
         employee_instructions=request.system_instructions,
         step_instructions=request.task_instructions,
     )
+
+
+def _validate_workflow_state(
+    workflow: WorkflowDefinition, state: WorkflowExecutionState
+) -> WorkflowStepDefinition:
+    """Bind the persisted running identity to the validated workflow definition."""
+    if workflow.id != state.workflow_id:
+        _raise("workflow_identity")
+    if state.current_step_index > len(workflow.steps):
+        _raise("workflow_identity")
+    step = workflow.steps[state.current_step_index - 1]
+    if (
+        step.id != state.current_step_id
+        or step.employee != state.current_employee_id
+    ):
+        _raise("workflow_identity")
+    return step
 
 
 def _valid_running_state(value: object) -> bool:
