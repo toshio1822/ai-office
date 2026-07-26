@@ -149,6 +149,10 @@ class DecisionSubclass(WorkflowProgressionDecision):
     pass
 
 
+class ApprovalSubclass(type(approval())):
+    pass
+
+
 def setup(tmp_path: Path) -> tuple[Path, Path, bytes]:
     state, events = tmp_path / "state.json", tmp_path / "events.jsonl"
     before = serialize_workflow_execution_state_json(start().running_state).encode()
@@ -607,3 +611,180 @@ def test_all_target_mutations_are_compensated_once(
         and state.read_bytes() == before
         and events.read_bytes() == event_before
     )
+
+
+def completion() -> WorkflowProgressionDecision:
+    return WorkflowProgressionDecision(
+        "workflow_complete",
+        "workflow",
+        "step",
+        2,
+        "employee",
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+
+
+@pytest.mark.parametrize(
+    "decision,dependency",
+    [
+        (DecisionSubclass(*completion().__dict__.values()), None),
+        (replace(completion(), decision="prepare_next_step"), None),
+        (replace(completion(), workflow_id="other"), None),
+        (replace(completion(), current_step_id="first"), None),
+        (replace(completion(), current_step_index=1), None),
+        (replace(completion(), current_employee_id="other"), None),
+        (replace(completion(), next_step_id="x"), None),
+        (replace(completion(), next_step_index=3), None),
+        (replace(completion(), next_employee_id="x"), None),
+        (replace(completion(), reason="other"), None),
+    ],
+)
+def test_completion_contract_rejections_do_not_call_phase36(
+    tmp_path: Path, decision: WorkflowProgressionDecision, dependency: object
+) -> None:
+    state, events, _ = setup(tmp_path)
+    calls = 0
+
+    def phase36(*_: object, **__: object) -> object:
+        nonlocal calls
+        calls += 1
+        return failure()
+
+    with pytest.raises(PersistedRunningExecutionRoutingCompatibilityError):
+        route_persisted_running_execution_reentry(
+            decision,
+            dependency,
+            workflow(),
+            None,
+            state,
+            events,
+            None,
+            None,
+            None,
+            None,
+            execution_reentry_function=phase36,
+        )
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    "dependency",
+    [start(), employee(), resolved_tools(), key(), approval(), lambda _: None],
+)
+def test_completion_rejects_every_execution_dependency(
+    tmp_path: Path, dependency: object
+) -> None:
+    state, events, _ = setup(tmp_path)
+    supplied = [None, None, None, None, None, None]
+    supplied[
+        [
+            start(),
+            employee(),
+            resolved_tools(),
+            key(),
+            approval(),
+            lambda _: None,
+        ].index(dependency)
+        if False
+        else 0
+    ] = dependency
+    # Keep the individual positional dependency explicit, avoiding any execution fake.
+    values = [None, None, None, None, None, None]
+    for index, candidate in enumerate(
+        [start(), employee(), resolved_tools(), key(), approval(), lambda _: None]
+    ):
+        if type(candidate) is type(dependency):
+            values[index] = dependency
+            break
+    with pytest.raises(PersistedRunningExecutionRoutingCompatibilityError):
+        route_persisted_running_execution_reentry(
+            completion(),
+            values[0],
+            workflow(),
+            values[1],
+            state,
+            events,
+            values[2],
+            values[3],
+            values[4],
+            values[5],
+            execution_reentry_function=lambda *_a, **_k: failure(),
+        )
+
+
+@pytest.mark.parametrize("mode", ["replace", "delete", "truncate", "append"])
+@pytest.mark.parametrize("safe", [True, False])
+def test_dependency_errors_restore_mutated_targets(
+    tmp_path: Path, mode: str, safe: bool
+) -> None:
+    state, events, before = setup(tmp_path)
+    events.write_bytes(b"event")
+    event_before = events.read_bytes()
+    calls = 0
+    safe_error = PersistedRunningExecutionReentryCompatibilityError("state_data")
+
+    def mutate(path: Path) -> None:
+        if mode == "replace":
+            path.write_bytes(b"x")
+        elif mode == "delete":
+            path.unlink()
+        elif mode == "truncate":
+            path.write_bytes(b"")
+        else:
+            path.write_bytes(path.read_bytes() + b"+")
+
+    def phase36(*_: object, **__: object) -> object:
+        nonlocal calls
+        calls += 1
+        mutate(state)
+        mutate(events)
+        if safe:
+            raise safe_error
+        raise RuntimeError("secret=/tmp/state api=key provider=response approval=data")
+
+    expected = (
+        PersistedRunningExecutionReentryCompatibilityError
+        if safe
+        else PersistedRunningExecutionRoutingCompatibilityError
+    )
+    with pytest.raises(expected) as caught:
+        call(state, events, phase36)
+    assert (
+        calls == 1
+        and state.read_bytes() == before
+        and events.read_bytes() == event_before
+    )
+    if safe:
+        assert caught.value is safe_error
+    else:
+        assert caught.value.detail.classification == "dependency_error"
+        assert "secret" not in str(caught.value)
+
+
+def test_unchanged_safe_and_unexpected_errors_preserve_no_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state, events, _ = setup(tmp_path)
+    writes = 0
+    original = Path.write_bytes
+
+    def counted(path: Path, data: bytes) -> int:
+        nonlocal writes
+        writes += 1
+        return original(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", counted)
+    error = PersistedRunningExecutionReentryCompatibilityError("state_data")
+    with pytest.raises(PersistedRunningExecutionReentryCompatibilityError) as caught:
+        call(state, events, lambda *_a, **_k: (_ for _ in ()).throw(error))
+    assert caught.value is error and writes == 0
+    with pytest.raises(PersistedRunningExecutionRoutingCompatibilityError):
+        call(
+            state,
+            events,
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("secret")),
+        )
+    assert writes == 0
