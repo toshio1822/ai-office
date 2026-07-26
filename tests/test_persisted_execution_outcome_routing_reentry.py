@@ -160,6 +160,64 @@ def test_rejects_mismatched_reclassification_before_progression(tmp_path: Path) 
     assert calls == 0
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"workflow_id": "other"},
+        {"current_step_id": "other"},
+        {"current_step_index": 3},
+        {"current_employee_id": "other"},
+    ],
+)
+def test_rejects_supplied_outcome_outside_workflow_safely(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path)
+    calls = [0, 0]
+
+    def classify(*_: object) -> PersistedExecutionOutcome:
+        calls[0] += 1
+        raise AssertionError
+
+    def progress(*_: object) -> WorkflowProgressionDecision:
+        calls[1] += 1
+        raise AssertionError
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
+        route_persisted_execution_outcome_reentry(
+            outcome(**changes),
+            workflow(),
+            state,
+            events,
+            classification_function=classify,
+            progression_function=progress,
+        )
+    assert error.value.detail.classification == "outcome_contract"
+    assert calls == [0, 0]
+
+
+def test_rejects_reclassified_outcome_outside_workflow_safely(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    calls = 0
+
+    def progress(*_: object) -> WorkflowProgressionDecision:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
+        route_persisted_execution_outcome_reentry(
+            outcome(),
+            workflow(),
+            state,
+            events,
+            classification_function=lambda *_: outcome(current_step_index=99),
+            progression_function=progress,
+        )
+    assert error.value.detail.classification == "classification_contract"
+    assert calls == 0
+
+
 def test_restores_changed_target_and_rejects(tmp_path: Path) -> None:
     state, events = targets(tmp_path)
     before = (state.read_bytes(), events.read_bytes())

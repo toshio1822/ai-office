@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import (
@@ -16,6 +16,7 @@ from ai_office.engine.persisted_success_progression import (
     decide_persisted_success_progression,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.invocation import ModelInvocationFailureCategory
 
 PersistedExecutionOutcomeRoutingClassification = Literal[
     "outcome_type",
@@ -30,16 +31,7 @@ PersistedExecutionOutcomeRoutingClassification = Literal[
     "dependency_rollback",
 ]
 _ERROR_MESSAGE = "persisted execution outcome routing inputs are incompatible"
-_FAILURE_CATEGORIES = frozenset(
-    {
-        "api_error",
-        "transport_error",
-        "invalid_response",
-        "invalid_output",
-        "invalid_request",
-        "approval_required",
-    }
-)
+_FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 ClassificationFunction = Callable[[object, object, object], PersistedExecutionOutcome]
 ProgressionFunction = Callable[[object, object, object], WorkflowProgressionDecision]
 
@@ -90,7 +82,7 @@ def route_persisted_execution_outcome_reentry(
     reclassified = _call_classification(
         classification_function, workflow, state_path, events_path, original
     )
-    _validate_outcome(reclassified, "classification_contract")
+    _validate_outcome(reclassified, "classification_contract", workflow)
     if not _same_outcome(outcome, reclassified):
         _raise("classification_contract")
     if outcome.outcome == "persisted_failure":
@@ -112,9 +104,9 @@ def _validate_inputs(
 ) -> None:
     if type(outcome) is not PersistedExecutionOutcome:
         _raise("outcome_type")
-    _validate_outcome(outcome, "outcome_contract")
     if type(workflow) is not WorkflowDefinition:
         _raise("workflow_definition")
+    _validate_outcome(outcome, "outcome_contract", workflow)
     if not isinstance(state_path, Path):
         _raise("state_target")
     if not isinstance(events_path, Path):
@@ -135,7 +127,9 @@ def _validate_inputs(
 
 
 def _validate_outcome(
-    value: object, classification: PersistedExecutionOutcomeRoutingClassification
+    value: object,
+    classification: PersistedExecutionOutcomeRoutingClassification,
+    workflow: WorkflowDefinition | None = None,
 ) -> None:
     if type(value) is not PersistedExecutionOutcome:
         _raise(classification)
@@ -160,6 +154,17 @@ def _validate_outcome(
     )
     if not valid:
         _raise(classification)
+    if workflow is not None:
+        if value.workflow_id != workflow.id or not 1 <= value.current_step_index <= len(
+            workflow.steps
+        ):
+            _raise(classification)
+        step = workflow.steps[value.current_step_index - 1]
+        if (
+            value.current_step_id != step.id
+            or value.current_employee_id != step.employee
+        ):
+            _raise(classification)
 
 
 def _capture(state_path: Path, events_path: Path) -> tuple[bytes, bytes]:
