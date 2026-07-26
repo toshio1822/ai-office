@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
@@ -11,7 +12,12 @@ from ai_office.engine import (
     PreparedStepExecutionStart,
     execute_persisted_running_openai_step,
 )
-from ai_office.invocation import ModelInvocationFailure, ModelInvocationRequest
+from ai_office.invocation import (
+    ModelInvocationFailure,
+    ModelInvocationRequest,
+    approve_model_invocation_execution,
+)
+from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import StepRuntimeExecutionFailure, WorkflowExecutionState
 from ai_office.storage import serialize_workflow_execution_state_json
 
@@ -67,6 +73,16 @@ def failure() -> StepRuntimeExecutionFailure:
     )
 
 
+def key() -> OpenAIApiKey:
+    return OpenAIApiKey(value=SecretStr("synthetic"))
+
+
+def approval():
+    return approve_model_invocation_execution(
+        start().request, (), provider="openai", approved_by="test", approval_id="id"
+    )
+
+
 def test_delegates_once_returns_exact_result_and_keeps_state(tmp_path: Path) -> None:
     target = tmp_path / "state.json"
     before = serialize_workflow_execution_state_json(start().running_state).encode()
@@ -85,8 +101,8 @@ def test_delegates_once_returns_exact_result_and_keeps_state(tmp_path: Path) -> 
         workflow(),
         employee(),
         (),
-        object(),
-        object(),
+        key(),
+        approval(),
         transport=lambda _: None,
         execution_function=execute,
     )  # type: ignore[arg-type]
@@ -111,8 +127,8 @@ def test_mutated_state_is_restored_after_one_call(tmp_path: Path) -> None:
             workflow(),
             employee(),
             (),
-            object(),
-            object(),
+            key(),
+            approval(),
             transport=lambda _: None,
             execution_function=execute,
         )  # type: ignore[arg-type]

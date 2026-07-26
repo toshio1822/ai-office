@@ -8,8 +8,13 @@ from typing import Literal
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
-from ai_office.invocation import ModelInvocationRequest
-from ai_office.providers.openai import OpenAIResponsesTransport
+from ai_office.invocation import (
+    ModelInvocationExecutionApproval,
+    ModelInvocationFailure,
+    ModelInvocationRequest,
+    ModelInvocationSuccess,
+)
+from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesTransport
 from ai_office.runtime import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionResult,
@@ -24,6 +29,7 @@ from ai_office.storage.workflow_execution_history import (
     WorkflowExecutionDataError,
     WorkflowExecutionLoadError,
 )
+from ai_office.tools import ToolDefinition
 
 PersistedRunningExecutionReentryClassification = Literal[
     "workflow_definition",
@@ -86,7 +92,14 @@ def execute_persisted_running_openai_step(
         start.running_state, WorkflowExecutionState
     ):
         _raise("start_content")
-    if not callable(execution_function) or not callable(transport):
+    if (
+        not isinstance(resolved_tools, tuple)
+        or not all(isinstance(tool, ToolDefinition) for tool in resolved_tools)
+        or not isinstance(api_key, OpenAIApiKey)
+        or not isinstance(approval, ModelInvocationExecutionApproval)
+        or not callable(execution_function)
+        or not callable(transport)
+    ):
         _raise("execution_contract")
     try:
         original = state_path.read_bytes()
@@ -120,16 +133,21 @@ def execute_persisted_running_openai_step(
         and start.request.allowed_tools == tuple(employee.allowed_tools)
     ):
         _raise("start_content")
-    result = execution_function(
-        start,
-        state_path,
-        workflow,
-        employee,
-        resolved_tools,
-        api_key,
-        approval,
-        transport=transport,
-    )
+    try:
+        result = execution_function(
+            start,
+            state_path,
+            workflow,
+            employee,
+            resolved_tools,
+            api_key,
+            approval,
+            transport=transport,
+        )
+    except Exception as error:
+        if _state_changed(state_path, original):
+            _restore_state(state_path, original)
+        raise error
     if _state_changed(state_path, original):
         _restore_state(state_path, original)
         _raise("state_immutability")
@@ -139,13 +157,32 @@ def execute_persisted_running_openai_step(
 
 
 def _valid_result(result: object, state: WorkflowExecutionState) -> bool:
-    return isinstance(
+    if not isinstance(
         result, (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
-    ) and (
+    ):
+        return False
+    identity = (
         result.workflow_id == state.workflow_id
         and result.step_id == state.current_step_id
         and result.step_index == state.current_step_index
         and result.employee_id == state.current_employee_id
+    )
+    if isinstance(result, StepRuntimeExecutionSuccess):
+        return identity and isinstance(result.invocation_result, ModelInvocationSuccess)
+    failure = result.invocation_result
+    return (
+        identity
+        and isinstance(failure, ModelInvocationFailure)
+        and failure.category
+        in {
+            "api_error",
+            "transport_error",
+            "invalid_response",
+            "invalid_output",
+            "invalid_request",
+            "approval_required",
+        }
+        and isinstance(failure.message, str)
     )
 
 
