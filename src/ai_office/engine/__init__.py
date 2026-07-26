@@ -70,6 +70,12 @@ from ai_office.engine.prepared_step_start_reentry import (
     PreparedStepStartReentryFailureDetail,
     prepare_persisted_prepared_step_start,
 )
+from ai_office.engine.prepared_step_start_routing_reentry import (
+    PreparedStepStartRoutingCompatibilityError,
+    PreparedStepStartRoutingError,
+    PreparedStepStartRoutingFailureDetail,
+    route_prepared_step_start_reentry,
+)
 from ai_office.engine.workflow_progression import (
     WorkflowProgressionCompatibilityDetail,
     WorkflowProgressionCompatibilityError,
@@ -121,6 +127,10 @@ __all__ = [
     "PreparedStepStartReentryError",
     "PreparedStepStartReentryFailureDetail",
     "prepare_persisted_prepared_step_start",
+    "PreparedStepStartRoutingCompatibilityError",
+    "PreparedStepStartRoutingError",
+    "PreparedStepStartRoutingFailureDetail",
+    "route_prepared_step_start_reentry",
     "PreparedRunningStateReentryCompatibilityError",
     "PreparedRunningStateReentryError",
     "PreparedRunningStateReentryFailureDetail",

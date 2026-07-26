@@ -330,3 +330,21 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 ## Persisted Success Preparation Routing Reentry Boundary（Phase 39）
 
 `route_persisted_success_progression_reentry()`は、Phase 38 からの正確なPhase 31 decision を再判定して全 field を照合します。`prepare_next_step`だけを明示 approval と employee を伴ってPhase 32へ一度委譲し同じprepared-step objectを返し、`workflow_complete`はPhase 32を呼ばず同じsupplied decision objectを返します。approval作成、実行、running state、completion persistence/finalization、retry、provider実行、データ書込みは行いません。
+
+## Prepared-Step Start Routing Reentry Boundary（Phase 40）
+
+`route_prepared_step_start_reentry()`は、正確なPhase 39 resultを受けるread-only boundaryです。`PreparedWorkflowStep`はcaller suppliedの正確なmatching employeeとともにPhase 34へ一度だけ委譲し、同じ`PreparedStepExecutionStart` objectを返します。正確な`workflow_complete` decisionはPhase 34を呼ばず同じdecision objectを返し、completion persistence/finalizationを行いません。proposed running stateやruntime eventを保存せず、provider、tools、credentialsを解決・実行せず、retry、自動継続、データ書込み、paid CLI/GUIも行いません。Phase 34呼出しの前後でstate/event target bytesを検証し、改変時は補償復元します。
+
+```text
+Phase 39
+prepare_next_step → PreparedWorkflowStep
+workflow_complete → WorkflowProgressionDecision
+    ↓
+Phase 40
+PreparedWorkflowStep → explicit employee → Phase 34 → PreparedStepExecutionStart
+workflow_complete → stop without completion persistence/finalization
+    ↓
+future explicit boundaries
+prepared start: running-state persistence
+workflow complete: completion persistence/finalization
+```
