@@ -348,3 +348,7 @@ future explicit boundaries
 prepared start: running-state persistence
 workflow complete: completion persistence/finalization
 ```
+
+## Prepared-Start Persistence Routing Reentry Boundary（Phase 41）
+
+`route_prepared_start_persistence_reentry()`は、正確なPhase 40 resultを受け、`PreparedStepExecutionStart`だけをcaller suppliedの正確なemployeeとともにPhase 35へ一度委譲します。Phase 35の同じ`RunningStatePersistenceResult`を返し、提案済み`running` stateだけの永続化を許可します。runtime event targetはbyte-for-byte不変です。`workflow_complete`はPhase 35を呼ばず同じdecision objectを返します。provider実行、credentials/tools/approval、runtime event append、completed result transition、retry、自動継続、completion persistence/finalization、CLI/GUIは行いません。
