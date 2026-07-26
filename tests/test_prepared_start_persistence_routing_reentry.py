@@ -20,6 +20,34 @@ from ai_office.storage import (
 )
 
 
+class StartSubclass(PreparedStepExecutionStart):
+    pass
+
+
+class DecisionSubclass(WorkflowProgressionDecision):
+    pass
+
+
+class WorkflowSubclass(WorkflowDefinition):
+    pass
+
+
+class EmployeeSubclass(EmployeeDefinition):
+    pass
+
+
+class RequestSubclass(ModelInvocationRequest):
+    pass
+
+
+class StateSubclass(WorkflowExecutionState):
+    pass
+
+
+class PersistenceSubclass(RunningStatePersistenceResult):
+    pass
+
+
 def workflow() -> WorkflowDefinition:
     return WorkflowDefinition.model_validate(
         {
@@ -264,3 +292,133 @@ def test_dependency_errors_restore_targets_without_retry(
         b"prior",
         b"events",
     )
+
+
+@pytest.mark.parametrize(
+    "value,definition,person",
+    [
+        (StartSubclass(*start().__dict__.values()), workflow(), employee()),
+        (DecisionSubclass(**complete().__dict__), workflow(), None),
+        (start(), WorkflowSubclass.model_validate(workflow().model_dump()), employee()),
+        (start(), workflow(), EmployeeSubclass.model_validate(employee().model_dump())),
+        (
+            PreparedStepExecutionStart(
+                RequestSubclass(*start().request.__dict__.values()),
+                start().running_state,
+            ),
+            workflow(),
+            employee(),
+        ),
+        (
+            PreparedStepExecutionStart(
+                start().request, StateSubclass(*start().running_state.__dict__.values())
+            ),
+            workflow(),
+            employee(),
+        ),
+    ],
+)
+def test_exact_subclasses_are_prevalidation_rejections(
+    tmp_path: Path, value: object, definition: object, person: object | None
+) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError):
+        route_prepared_start_persistence_reentry(
+            value,
+            definition,
+            person,
+            state,
+            events,
+            persistence_reentry_function=lambda *_: pytest.fail("called"),
+        )  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("mode", ["changed", "deleted", "read_error"])
+def test_completion_rechecks_capture_without_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    state, events = targets(tmp_path)
+    original_read, original_write = Path.read_bytes, Path.write_bytes
+    writes: list[Path] = []
+    reads = 0
+
+    def read(path: Path) -> bytes:
+        nonlocal reads
+        reads += 1
+        if reads == 3:
+            if mode == "changed":
+                original_write(state, b"changed")
+            if mode == "deleted":
+                events.unlink()
+            if mode == "read_error":
+                raise OSError
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda p, b: (writes.append(p), original_write(p, b))[1]
+    )
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError) as error:
+        route_prepared_start_persistence_reentry(
+            complete(),
+            workflow(),
+            None,
+            state,
+            events,
+            persistence_reentry_function=lambda *_: pytest.fail("called"),
+        )
+    assert error.value.detail.classification == "dependency_error" and writes == []
+
+
+def test_completion_rechecks_and_returns_same(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state, events = targets(tmp_path)
+    supplied = complete()
+    reads: list[Path] = []
+    original = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda p: (reads.append(p), original(p))[1])
+    assert (
+        route_prepared_start_persistence_reentry(
+            supplied,
+            workflow(),
+            None,
+            state,
+            events,
+            persistence_reentry_function=lambda *_: pytest.fail("called"),
+        )
+        is supplied
+    )
+    assert reads == [state, events, state, events]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        object(),
+        PersistenceSubclass(1),
+        RunningStatePersistenceResult(True),
+        RunningStatePersistenceResult(-1),
+        RunningStatePersistenceResult("x"),
+    ],
+)
+def test_phase35_result_type_and_count_rejections_restore(
+    tmp_path: Path, value: object
+) -> None:
+    state, events = targets(tmp_path)
+    supplied = start()
+
+    def phase35(*_: object) -> object:
+        persist(supplied, state)
+        return value
+
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError):
+        route_prepared_start_persistence_reentry(
+            supplied,
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_reentry_function=phase35,
+        )  # type: ignore[arg-type]
+    assert (state.read_bytes(), events.read_bytes()) == (b"prior", b"events")

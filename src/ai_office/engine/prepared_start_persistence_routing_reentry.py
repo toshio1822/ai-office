@@ -84,6 +84,7 @@ def route_prepared_start_persistence_reentry(
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
     original = _capture(state_path, events_path)
     if type(result) is WorkflowProgressionDecision:
+        _require_unchanged(state_path, events_path, original)
         return result
     assert (
         type(result) is PreparedStepExecutionStart
@@ -201,6 +202,19 @@ def _capture(state: Path, events: Path) -> tuple[bytes, bytes]:
     try:
         return state.read_bytes(), events.read_bytes()
     except OSError:
+        _raise("dependency_error")
+
+
+def _require_unchanged(
+    state: Path, events: Path, original: tuple[bytes, bytes]
+) -> None:
+    try:
+        unchanged = (
+            state.read_bytes() == original[0] and events.read_bytes() == original[1]
+        )
+    except OSError:
+        _raise("dependency_error")
+    if not unchanged:
         _raise("dependency_error")
 
 
