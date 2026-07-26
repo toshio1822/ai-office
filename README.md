@@ -278,3 +278,9 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 ## Explicit Running-State Persistence Boundary（Phase 28）
 
 `persist_prepared_running_state()`はPhase 27のproposed `running` stateだけを、caller suppliedなstate targetへ決定的JSONとして安全に置換保存します。保存はcallerがPhase 21を明示実行する前に完了しなければなりません。start eventは作成せず、runtime event fileは変更しません。provider execution、completed-result transition、completion/failure persistence、retry、automatic continuationは別の明示boundaryのままです。
+
+## Persisted-Start Single-Step Execution Boundary（Phase 29）
+
+`execute_persisted_start_openai_step()`は、Phase 27の`PreparedStepExecutionStart`、明示state target、検証済み`WorkflowDefinition`と`EmployeeDefinition`、resolved tools、API credential、paid-execution approvalを受けます。すべてのin-memory inputを検証してから、Phase 24の厳格なstate JSON parserでtargetをread-onlyに読み、Phase 27のproposed `running` stateと完全一致することを確認します。さらにworkflow ID、1-based current step index、current step ID、current employee IDを検証済みworkflowに照合します。その後だけ、workflow/stepの表示名をdefinitionから取得して既存の必須`StepExecutionRequest`を構築し、同一の`ModelInvocationRequest`を既存Phase 21 `execute_openai_runtime_step()`へ一度だけ渡します。
+
+順序は `Phase 25 decision → Phase 26 approval/preparation → Phase 27 request + proposed running state → Phase 28 persist running state → Phase 29 verify persisted state + execute Phase 21 once → later Phase 22 transition + Phase 23 completion/failure persistence` です。Phase 29は明示承認済みの有料provider callを1回だけ行えますが、認証・transportの前にpersistenceを検証し、結果state/eventの保存、retry、自動継続、paid CLI、GUIを行いません。

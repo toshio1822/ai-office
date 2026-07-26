@@ -14,6 +14,7 @@ from ai_office.storage.workflow_execution_history import (
     WorkflowExecutionLoadError,
     WorkflowExecutionLoadFailureDetail,
     load_workflow_execution_history,
+    load_workflow_execution_state,
     parse_runtime_step_event,
     parse_workflow_execution_state,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "build_workflow_execution_state_dict",
     "persist_workflow_execution_transition",
     "load_workflow_execution_history",
+    "load_workflow_execution_state",
     "parse_runtime_step_event",
     "parse_workflow_execution_state",
     "serialize_runtime_step_event_jsonl",

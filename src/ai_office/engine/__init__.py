@@ -23,6 +23,12 @@ from ai_office.engine.workflow_progression import (
     WorkflowProgressionDecisionType,
     decide_workflow_progression,
 )
+from ai_office.runtime.persisted_start_execution import (
+    PersistedStartExecutionCompatibilityError,
+    PersistedStartExecutionError,
+    PersistedStartExecutionFailureDetail,
+    execute_persisted_start_openai_step,
+)
 
 __all__ = [
     "WorkflowProgressionCompatibilityDetail",
@@ -42,4 +48,8 @@ __all__ = [
     "PreparedStepExecutionStartCompatibilityError",
     "PreparedStepExecutionStartError",
     "prepare_prepared_step_execution_start",
+    "PersistedStartExecutionCompatibilityError",
+    "PersistedStartExecutionError",
+    "PersistedStartExecutionFailureDetail",
+    "execute_persisted_start_openai_step",
 ]

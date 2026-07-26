@@ -109,6 +109,18 @@ def load_workflow_execution_history(
     return LoadedWorkflowExecutionHistory(state=state, events=events)
 
 
+def load_workflow_execution_state(state_path: Path) -> WorkflowExecutionState:
+    """Strictly read one explicit state target without requiring an event file."""
+    try:
+        invalid = not state_path.is_file()
+    except OSError:
+        raise WorkflowExecutionLoadError(_LOAD_ERROR_MESSAGE) from None
+    if invalid:
+        raise WorkflowExecutionLoadError(_LOAD_ERROR_MESSAGE)
+    contents = _read_bytes(state_path, "state_read")
+    return parse_workflow_execution_state(_decode_state_json(contents))
+
+
 def parse_workflow_execution_state(value: object) -> WorkflowExecutionState:
     """Strictly reconstruct an immutable state from decoded JSON data."""
     data = _require_exact_object(value, _STATE_KEYS, "state_parse")
