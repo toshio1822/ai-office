@@ -140,10 +140,19 @@ def _restore_if_changed(
     state_path: Path, events_path: Path, original: tuple[bytes, bytes]
 ) -> None:
     try:
-        state_path.write_bytes(original[0])
-        events_path.write_bytes(original[1])
+        if _target_needs_restore(state_path, original[0]):
+            state_path.write_bytes(original[0])
+        if _target_needs_restore(events_path, original[1]):
+            events_path.write_bytes(original[1])
     except OSError:
         _raise("history_rollback")
+
+
+def _target_needs_restore(path: Path, original: bytes) -> bool:
+    try:
+        return path.read_bytes() != original
+    except FileNotFoundError:
+        return True
 
 
 def _reject_changed_targets(

@@ -296,6 +296,24 @@ def test_preserves_safe_loader_error_and_restores_loader_mutation(
     assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
 
 
+def test_safe_loader_error_without_changes_does_not_write_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = write_history(tmp_path, state(), first_event(), event())
+    writes = _record_target_writes(monkeypatch, targets)
+    expected = WorkflowExecutionLoadError("safe")
+
+    def loader(_: object) -> object:
+        raise expected
+
+    with pytest.raises(WorkflowExecutionLoadError) as error:
+        classify_persisted_execution_outcome_reentry(
+            workflow(), targets.state_path, targets.events_path, history_loader=loader
+        )  # type: ignore[arg-type]
+    assert error.value is expected
+    assert writes == []
+
+
 def test_rejects_and_restores_loader_mutation(tmp_path: Path) -> None:
     targets = write_history(tmp_path, state(), first_event(), event())
     before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
@@ -403,3 +421,35 @@ def test_unexpected_loader_failure_is_safe_and_does_not_write(tmp_path: Path) ->
     assert error.value.detail.classification == "history_data"
     assert "secret target details" not in str(error.value)
     assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
+
+
+def test_unexpected_loader_error_without_changes_does_not_write_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = write_history(tmp_path, state(), first_event(), event())
+    writes = _record_target_writes(monkeypatch, targets)
+
+    def loader(_: object) -> object:
+        raise RuntimeError("secret target details")
+
+    with pytest.raises(PersistedExecutionOutcomeCompatibilityError) as error:
+        classify_persisted_execution_outcome_reentry(
+            workflow(), targets.state_path, targets.events_path, history_loader=loader
+        )  # type: ignore[arg-type]
+    assert error.value.detail.classification == "history_data"
+    assert writes == []
+
+
+def _record_target_writes(
+    monkeypatch: pytest.MonkeyPatch, targets: WorkflowExecutionPersistenceTargets
+) -> list[Path]:
+    writes: list[Path] = []
+    original_write_bytes = Path.write_bytes
+
+    def record(path: Path, data: bytes) -> int:
+        if path in {targets.state_path, targets.events_path}:
+            writes.append(path)
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", record)
+    return writes
