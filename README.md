@@ -355,12 +355,12 @@ workflow complete: completion persistence/finalization
 
 ## Persisted-Running Execution Routing Reentry Boundary（Phase 42）
 
-`route_persisted_running_execution_reentry()`は、正確なPhase 41の`RunningStatePersistenceResult`を対応するPhase 33 `PreparedStepExecutionStart`、workflow、employee、明示実行入力と照合し、既存Phase 35を一度だけ呼びます。状態targetをstrict loaderで再読込してstartの`running` stateとbyte countを照合し、実行後はstate/event targetをbyte-for-byte検証します。変更されたtargetだけを呼出し前bytesへ補償復元し、同一の既存runtime resultを返します。`workflow_complete`は実行入力を受けずPhase 35を呼ばずに同じdecision objectを返します。provider呼出し、結果保存、transition、event append、retry、自動継続、completion finalizationは行いません。
+`route_persisted_running_execution_reentry()`は、正確なPhase 41の`RunningStatePersistenceResult`を対応するPhase 33 `PreparedStepExecutionStart`、workflow、employee、明示実行入力と照合し、既存Phase 36を一度だけ呼びます。Phase 36を通じて最大一回の明示承認済みOpenAI executionだけを行えます。状態targetをstrict loaderで再読込してstartの`running` stateとbyte countを照合し、実行後はstate/event targetをbyte-for-byte検証します。変更されたtargetだけを呼出し前bytesへ補償復元し、同一の既存runtime resultを返します。`workflow_complete`は実行入力を受けずPhase 36を呼ばずに同じdecision objectを返します。credential取得、approval作成、結果保存、transition、event append、retry、自動継続、completion finalization、paid CLI/GUIは行いません。
 
 ```text
 Phase 41
 RunningStatePersistenceResult → exact start + explicit approved execution inputs
-    → Phase 42 → Phase 35 once → same StepRuntimeExecutionResult
+    → Phase 42 → Phase 36 once → same StepRuntimeExecutionResult
 workflow_complete → stop unchanged
     ↓
 future explicit runtime-result transition and terminal persistence

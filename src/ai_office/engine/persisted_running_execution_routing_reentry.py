@@ -1,4 +1,4 @@
-"""Route an exact persisted running result to one Phase 35 execution."""
+"""Route an exact persisted running result to one Phase 36 execution."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,7 +20,9 @@ from ai_office.invocation import (
 )
 from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import (
+    StepRuntimeExecutionFailure,
     StepRuntimeExecutionResult,
+    StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
     is_valid_step_runtime_execution_result,
 )
@@ -86,10 +88,11 @@ def route_persisted_running_execution_reentry(
     ),
 ) -> StepRuntimeExecutionResult | WorkflowProgressionDecision:
     """Execute one verified persisted start, or stop an exact completion decision."""
-    _validate_targets(workflow, state_path, events_path, execution_reentry_function)
+    _validate_top_level(
+        result, workflow, state_path, events_path, execution_reentry_function
+    )
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
-    original = _capture(state_path, events_path)
     if type(result) is WorkflowProgressionDecision:
         _validate_completion(
             result,
@@ -101,10 +104,10 @@ def route_persisted_running_execution_reentry(
             approval,
             transport,
         )
+        _validate_target_files(state_path, events_path)
+        original = _capture(state_path, events_path)
         _require_unchanged(state_path, events_path, original)
         return result
-    if type(result) is not RunningStatePersistenceResult:
-        _raise("result_type")
     _validate_execution_inputs(
         start, workflow, employee, resolved_tools, api_key, approval, transport
     )
@@ -114,6 +117,8 @@ def route_persisted_running_execution_reentry(
     assert type(api_key) is OpenAIApiKey
     assert type(approval) is ModelInvocationExecutionApproval
     assert callable(transport)
+    _validate_target_files(state_path, events_path)
+    original = _capture(state_path, events_path)
     persisted = _validate_persistence(result, start, state_path)
     try:
         value = execution_reentry_function(
@@ -132,7 +137,13 @@ def route_persisted_running_execution_reentry(
     except Exception:
         _restore(state_path, events_path, original)
         _raise("dependency_error")
-    if not is_valid_step_runtime_execution_result(
+    if _changed(state_path, original[0]) or _changed(events_path, original[1]):
+        _restore(state_path, events_path, original)
+        _raise("execution_contract")
+    if type(value) not in {
+        StepRuntimeExecutionSuccess,
+        StepRuntimeExecutionFailure,
+    } or not is_valid_step_runtime_execution_result(
         value,
         workflow_id=persisted.workflow_id,
         step_id=persisted.current_step_id,
@@ -141,15 +152,14 @@ def route_persisted_running_execution_reentry(
     ):
         _restore(state_path, events_path, original)
         _raise("execution_contract")
-    if _changed(state_path, original[0]) or _changed(events_path, original[1]):
-        _restore(state_path, events_path, original)
-        _raise("execution_contract")
     return value
 
 
-def _validate_targets(
-    workflow: object, state: object, events: object, function: object
+def _validate_top_level(
+    result: object, workflow: object, state: object, events: object, function: object
 ) -> None:
+    if type(result) not in {RunningStatePersistenceResult, WorkflowProgressionDecision}:
+        _raise("result_type")
     if type(workflow) is not WorkflowDefinition:
         _raise("workflow_definition")
     if not isinstance(state, Path):
@@ -160,6 +170,9 @@ def _validate_targets(
         _raise("target_conflict")
     if not callable(function):
         _raise("execution_contract")
+
+
+def _validate_target_files(state: Path, events: Path) -> None:
     try:
         if not state.is_file():
             _raise("state_target")
