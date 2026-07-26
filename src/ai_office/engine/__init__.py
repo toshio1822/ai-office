@@ -23,6 +23,12 @@ from ai_office.engine.workflow_progression import (
     WorkflowProgressionDecisionType,
     decide_workflow_progression,
 )
+from ai_office.runtime.executed_step_transition_persistence import (
+    ExecutedStepTransitionPersistenceCompatibilityError,
+    ExecutedStepTransitionPersistenceError,
+    ExecutedStepTransitionPersistenceFailureDetail,
+    persist_executed_step_transition,
+)
 from ai_office.runtime.persisted_start_execution import (
     PersistedStartExecutionCompatibilityError,
     PersistedStartExecutionError,
@@ -52,4 +58,8 @@ __all__ = [
     "PersistedStartExecutionError",
     "PersistedStartExecutionFailureDetail",
     "execute_persisted_start_openai_step",
+    "ExecutedStepTransitionPersistenceCompatibilityError",
+    "ExecutedStepTransitionPersistenceError",
+    "ExecutedStepTransitionPersistenceFailureDetail",
+    "persist_executed_step_transition",
 ]
