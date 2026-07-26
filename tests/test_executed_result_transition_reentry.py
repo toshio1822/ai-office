@@ -65,6 +65,10 @@ def running(**changes: object) -> WorkflowExecutionState:
     return WorkflowExecutionState(**values)  # type: ignore[arg-type]
 
 
+def first_running() -> WorkflowExecutionState:
+    return WorkflowExecutionState("workflow", "running", "first", 1, "one", (), None)
+
+
 def success(**changes: object) -> StepRuntimeExecutionSuccess:
     values: dict[str, object] = {
         "workflow_id": "workflow",
@@ -77,6 +81,18 @@ def success(**changes: object) -> StepRuntimeExecutionSuccess:
     }
     values.update(changes)
     return StepRuntimeExecutionSuccess(**values)  # type: ignore[arg-type]
+
+
+def first_success() -> StepRuntimeExecutionSuccess:
+    return StepRuntimeExecutionSuccess(
+        "workflow",
+        "first",
+        1,
+        "one",
+        ModelInvocationSuccess(
+            "openai", "response", "request", "completed", ("output",), "output"
+        ),
+    )
 
 
 def failure() -> StepRuntimeExecutionFailure:
@@ -92,13 +108,20 @@ def failure() -> StepRuntimeExecutionFailure:
 
 
 def setup(
-    tmp_path: Path, state: WorkflowExecutionState | None = None
+    tmp_path: Path,
+    state: WorkflowExecutionState | None = None,
+    event_bytes: bytes | None = None,
 ) -> tuple[Path, Path, bytes, bytes]:
     state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
     state_bytes = serialize_workflow_execution_state_json(state or running()).encode()
+    if event_bytes is None:
+        event_bytes = (
+            serialize_runtime_step_event_jsonl(prior_success_event()).encode()
+            + serialize_runtime_step_event_jsonl(prior_success_event()).encode()
+        )
     state_path.write_bytes(state_bytes)
-    events_path.write_bytes(b"")
-    return state_path, events_path, state_bytes, b""
+    events_path.write_bytes(event_bytes)
+    return state_path, events_path, state_bytes, event_bytes
 
 
 def prior_success_event(**changes: object) -> RuntimeStepEvent:
@@ -184,7 +207,11 @@ def assert_history_rejected_before_delegation(
         ).encode(),
         (
             serialize_runtime_step_event_jsonl(prior_success_event()).encode()
-            + serialize_runtime_step_event_jsonl(prior_success_event()).encode()
+            + serialize_runtime_step_event_jsonl(
+                prior_success_event(
+                    step_id="step", step_index=2, employee_id="employee"
+                )
+            ).encode()
         ),
     ],
     ids=[
@@ -204,6 +231,85 @@ def test_strict_history_rejects_before_phase_30(
     assert_history_rejected_before_delegation(tmp_path, event_bytes)
 
 
+def test_first_step_with_empty_history_delegates_once(tmp_path: Path) -> None:
+    state_path, events_path, _, _ = setup(tmp_path, first_running(), b"")
+    calls = 0
+
+    def persist(*args: object) -> WorkflowExecutionPersistenceResult:
+        nonlocal calls
+        calls += 1
+        return persist_executed_step_transition(*args)  # type: ignore[arg-type]
+
+    persist_executed_result_transition_reentry(
+        first_success(),
+        workflow(),
+        state_path,
+        events_path,
+        persistence_function=persist,
+    )
+    assert calls == 1
+
+
+def test_later_step_with_empty_history_rejects_before_delegation(
+    tmp_path: Path,
+) -> None:
+    state_path, events_path, state_bytes, event_bytes = setup(tmp_path, running(), b"")
+    calls = 0
+
+    def unexpected(*_args: object) -> WorkflowExecutionPersistenceResult:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ExecutedResultTransitionReentryCompatibilityError) as caught:
+        persist_executed_result_transition_reentry(
+            success(),
+            workflow(),
+            state_path,
+            events_path,
+            persistence_function=unexpected,
+        )
+    assert calls == 0
+    assert state_path.read_bytes() == state_bytes
+    assert events_path.read_bytes() == event_bytes
+    assert str(state_path) not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "event_bytes",
+    [
+        serialize_runtime_step_event_jsonl(prior_success_event()).encode(),
+        (
+            serialize_runtime_step_event_jsonl(prior_success_event()).encode()
+            + serialize_runtime_step_event_jsonl(prior_success_event()).encode()
+            + serialize_runtime_step_event_jsonl(prior_success_event()).encode()
+        ),
+    ],
+    ids=["too-few", "too-many"],
+)
+def test_completed_events_must_match_count_before_delegation(
+    tmp_path: Path, event_bytes: bytes
+) -> None:
+    assert_history_rejected_before_delegation(tmp_path, event_bytes)
+
+
+def test_step_two_with_matching_duplicate_history_delegates_once(
+    tmp_path: Path,
+) -> None:
+    state_path, events_path, _, previous_events = setup(tmp_path)
+    calls = 0
+
+    def persist(*args: object) -> WorkflowExecutionPersistenceResult:
+        nonlocal calls
+        calls += 1
+        return persist_executed_step_transition(*args)  # type: ignore[arg-type]
+
+    persist_executed_result_transition_reentry(
+        success(), workflow(), state_path, events_path, persistence_function=persist
+    )
+    assert calls == 1
+
+
 @pytest.mark.parametrize(
     "result,status,event",
     [(success(), "succeeded", "step_succeeded"), (failure(), "failed", "step_failed")],
@@ -211,7 +317,7 @@ def test_strict_history_rejects_before_phase_30(
 def test_valid_result_delegates_once_and_returns_exact_result(
     tmp_path: Path, result: object, status: str, event: str
 ) -> None:
-    state_path, events_path, _, _ = setup(tmp_path)
+    state_path, events_path, _, previous_events = setup(tmp_path)
     calls = 0
 
     def persist(*args: object) -> WorkflowExecutionPersistenceResult:
@@ -226,7 +332,9 @@ def test_valid_result_delegates_once_and_returns_exact_result(
     assert actual.state_path == state_path
     assert actual.events_path == events_path
     assert actual.state_bytes_written == len(state_path.read_bytes())
-    assert actual.event_bytes_appended == len(events_path.read_bytes())
+    assert actual.event_bytes_appended == len(events_path.read_bytes()) - len(
+        previous_events
+    )
     assert f'"status":"{status}"'.encode() in state_path.read_bytes()
     assert f'"event_type":"{event}"'.encode() in events_path.read_bytes()
 

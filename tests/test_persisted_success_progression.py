@@ -188,7 +188,7 @@ def test_invalid_decision_result_is_rejected_after_one_call(
 @pytest.mark.parametrize(
     ("state_changes", "event_changes", "workflow_changes", "classification"),
     [
-        ({"status": "running"}, {}, {}, "history_data"),
+        ({"status": "running"}, {}, {}, "state_status"),
         (
             {"status": "failed", "last_failure_category": "api_error"},
             {},

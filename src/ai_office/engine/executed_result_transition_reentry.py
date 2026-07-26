@@ -198,6 +198,8 @@ def _validate_running_history(
     if history.state != state:
         _raise("state_identity")
     if not history.events:
+        if state.completed_step_ids or state.current_step_index != 1:
+            _raise("state_identity")
         return
     positions = {step.id: index for index, step in enumerate(workflow.steps, 1)}
     succeeded_ids: list[str] = []

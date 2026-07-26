@@ -243,25 +243,22 @@ def _parse_runtime_step_events(contents: bytes) -> tuple[RuntimeStepEvent, ...]:
 
 
 def _validate_event_semantics(event: RuntimeStepEvent) -> None:
-    valid = (
-        event.previous_status == "running"
-        and (
-            (
-                event.event_type == "step_succeeded"
-                and event.next_status == "succeeded"
-                and event.failure_category is None
-                and event.message is None
-                and isinstance(event.response_id, str)
-                and isinstance(event.output_text, str)
-            )
-            or (
-                event.event_type == "step_failed"
-                and event.next_status == "failed"
-                and event.failure_category is not None
-                and isinstance(event.message, str)
-                and event.response_id is None
-                and event.output_text is None
-            )
+    valid = event.previous_status == "running" and (
+        (
+            event.event_type == "step_succeeded"
+            and event.next_status == "succeeded"
+            and event.failure_category is None
+            and event.message is None
+            and isinstance(event.response_id, str)
+            and isinstance(event.output_text, str)
+        )
+        or (
+            event.event_type == "step_failed"
+            and event.next_status == "failed"
+            and event.failure_category is not None
+            and isinstance(event.message, str)
+            and event.response_id is None
+            and event.output_text is None
         )
     )
     if not valid:
@@ -275,24 +272,33 @@ def _validate_history_consistency(
         valid = state.status in {"ready", "running"}
     else:
         final = events[-1]
-        valid = (
-            all(event.workflow_id == state.workflow_id for event in events)
-            and final.step_id == state.current_step_id
-            and final.step_index == state.current_step_index
-            and final.employee_id == state.current_employee_id
-            and final.next_status == state.status
-            and (
-                state.status != "succeeded"
-                or (
+        valid = all(event.workflow_id == state.workflow_id for event in events) and (
+            (
+                state.status == "running"
+                and final.event_type == "step_succeeded"
+                and final.next_status == "succeeded"
+                and final.failure_category is None
+            )
+            or (
+                state.status == "succeeded"
+                and final.step_id == state.current_step_id
+                and final.step_index == state.current_step_index
+                and final.employee_id == state.current_employee_id
+                and final.next_status == state.status
+                and (
                     final.event_type == "step_succeeded"
                     and state.last_failure_category is None
                     and state.completed_step_ids
                     and state.completed_step_ids[-1] == final.step_id
                 )
             )
-            and (
-                state.status != "failed"
-                or (
+            or (
+                state.status == "failed"
+                and final.step_id == state.current_step_id
+                and final.step_index == state.current_step_index
+                and final.employee_id == state.current_employee_id
+                and final.next_status == state.status
+                and (
                     final.event_type == "step_failed"
                     and state.last_failure_category == final.failure_category
                 )
