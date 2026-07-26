@@ -292,3 +292,9 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 ## Persisted-Success Progression Decision Boundary（Phase 31）
 
 `decide_persisted_success_progression()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受けます。既存Phase 24 history loaderでpersisted successと最新success eventを厳格に照合し、既存Phase 25 `decide_workflow_progression()`を一度だけ呼んで既存decisionをそのまま返します。承認、準備、persistence、provider実行、retry、自動継続、paid CLI、GUIは扱いません。順序は `Phase 25 → Phase 26 → Phase 27 → Phase 28 → Phase 29 → Phase 30 → Phase 31 persisted success reload + one Phase 25 decision → later explicit human approval/preparation or completion handling` です。
+
+## Approved Next-Step Reentry Boundary（Phase 32）
+
+`prepare_approved_next_step_reentry()`は、Phase 31から得た正確な`prepare_next_step` decision、新規に明示されたその同一next stepへの`NextStepPreparationApproval`、検証済みworkflow/employee、明示state/event targetを受けます。Phase 24でpersisted succeeded historyと最新`step_succeeded` eventをread-onlyで再読込し、workflow順序、decisionのcurrent/next identity、approvalを再検証してから、既存Phase 26 `prepare_approved_next_workflow_step()`を一度だけ呼びます。返却する既存`PreparedWorkflowStep`もdecisionと照合し、同一objectをそのまま返します。
+
+順序は `Phase 25 progression decision → Phase 26 explicit approval/preparation → Phase 27 request + proposed running state → Phase 28 persist running state → Phase 29 verify persisted state + execute Phase 21 exactly once → Phase 30 transition + persistence → Phase 31 reload persisted success + Phase 25 decision exactly once → Phase 32 verify exact prepare_next_step decision + fresh human approval + Phase 26 preparation exactly once → later explicit Phase 27 start preparation` です。Phase 32はread-onlyで、provider request、running state、persistence、execution、retry、自動継続、paid CLI、GUIを作成しません。
