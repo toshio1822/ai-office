@@ -348,6 +348,53 @@ def test_invalid_prepared_result_is_rejected_after_one_call(
     assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        lambda value: replace(value, employee_instructions="other"),
+        lambda value: replace(value, step_instructions="other"),
+        lambda value: replace(value, model="other"),
+        lambda value: replace(value, allowed_tool_names=("other",)),
+        lambda value: replace(value, allowed_tool_names=("second", "first")),
+    ],
+)
+def test_prepared_execution_content_must_match_phase_26_inputs(
+    tmp_path: Path, changed: object
+) -> None:
+    targets = write_history(tmp_path, state())
+    value = decision(targets)
+    selected = employee(allowed_tools=["first", "second"])
+    expected = prepare_approved_next_workflow_step(
+        workflow(),
+        load_workflow_execution_history(targets),
+        value,
+        approval(value),
+        selected,
+    )
+    returned = changed(expected)  # type: ignore[operator]
+    calls = 0
+    before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
+
+    def prepare(*_args: object) -> object:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    with pytest.raises(ApprovedNextStepReentryCompatibilityError) as caught:
+        prepare_approved_next_step_reentry(
+            workflow(),
+            targets.state_path,
+            targets.events_path,
+            value,
+            approval(value),
+            selected,
+            preparation_function=prepare,  # type: ignore[arg-type]
+        )
+    assert caught.value.detail.classification == "preparation_contract"
+    assert calls == 1
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
+
+
 def test_phase_26_safe_error_is_preserved(tmp_path: Path) -> None:
     targets = write_history(tmp_path, state())
     value = decision(targets)

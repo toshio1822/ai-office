@@ -99,7 +99,7 @@ def prepare_approved_next_step_reentry(
     _validate_decision(workflow, history, decision)
     _validate_approval(decision, approval)
     prepared = preparation_function(workflow, history, decision, approval, employee)
-    _validate_prepared_step(prepared, workflow, decision)
+    _validate_prepared_step(prepared, workflow, decision, employee)
     return prepared
 
 
@@ -278,16 +278,23 @@ def _validate_prepared_step(
     prepared: object,
     workflow: WorkflowDefinition,
     decision: WorkflowProgressionDecision,
+    employee: EmployeeDefinition,
 ) -> None:
     if not isinstance(prepared, PreparedWorkflowStep):
         _raise("preparation_contract")
+    next_step = workflow.steps[decision.next_step_index - 1]
     valid = (
         _valid_prepared_values(prepared)
         and
         prepared.workflow_id == workflow.id
-        and prepared.step_id == decision.next_step_id
+        and prepared.step_id == next_step.id
         and prepared.step_index == decision.next_step_index
-        and prepared.employee_id == decision.next_employee_id
+        and prepared.employee_id == employee.id
+        and prepared.employee_id == next_step.employee
+        and prepared.employee_instructions == employee.instructions
+        and prepared.step_instructions == next_step.instructions
+        and prepared.model == employee.model
+        and prepared.allowed_tool_names == tuple(employee.allowed_tools)
     )
     if not valid:
         _raise("preparation_contract")
