@@ -39,6 +39,7 @@ PreparedRunningStateReentryClassification = Literal[
     "workflow_identity",
     "persistence_contract",
     "event_immutability",
+    "event_rollback",
 ]
 _ERROR_MESSAGE = "prepared running-state persistence inputs are incompatible"
 PersistenceFunction = Callable[
@@ -89,6 +90,9 @@ def persist_prepared_running_state_reentry(
     except OSError:
         _raise("event_target")
     result = persistence_function(start, state_path)
+    if _event_changed(events_path, event_bytes):
+        _restore_event(events_path, event_bytes)
+        _raise("event_immutability")
     _validate_persistence(result, state_path, events_path, event_bytes, start)
     return result
 
@@ -235,7 +239,9 @@ def _validate_persistence(
     try:
         persisted = load_workflow_execution_state(state_path)
         current_bytes = state_path.read_bytes()
-        unchanged_events = events_path.read_bytes() == event_bytes
+        unchanged_events = (
+            events_path.is_file() and events_path.read_bytes() == event_bytes
+        )
     except (OSError, WorkflowExecutionDataError, WorkflowExecutionLoadError):
         _raise("persistence_contract")
     if not unchanged_events:
@@ -244,6 +250,20 @@ def _validate_persistence(
         current_bytes
     ):
         _raise("persistence_contract")
+
+
+def _event_changed(path: Path, original_bytes: bytes) -> bool:
+    try:
+        return not path.is_file() or path.read_bytes() != original_bytes
+    except OSError:
+        return True
+
+
+def _restore_event(path: Path, original_bytes: bytes) -> None:
+    try:
+        path.write_bytes(original_bytes)
+    except OSError:
+        _raise("event_rollback")
 
 
 def _raise(classification: PreparedRunningStateReentryClassification) -> None:

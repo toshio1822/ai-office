@@ -188,16 +188,30 @@ def test_invalid_result_rejected_after_one_call(
     assert calls == 1
 
 
-def test_event_mutation_is_rejected_after_one_call(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda path, original: path.write_bytes(original + b"append"),
+        lambda path, original: path.write_bytes(original[:1]),
+        lambda path, original: path.write_bytes(b"replacement"),
+        lambda path, original: path.unlink(),
+    ],
+)
+def test_event_mutation_is_restored_after_one_call(
+    tmp_path: Path, mutate: object
+) -> None:
     targets = write_history(tmp_path)
     before = targets.events_path.read_bytes()
+    calls = 0
 
     def persist(
         value: PreparedStepExecutionStart, path: Path
     ) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
         contents = serialize_workflow_execution_state_json(value.running_state).encode()
         path.write_bytes(contents)
-        targets.events_path.write_bytes(before + b"x")
+        mutate(targets.events_path, before)  # type: ignore[operator]
         return RunningStatePersistenceResult(len(contents))
 
     with pytest.raises(PreparedRunningStateReentryCompatibilityError) as caught:
@@ -210,3 +224,37 @@ def test_event_mutation_is_rejected_after_one_call(tmp_path: Path) -> None:
             persistence_function=persist,
         )
     assert caught.value.detail.classification == "event_immutability"
+    assert calls == 1
+    assert targets.events_path.read_bytes() == before
+    assert targets.state_path.read_text() == serialize_workflow_execution_state_json(
+        start().running_state
+    )
+
+
+def test_event_restore_failure_has_safe_classification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    targets = write_history(tmp_path)
+
+    def persist(
+        value: PreparedStepExecutionStart, path: Path
+    ) -> RunningStatePersistenceResult:
+        contents = serialize_workflow_execution_state_json(value.running_state).encode()
+        path.write_bytes(contents)
+        targets.events_path.unlink()
+        monkeypatch.setattr(
+            Path, "write_bytes", lambda *_: (_ for _ in ()).throw(OSError())
+        )
+        return RunningStatePersistenceResult(len(contents))
+
+    with pytest.raises(PreparedRunningStateReentryCompatibilityError) as caught:
+        persist_prepared_running_state_reentry(
+            workflow(),
+            employee(),
+            targets.state_path,
+            targets.events_path,
+            start(),
+            persistence_function=persist,
+        )
+    assert caught.value.detail.classification == "event_rollback"
+    assert str(targets.events_path) not in str(caught.value)
