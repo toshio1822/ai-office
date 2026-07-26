@@ -166,18 +166,27 @@ def _validate_transition_contract(
         else "step_failed"
     )
     if isinstance(result, StepRuntimeExecutionSuccess):
+        invocation_result = result.invocation_result
         completed_ids_are_valid = (
             next_state.completed_step_ids
             == state.completed_step_ids + (state.current_step_id,)
             and next_state.last_failure_category is None
+            and event.provider == invocation_result.provider
+            and event.response_id == invocation_result.response_id
+            and event.request_id == invocation_result.request_id
+            and event.output_text == invocation_result.text
             and event.failure_category is None
             and event.message is None
         )
     else:
+        invocation_result = result.invocation_result
         completed_ids_are_valid = (
             next_state.completed_step_ids == state.completed_step_ids
             and next_state.last_failure_category == result.invocation_result.category
+            and event.provider == invocation_result.provider
+            and event.request_id == invocation_result.request_id
             and event.failure_category == result.invocation_result.category
+            and event.message == invocation_result.message
             and event.response_id is None
             and event.output_text is None
         )

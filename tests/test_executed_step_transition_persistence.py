@@ -302,6 +302,67 @@ def test_incompatible_transition_rejects_before_persistence(tmp_path: Path) -> N
     assert not value_targets.events_path.exists()
 
 
+@pytest.mark.parametrize(
+    ("result", "event_changes"),
+    [
+        (success(), {"provider": "other"}),
+        (success(), {"response_id": "other"}),
+        (success(), {"request_id": "other"}),
+        (success(), {"output_text": "other"}),
+        (failure(), {"provider": "other"}),
+        (failure(), {"request_id": "other"}),
+        (failure(), {"message": "other"}),
+    ],
+    ids=[
+        "success-provider",
+        "success-response-id",
+        "success-request-id",
+        "success-output-text",
+        "failure-provider",
+        "failure-request-id",
+        "failure-message",
+    ],
+)
+def test_runtime_event_payload_mismatch_rejects_before_persistence(
+    tmp_path: Path,
+    result: StepRuntimeExecutionResult,
+    event_changes: dict[str, object],
+) -> None:
+    value_targets = targets(tmp_path)
+    original_state = write_running_state(value_targets.state_path, running_state())
+    original_events = b'{"old":true}\n'
+    value_targets.events_path.write_bytes(original_events)
+    transition_calls = 0
+    persistence_calls = 0
+
+    def transition(
+        state: WorkflowExecutionState, runtime_result: StepRuntimeExecutionResult
+    ) -> WorkflowExecutionTransition:
+        nonlocal transition_calls
+        transition_calls += 1
+        value = transition_workflow_execution_from_step_result(state, runtime_result)
+        return replace(value, event=replace(value.event, **event_changes))
+
+    def unexpected(*_args: object, **_kwargs: object) -> object:
+        nonlocal persistence_calls
+        persistence_calls += 1
+        raise AssertionError
+
+    with pytest.raises(ExecutedStepTransitionPersistenceCompatibilityError) as error:
+        persist_executed_step_transition(
+            result,
+            value_targets.state_path,
+            value_targets.events_path,
+            transition_function=transition,
+            persistence_function=unexpected,  # type: ignore[arg-type]
+        )
+    assert error.value.detail.classification == "transition_contract"
+    assert transition_calls == 1
+    assert persistence_calls == 0
+    assert value_targets.state_path.read_bytes() == original_state
+    assert value_targets.events_path.read_bytes() == original_events
+
+
 def test_phase_23_errors_are_preserved(tmp_path: Path) -> None:
     value_targets = targets(tmp_path)
     write_running_state(value_targets.state_path, running_state())
