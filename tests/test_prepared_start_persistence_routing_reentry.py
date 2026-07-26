@@ -350,6 +350,162 @@ def test_invalid_post_persistence_restores_both(tmp_path: Path, mode: str) -> No
     )
 
 
+@pytest.mark.parametrize("changed", [None, "state", "events", "both"])
+def test_safe_phase35_errors_preserve_object_and_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str | None
+) -> None:
+    from ai_office.engine.prepared_running_state_reentry import (
+        PreparedRunningStateReentryCompatibilityError,
+    )
+
+    state, events = targets(tmp_path)
+    expected = PreparedRunningStateReentryCompatibilityError("history_data")
+    writes: list[Path] = []
+    calls = 0
+    original = Path.write_bytes
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda p, b: (writes.append(p), original(p, b))[1]
+    )
+
+    def phase35(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        if changed in ("state", "both"):
+            state.write_bytes(b"changed")
+        if changed in ("events", "both"):
+            events.write_bytes(b"changed")
+        raise expected
+
+    with pytest.raises(PreparedRunningStateReentryCompatibilityError) as error:
+        route_prepared_start_persistence_reentry(
+            start(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_reentry_function=phase35,
+        )
+    assert error.value is expected and calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (b"prior", b"events")
+    if changed is None:
+        assert writes == []
+
+
+def test_unchanged_unexpected_error_is_safe_without_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state, events = targets(tmp_path)
+    writes = []
+    calls = 0
+    original = Path.write_bytes
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda p, b: (writes.append(p), original(p, b))[1]
+    )
+
+    def phase35(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("credential=secret")
+
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError) as error:
+        route_prepared_start_persistence_reentry(
+            start(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_reentry_function=phase35,
+        )
+    assert (
+        calls == 1
+        and writes == []
+        and error.value.detail.classification == "dependency_error"
+        and "secret" not in str(error.value)
+    )
+
+
+@pytest.mark.parametrize("failed", ["state", "events"])
+def test_rollback_failure_attempts_both_targets_and_is_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed: str
+) -> None:
+    state, events = targets(tmp_path)
+    target = state if failed == "state" else events
+    calls = 0
+    attempted = []
+    original = Path.write_bytes
+
+    def write(path: Path, data: bytes) -> int:
+        attempted.append(path)
+        if path == target:
+            raise OSError("credential=secret")
+        return original(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", write)
+
+    def phase35(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        state.unlink()
+        events.unlink()
+        raise RuntimeError("credential=secret")
+
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError) as error:
+        route_prepared_start_persistence_reentry(
+            start(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_reentry_function=phase35,
+        )
+    assert (
+        calls == 1
+        and set(attempted) == {state, events}
+        and error.value.detail.classification == "dependency_rollback"
+    )
+    assert "secret" not in str(error.value) and str(state) not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "kind", ["prepare", "employee", "missing_state", "missing_events"]
+)
+def test_remaining_prevalidation_zero_calls_and_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    state, events = targets(tmp_path)
+    writes = []
+    original = Path.write_bytes
+    if kind == "missing_state":
+        state.unlink()
+    if kind == "missing_events":
+        events.unlink()
+    monkeypatch.setattr(
+        Path, "write_bytes", lambda p, b: (writes.append(p), original(p, b))[1]
+    )
+    supplied = (
+        complete(
+            decision="prepare_next_step",
+            next_step_id="second",
+            next_step_index=2,
+            next_employee_id="two",
+            reason="next_step_available",
+        )
+        if kind == "prepare"
+        else complete()
+    )
+    person = employee() if kind == "employee" else None
+    with pytest.raises(PreparedStartPersistenceRoutingCompatibilityError):
+        route_prepared_start_persistence_reentry(
+            supplied,
+            workflow(),
+            person,
+            state,
+            events,
+            persistence_reentry_function=lambda *_: pytest.fail("called"),
+        )
+    assert writes == []
+
+
 @pytest.mark.parametrize(
     "result,definition,person,state_value,event_value,function",
     [
