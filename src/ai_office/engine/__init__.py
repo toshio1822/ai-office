@@ -58,6 +58,12 @@ from ai_office.engine.prepared_running_state_reentry import (
     PreparedRunningStateReentryFailureDetail,
     persist_prepared_running_state_reentry,
 )
+from ai_office.engine.prepared_start_persistence_routing_reentry import (
+    PreparedStartPersistenceRoutingCompatibilityError,
+    PreparedStartPersistenceRoutingError,
+    PreparedStartPersistenceRoutingFailureDetail,
+    route_prepared_start_persistence_reentry,
+)
 from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStart,
     PreparedStepExecutionStartCompatibilityError,
@@ -131,6 +137,10 @@ __all__ = [
     "PreparedStepStartRoutingError",
     "PreparedStepStartRoutingFailureDetail",
     "route_prepared_step_start_reentry",
+    "PreparedStartPersistenceRoutingCompatibilityError",
+    "PreparedStartPersistenceRoutingError",
+    "PreparedStartPersistenceRoutingFailureDetail",
+    "route_prepared_start_persistence_reentry",
     "PreparedRunningStateReentryCompatibilityError",
     "PreparedRunningStateReentryError",
     "PreparedRunningStateReentryFailureDetail",
