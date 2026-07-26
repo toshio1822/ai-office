@@ -304,3 +304,7 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 `prepare_persisted_prepared_step_start()`は、正確なPhase 32 `PreparedWorkflowStep`、対応するemployee definition、workflow、明示state/event targetを受けます。Phase 24でpersisted successful historyをread-onlyで再読込し、prepared step のidentity、instructions、model、allowed toolsを定義と完全照合してから、既存Phase 27 `prepare_prepared_step_execution_start()`を一度だけ呼びます。返却された既存request/proposed running-state resultも照合し、同一objectを返します。
 
 順序は `Phase 31 persisted success + Phase 25 decision → Phase 32 exact prepare_next_step + fresh approval + Phase 26 → Phase 33 exact PreparedWorkflowStep + Phase 27 → later explicit Phase 28 running-state persistence` です。Phase 33はread-onlyで、running stateの保存、provider実行、credentials/tool resolution、retry、自動継続、paid CLI、GUIを行いません。
+
+## Prepared Running-State Persistence Reentry Boundary（Phase 34）
+
+`persist_prepared_running_state_reentry()`は、正確なPhase 33 start result、workflow/employee、明示state/event targetを受けます。Phase 24でpersisted successを再読込してstart resultを検証し、既存Phase 28 `persist_prepared_running_state()`を一度だけ呼びます。呼出し後はstrict state reloadでproposed running stateとの一致、結果byte count、event targetのbyte-for-byte不変を確認して同一result objectを返します。provider、credentials/tools、実行、retry、自動継続、paid CLI、GUIは扱いません。
