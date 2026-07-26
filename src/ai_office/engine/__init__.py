@@ -28,6 +28,12 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcomeFailureDetail,
     classify_persisted_execution_outcome_reentry,
 )
+from ai_office.engine.persisted_execution_outcome_routing_reentry import (
+    PersistedExecutionOutcomeRoutingCompatibilityError,
+    PersistedExecutionOutcomeRoutingError,
+    PersistedExecutionOutcomeRoutingFailureDetail,
+    route_persisted_execution_outcome_reentry,
+)
 from ai_office.engine.persisted_running_execution_reentry import (
     PersistedRunningExecutionReentryCompatibilityError,
     PersistedRunningExecutionReentryError,
@@ -122,6 +128,10 @@ __all__ = [
     "PersistedExecutionOutcomeError",
     "PersistedExecutionOutcomeFailureDetail",
     "classify_persisted_execution_outcome_reentry",
+    "PersistedExecutionOutcomeRoutingCompatibilityError",
+    "PersistedExecutionOutcomeRoutingError",
+    "PersistedExecutionOutcomeRoutingFailureDetail",
+    "route_persisted_execution_outcome_reentry",
     "PersistedRunningExecutionReentryCompatibilityError",
     "PersistedRunningExecutionReentryError",
     "PersistedRunningExecutionReentryFailureDetail",
