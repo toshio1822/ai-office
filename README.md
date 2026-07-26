@@ -318,3 +318,7 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 `persist_executed_result_transition_reentry()`は、正確な既存Phase 21/35 runtime result、検証済み`WorkflowDefinition`、明示state/event targetだけを受けます。Phase 24 strict loaderでpersisted `running` stateを再読込し、workflow、current step、employee、completed-step history、runtime result identityを検証してから、既存Phase 30 `persist_executed_step_transition()`を一度だけ呼びます。返却するのは同一の既存`WorkflowExecutionPersistenceResult`です。呼出し後はstrict history reloadで、success/failure state、一つだけ追加されたruntime event、byte countを検証し、注入依存が契約を破った場合は両targetを呼出し前のbytesへ復元します。
 
 順序は `Phase 31 persisted success + Phase 25 decision → Phase 32 fresh approval + Phase 26 → Phase 33 exact PreparedWorkflowStep + Phase 27 → Phase 34 exact start + Phase 28 running-state persistence → Phase 35 strict running verification + Phase 29 exactly once → Phase 36 exact runtime result + Phase 30 transition persistence exactly once → later explicit persisted-history progression/failure handling` です。Phase 36はprovider実行、credential/tool resolution、retry、progression、自動継続、paid CLI、GUIを行いません。
+
+## Persisted Execution Outcome Classification Reentry Boundary（Phase 37）
+
+`classify_persisted_execution_outcome_reentry()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受け、既存Phase 24 history loaderを一度だけ使ってPhase 36の終端outcomeを厳格に再読込します。`succeeded`は`persisted_success`、`failed`は既存の安全なfailure categoryを含む`persisted_failure`として、不変の最小classification resultに分類するだけです。Phase 25とPhase 31は呼ばず、progression判断、次step準備、retry、workflow完了/finalization、provider実行、persistenceを行いません。

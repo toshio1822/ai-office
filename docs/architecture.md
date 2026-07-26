@@ -157,3 +157,5 @@ schemas/
 ```
 
 `employees/` と `workflows/` はテキスト定義の配置場所であり、定義の読込・検証とCLIによる確認を提供する。`planning/` は検証済み定義から実行計画と、1 step分の構造化実行要求を生成する。`invocation/` は実行要求からprovider非依存のモデル呼び出し要求を生成する。`tools/` は未解決名を静的な`ToolDefinition`へ解決する。`providers/openai/` はモデル呼び出し要求をOpenAI固有の実行前モデルへ、解決済みtool定義を静的function tool schemaモデルへ、payloadをJSON互換Python辞書と決定的なJSON文字列へ、未認証HTTP request templateと認証済みtemplateへ変換し、`OPENAI_API_KEY`を限定された環境取得境界でだけ取得して、認証済みrequestを1回だけHTTPS送信してraw responseを返す。Response Boundaryはcompleted responseを不変dataへ分類し、Output Text Boundaryはsuccess responseから対応するtextだけを抽出する。OpenAI Runtimeは今後のPhaseで扱う。
+
+Persisted Execution Outcome Classification Reentry Boundary（Phase 37）は、検証済み`WorkflowDefinition`とcaller supplied state/event targetを入力にするread-only boundaryである。既存Phase 24 loaderを一度だけ呼び、Phase 36の終端`step_succeeded`または`step_failed`、workflow/current-step/employee/completed-step/event sequenceを厳格に照合する。成功は`persisted_success`、失敗は既存安全failure categoryを持つ`persisted_failure`として最小の不変resultに分類するだけである。Phase 25とPhase 31、progression判断、次step準備、retry、completion/finalization、provider実行、persistenceを呼ばない。loader注入がtargetを改変した場合は呼出し前bytesへ復元し、安全なerrorとして拒否する。
