@@ -6,6 +6,12 @@ from ai_office.engine.approved_next_step_reentry import (
     ApprovedNextStepReentryFailureDetail,
     prepare_approved_next_step_reentry,
 )
+from ai_office.engine.executed_result_transition_reentry import (
+    ExecutedResultTransitionReentryCompatibilityError,
+    ExecutedResultTransitionReentryError,
+    ExecutedResultTransitionReentryFailureDetail,
+    persist_executed_result_transition_reentry,
+)
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationApprovalError,
@@ -67,6 +73,10 @@ from ai_office.runtime.persisted_start_execution import (
 )
 
 __all__ = [
+    "ExecutedResultTransitionReentryCompatibilityError",
+    "ExecutedResultTransitionReentryError",
+    "ExecutedResultTransitionReentryFailureDetail",
+    "persist_executed_result_transition_reentry",
     "ApprovedNextStepReentryCompatibilityError",
     "ApprovedNextStepReentryError",
     "ApprovedNextStepReentryFailureDetail",
