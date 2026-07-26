@@ -1,6 +1,5 @@
 """Guard one Phase 30 persistence call for one persisted running step result."""
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,9 +22,9 @@ from ai_office.storage import (
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
     load_workflow_execution_state,
-    parse_runtime_step_event,
 )
 from ai_office.storage.workflow_execution_history import (
+    LoadedWorkflowExecutionHistory,
     WorkflowExecutionDataError,
     WorkflowExecutionHistoryInconsistencyError,
     WorkflowExecutionLoadError,
@@ -86,6 +85,8 @@ def persist_executed_result_transition_reentry(
 
     state = _load_running_state(state_path)
     _validate_workflow_state(workflow, state)
+    history = _load_running_history(state_path, events_path)
+    _validate_running_history(workflow, state, history)
     _validate_result(result, state)
     original_state, original_events = _capture_targets(state_path, events_path)
 
@@ -133,10 +134,7 @@ def _validate_inputs(
             _raise("state_target")
         if not events_path.is_file():
             _raise("event_target")
-        _parse_event_bytes(events_path.read_bytes())
     except OSError:
-        _raise("event_target")
-    except WorkflowExecutionDataError:
         _raise("event_target")
 
 
@@ -150,6 +148,19 @@ def _load_running_state(state_path: Path) -> WorkflowExecutionState:
     if state.status != "running" or state.last_failure_category is not None:
         _raise("state_identity")
     return state
+
+
+def _load_running_history(
+    state_path: Path, events_path: Path
+) -> LoadedWorkflowExecutionHistory:
+    try:
+        return load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state_path, events_path)
+        )
+    except (WorkflowExecutionDataError, WorkflowExecutionHistoryInconsistencyError):
+        _raise("state_data")
+    except WorkflowExecutionLoadError:
+        _raise("event_target")
 
 
 def _validate_workflow_state(
@@ -176,6 +187,34 @@ def _validate_workflow_state(
     )
     if compressed != tuple(range(1, state.current_step_index)):
         _raise("workflow_identity")
+
+
+def _validate_running_history(
+    workflow: WorkflowDefinition,
+    state: WorkflowExecutionState,
+    history: LoadedWorkflowExecutionHistory,
+) -> None:
+    """Bind Phase 24's strict history result to the supplied running identity."""
+    if history.state != state:
+        _raise("state_identity")
+    if not history.events:
+        return
+    positions = {step.id: index for index, step in enumerate(workflow.steps, 1)}
+    succeeded_ids: list[str] = []
+    for event in history.events:
+        if (
+            event.workflow_id != state.workflow_id
+            or event.step_id not in positions
+            or event.step_index != positions[event.step_id]
+            or event.employee_id != workflow.steps[event.step_index - 1].employee
+            or event.step_index >= state.current_step_index
+            or event.step_id == state.current_step_id
+            or event.event_type != "step_succeeded"
+        ):
+            _raise("workflow_identity")
+        succeeded_ids.append(event.step_id)
+    if tuple(succeeded_ids) != state.completed_step_ids:
+        _raise("state_identity")
 
 
 def _validate_result(
@@ -234,7 +273,7 @@ def _validate_persistence(
         or not event_bytes.startswith(original_event_bytes)
         or len(event_bytes) - len(original_event_bytes)
         != persisted.event_bytes_appended
-        or len(history.events) != len(_parse_event_bytes(original_event_bytes)) + 1
+        or len(history.events) != _event_record_count(original_event_bytes) + 1
     ):
         _raise("persistence_contract")
     _validate_final_contract(history.state, history.events[-1], result, original_state)
@@ -291,40 +330,9 @@ def _validate_final_contract(
         _raise("persistence_contract")
 
 
-def _parse_event_bytes(contents: bytes) -> tuple[RuntimeStepEvent, ...]:
-    try:
-        text = contents.decode("utf-8")
-    except UnicodeDecodeError:
-        raise WorkflowExecutionDataError("events_parse") from None
-    if not text:
-        return ()
-    if not text.endswith("\n"):
-        raise WorkflowExecutionDataError("events_parse")
-    records = text[:-1].split("\n")
-    if any(not record.strip() for record in records):
-        raise WorkflowExecutionDataError("events_parse")
-    try:
-        return tuple(
-            parse_runtime_step_event(
-                json.loads(record, object_pairs_hook=_reject_duplicate_keys)
-            )
-            for record in records
-        )
-    except (ValueError, TypeError, json.JSONDecodeError, _DuplicateKeyError):
-        raise WorkflowExecutionDataError("events_parse") from None
-
-
-class _DuplicateKeyError(ValueError):
-    pass
-
-
-def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, item in pairs:
-        if key in value:
-            raise _DuplicateKeyError
-        value[key] = item
-    return value
+def _event_record_count(contents: bytes) -> int:
+    """Count already validated JSONL records without parsing a second time."""
+    return 0 if not contents else contents.count(b"\n")
 
 
 def _restore_if_changed(

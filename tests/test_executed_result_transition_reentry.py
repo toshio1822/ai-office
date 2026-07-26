@@ -12,6 +12,7 @@ from ai_office.engine import (
 )
 from ai_office.invocation import ModelInvocationFailure, ModelInvocationSuccess
 from ai_office.runtime import (
+    RuntimeStepEvent,
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
@@ -21,6 +22,7 @@ from ai_office.runtime.executed_step_transition_persistence import (
 )
 from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
+    serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
 
@@ -97,6 +99,109 @@ def setup(
     state_path.write_bytes(state_bytes)
     events_path.write_bytes(b"")
     return state_path, events_path, state_bytes, b""
+
+
+def prior_success_event(**changes: object) -> RuntimeStepEvent:
+    values: dict[str, object] = {
+        "event_type": "step_succeeded",
+        "workflow_id": "workflow",
+        "step_id": "first",
+        "step_index": 1,
+        "employee_id": "one",
+        "previous_status": "running",
+        "next_status": "succeeded",
+        "provider": "openai",
+        "failure_category": None,
+        "response_id": "response",
+        "request_id": "request",
+        "output_text": "output",
+        "message": None,
+    }
+    values.update(changes)
+    return RuntimeStepEvent(**values)  # type: ignore[arg-type]
+
+
+def assert_history_rejected_before_delegation(
+    tmp_path: Path, event_bytes: bytes
+) -> None:
+    state_path, events_path, state_bytes, _ = setup(tmp_path)
+    events_path.write_bytes(event_bytes)
+    calls = 0
+
+    def unexpected(*_args: object) -> WorkflowExecutionPersistenceResult:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ExecutedResultTransitionReentryCompatibilityError) as caught:
+        persist_executed_result_transition_reentry(
+            success(),
+            workflow(),
+            state_path,
+            events_path,
+            persistence_function=unexpected,
+        )
+    assert calls == 0
+    assert state_path.read_bytes() == state_bytes
+    assert events_path.read_bytes() == event_bytes
+    message = str(caught.value)
+    assert "workflow" not in message
+    assert "response" not in message
+    assert str(state_path) not in message
+
+
+@pytest.mark.parametrize(
+    "event_bytes",
+    [
+        serialize_runtime_step_event_jsonl(
+            prior_success_event(workflow_id="other-workflow")
+        ).encode(),
+        serialize_runtime_step_event_jsonl(
+            prior_success_event(step_id="step")
+        ).encode(),
+        serialize_runtime_step_event_jsonl(prior_success_event(step_index=2)).encode(),
+        serialize_runtime_step_event_jsonl(
+            prior_success_event(employee_id="other-employee")
+        ).encode(),
+        serialize_runtime_step_event_jsonl(
+            prior_success_event(step_id="first")
+        ).encode(),
+        serialize_runtime_step_event_jsonl(
+            prior_success_event(step_id="step", step_index=2, employee_id="employee")
+        ).encode(),
+        serialize_runtime_step_event_jsonl(
+            prior_success_event(
+                event_type="step_failed",
+                step_id="step",
+                step_index=2,
+                employee_id="employee",
+                next_status="failed",
+                failure_category="api_error",
+                response_id=None,
+                output_text=None,
+                message="safe",
+            )
+        ).encode(),
+        (
+            serialize_runtime_step_event_jsonl(prior_success_event()).encode()
+            + serialize_runtime_step_event_jsonl(prior_success_event()).encode()
+        ),
+    ],
+    ids=[
+        "wrong-workflow",
+        "wrong-step",
+        "wrong-index",
+        "wrong-employee",
+        "completed-history-mismatch",
+        "running-step-succeeded",
+        "running-step-failed",
+        "invalid-event-order",
+    ],
+)
+def test_strict_history_rejects_before_phase_30(
+    tmp_path: Path, event_bytes: bytes
+) -> None:
+    assert_history_rejected_before_delegation(tmp_path, event_bytes)
 
 
 @pytest.mark.parametrize(
@@ -244,4 +349,4 @@ def test_missing_or_malformed_event_target_rejects_before_delegation(
         persist_executed_result_transition_reentry(
             success(), workflow(), state_path, events_path
         )
-    assert caught.value.detail.classification == "event_target"
+    assert caught.value.detail.classification == "state_data"
