@@ -15,6 +15,12 @@ from ai_office.engine.next_step_preparation import (
     PreparedWorkflowStep,
     prepare_approved_next_workflow_step,
 )
+from ai_office.engine.persisted_running_execution_reentry import (
+    PersistedRunningExecutionReentryCompatibilityError,
+    PersistedRunningExecutionReentryError,
+    PersistedRunningExecutionReentryFailureDetail,
+    execute_persisted_running_openai_step,
+)
 from ai_office.engine.persisted_success_progression import (
     PersistedSuccessProgressionCompatibilityError,
     PersistedSuccessProgressionError,
@@ -94,6 +100,10 @@ __all__ = [
     "PersistedSuccessProgressionError",
     "PersistedSuccessProgressionFailureDetail",
     "decide_persisted_success_progression",
+    "PersistedRunningExecutionReentryCompatibilityError",
+    "PersistedRunningExecutionReentryError",
+    "PersistedRunningExecutionReentryFailureDetail",
+    "execute_persisted_running_openai_step",
     "PersistedStartExecutionCompatibilityError",
     "PersistedStartExecutionError",
     "PersistedStartExecutionFailureDetail",
