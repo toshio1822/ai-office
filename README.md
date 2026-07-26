@@ -288,3 +288,7 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 ## Executed-Step Transition Persistence Boundary（Phase 30）
 
 `persist_executed_step_transition()`は、既存のPhase 21 runtime result、明示state target、明示runtime-event targetだけを受けます。stateを厳格にread-onlyで再読込し、`running` stateとruntime resultのidentityを検証してから、既存Phase 22 `transition_workflow_execution_from_step_result()`を一度だけ呼びます。互換性を確認したtransitionは既存Phase 23 `persist_workflow_execution_transition()`へ一度だけ渡され、最終stateと一つのeventを保存します。provider、credential、approval、tool、retry、次step選択・実行、自動継続、paid CLI、GUIは扱わず、Phase 23のcompensationをそのまま保持します。
+
+## Persisted-Success Progression Decision Boundary（Phase 31）
+
+`decide_persisted_success_progression()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受けます。既存Phase 24 history loaderでpersisted successと最新success eventを厳格に照合し、既存Phase 25 `decide_workflow_progression()`を一度だけ呼んで既存decisionをそのまま返します。承認、準備、persistence、provider実行、retry、自動継続、paid CLI、GUIは扱いません。順序は `Phase 25 → Phase 26 → Phase 27 → Phase 28 → Phase 29 → Phase 30 → Phase 31 persisted success reload + one Phase 25 decision → later explicit human approval/preparation or completion handling` です。
