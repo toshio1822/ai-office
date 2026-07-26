@@ -1,5 +1,6 @@
 """Tests for Phase 42 with an injected Phase 35 fake."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -121,6 +122,30 @@ class RuntimeFailureSubclass(StepRuntimeExecutionFailure):
 
 
 class PersistenceSubclass(RunningStatePersistenceResult):
+    pass
+
+
+class StartSubclass(PreparedStepExecutionStart):
+    pass
+
+
+class RequestSubclass(ModelInvocationRequest):
+    pass
+
+
+class StateSubclass(WorkflowExecutionState):
+    pass
+
+
+class ToolSubclass(ToolDefinition):
+    pass
+
+
+class ApiKeySubclass(OpenAIApiKey):
+    pass
+
+
+class DecisionSubclass(WorkflowProgressionDecision):
     pass
 
 
@@ -407,3 +432,178 @@ def test_unexpected_error_is_safe_and_does_not_disclose_secret(tmp_path: Path) -
         call(state, events, phase35)
     assert caught.value.detail.classification == "dependency_error"
     assert "secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "start_value,employee_value,tools_value,key_value,transport_value",
+    [
+        (None, employee(), resolved_tools(), key(), lambda _: None),
+        (
+            StartSubclass(start().request, start().running_state),
+            employee(),
+            resolved_tools(),
+            key(),
+            lambda _: None,
+        ),
+        (
+            replace(
+                start(), request=RequestSubclass(*start().request.__dict__.values())
+            ),
+            employee(),
+            resolved_tools(),
+            key(),
+            lambda _: None,
+        ),
+        (
+            replace(
+                start(),
+                running_state=StateSubclass(*start().running_state.__dict__.values()),
+            ),
+            employee(),
+            resolved_tools(),
+            key(),
+            lambda _: None,
+        ),
+        (start(), None, resolved_tools(), key(), lambda _: None),
+        (
+            start(),
+            employee(),
+            (ToolSubclass(*resolved_tools()[0].__dict__.values()),),
+            key(),
+            lambda _: None,
+        ),
+        (
+            start(),
+            employee(),
+            resolved_tools(),
+            ApiKeySubclass(value=SecretStr("synthetic")),
+            lambda _: None,
+        ),
+        (start(), employee(), resolved_tools(), key(), None),
+    ],
+)
+def test_exact_execution_input_types_reject_without_dependency_call(
+    tmp_path: Path,
+    start_value: object,
+    employee_value: object,
+    tools_value: object,
+    key_value: object,
+    transport_value: object,
+) -> None:
+    state, events, _ = setup(tmp_path)
+    calls = 0
+
+    def phase36(*_: object, **__: object) -> object:
+        nonlocal calls
+        calls += 1
+        return failure()
+
+    with pytest.raises(PersistedRunningExecutionRoutingCompatibilityError):
+        route_persisted_running_execution_reentry(
+            RunningStatePersistenceResult(len(state.read_bytes())),
+            start_value,
+            workflow(),
+            employee_value,
+            state,
+            events,
+            tools_value,
+            key_value,
+            approval(),
+            transport_value,
+            execution_reentry_function=phase36,  # type: ignore[arg-type]
+        )
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    "running",
+    [
+        replace(start().running_state, status="ready"),
+        replace(start().running_state, last_failure_category="api_error"),
+        replace(start().running_state, workflow_id="other"),
+        replace(start().running_state, current_step_id="first"),
+        replace(start().running_state, current_step_index=True),
+        replace(start().running_state, current_step_index=0),
+        replace(start().running_state, current_step_index=3),
+        replace(start().running_state, current_employee_id="other"),
+        replace(start().running_state, completed_step_ids=()),
+        replace(start().running_state, completed_step_ids=("unknown",)),
+        replace(start().running_state, completed_step_ids=("step",)),
+    ],
+)
+def test_invalid_running_contract_does_not_call_dependency(
+    tmp_path: Path, running: WorkflowExecutionState
+) -> None:
+    state, events, _ = setup(tmp_path)
+    supplied = replace(start(), running_state=running)
+    state.write_bytes(serialize_workflow_execution_state_json(running).encode())
+    calls = 0
+
+    def phase36(*_: object, **__: object) -> object:
+        nonlocal calls
+        calls += 1
+        return failure()
+
+    with pytest.raises(PersistedRunningExecutionRoutingCompatibilityError):
+        route_persisted_running_execution_reentry(
+            RunningStatePersistenceResult(len(state.read_bytes())),
+            supplied,
+            workflow(),
+            employee(),
+            state,
+            events,
+            resolved_tools(),
+            key(),
+            approval(),
+            lambda _: None,
+            execution_reentry_function=phase36,
+        )
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    "state_mode,event_mode",
+    [
+        ("replace", "same"),
+        ("delete", "same"),
+        ("truncate", "same"),
+        ("append", "same"),
+        ("same", "replace"),
+        ("same", "delete"),
+        ("same", "truncate"),
+        ("same", "append"),
+        ("delete", "append"),
+    ],
+)
+def test_all_target_mutations_are_compensated_once(
+    tmp_path: Path, state_mode: str, event_mode: str
+) -> None:
+    state, events, before = setup(tmp_path)
+    events.write_bytes(b"event")
+    event_before = events.read_bytes()
+    calls = 0
+
+    def mutate(path: Path, mode: str) -> None:
+        if mode == "replace":
+            path.write_bytes(b"replace")
+        elif mode == "delete":
+            path.unlink()
+        elif mode == "truncate":
+            path.write_bytes(b"")
+        elif mode == "append":
+            path.write_bytes(path.read_bytes() + b"+")
+
+    def phase36(*_: object, **__: object) -> object:
+        nonlocal calls
+        calls += 1
+        mutate(state, state_mode)
+        mutate(events, event_mode)
+        return failure()
+
+    with pytest.raises(PersistedRunningExecutionRoutingCompatibilityError):
+        call(state, events, phase36)
+    assert (
+        calls == 1
+        and state.read_bytes() == before
+        and events.read_bytes() == event_before
+    )
