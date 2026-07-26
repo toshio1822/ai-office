@@ -72,10 +72,10 @@ def route_prepared_step_start_reentry(
     )
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
+    original = _capture(state_path, events_path)
     if type(result) is WorkflowProgressionDecision:
         return result
     assert type(result) is PreparedWorkflowStep and type(employee) is EmployeeDefinition
-    original = _capture(state_path, events_path)
     started = _call(
         start_reentry_function,
         workflow,

@@ -18,6 +18,34 @@ from ai_office.invocation import ModelInvocationRequest
 from ai_office.runtime import WorkflowExecutionState
 
 
+class PreparedSubclass(PreparedWorkflowStep):
+    pass
+
+
+class DecisionSubclass(WorkflowProgressionDecision):
+    pass
+
+
+class WorkflowSubclass(WorkflowDefinition):
+    pass
+
+
+class EmployeeSubclass(EmployeeDefinition):
+    pass
+
+
+class StartSubclass(PreparedStepExecutionStart):
+    pass
+
+
+class RequestSubclass(ModelInvocationRequest):
+    pass
+
+
+class StateSubclass(WorkflowExecutionState):
+    pass
+
+
 def workflow() -> WorkflowDefinition:
     return WorkflowDefinition.model_validate(
         {
@@ -415,3 +443,225 @@ def test_dependency_errors_are_safe_not_retried_and_unchanged_do_not_write(
     else:
         assert error.value.detail.classification == "dependency_error"
         assert "secret" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "supplied,definition,person",
+    [
+        (PreparedSubclass(*prepared().__dict__.values()), workflow(), employee()),
+        (DecisionSubclass(**complete().__dict__), workflow(), None),
+        (
+            prepared(),
+            WorkflowSubclass.model_validate(workflow().model_dump()),
+            employee(),
+        ),
+        (
+            prepared(),
+            workflow(),
+            EmployeeSubclass.model_validate(employee().model_dump()),
+        ),
+    ],
+)
+def test_exact_input_subclasses_are_rejected_before_call(
+    tmp_path: Path, supplied: object, definition: object, person: object | None
+) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedStepStartRoutingCompatibilityError):
+        route_prepared_step_start_reentry(
+            supplied,
+            definition,
+            person,
+            state,
+            events,
+            start_reentry_function=lambda *_: pytest.fail("Phase 34 must not run"),
+        )  # type: ignore[arg-type]
+
+
+def test_completion_captures_targets_without_writes_or_phase34(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state, events = targets(tmp_path)
+    reads: list[Path] = []
+    writes: list[Path] = []
+    original_read, original_write = Path.read_bytes, Path.write_bytes
+    monkeypatch.setattr(
+        Path, "read_bytes", lambda path: (reads.append(path), original_read(path))[1]
+    )
+    monkeypatch.setattr(
+        Path,
+        "write_bytes",
+        lambda path, data: (writes.append(path), original_write(path, data))[1],
+    )
+    supplied = complete()
+    assert (
+        route_prepared_step_start_reentry(
+            supplied,
+            workflow(),
+            None,
+            state,
+            events,
+            start_reentry_function=lambda *_: pytest.fail("Phase 34 must not run"),
+        )
+        is supplied
+    )
+    assert reads == [state, events] and writes == []
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+def test_completion_capture_failure_is_safe_with_zero_writes_and_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    state, events = targets(tmp_path)
+    blocked = state if target == "state" else events
+    writes: list[Path] = []
+    original_read, original_write = Path.read_bytes, Path.write_bytes
+
+    def read(path: Path) -> bytes:
+        if path == blocked:
+            raise OSError
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(
+        Path,
+        "write_bytes",
+        lambda path, data: (writes.append(path), original_write(path, data))[1],
+    )
+    with pytest.raises(PreparedStepStartRoutingCompatibilityError) as error:
+        route_prepared_step_start_reentry(
+            complete(),
+            workflow(),
+            None,
+            state,
+            events,
+            start_reentry_function=lambda *_: pytest.fail("Phase 34 must not run"),
+        )
+    assert error.value.detail.classification == "dependency_error" and writes == []
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        complete(current_step_index=1),
+        complete(current_employee_id="one"),
+        complete(next_step_index=3),
+        complete(next_employee_id="other"),
+    ],
+)
+def test_completion_contract_field_mismatches_do_not_call_phase34(
+    tmp_path: Path, supplied: WorkflowProgressionDecision
+) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedStepStartRoutingCompatibilityError):
+        route_prepared_step_start_reentry(
+            supplied,
+            workflow(),
+            None,
+            state,
+            events,
+            start_reentry_function=lambda *_: pytest.fail("Phase 34 must not run"),
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        object(),
+        StartSubclass(*started().__dict__.values()),
+        started(request=RequestSubclass(*started().request.__dict__.values())),
+        started(
+            running_state=StateSubclass(*started().running_state.__dict__.values())
+        ),
+    ],
+)
+def test_exact_phase34_return_types_reject_subclasses(
+    tmp_path: Path, value: object
+) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedStepStartRoutingCompatibilityError) as error:
+        route_prepared_step_start_reentry(
+            prepared(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_reentry_function=lambda *_: value,  # type: ignore[return-value]
+        )
+    assert error.value.detail.classification == "start_contract"
+
+
+@pytest.mark.parametrize(
+    "kind", ["safe_change", "unexpected_change", "unexpected_delete"]
+)
+def test_changed_dependency_errors_restore_without_retry(
+    tmp_path: Path, kind: str
+) -> None:
+    state, events = targets(tmp_path)
+    expected = PreparedStepStartReentryCompatibilityError("history_data")
+    calls = 0
+
+    def phase34(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        if kind == "unexpected_delete":
+            events.unlink()
+        else:
+            state.write_bytes(b"changed")
+        if kind == "safe_change":
+            raise expected
+        raise RuntimeError("credential=secret")
+
+    expected_type = (
+        PreparedStepStartReentryCompatibilityError
+        if kind == "safe_change"
+        else PreparedStepStartRoutingCompatibilityError
+    )
+    with pytest.raises(expected_type) as error:
+        route_prepared_step_start_reentry(
+            prepared(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_reentry_function=phase34,
+        )
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == (
+        b"state",
+        b"events",
+    )
+    if kind == "safe_change":
+        assert error.value is expected
+    else:
+        assert error.value.detail.classification == "dependency_error"
+        assert "secret" not in str(error.value)
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+def test_restoration_failures_are_dependency_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    state, events = targets(tmp_path)
+    changed = state if target == "state" else events
+    original = Path.write_bytes
+
+    def write(path: Path, data: bytes) -> int:
+        if path == changed:
+            raise OSError
+        return original(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", write)
+
+    def phase34(*_: object) -> PreparedStepExecutionStart:
+        changed.unlink()
+        return started()
+
+    with pytest.raises(PreparedStepStartRoutingCompatibilityError) as error:
+        route_prepared_step_start_reentry(
+            prepared(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_reentry_function=phase34,
+        )
+    assert error.value.detail.classification == "dependency_rollback"
