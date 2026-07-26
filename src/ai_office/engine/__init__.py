@@ -9,6 +9,12 @@ from ai_office.engine.next_step_preparation import (
     PreparedWorkflowStep,
     prepare_approved_next_workflow_step,
 )
+from ai_office.engine.persisted_success_progression import (
+    PersistedSuccessProgressionCompatibilityError,
+    PersistedSuccessProgressionError,
+    PersistedSuccessProgressionFailureDetail,
+    decide_persisted_success_progression,
+)
 from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStart,
     PreparedStepExecutionStartCompatibilityError,
@@ -54,6 +60,10 @@ __all__ = [
     "PreparedStepExecutionStartCompatibilityError",
     "PreparedStepExecutionStartError",
     "prepare_prepared_step_execution_start",
+    "PersistedSuccessProgressionCompatibilityError",
+    "PersistedSuccessProgressionError",
+    "PersistedSuccessProgressionFailureDetail",
+    "decide_persisted_success_progression",
     "PersistedStartExecutionCompatibilityError",
     "PersistedStartExecutionError",
     "PersistedStartExecutionFailureDetail",
