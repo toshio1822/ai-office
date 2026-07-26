@@ -21,6 +21,12 @@ from ai_office.engine.persisted_success_progression import (
     PersistedSuccessProgressionFailureDetail,
     decide_persisted_success_progression,
 )
+from ai_office.engine.prepared_running_state_reentry import (
+    PreparedRunningStateReentryCompatibilityError,
+    PreparedRunningStateReentryError,
+    PreparedRunningStateReentryFailureDetail,
+    persist_prepared_running_state_reentry,
+)
 from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStart,
     PreparedStepExecutionStartCompatibilityError,
@@ -80,6 +86,10 @@ __all__ = [
     "PreparedStepStartReentryError",
     "PreparedStepStartReentryFailureDetail",
     "prepare_persisted_prepared_step_start",
+    "PreparedRunningStateReentryCompatibilityError",
+    "PreparedRunningStateReentryError",
+    "PreparedRunningStateReentryFailureDetail",
+    "persist_prepared_running_state_reentry",
     "PersistedSuccessProgressionCompatibilityError",
     "PersistedSuccessProgressionError",
     "PersistedSuccessProgressionFailureDetail",
