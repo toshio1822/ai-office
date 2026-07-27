@@ -319,6 +319,22 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 
 `route_executed_result_transition_reentry()`（Phase 43）は、正確なPhase 42の`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を`persist_executed_result_transition_reentry()`へ正確に一度だけ渡し、同一の`WorkflowExecutionPersistenceResult`を返します。既存boundary内部でPhase 30 persistenceがterminal stateと一つのruntime eventを保存しますが、Phase 43自身はそれらを構築しません。正確な`workflow_complete` decisionはtargetをread-onlyで確認して無変更のまま返します。partial/invalid dependency writeは補償復元し、retry、自動継続、progression、workflow completion finalization、paid CLI/GUIは行いません。
 
+## Executed-Result Transition Persistence Bridge Reentry Boundary（Phase 50）
+
+`route_executed_result_transition_persistence_bridge_reentry()`は、正確なPhase 49 resultを一つだけ受けるbridgeです。runtime success/failureは既存Phase 43 `route_executed_result_transition_reentry()`へ正確に一度だけ委譲し、同じ`WorkflowExecutionPersistenceResult` objectを返します。`workflow_complete`と`persisted_failure`はstrict terminal state/historyをread-onlyで照合して同じobjectを返し、Phase 43を呼びません。runtime routeではPhase 43 の正確なstate transitionと一つのruntime eventだけを許し、不正・partial dependency writeは元bytesへ補償復元します。Phase 36/43の処理を複製せず、outcome classification、progression、next-step preparation/execution、retry、自動継続、completion/failure finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+
+```text
+Phase 49
+runtime success | runtime failure | workflow_complete | persisted_failure
+    ↓
+Phase 50
+runtime success/failure → Phase 43 exactly once → same WorkflowExecutionPersistenceResult
+workflow_complete → unchanged stop
+persisted_failure → unchanged stop
+    ↓
+future explicit boundary
+```
+
 ```text
 Phase 42 result
   StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | workflow_complete
