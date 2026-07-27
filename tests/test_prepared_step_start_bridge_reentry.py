@@ -1035,3 +1035,349 @@ def test_rollback_failure_attempts_both_targets(
     assert caught.value.detail.classification == "dependency_rollback"
     assert restore_attempts == [state, events]
     assert "/private" not in str(caught.value)
+
+
+@pytest.mark.parametrize("error_kind", ["safe", "unexpected"])
+def test_unchanged_dependency_errors_do_not_write_or_retry(
+    tmp_path: Path, error_kind: str
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    writes, calls = [], 0
+    safe = PreparedStepStartRoutingCompatibilityError("prepared_step_contract")
+    original = Path.write_bytes
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    def phase40(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        if error_kind == "safe":
+            raise safe
+        raise RuntimeError(
+            "/private/path workflow employee request response output failure message"
+        )
+
+    expected = (
+        PreparedStepStartRoutingCompatibilityError
+        if error_kind == "safe"
+        else PreparedStepStartBridgeCompatibilityError
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(expected) as caught:
+            route_prepared_step_start_bridge_reentry(
+                prepared(),
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=phase40,
+            )
+    assert calls == 1 and writes == []
+    assert (state.read_bytes(), events.read_bytes()) == before
+    if error_kind == "safe":
+        assert caught.value is safe
+    else:
+        assert caught.value.detail.classification == "dependency_error"
+        public = str(caught.value)
+        assert all(secret not in public for secret in ("/private", "request", "output"))
+
+
+@pytest.mark.parametrize("error_kind", ["safe", "unexpected"])
+@pytest.mark.parametrize("target", ["state", "events", "both"])
+@pytest.mark.parametrize("operation", ["replace", "delete", "truncate", "append"])
+def test_all_dependency_error_mutations_are_compensated(
+    tmp_path: Path, error_kind: str, target: str, operation: str
+) -> None:
+    state, events = targets(tmp_path)
+    before, calls = (state.read_bytes(), events.read_bytes()), 0
+    safe = PreparedStepStartRoutingCompatibilityError("prepared_step_contract")
+
+    def mutate(path: Path) -> None:
+        if operation == "replace":
+            path.write_bytes(b"changed")
+        elif operation == "delete":
+            path.unlink()
+        elif operation == "truncate":
+            path.write_bytes(b"")
+        else:
+            path.write_bytes(path.read_bytes() + b"changed")
+
+    def phase40(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        if target in {"state", "both"}:
+            mutate(state)
+        if target in {"events", "both"}:
+            mutate(events)
+        if error_kind == "safe":
+            raise safe
+        raise RuntimeError("/private/provider response output failure")
+
+    expected = (
+        PreparedStepStartRoutingCompatibilityError
+        if error_kind == "safe"
+        else PreparedStepStartBridgeCompatibilityError
+    )
+    with pytest.raises(expected) as caught:
+        route_prepared_step_start_bridge_reentry(
+            prepared(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_routing_function=phase40,
+        )
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+    if error_kind == "safe":
+        assert caught.value is safe
+    else:
+        assert caught.value.detail.classification == "dependency_error"
+        assert "/private" not in str(caught.value)
+
+
+@pytest.mark.parametrize("dependency_result", ["return", "safe", "unexpected"])
+@pytest.mark.parametrize("fail_targets", [("state",), ("events",), ("state", "events")])
+def test_rollback_failure_overrides_all_dependency_results(
+    tmp_path: Path, dependency_result: str, fail_targets: tuple[str, ...]
+) -> None:
+    state, events = targets(tmp_path)
+    before = {state: state.read_bytes(), events: events.read_bytes()}
+    attempts, calls = [], 0
+    original = Path.write_bytes
+    safe = PreparedStepStartRoutingCompatibilityError("prepared_step_contract")
+
+    def record(path: Path, data: bytes) -> int:
+        if data == before.get(path):
+            attempts.append(path)
+            if ("state" if path is state else "events") in fail_targets:
+                raise OSError("/private/rollback failure")
+        return original(path, data)
+
+    def phase40(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(b"changed-state")
+        events.write_bytes(b"changed-events")
+        if dependency_result == "safe":
+            raise safe
+        if dependency_result == "unexpected":
+            raise RuntimeError("/private/provider response output failure")
+        return started()
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+            route_prepared_step_start_bridge_reentry(
+                prepared(),
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=phase40,
+            )
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert calls == 1 and attempts == [state, events]
+    public = str(caught.value)
+    assert all(secret not in public for secret in ("/private", "response", "output"))
+
+
+def test_attribute_compatible_substitutes_are_rejected(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+
+    class Compatible:
+        pass
+
+    compatible = Compatible()
+    for source in (prepared(), completion(), failure(), employee()):
+        compatible.__dict__.update(source.__dict__)
+        with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+            route_prepared_step_start_bridge_reentry(
+                compatible,
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=lambda *_: pytest.fail("Phase 40 must not run"),
+            )
+        assert caught.value.detail.classification == "result_type"
+    with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+        route_prepared_step_start_bridge_reentry(
+            prepared(),
+            workflow(),
+            compatible,
+            state,
+            events,
+            start_routing_function=lambda *_: pytest.fail("Phase 40 must not run"),
+        )
+    assert caught.value.detail.classification == "employee_contract"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        DecisionSubclass(**completion().__dict__),
+        OutcomeSubclass(**failure().__dict__),
+    ],
+)
+def test_non_prepared_result_subclasses_are_rejected_without_writes(
+    tmp_path: Path, result: object
+) -> None:
+    state, events = targets(tmp_path, "succeeded", 2)
+    writes, calls = [], 0
+    original = Path.write_bytes
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    def phase40(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+            route_prepared_step_start_bridge_reentry(
+                result,
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=phase40,
+            )
+    assert caught.value.detail.classification == "result_type"
+    assert calls == 0 and writes == []
+
+
+def test_phase40_attribute_compatible_returns_are_rejected(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+
+    class Compatible:
+        pass
+
+    request = Compatible()
+    request.__dict__.update(started().request.__dict__)
+    running = Compatible()
+    running.__dict__.update(started().running_state.__dict__)
+    values = [
+        Compatible(),
+        PreparedStepExecutionStart(request, started().running_state),
+    ]
+    values.append(PreparedStepExecutionStart(started().request, running))
+    for value in values:
+        with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+            route_prepared_step_start_bridge_reentry(
+                prepared(),
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=lambda *_: value,
+            )
+        assert caught.value.detail.classification == "start_contract"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"current_step_index": 0},
+        {"current_step_index": -1},
+        {"current_step_index": 3},
+        {"next_step_index": 1},
+        {"next_employee_id": "two"},
+    ],
+)
+def test_completion_route_specific_fields_are_rejected(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path, "succeeded", 2)
+    result = WorkflowProgressionDecision(**{**completion().__dict__, **changes})
+    with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+        route_prepared_step_start_bridge_reentry(
+            result,
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_routing_function=lambda *_: pytest.fail("Phase 40 must not run"),
+        )
+    assert caught.value.detail.classification == "completion_contract"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["category", "response", "output", "missing_message", "invalid_message"],
+)
+def test_failed_terminal_event_contract_rejects_before_phase40(
+    tmp_path: Path, mode: str
+) -> None:
+    state, events = targets(tmp_path, "failed", 2)
+    changes: dict[str, object] = {
+        "category": {"failure_category": "transport_error"},
+        "response": {"response_id": "response"},
+        "output": {"output_text": "output"},
+        "missing_message": {"message": None},
+        "invalid_message": {"message": 1},
+    }[mode]
+    events.write_text(
+        serialize_runtime_step_event_jsonl(terminal_event("succeeded", 1))
+        + serialize_runtime_step_event_jsonl(
+            replace(terminal_event("failed", 2), **changes)
+        )
+    )
+    with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+        route_prepared_step_start_bridge_reentry(
+            failure(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_routing_function=lambda *_: pytest.fail("Phase 40 must not run"),
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+
+
+def test_failure_state_category_mismatch_rejects_before_phase40(tmp_path: Path) -> None:
+    state, events = targets(tmp_path, "failed", 2)
+    mismatched = WorkflowExecutionState(
+        "workflow", "failed", "second", 2, "two", ("first",), "transport_error"
+    )
+    state.write_text(serialize_workflow_execution_state_json(mismatched))
+    with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+        route_prepared_step_start_bridge_reentry(
+            failure(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_routing_function=lambda *_: pytest.fail("Phase 40 must not run"),
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+
+
+def test_target_is_file_oserror_uses_existing_terminal_contract(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    original = Path.is_file
+
+    def broken(path: Path) -> bool:
+        if path is state:
+            raise OSError("/private/state")
+        return original(path)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "is_file", broken)
+        with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+            route_prepared_step_start_bridge_reentry(
+                prepared(),
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=lambda *_: pytest.fail("Phase 40 must not run"),
+            )
+    assert caught.value.detail.classification == "terminal_contract"
