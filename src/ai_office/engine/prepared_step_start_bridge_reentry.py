@@ -16,11 +16,13 @@ from ai_office.engine.prepared_step_start_routing_reentry import (
     PreparedStepStartRoutingError,
     route_prepared_step_start_reentry,
 )
-from ai_office.engine.progression_preparation_routing_reentry import (
-    _load_terminal_history,
+from ai_office.engine.terminal_history_contract import (
+    TerminalHistoryContractError,
+    load_strict_terminal_history,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.invocation import ModelInvocationFailureCategory, ModelInvocationRequest
+from ai_office.runtime import WorkflowExecutionState
 
 Classification = Literal[
     "result_type",
@@ -37,13 +39,7 @@ Classification = Literal[
     "dependency_error",
     "dependency_rollback",
 ]
-_CATEGORIES = frozenset(
-    get_args(
-        __import__(
-            "ai_office.invocation", fromlist=["ModelInvocationFailureCategory"]
-        ).ModelInvocationFailureCategory
-    )
-)
+_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 Function = Callable[..., PreparedStepExecutionStart | WorkflowProgressionDecision]
 
 
@@ -91,46 +87,28 @@ def route_prepared_step_start_bridge_reentry(
         _raise("target_conflict")
     if not callable(start_routing_function):
         _raise("start_contract")
-    if not state_path.is_file():
-        _raise("state_target")
-    if not events_path.is_file():
-        _raise("event_target")
-    original = _capture(state_path, events_path)
     if type(result) is WorkflowProgressionDecision:
         _completion(result, workflow)
+    elif type(result) is PersistedExecutionOutcome:
+        _failure(result, workflow)
+    else:
+        assert type(result) is PreparedWorkflowStep
+        _prepared(result, workflow, employee)
+    _validate_targets(state_path, events_path)
+    original = _capture(state_path, events_path)
+    if type(result) is WorkflowProgressionDecision:
         state, _ = _history(workflow, state_path, events_path)
-        if state.status != "succeeded" or (
-            state.current_step_id,
-            state.current_step_index,
-            state.current_employee_id,
-        ) != (
-            result.current_step_id,
-            result.current_step_index,
-            result.current_employee_id,
-        ):
+        if state.status != "succeeded" or not _state_matches(result, state):
             _raise("terminal_contract")
         _unchanged(state_path, events_path, original)
         return result
     if type(result) is PersistedExecutionOutcome:
-        _failure(result, workflow)
         state, _ = _history(workflow, state_path, events_path)
-        if state.status != "failed" or (
-            state.workflow_id,
-            state.current_step_id,
-            state.current_step_index,
-            state.current_employee_id,
-            state.last_failure_category,
-        ) != (
-            result.workflow_id,
-            result.current_step_id,
-            result.current_step_index,
-            result.current_employee_id,
-            result.failure_category,
-        ):
+        if state.status != "failed" or not _state_matches(result, state):
             _raise("terminal_contract")
         _unchanged(state_path, events_path, original)
         return result
-    _prepared(result, workflow, employee)
+    assert type(result) is PreparedWorkflowStep
     state, _ = _history(workflow, state_path, events_path)
     if not (
         state.status == "succeeded"
@@ -153,6 +131,7 @@ def route_prepared_step_start_bridge_reentry(
     request, running = value.request, value.running_state
     if not (
         type(request) is ModelInvocationRequest
+        and type(running) is WorkflowExecutionState
         and request.model == result.model
         and request.system_instructions == result.employee_instructions
         and request.task_instructions == result.step_instructions
@@ -230,12 +209,51 @@ def _failure(value: PersistedExecutionOutcome, workflow: WorkflowDefinition) -> 
         _raise("failure_contract")
 
 
+def _validate_targets(state: Path, events: Path) -> None:
+    try:
+        if not state.is_file():
+            _raise("state_target")
+        if not events.is_file():
+            _raise("event_target")
+    except OSError:
+        _raise("terminal_contract")
+
+
+def _state_matches(
+    value: WorkflowProgressionDecision | PersistedExecutionOutcome,
+    state: WorkflowExecutionState,
+) -> bool:
+    if type(value) is WorkflowProgressionDecision:
+        return (
+            state.workflow_id,
+            state.current_step_id,
+            state.current_step_index,
+            state.current_employee_id,
+        ) == (
+            value.workflow_id,
+            value.current_step_id,
+            value.current_step_index,
+            value.current_employee_id,
+        )
+    return (
+        state.workflow_id,
+        state.current_step_id,
+        state.current_step_index,
+        state.current_employee_id,
+        state.last_failure_category,
+    ) == (
+        value.workflow_id,
+        value.current_step_id,
+        value.current_step_index,
+        value.current_employee_id,
+        value.failure_category,
+    )
+
+
 def _history(workflow: WorkflowDefinition, state: Path, events: Path):
     try:
-        return _load_terminal_history(workflow, state, events)
-    except PreparedStepStartBridgeError:
-        raise
-    except Exception:
+        return load_strict_terminal_history(workflow, state, events)
+    except TerminalHistoryContractError:
         _raise("terminal_contract")
 
 
