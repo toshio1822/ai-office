@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
 
+from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
@@ -13,18 +14,34 @@ from ai_office.engine.persisted_running_execution_routing_reentry import (
     PersistedRunningExecutionRoutingError,
     route_persisted_running_execution_reentry,
 )
+from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.terminal_history_contract import (
     TerminalHistoryContractError,
     load_strict_terminal_history,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
-from ai_office.invocation import ModelInvocationFailureCategory
+from ai_office.invocation import (
+    ModelInvocationExecutionApproval,
+    ModelInvocationFailureCategory,
+    ModelInvocationRequest,
+    validate_model_invocation_execution_approval,
+)
+from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
+    WorkflowExecutionState,
     is_valid_step_runtime_execution_result,
 )
-from ai_office.storage import RunningStatePersistenceResult
+from ai_office.storage import (
+    RunningStatePersistenceResult,
+    load_workflow_execution_state,
+)
+from ai_office.storage.workflow_execution_history import (
+    WorkflowExecutionDataError,
+    WorkflowExecutionLoadError,
+)
+from ai_office.tools import ToolDefinition
 
 Classification = Literal[
     "result_type",
@@ -112,10 +129,25 @@ def route_persisted_running_execution_bridge_reentry(
     original = _capture(state_path, events_path)
     if type(result) is WorkflowProgressionDecision:
         _terminal(result, workflow, state_path, events_path, "succeeded")
+        _unchanged(state_path, events_path, original)
         return result
     if type(result) is PersistedExecutionOutcome:
         _terminal(result, workflow, state_path, events_path, "failed")
+        _unchanged(state_path, events_path, original)
         return result
+    _running(
+        result,
+        start,
+        workflow,
+        employee,
+        state_path,
+        events_path,
+        resolved_tools,
+        api_key,
+        approval,
+        transport,
+    )
+    assert type(start) is PreparedStepExecutionStart
     try:
         value = execution_routing_function(
             result,
@@ -142,10 +174,10 @@ def route_persisted_running_execution_bridge_reentry(
         _raise("execution_contract")
     if not is_valid_step_runtime_execution_result(
         value,
-        workflow_id=value.workflow_id,
-        step_id=value.step_id,
-        step_index=value.step_index,
-        employee_id=value.employee_id,
+        workflow_id=start.running_state.workflow_id,
+        step_id=start.running_state.current_step_id,
+        step_index=start.running_state.current_step_index,
+        employee_id=start.running_state.current_employee_id,
     ):
         _raise("execution_contract")
     return value
@@ -154,6 +186,79 @@ def route_persisted_running_execution_bridge_reentry(
 def _none(*values: object | None) -> None:
     if any(value is not None for value in values):
         _raise("execution_inputs")
+
+
+def _running(
+    result: RunningStatePersistenceResult,
+    start: object | None,
+    workflow: WorkflowDefinition,
+    employee: object | None,
+    state: Path,
+    events: Path,
+    tools: object | None,
+    key: object | None,
+    approval: object | None,
+    transport: object | None,
+) -> None:
+    if (
+        type(start) is not PreparedStepExecutionStart
+        or type(employee) is not EmployeeDefinition
+    ):
+        _raise("execution_inputs")
+    if (
+        type(start.request) is not ModelInvocationRequest
+        or type(start.running_state) is not WorkflowExecutionState
+    ):
+        _raise("execution_inputs")
+    if (
+        type(tools) is not tuple
+        or not all(type(tool) is ToolDefinition for tool in tools)
+        or type(key) is not OpenAIApiKey
+        or type(approval) is not ModelInvocationExecutionApproval
+        or not callable(transport)
+    ):
+        _raise("execution_inputs")
+    running = start.running_state
+    if type(
+        running.current_step_index
+    ) is not int or not 1 <= running.current_step_index <= len(workflow.steps):
+        _raise("execution_inputs")
+    step = workflow.steps[running.current_step_index - 1]
+    prefix = tuple(item.id for item in workflow.steps[: running.current_step_index - 1])
+    if not (
+        running.status == "running"
+        and running.last_failure_category is None
+        and running.workflow_id == workflow.id
+        and running.current_step_id == step.id
+        and running.current_employee_id == step.employee == employee.id
+        and running.completed_step_ids == prefix
+        and start.request.model == employee.model
+        and start.request.system_instructions == employee.instructions
+        and start.request.task_instructions == step.instructions
+        and start.request.allowed_tools == tuple(employee.allowed_tools)
+        and tuple(tool.name for tool in tools) == start.request.allowed_tools
+    ):
+        _raise("execution_inputs")
+    try:
+        validate_model_invocation_execution_approval(
+            start.request, tools, approval, provider="openai"
+        )
+        bytes_value = state.read_bytes()
+        persisted = load_workflow_execution_state(state)
+    except (
+        ValueError,
+        OSError,
+        WorkflowExecutionDataError,
+        WorkflowExecutionLoadError,
+    ):
+        _raise("persistence_contract")
+    if (
+        type(result.state_bytes_written) is not int
+        or result.state_bytes_written <= 0
+        or result.state_bytes_written != len(bytes_value)
+        or persisted != running
+    ):
+        _raise("persistence_contract")
 
 
 def _completion(
@@ -244,6 +349,12 @@ def _changed(path: Path, before: bytes) -> bool:
         return not path.is_file() or path.read_bytes() != before
     except OSError:
         return True
+
+
+def _unchanged(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
+    if _changed(state, original[0]) or _changed(events, original[1]):
+        _restore(state, events, original)
+        _raise("dependency_error")
 
 
 def _restore(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
