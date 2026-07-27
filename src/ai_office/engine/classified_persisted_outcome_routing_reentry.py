@@ -13,11 +13,9 @@ from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     PersistedExecutionOutcomeRoutingError,
     route_persisted_execution_outcome_reentry,
 )
-from ai_office.engine.persisted_terminal_outcome_classification_routing_reentry import (
-    _validate_terminal_history,
-)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
+from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
@@ -187,8 +185,95 @@ def _load_terminal_history(workflow: WorkflowDefinition, state: Path, events: Pa
         WorkflowExecutionLoadError,
     ):
         _raise("terminal_contract")
-    _validate_terminal_history(workflow, history)
+    _validate_terminal_history(workflow, history.state, history.events)
     return history
+
+
+def _validate_terminal_history(
+    workflow: WorkflowDefinition,
+    state: WorkflowExecutionState,
+    events: tuple[RuntimeStepEvent, ...],
+) -> None:
+    if state.status not in {"succeeded", "failed"} or state.workflow_id != workflow.id:
+        _raise("terminal_contract")
+    if not 1 <= state.current_step_index <= len(workflow.steps):
+        _raise("terminal_contract")
+    current = workflow.steps[state.current_step_index - 1]
+    if (
+        current.id != state.current_step_id
+        or current.employee != state.current_employee_id
+    ):
+        _raise("terminal_contract")
+    positions = {step.id: index for index, step in enumerate(workflow.steps, 1)}
+    try:
+        completed = [positions[item] for item in state.completed_step_ids]
+    except KeyError:
+        _raise("terminal_contract")
+    expected = (
+        state.current_step_index
+        if state.status == "succeeded"
+        else state.current_step_index - 1
+    )
+    compressed = tuple(
+        value
+        for index, value in enumerate(completed)
+        if index == 0 or completed[index - 1] != value
+    )
+    if compressed != tuple(range(1, expected + 1)) or not events:
+        _raise("terminal_contract")
+    prior_ids: list[str] = []
+    expected_prior = (
+        state.completed_step_ids[:-1]
+        if state.status == "succeeded"
+        else state.completed_step_ids
+    )
+    for event in events[:-1]:
+        if not (
+            event.workflow_id == state.workflow_id
+            and event.step_id in positions
+            and event.step_index == positions[event.step_id]
+            and event.employee_id == workflow.steps[event.step_index - 1].employee
+            and event.step_index < state.current_step_index
+            and event.step_id != state.current_step_id
+            and event.event_type == "step_succeeded"
+            and event.previous_status == "running"
+            and event.next_status == "succeeded"
+        ):
+            _raise("terminal_contract")
+        prior_ids.append(event.step_id)
+    if tuple(prior_ids) != expected_prior:
+        _raise("terminal_contract")
+    event = events[-1]
+    base = (
+        event.workflow_id == state.workflow_id
+        and event.step_id == state.current_step_id
+        and event.step_index == state.current_step_index
+        and event.employee_id == state.current_employee_id
+        and event.previous_status == "running"
+    )
+    valid = (
+        (
+            base
+            and event.event_type == "step_succeeded"
+            and event.next_status == "succeeded"
+            and state.last_failure_category is None
+            and event.failure_category is None
+            and event.message is None
+        )
+        if state.status == "succeeded"
+        else (
+            base
+            and event.event_type == "step_failed"
+            and event.next_status == "failed"
+            and state.last_failure_category in _FAILURE_CATEGORIES
+            and event.failure_category == state.last_failure_category
+            and event.response_id is None
+            and event.output_text is None
+            and isinstance(event.message, str)
+        )
+    )
+    if not valid:
+        _raise("terminal_contract")
 
 
 def _matches_state(value: PersistedExecutionOutcome, state: object) -> bool:

@@ -135,6 +135,53 @@ def test_failure_returns_same_exact_outcome(tmp_path: Path) -> None:
     assert calls == 1
 
 
+def test_final_success_routes_once_to_same_workflow_complete(tmp_path: Path) -> None:
+    state, events, outcome = setup(tmp_path, final=True)
+    prior = RuntimeStepEvent(
+        "step_succeeded",
+        "workflow",
+        "first",
+        1,
+        "one",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        "response",
+        "request",
+        "out",
+        None,
+    )
+    events.write_bytes(
+        serialize_runtime_step_event_jsonl(prior).encode() + events.read_bytes()
+    )
+    expected = WorkflowProgressionDecision(
+        "workflow_complete",
+        "workflow",
+        "step",
+        2,
+        "employee",
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+    calls = 0
+
+    def route(*_: object):
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert (
+        route_classified_persisted_outcome_reentry(
+            outcome, workflow(), state, events, routing_function=route
+        )
+        is expected
+    )
+    assert calls == 1
+
+
 def test_completion_stops_without_phase38(tmp_path: Path) -> None:
     state, events, _ = setup(tmp_path, final=True)
     decision = WorkflowProgressionDecision(
@@ -180,3 +227,82 @@ def test_invalid_failure_return_is_rejected(tmp_path: Path, returned: object) ->
             outcome, workflow(), state, events, routing_function=lambda *_: returned
         )
     assert caught.value.detail.classification == "routing_contract"
+
+
+@pytest.mark.parametrize(
+    "mode", ["invalid-state", "invalid-events", "terminal-mismatch"]
+)
+def test_invalid_terminal_history_is_phase45_terminal_contract(
+    tmp_path: Path, mode: str
+) -> None:
+    state, events, outcome = setup(tmp_path)
+    before = (state.read_bytes(), events.read_bytes())
+    if mode == "invalid-state":
+        state.write_bytes(b"bad")
+    elif mode == "invalid-events":
+        events.write_bytes(b"bad\n")
+    else:
+        events.write_bytes(
+            serialize_runtime_step_event_jsonl(
+                RuntimeStepEvent(
+                    "step_failed",
+                    "workflow",
+                    "first",
+                    1,
+                    "one",
+                    "running",
+                    "failed",
+                    "openai",
+                    "api_error",
+                    None,
+                    "request",
+                    None,
+                    "safe",
+                )
+            ).encode()
+        )
+    calls = 0
+
+    def unexpected(*_: object):
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingCompatibilityError) as caught:
+        route_classified_persisted_outcome_reentry(
+            outcome, workflow(), state, events, routing_function=unexpected
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) != before
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"outcome": "unknown"},
+        {"workflow_id": "other"},
+        {"current_step_id": "other"},
+        {"current_step_index": 0},
+        {"failure_category": "api_error"},
+    ],
+)
+def test_outcome_contract_rejects_before_phase38(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    state, events, outcome = setup(tmp_path)
+    values = outcome.__dict__.copy()
+    values.update(changes)
+    supplied = PersistedExecutionOutcome(**values)  # type: ignore[arg-type]
+    calls = 0
+
+    def unexpected(*_: object):
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingCompatibilityError) as caught:
+        route_classified_persisted_outcome_reentry(
+            supplied, workflow(), state, events, routing_function=unexpected
+        )
+    assert caught.value.detail.classification == "outcome_contract" and calls == 0
