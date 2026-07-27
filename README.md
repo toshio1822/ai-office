@@ -336,6 +336,10 @@ future explicit outcome routing
 
 `classify_persisted_execution_outcome_reentry()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受け、既存Phase 24 history loaderを一度だけ使ってPhase 36の終端outcomeを厳格に再読込します。`succeeded`は`persisted_success`、`failed`は既存の安全なfailure categoryを含む`persisted_failure`として、不変の最小classification resultに分類するだけです。Phase 25とPhase 31は呼ばず、progression判断、次step準備、retry、workflow完了/finalization、provider実行、persistenceを行いません。
 
+## Persisted Terminal Outcome Classification Routing Reentry Boundary（Phase 44）
+
+`route_persisted_terminal_outcome_classification_reentry()`は、正確なPhase 43 `WorkflowExecutionPersistenceResult`をterminal state/event bytesに照合し、`classify_persisted_execution_outcome_reentry()`を正確に一度だけ呼んで同じ`PersistedExecutionOutcome` objectを返すread-only boundaryです。`workflow_complete`はPhase 37を呼ばず同じdecision objectを返します。Phase 38 routing、Phase 31 progression、次step準備、retry、自動継続、workflow completion finalization、paid CLI/GUIは行いません。
+
 ## Persisted Execution Outcome Routing Reentry Boundary（Phase 38）
 
 `route_persisted_execution_outcome_reentry()`は、正確なPhase 37 outcome を明示 target に対して再分類し、field-for-field で照合します。`persisted_success`だけを既存Phase 31へ一度委譲して同じdecision objectを返し、`persisted_failure`はPhase 31を呼ばず同じsupplied outcome objectを返します。target bytes は各依存呼出し後に検証・必要時のみ復元します。次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みは行いません。
