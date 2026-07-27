@@ -1,5 +1,6 @@
 """Tests for the Phase 47 bridge using injected Phase 40 fakes only."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,14 @@ class PreparedSubclass(PreparedWorkflowStep):
     pass
 
 
+class DecisionSubclass(WorkflowProgressionDecision):
+    pass
+
+
+class OutcomeSubclass(PersistedExecutionOutcome):
+    pass
+
+
 class WorkflowSubclass(WorkflowDefinition):
     pass
 
@@ -38,6 +47,14 @@ class EmployeeSubclass(EmployeeDefinition):
 
 
 class StartSubclass(PreparedStepExecutionStart):
+    pass
+
+
+class RequestSubclass(ModelInvocationRequest):
+    pass
+
+
+class StateSubclass(WorkflowExecutionState):
     pass
 
 
@@ -221,6 +238,74 @@ def test_terminal_routes_stop_with_same_object_and_strict_history(
     assert (state.read_bytes(), events.read_bytes()) == before
 
 
+@pytest.mark.parametrize("route", ["prepared", "completion", "failure"])
+@pytest.mark.parametrize(
+    "mode", ["running", "failed", "wrong_completed", "extra_event"]
+)
+def test_persisted_history_contract_rejects_before_phase40(
+    tmp_path: Path, route: str, mode: str
+) -> None:
+    status, index = ("succeeded", 1) if route == "prepared" else ("succeeded", 2)
+    if route == "failure":
+        status = "failed"
+    state, events = targets(tmp_path, status, index)
+    if mode in {"running", "failed"}:
+        replacement_status = mode if mode != status else "running"
+        current = WorkflowExecutionState(
+            "workflow",
+            replacement_status,
+            "first" if index == 1 else "second",
+            index,
+            "one" if index == 1 else "two",
+            ("first",) if index == 1 else ("first", "second"),
+            "api_error" if replacement_status == "failed" else None,
+        )  # type: ignore[arg-type]
+        state.write_text(serialize_workflow_execution_state_json(current))
+    elif mode == "wrong_completed":
+        current = WorkflowExecutionState(
+            "workflow",
+            status,
+            "first" if index == 1 else "second",
+            index,
+            "one" if index == 1 else "two",
+            (),
+            None if status == "succeeded" else "api_error",
+        )  # type: ignore[arg-type]
+        state.write_text(serialize_workflow_execution_state_json(current))
+    else:
+        events.write_bytes(
+            events.read_bytes() + events.read_bytes().splitlines(keepends=True)[0]
+        )
+    result: object = prepared() if route == "prepared" else completion()
+    if route == "failure":
+        result = failure()
+    calls, writes = 0, []
+    original = Path.write_bytes
+
+    def phase40(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+            route_prepared_step_start_bridge_reentry(
+                result,
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=phase40,
+            )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0 and writes == []
+
+
 @pytest.mark.parametrize("mode", ["invalid_state", "invalid_events", "wrong_terminal"])
 def test_terminal_history_rejection_precedes_phase40(tmp_path: Path, mode: str) -> None:
     state, events = targets(tmp_path, "succeeded", 2)
@@ -249,6 +334,56 @@ def test_terminal_history_rejection_precedes_phase40(tmp_path: Path, mode: str) 
         with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
             route_prepared_step_start_bridge_reentry(
                 completion(),
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=phase40,
+            )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0 and writes == []
+
+
+@pytest.mark.parametrize("result_kind", ["completion", "failure"])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"failure_category": "api_error"},
+        {"response_id": None},
+        {"response_id": 1},
+        {"output_text": None},
+        {"output_text": 1},
+        {"message": "unexpected"},
+    ],
+)
+def test_earlier_success_event_requires_existing_success_contract(
+    tmp_path: Path, result_kind: str, changes: dict[str, object]
+) -> None:
+    status = "succeeded" if result_kind == "completion" else "failed"
+    state, events = targets(tmp_path, status, 2)
+    altered = replace(terminal_event("succeeded", 1), **changes)
+    events.write_text(
+        serialize_runtime_step_event_jsonl(altered)
+        + serialize_runtime_step_event_jsonl(terminal_event(status, 2))
+    )
+    calls, writes = 0, []
+    original = Path.write_bytes
+
+    def phase40(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    supplied: object = completion() if result_kind == "completion" else failure()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+            route_prepared_step_start_bridge_reentry(
+                supplied,
                 workflow(),
                 employee(),
                 state,
@@ -512,6 +647,191 @@ def test_prevalidation_rejections_do_not_call_or_write(
     assert calls == 0 and writes == []
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"step_index": 1},
+        {"step_index": True},
+        {"step_index": 0},
+        {"step_index": -1},
+        {"step_index": 3},
+        {"workflow_id": "wrong"},
+        {"step_id": "wrong"},
+        {"employee_id": "wrong"},
+        {"employee_instructions": "wrong"},
+        {"step_instructions": "wrong"},
+        {"model": "wrong"},
+        {"allowed_tool_names": ("wrong",)},
+        {"allowed_tool_names": ["tool"]},
+        {"allowed_tool_names": ("tool", 1)},
+    ],
+)
+def test_prepared_step_contract_rejections_precede_target_reads(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path)
+    writes, calls = [], 0
+    original = Path.write_bytes
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    def phase40(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+            route_prepared_step_start_bridge_reentry(
+                prepared(**changes),
+                workflow(),
+                employee(),
+                state,
+                events,
+                start_routing_function=phase40,
+            )
+    assert caught.value.detail.classification == "prepared_step_contract"
+    assert calls == 0 and writes == []
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        WorkflowProgressionDecision(
+            "workflow_complete",
+            "wrong",
+            "second",
+            2,
+            "two",
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        ),
+        WorkflowProgressionDecision(
+            "workflow_complete",
+            "workflow",
+            "wrong",
+            2,
+            "two",
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        ),
+        WorkflowProgressionDecision(
+            "workflow_complete",
+            "workflow",
+            "second",
+            True,
+            "two",
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        ),
+        WorkflowProgressionDecision(
+            "workflow_complete",
+            "workflow",
+            "second",
+            2,
+            "wrong",
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        ),
+        WorkflowProgressionDecision(
+            "workflow_complete",
+            "workflow",
+            "second",
+            2,
+            "two",
+            "next",
+            None,
+            None,
+            "last_step_succeeded",
+        ),
+        WorkflowProgressionDecision(
+            "workflow_complete",
+            "workflow",
+            "second",
+            2,
+            "two",
+            None,
+            None,
+            None,
+            "wrong",
+        ),
+    ],
+)
+def test_completion_contract_rejections_do_not_call_or_write(
+    tmp_path: Path, result: WorkflowProgressionDecision
+) -> None:
+    state, events = targets(tmp_path, "succeeded", 2)
+    with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+        route_prepared_step_start_bridge_reentry(
+            result,
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_routing_function=lambda *_: pytest.fail("Phase 40 must not run"),
+        )
+    assert caught.value.detail.classification == "completion_contract"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        PersistedExecutionOutcome(
+            "persisted_success", "workflow", "second", 2, "two", None
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure", "wrong", "second", 2, "two", "api_error"
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "wrong", 2, "two", "api_error"
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "second", True, "two", "api_error"
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "second", 0, "two", "api_error"
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "second", 3, "two", "api_error"
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "second", 2, "wrong", "api_error"
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "second", 2, "two", None
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "second", 2, "two", "wrong"
+        ),
+    ],
+)
+def test_failure_contract_rejections_do_not_call_or_write(
+    tmp_path: Path, result: PersistedExecutionOutcome
+) -> None:
+    state, events = targets(tmp_path, "failed", 2)
+    with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+        route_prepared_step_start_bridge_reentry(
+            result,
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_routing_function=lambda *_: pytest.fail("Phase 40 must not run"),
+        )
+    assert caught.value.detail.classification == "failure_contract"
+
+
 def test_malformed_phase40_return_is_not_returned(tmp_path: Path) -> None:
     state, events = targets(tmp_path)
     before = state.read_bytes(), events.read_bytes()
@@ -575,6 +895,68 @@ def test_phase40_request_field_contract_is_checked(
             start_routing_function=lambda *_: malformed,
         )
     assert caught.value.detail.classification == classification
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        PreparedStepExecutionStart(
+            RequestSubclass("model", "employee", "b", ("tool",)),
+            WorkflowExecutionState(
+                "workflow", "running", "second", 2, "two", ("first",), None
+            ),
+        ),
+        PreparedStepExecutionStart(
+            ModelInvocationRequest("model", "employee", "b", ("tool",)),
+            StateSubclass("workflow", "running", "second", 2, "two", ("first",), None),
+        ),
+    ],
+)
+def test_phase40_nested_subclasses_are_rejected(
+    tmp_path: Path, value: PreparedStepExecutionStart
+) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+        route_prepared_step_start_bridge_reentry(
+            prepared(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_routing_function=lambda *_: value,
+        )
+    assert caught.value.detail.classification == "start_contract"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"status": "ready"},
+        {"status": "succeeded"},
+        {"status": "failed"},
+        {"completed_step_ids": ()},
+        {"last_failure_category": "api_error"},
+    ],
+)
+def test_phase40_running_state_contract_is_checked(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path)
+    value = started()
+    malformed = PreparedStepExecutionStart(
+        value.request,
+        WorkflowExecutionState(**{**value.running_state.__dict__, **changes}),
+    )
+    with pytest.raises(PreparedStepStartBridgeCompatibilityError) as caught:
+        route_prepared_step_start_bridge_reentry(
+            prepared(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_routing_function=lambda *_: malformed,
+        )
+    assert caught.value.detail.classification == "start_contract"
 
 
 @pytest.mark.parametrize("error_kind", ["safe", "unexpected"])

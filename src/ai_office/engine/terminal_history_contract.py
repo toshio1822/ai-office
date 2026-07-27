@@ -89,6 +89,10 @@ def validate_strict_terminal_history(
             and event.employee_id == workflow.steps[step_index - 1].employee
             and event.previous_status == "running"
             and event.next_status == "succeeded"
+            and event.failure_category is None
+            and isinstance(event.response_id, str)
+            and isinstance(event.output_text, str)
+            and event.message is None
         ):
             _invalid()
     _validate_terminal_event(state, events[-1])
