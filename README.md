@@ -317,7 +317,7 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 
 `persist_executed_result_transition_reentry()`は、正確な既存Phase 21/35 runtime result、検証済み`WorkflowDefinition`、明示state/event targetだけを受けます。Phase 24 strict loaderでpersisted `running` stateを再読込し、workflow、current step、employee、completed-step history、runtime result identityを検証してから、既存Phase 30 `persist_executed_step_transition()`を一度だけ呼びます。返却するのは同一の既存`WorkflowExecutionPersistenceResult`です。呼出し後はstrict history reloadで、success/failure state、一つだけ追加されたruntime event、byte countを検証し、注入依存が契約を破った場合は両targetを呼出し前のbytesへ復元します。
 
-`route_executed_result_transition_reentry()`（Phase 43）は、正確なPhase 42の`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を既存transition-persistence reentryへ一度だけ渡し、同一の`WorkflowExecutionPersistenceResult`を返します。正確な`workflow_complete` decisionはtargetをread-onlyで確認して無変更のまま返します。partial/invalid dependency writeは補償復元し、retry、自動継続、next-step progression、workflow completion finalization、paid CLI/GUIは行いません。
+`route_executed_result_transition_reentry()`（Phase 43）は、正確なPhase 42の`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を`persist_executed_result_transition_reentry()`へ正確に一度だけ渡し、同一の`WorkflowExecutionPersistenceResult`を返します。既存boundary内部でPhase 30 persistenceがterminal stateと一つのruntime eventを保存しますが、Phase 43自身はそれらを構築しません。正確な`workflow_complete` decisionはtargetをread-onlyで確認して無変更のまま返します。partial/invalid dependency writeは補償復元し、retry、自動継続、progression、workflow completion finalization、paid CLI/GUIは行いません。
 
 ```text
 Phase 42 result

@@ -81,10 +81,11 @@ def route_executed_result_transition_reentry(
     )
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
+    if type(result) is WorkflowProgressionDecision:
+        _validate_completion(result, workflow)
     _validate_targets(state_path, events_path)
     original = _capture(state_path, events_path)
     if type(result) is WorkflowProgressionDecision:
-        _validate_completion(result, workflow)
         _require_unchanged(state_path, events_path, original)
         return result
 
