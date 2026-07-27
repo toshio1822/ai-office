@@ -35,11 +35,15 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     RunningStatePersistenceResult,
+    load_workflow_execution_history,
     load_workflow_execution_state,
 )
 from ai_office.storage.workflow_execution_history import (
     WorkflowExecutionDataError,
     WorkflowExecutionLoadError,
+)
+from ai_office.storage.workflow_execution_persistence import (
+    WorkflowExecutionPersistenceTargets,
 )
 from ai_office.tools import ToolDefinition
 
@@ -252,6 +256,30 @@ def _running(
         WorkflowExecutionLoadError,
     ):
         _raise("persistence_contract")
+    try:
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state, events)
+        )
+    except (WorkflowExecutionDataError, WorkflowExecutionLoadError):
+        _raise("persistence_contract")
+    expected = workflow.steps[: running.current_step_index - 1]
+    if len(history.events) != len(expected):
+        _raise("persistence_contract")
+    for event, step in zip(history.events, expected, strict=True):
+        if not (
+            event.event_type == "step_succeeded"
+            and event.workflow_id == workflow.id
+            and event.step_id == step.id
+            and event.step_index == workflow.steps.index(step) + 1
+            and event.employee_id == step.employee
+            and event.previous_status == "running"
+            and event.next_status == "succeeded"
+            and event.failure_category is None
+            and isinstance(event.response_id, str)
+            and isinstance(event.output_text, str)
+            and event.message is None
+        ):
+            _raise("persistence_contract")
     if (
         type(result.state_bytes_written) is not int
         or result.state_bytes_written <= 0
