@@ -580,13 +580,27 @@ def test_phase41_invalid_target_effects_restore_originals(
     ],
 )
 def test_dependency_errors_preserve_safe_identity_and_restore_targets(
-    tmp_path: Path, kind: str, mutation: str | None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    mutation: str | None,
 ) -> None:
     state, events = targets(tmp_path)
     before = state.read_bytes(), events.read_bytes()
     safe = PreparedStartPersistenceRoutingError("internal secret")
+    calls = 0
+    writes: list[Path] = []
+    original_write = Path.write_bytes
+
+    def recording_write(path: Path, contents: bytes) -> int:
+        writes.append(path)
+        return original_write(path, contents)
+
+    monkeypatch.setattr(Path, "write_bytes", recording_write)
 
     def phase41(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
         if mutation == "state_replace":
             state.write_bytes(b"state secret")
         elif mutation == "state_delete":
@@ -630,9 +644,22 @@ def test_dependency_errors_preserve_safe_identity_and_restore_targets(
                 state,
                 events,
                 persistence_routing_function=phase41,
-            )
+        )
         assert_error(caught, "dependency_error")
-        assert "secret" not in str(caught.value)
+        for detail in (
+            "secret",
+            str(state),
+            "workflow",
+            "employee",
+            "request",
+            "response",
+            "output",
+            "failure",
+        ):
+            assert detail not in str(caught.value)
+    assert calls == 1
+    if mutation is None:
+        assert writes == []
     assert (state.read_bytes(), events.read_bytes()) == before
 
 
@@ -643,8 +670,11 @@ def test_rollback_failure_overrides_dependency_error_and_attempts_both_targets(
     state, events = targets(tmp_path)
     original_write = Path.write_bytes
     attempts: list[Path] = []
+    calls = 0
 
     def phase41(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
         original_write(state, b"changed")
         original_write(events, b"changed")
         raise RuntimeError("private failure")
@@ -669,6 +699,7 @@ def test_rollback_failure_overrides_dependency_error_and_attempts_both_targets(
             persistence_routing_function=phase41,
         )
     assert_error(caught, "dependency_rollback")
+    assert calls == 1
     assert state in attempts and events in attempts
     assert "private" not in str(caught.value)
 
@@ -1016,8 +1047,11 @@ def test_rollback_failure_overrides_every_phase41_outcome(
     original_write = Path.write_bytes
     attempts: list[Path] = []
     safe = PreparedStartPersistenceRoutingError("private safe error")
+    calls = 0
 
     def phase41(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
         original_write(state, b"changed")
         original_write(events, b"changed")
         if outcome == "safe":
@@ -1044,5 +1078,6 @@ def test_rollback_failure_overrides_every_phase41_outcome(
             persistence_routing_function=phase41,
         )
     assert_error(caught, "dependency_rollback")
+    assert calls == 1
     assert state in attempts and events in attempts
     assert "private" not in str(caught.value)
