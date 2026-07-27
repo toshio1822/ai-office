@@ -12,6 +12,12 @@ from ai_office.engine.executed_result_transition_reentry import (
     ExecutedResultTransitionReentryFailureDetail,
     persist_executed_result_transition_reentry,
 )
+from ai_office.engine.executed_result_transition_routing_reentry import (
+    ExecutedResultTransitionRoutingCompatibilityError,
+    ExecutedResultTransitionRoutingError,
+    ExecutedResultTransitionRoutingFailureDetail,
+    route_executed_result_transition_reentry,
+)
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationApprovalError,
@@ -114,6 +120,10 @@ __all__ = [
     "ExecutedResultTransitionReentryError",
     "ExecutedResultTransitionReentryFailureDetail",
     "persist_executed_result_transition_reentry",
+    "ExecutedResultTransitionRoutingCompatibilityError",
+    "ExecutedResultTransitionRoutingError",
+    "ExecutedResultTransitionRoutingFailureDetail",
+    "route_executed_result_transition_reentry",
     "ApprovedNextStepReentryCompatibilityError",
     "ApprovedNextStepReentryError",
     "ApprovedNextStepReentryFailureDetail",
