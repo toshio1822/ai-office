@@ -760,3 +760,216 @@ def test_attribute_compatible_approval_and_employee_are_rejected_without_writes(
             )
     assert caught.value.detail.classification == classification
     assert writes == [] and (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"workflow_id": "wrong"},
+        {"step_id": "wrong"},
+        {"step_index": 1},
+        {"employee_id": "wrong"},
+        {"employee_instructions": "wrong"},
+        {"step_instructions": "wrong"},
+        {"model": "wrong"},
+        {"allowed_tool_names": ()},
+    ],
+)
+def test_phase39_return_field_contract_rejects_each_wrong_field(
+    tmp_path: Path, change: dict[str, object]
+) -> None:
+    state, events, _ = targets(tmp_path)
+    before, calls = (state.read_bytes(), events.read_bytes()), 0
+    values = prepared().__dict__.copy()
+    values.update(change)
+    malformed = PreparedWorkflowStep(**values)  # type: ignore[arg-type]
+
+    def phase39(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return malformed
+
+    with pytest.raises(ProgressionPreparationRoutingCompatibilityError) as caught:
+        route_progression_preparation_reentry(
+            decision(),
+            workflow(),
+            state,
+            events,
+            approval(),
+            employee(),
+            preparation_routing_function=phase39,
+        )
+    assert caught.value.detail.classification == "preparation_contract"
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_unchanged_safe_phase39_error_preserves_identity_without_writes(
+    tmp_path: Path,
+) -> None:
+    state, events, _ = targets(tmp_path)
+    before, writes, calls = (state.read_bytes(), events.read_bytes()), [], 0
+    expected = PersistedSuccessPreparationRoutingCompatibilityError("decision_type")
+    original = Path.write_bytes
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    def phase39(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        raise expected
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(
+            PersistedSuccessPreparationRoutingCompatibilityError
+        ) as caught:
+            route_progression_preparation_reentry(
+                decision(),
+                workflow(),
+                state,
+                events,
+                approval(),
+                employee(),
+                preparation_routing_function=phase39,
+            )
+    assert caught.value is expected and calls == 1 and writes == []
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_unchanged_unexpected_phase39_error_is_sanitized_without_writes(
+    tmp_path: Path,
+) -> None:
+    state, events, _ = targets(tmp_path)
+    before, writes, calls = (state.read_bytes(), events.read_bytes()), [], 0
+    original = Path.write_bytes
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    def phase39(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("/secret/path approval provider output failure-message")
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(ProgressionPreparationRoutingCompatibilityError) as caught:
+            route_progression_preparation_reentry(
+                decision(),
+                workflow(),
+                state,
+                events,
+                approval(),
+                employee(),
+                preparation_routing_function=phase39,
+            )
+    assert caught.value.detail.classification == "dependency_error"
+    assert calls == 1 and writes == []
+    assert (state.read_bytes(), events.read_bytes()) == before
+    assert "/secret" not in str(caught.value) and "approval" not in str(caught.value)
+
+
+def _mutate(path: Path, operation: str) -> None:
+    if operation == "replace":
+        path.write_bytes(b"replacement")
+    elif operation == "delete":
+        path.unlink()
+    elif operation == "truncate":
+        path.write_bytes(b"")
+    else:
+        path.write_bytes(path.read_bytes() + b"append")
+
+
+@pytest.mark.parametrize("operation", ["replace", "delete", "truncate", "append"])
+@pytest.mark.parametrize("target", ["state", "events", "both"])
+@pytest.mark.parametrize("safe", [True, False])
+def test_phase39_error_mutation_matrix_restores_originals(
+    tmp_path: Path, operation: str, target: str, safe: bool
+) -> None:
+    state, events, _ = targets(tmp_path)
+    before, calls = (state.read_bytes(), events.read_bytes()), 0
+    safe_error = PersistedSuccessPreparationRoutingCompatibilityError("decision_type")
+
+    def phase39(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        if target in {"state", "both"}:
+            _mutate(state, operation)
+        if target in {"events", "both"}:
+            _mutate(events, operation)
+        if safe:
+            raise safe_error
+        raise RuntimeError("/secret/path approval=response output failure-message")
+
+    if safe:
+        with pytest.raises(
+            PersistedSuccessPreparationRoutingCompatibilityError
+        ) as caught:
+            route_progression_preparation_reentry(
+                decision(),
+                workflow(),
+                state,
+                events,
+                approval(),
+                employee(),
+                preparation_routing_function=phase39,
+            )
+        assert caught.value is safe_error
+    else:
+        with pytest.raises(ProgressionPreparationRoutingCompatibilityError) as caught:
+            route_progression_preparation_reentry(
+                decision(),
+                workflow(),
+                state,
+                events,
+                approval(),
+                employee(),
+                preparation_routing_function=phase39,
+            )
+        assert caught.value.detail.classification == "dependency_error"
+        assert "/secret" not in str(caught.value) and "output" not in str(caught.value)
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("failed_target", ["state", "events", "both"])
+def test_rollback_failure_matrix_attempts_both_targets(
+    tmp_path: Path, failed_target: str
+) -> None:
+    state, events, _ = targets(tmp_path)
+    original, calls, attempted = Path.write_bytes, 0, []
+
+    def phase39(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        state.unlink()
+        events.unlink()
+        return prepared()
+
+    def fail_selected(path: Path, data: bytes) -> int:
+        attempted.append(path)
+        if (
+            failed_target == "both"
+            or (failed_target == "state" and path == state)
+            or (failed_target == "events" and path == events)
+        ):
+            raise OSError("/secret/rollback")
+        return original(path, data)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", fail_selected)
+        with pytest.raises(ProgressionPreparationRoutingCompatibilityError) as caught:
+            route_progression_preparation_reentry(
+                decision(),
+                workflow(),
+                state,
+                events,
+                approval(),
+                employee(),
+                preparation_routing_function=phase39,
+            )
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert state in attempted and events in attempted and calls == 1
+    assert "/secret" not in str(caught.value)
