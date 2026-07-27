@@ -92,6 +92,7 @@ def setup(
 
 def test_success_routes_once_to_same_prepare_next_step(tmp_path: Path) -> None:
     state, events, outcome = setup(tmp_path)
+    supplied_workflow = workflow()
     expected = WorkflowProgressionDecision(
         "prepare_next_step",
         "workflow",
@@ -108,12 +109,16 @@ def test_success_routes_once_to_same_prepare_next_step(tmp_path: Path) -> None:
     def route(*args: object):
         nonlocal calls
         calls += 1
-        assert args == (outcome, workflow(), state, events)
+        actual_outcome, actual_workflow, actual_state, actual_events = args
+        assert actual_outcome is outcome
+        assert actual_workflow is supplied_workflow
+        assert actual_state is state
+        assert actual_events is events
         return expected
 
     assert (
         route_classified_persisted_outcome_reentry(
-            outcome, workflow(), state, events, routing_function=route
+            outcome, supplied_workflow, state, events, routing_function=route
         )
         is expected
     )
@@ -122,16 +127,22 @@ def test_success_routes_once_to_same_prepare_next_step(tmp_path: Path) -> None:
 
 def test_failure_returns_same_exact_outcome(tmp_path: Path) -> None:
     state, events, outcome = setup(tmp_path, "failed")
+    supplied_workflow = workflow()
     calls = 0
 
-    def route(*_: object):
+    def route(*args: object):
         nonlocal calls
         calls += 1
+        actual_outcome, actual_workflow, actual_state, actual_events = args
+        assert actual_outcome is outcome
+        assert actual_workflow is supplied_workflow
+        assert actual_state is state
+        assert actual_events is events
         return outcome
 
     assert (
         route_classified_persisted_outcome_reentry(
-            outcome, workflow(), state, events, routing_function=route
+            outcome, supplied_workflow, state, events, routing_function=route
         )
         is outcome
     )
@@ -140,6 +151,7 @@ def test_failure_returns_same_exact_outcome(tmp_path: Path) -> None:
 
 def test_final_success_routes_once_to_same_workflow_complete(tmp_path: Path) -> None:
     state, events, outcome = setup(tmp_path, final=True)
+    supplied_workflow = workflow()
     prior = RuntimeStepEvent(
         "step_succeeded",
         "workflow",
@@ -171,14 +183,19 @@ def test_final_success_routes_once_to_same_workflow_complete(tmp_path: Path) -> 
     )
     calls = 0
 
-    def route(*_: object):
+    def route(*args: object):
         nonlocal calls
         calls += 1
+        actual_outcome, actual_workflow, actual_state, actual_events = args
+        assert actual_outcome is outcome
+        assert actual_workflow is supplied_workflow
+        assert actual_state is state
+        assert actual_events is events
         return expected
 
     assert (
         route_classified_persisted_outcome_reentry(
-            outcome, workflow(), state, events, routing_function=route
+            outcome, supplied_workflow, state, events, routing_function=route
         )
         is expected
     )
@@ -533,3 +550,54 @@ def test_missing_target_rejects_before_phase38(
             outcome, workflow(), state, events, routing_function=unexpected
         )
     assert caught.value.detail.classification == classification and calls == 0
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"response_id": None},
+        {"response_id": 1},
+        {"output_text": None},
+        {"output_text": 1},
+    ],
+)
+def test_success_terminal_response_and_output_contract(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    state, events, outcome = setup(tmp_path)
+    values: dict[str, object] = {
+        "event_type": "step_succeeded",
+        "workflow_id": "workflow",
+        "step_id": "first",
+        "step_index": 1,
+        "employee_id": "one",
+        "previous_status": "running",
+        "next_status": "succeeded",
+        "provider": "openai",
+        "failure_category": None,
+        "response_id": "response",
+        "request_id": "request",
+        "output_text": "out",
+        "message": None,
+    }
+    values.update(changes)
+    if type(values["response_id"]) is not str or type(values["output_text"]) is not str:
+        import json
+
+        events.write_text(json.dumps(values, separators=(",", ":")) + "\n")
+    else:
+        events.write_bytes(
+            serialize_runtime_step_event_jsonl(RuntimeStepEvent(**values)).encode()
+        )  # type: ignore[arg-type]
+    calls = 0
+
+    def unexpected(*_: object):
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingCompatibilityError) as caught:
+        route_classified_persisted_outcome_reentry(
+            outcome, workflow(), state, events, routing_function=unexpected
+        )
+    assert caught.value.detail.classification == "terminal_contract" and calls == 0

@@ -258,6 +258,8 @@ def _validate_terminal_history(
             and event.next_status == "succeeded"
             and state.last_failure_category is None
             and event.failure_category is None
+            and isinstance(event.response_id, str)
+            and isinstance(event.output_text, str)
             and event.message is None
         )
         if state.status == "succeeded"
