@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +51,14 @@ class ResultSubclass(RunningStatePersistenceResult):
     pass
 
 
+class RequestSubclass(ModelInvocationRequest):
+    pass
+
+
+class StateSubclass(WorkflowExecutionState):
+    pass
+
+
 def workflow() -> WorkflowDefinition:
     return WorkflowDefinition.model_validate(
         {
@@ -62,13 +71,13 @@ def workflow() -> WorkflowDefinition:
                     "name": "First",
                     "employee": "one",
                     "instructions": "a",
-                },  # noqa: E501
+                },
                 {
                     "id": "second",
                     "name": "Second",
                     "employee": "two",
                     "instructions": "b",
-                },  # noqa: E501
+                },
             ],
         }
     )
@@ -147,7 +156,7 @@ def event(status: str, index: int) -> RuntimeStepEvent:
 
 def targets(
     tmp_path: Path, status: str = "succeeded", index: int = 1
-) -> tuple[Path, Path]:  # noqa: E501
+) -> tuple[Path, Path]:
     step, person = ("first", "one") if index == 1 else ("second", "two")
     completed = ("first",) if index == 1 or status == "failed" else ("first", "second")
     state = WorkflowExecutionState(
@@ -165,7 +174,7 @@ def targets(
     state_path.write_text(serialize_workflow_execution_state_json(state))
     events_path.write_text(
         "".join(serialize_runtime_step_event_jsonl(item) for item in events)
-    )  # noqa: E501
+    )
     return state_path, events_path
 
 
@@ -176,7 +185,15 @@ def assert_error(
     assert error.value.detail.classification == classification
     assert (
         str(error.value) == "prepared-start persistence bridge inputs are incompatible"
-    )  # noqa: E501
+    )
+
+
+def persist_exact_start(
+    state: Path, value: PreparedStepExecutionStart
+) -> RunningStatePersistenceResult:
+    contents = serialize_workflow_execution_state_json(value.running_state).encode()
+    state.write_bytes(contents)
+    return RunningStatePersistenceResult(len(contents))
 
 
 def test_start_delegates_exact_objects_persists_only_running_state_and_returns_identity(
@@ -194,14 +211,14 @@ def test_start_delegates_exact_objects_persists_only_running_state_and_returns_i
         nonlocal calls
         calls += 1
         actual_start, actual_workflow, actual_employee, actual_state, actual_events = (
-            args  # noqa: E501
+            args
         )
         assert actual_start is supplied and actual_workflow is definition
         assert (
             actual_employee is person
             and actual_state is state
             and actual_events is events
-        )  # noqa: E501
+        )
         state.write_text(
             serialize_workflow_execution_state_json(supplied.running_state)
         )
@@ -214,14 +231,14 @@ def test_start_delegates_exact_objects_persists_only_running_state_and_returns_i
             person,
             state,
             events,
-            persistence_routing_function=phase41,  # noqa: E501
+            persistence_routing_function=phase41,
         )
         is expected
     )
     assert calls == 1
     assert state.read_text() == serialize_workflow_execution_state_json(
         supplied.running_state
-    )  # noqa: E501
+    )
     assert events.read_bytes() == event_before
 
 
@@ -231,7 +248,7 @@ def test_terminal_routes_validate_strict_history_and_return_same_object(
 ) -> None:
     state, events = targets(
         tmp_path, "succeeded" if route == "completion" else "failed", 2
-    )  # noqa: E501
+    )
     supplied: object = completion() if route == "completion" else failure()
     before = state.read_bytes(), events.read_bytes()
     assert (
@@ -262,7 +279,7 @@ def test_terminal_routes_validate_strict_history_and_return_same_object(
                 "persisted_success", "workflow", "second", 2, "two", None
             ),
             "failure_contract",
-        ),  # noqa: E501
+        ),
     ],
 )
 def test_result_prevalidation_rejects_without_calls_or_writes(
@@ -276,7 +293,7 @@ def test_result_prevalidation_rejects_without_calls_or_writes(
         Path,
         "write_bytes",
         lambda path, data: (writes.append(path), original(path, data))[1],
-    )  # noqa: E501
+    )
     with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
         route_prepared_start_persistence_bridge_reentry(
             result,
@@ -298,7 +315,7 @@ def test_result_prevalidation_rejects_without_calls_or_writes(
         "events_value",
         "function",
         "classification",
-    ),  # noqa: E501
+    ),
     [
         (object(), employee(), None, None, lambda: None, "workflow_definition"),
         (
@@ -308,7 +325,7 @@ def test_result_prevalidation_rejects_without_calls_or_writes(
             None,
             lambda: None,
             "employee_contract",
-        ),  # noqa: E501
+        ),
         (workflow(), employee(), object(), None, lambda: None, "state_target"),
         (workflow(), employee(), None, object(), lambda: None, "event_target"),
         (workflow(), employee(), None, None, object(), "persistence_contract"),
@@ -365,7 +382,7 @@ def test_conflicting_or_missing_targets_reject_before_phase41(tmp_path: Path) ->
         {"current_step_id": "first"},
         {"current_step_index": True},
         {"current_step_index": 1},
-        {"current_step_index": 3},  # noqa: E501
+        {"current_step_index": 3},
         {"current_employee_id": "one"},
         {"completed_step_ids": ()},
         {"last_failure_category": "api_error"},
@@ -373,7 +390,7 @@ def test_conflicting_or_missing_targets_reject_before_phase41(tmp_path: Path) ->
 )
 def test_malformed_start_rejects_before_phase41(
     tmp_path: Path, changed: dict[str, object]
-) -> None:  # noqa: E501
+) -> None:
     state, events = targets(tmp_path)
     bad_state = replace(start().running_state, **changed)
     with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
@@ -390,12 +407,12 @@ def test_malformed_start_rejects_before_phase41(
 
 @pytest.mark.parametrize(
     "field", ["model", "system_instructions", "task_instructions", "allowed_tools"]
-)  # noqa: E501
+)
 def test_malformed_request_rejects_before_phase41(tmp_path: Path, field: str) -> None:
     state, events = targets(tmp_path)
     request = replace(
         start().request, **{field: "wrong" if field != "allowed_tools" else ()}
-    )  # noqa: E501
+    )
     with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
         route_prepared_start_persistence_bridge_reentry(
             start(request=request),
@@ -412,7 +429,7 @@ def test_malformed_request_rejects_before_phase41(tmp_path: Path, field: str) ->
 @pytest.mark.parametrize("mode", ["invalid_state", "invalid_events", "wrong_prefix"])
 def test_history_mismatch_rejects_before_phase41(
     tmp_path: Path, route: str, mode: str
-) -> None:  # noqa: E501
+) -> None:
     status, index = ("succeeded", 1) if route == "start" else ("succeeded", 2)
     if route == "failure":
         status = "failed"
@@ -429,9 +446,9 @@ def test_history_mismatch_rejects_before_phase41(
                         "workflow",
                         status,
                         "first" if index == 1 else "second",
-                        index,  # noqa: E501
+                        index,
                         "one" if index == 1 else "two",
-                        ("first",) if index == 1 else ("first", "second"),  # noqa: E501
+                        ("first",) if index == 1 else ("first", "second"),
                         None if status == "succeeded" else "api_error",
                     ),
                     completed_step_ids=(),
@@ -444,7 +461,7 @@ def test_history_mismatch_rejects_before_phase41(
         else completion()
         if route == "completion"
         else failure()
-    )  # noqa: E501
+    )
     with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
         route_prepared_start_persistence_bridge_reentry(
             value,
@@ -459,7 +476,7 @@ def test_history_mismatch_rejects_before_phase41(
 
 def test_malformed_completion_and_failure_are_classified_before_missing_targets(
     tmp_path: Path,
-) -> None:  # noqa: E501
+) -> None:
     state, events = tmp_path / "missing-state", tmp_path / "missing-events"
     for value, classification in (
         (completion(reason="wrong"), "completion_contract"),
@@ -485,11 +502,11 @@ def test_malformed_completion_and_failure_are_classified_before_missing_targets(
         RunningStatePersistenceResult(True),
         RunningStatePersistenceResult(0),
         RunningStatePersistenceResult(-1),
-    ],  # noqa: E501
+    ],
 )
 def test_malformed_phase41_result_restores_originals(
     tmp_path: Path, result: object
-) -> None:  # noqa: E501
+) -> None:
     state, events = targets(tmp_path)
     supplied = start()
     before = state.read_bytes(), events.read_bytes()
@@ -507,7 +524,7 @@ def test_malformed_phase41_result_restores_originals(
             employee(),
             state,
             events,
-            persistence_routing_function=phase41,  # noqa: E501
+            persistence_routing_function=phase41,
         )
     assert_error(caught, "persistence_contract")
     assert (state.read_bytes(), events.read_bytes()) == before
@@ -540,7 +557,7 @@ def test_phase41_invalid_target_effects_restore_originals(
             employee(),
             state,
             events,
-            persistence_routing_function=phase41,  # noqa: E501
+            persistence_routing_function=phase41,
         )
     assert_error(caught, "persistence_contract")
     assert (state.read_bytes(), events.read_bytes()) == before
@@ -601,7 +618,7 @@ def test_dependency_errors_preserve_safe_identity_and_restore_targets(
                 employee(),
                 state,
                 events,
-                persistence_routing_function=phase41,  # noqa: E501
+                persistence_routing_function=phase41,
             )
         assert caught.value is safe
     else:
@@ -612,7 +629,7 @@ def test_dependency_errors_preserve_safe_identity_and_restore_targets(
                 employee(),
                 state,
                 events,
-                persistence_routing_function=phase41,  # noqa: E501
+                persistence_routing_function=phase41,
             )
         assert_error(caught, "dependency_error")
         assert "secret" not in str(caught.value)
@@ -637,7 +654,7 @@ def test_rollback_failure_overrides_dependency_error_and_attempts_both_targets(
         if failed_target in {
             path.name.removesuffix(".json").removesuffix(".jsonl"),
             "both",
-        }:  # noqa: E501
+        }:
             raise OSError("private path")
         return original_write(path, contents)
 
@@ -649,7 +666,382 @@ def test_rollback_failure_overrides_dependency_error_and_attempts_both_targets(
             employee(),
             state,
             events,
-            persistence_routing_function=phase41,  # noqa: E501
+            persistence_routing_function=phase41,
+        )
+    assert_error(caught, "dependency_rollback")
+    assert state in attempts and events in attempts
+    assert "private" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        object(),
+        ResultSubclass(1),
+        SimpleNamespace(state_bytes_written=1),
+        RunningStatePersistenceResult(True),
+        RunningStatePersistenceResult("1"),
+        RunningStatePersistenceResult(1.0),
+        RunningStatePersistenceResult(None),
+        RunningStatePersistenceResult(0),
+        RunningStatePersistenceResult(-1),
+        RunningStatePersistenceResult(999),
+    ],
+)
+def test_phase41_result_contract_rejects_each_bad_result_and_restores(
+    tmp_path: Path, result: object
+) -> None:
+    state, events = targets(tmp_path)
+    supplied = start()
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def phase41(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        persist_exact_start(state, supplied)
+        return result
+
+    with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+        route_prepared_start_persistence_bridge_reentry(
+            supplied,
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_routing_function=phase41,
+        )
+    assert_error(caught, "persistence_contract")
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {},
+        {"workflow_id": "other"},
+        {"current_step_id": "first"},
+        {"current_step_index": 1},
+        {"current_employee_id": "one"},
+        {"completed_step_ids": ()},
+        {"last_failure_category": "api_error"},
+    ],
+)
+def test_phase41_state_must_be_exact_proposed_running_state(
+    tmp_path: Path, changed: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path)
+    supplied = start()
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def phase41(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        if changed:
+            different = replace(supplied.running_state, **changed)
+            state.write_text(serialize_workflow_execution_state_json(different))
+        return RunningStatePersistenceResult(len(state.read_bytes()))
+
+    with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+        route_prepared_start_persistence_bridge_reentry(
+            supplied,
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_routing_function=phase41,
+        )
+    assert_error(caught, "persistence_contract")
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("event_effect", ["replace", "delete", "truncate", "append"])
+def test_phase41_correct_state_rejects_each_event_effect(
+    tmp_path: Path, event_effect: str
+) -> None:
+    state, events = targets(tmp_path)
+    supplied = start()
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def phase41(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        result = persist_exact_start(state, supplied)
+        if event_effect == "replace":
+            events.write_bytes(b"extra")
+        elif event_effect == "delete":
+            events.unlink()
+        elif event_effect == "truncate":
+            events.write_bytes(b"")
+        else:
+            events.write_bytes(events.read_bytes() + b"extra")
+        return result
+
+    with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+        route_prepared_start_persistence_bridge_reentry(
+            supplied,
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_routing_function=phase41,
+        )
+    assert_error(caught, "persistence_contract")
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    ("value", "classification"),
+    [
+        (WorkflowSubclass(**workflow().__dict__), "workflow_definition"),
+        (SimpleNamespace(id="workflow", steps=workflow().steps), "workflow_definition"),
+        (EmployeeSubclass(**employee().__dict__), "employee_contract"),
+        (SimpleNamespace(**employee().__dict__), "employee_contract"),
+        (
+            SimpleNamespace(
+                request=start().request,
+                running_state=start().running_state,
+            ),
+            "result_type",
+        ),
+        (SimpleNamespace(**completion().__dict__), "result_type"),
+        (SimpleNamespace(**failure().__dict__), "result_type"),
+    ],
+)
+def test_exact_top_level_models_reject_substitutes_without_writes(
+    tmp_path: Path, value: object, classification: str
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+    original = Path.write_bytes
+    writes: list[Path] = []
+
+    def phase41(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        return RunningStatePersistenceResult(1)
+
+    def recording_write(path: Path, contents: bytes) -> int:
+        writes.append(path)
+        return original(path, contents)
+
+    if classification == "workflow_definition":
+        supplied_workflow, supplied_employee, supplied_result = (
+            value,
+            employee(),
+            start(),
+        )
+    elif classification == "employee_contract":
+        supplied_workflow, supplied_employee, supplied_result = (
+            workflow(),
+            value,
+            start(),
+        )
+    else:
+        supplied_workflow, supplied_employee, supplied_result = (
+            workflow(),
+            employee(),
+            value,
+        )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "write_bytes", recording_write)
+        with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+            route_prepared_start_persistence_bridge_reentry(
+                supplied_result,
+                supplied_workflow,
+                supplied_employee,
+                state,
+                events,
+                persistence_routing_function=phase41,
+            )
+    assert_error(caught, classification)
+    assert calls == 0 and writes == []
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        start(request=RequestSubclass(**start().request.__dict__)),
+        start(running_state=StateSubclass(**start().running_state.__dict__)),
+        start(request=SimpleNamespace(**start().request.__dict__)),
+        start(running_state=SimpleNamespace(**start().running_state.__dict__)),
+    ],
+)
+def test_start_exact_nested_models_reject_without_phase41(
+    tmp_path: Path, result: PreparedStepExecutionStart
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    writes: list[Path] = []
+    original = Path.write_bytes
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            Path,
+            "write_bytes",
+            lambda path, contents: (writes.append(path), original(path, contents))[1],
+        )
+        with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+            route_prepared_start_persistence_bridge_reentry(
+                result,
+                workflow(),
+                employee(),
+                state,
+                events,
+                persistence_routing_function=lambda *_: pytest.fail("called"),
+            )
+    assert_error(caught, "start_contract")
+    assert writes == [] and (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"decision": "prepare_next_step"},
+        {"workflow_id": "other"},
+        {"current_step_id": "first"},
+        {"current_step_index": True},
+        {"current_step_index": 0},
+        {"current_step_index": -1},
+        {"current_step_index": 3},
+        {"current_employee_id": "one"},
+        {"next_step_id": "third"},
+        {"next_step_index": 3},
+        {"next_employee_id": "three"},
+        {"reason": "wrong"},
+    ],
+)
+def test_completion_contract_rejects_each_field_before_phase41(
+    tmp_path: Path, changed: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path, "succeeded", 2)
+    before = state.read_bytes(), events.read_bytes()
+    with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+        route_prepared_start_persistence_bridge_reentry(
+            completion(**changed),
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_routing_function=lambda *_: pytest.fail("called"),
+        )
+    assert_error(caught, "completion_contract")
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    ("changed", "classification"),
+    [
+        ({"outcome": "persisted_success"}, "failure_contract"),
+        ({"workflow_id": "other"}, "failure_contract"),
+        ({"current_step_id": "first"}, "failure_contract"),
+        ({"current_employee_id": "one"}, "failure_contract"),
+        ({"current_step_index": True}, "failure_contract"),
+        ({"current_step_index": 0}, "failure_contract"),
+        ({"current_step_index": -1}, "failure_contract"),
+        ({"current_step_index": 3}, "failure_contract"),
+        ({"failure_category": None}, "failure_contract"),
+        ({"failure_category": "unsupported"}, "failure_contract"),
+    ],
+)
+def test_failure_contract_rejects_each_field_before_phase41(
+    tmp_path: Path, changed: dict[str, object], classification: str
+) -> None:
+    state, events = targets(tmp_path, "failed", 2)
+    before = state.read_bytes(), events.read_bytes()
+    with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+        route_prepared_start_persistence_bridge_reentry(
+            failure(**changed),
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_routing_function=lambda *_: pytest.fail("called"),
+        )
+    assert_error(caught, classification)
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "event_change",
+    [
+        {"workflow_id": "other"},
+        {"event_type": "step_succeeded"},
+        {"previous_status": "ready"},
+        {"next_status": "succeeded"},
+        {"failure_category": "runtime_error"},
+        {"response_id": "response"},
+        {"output_text": "output"},
+        {"message": None},
+        {"message": 1},
+    ],
+)
+def test_failure_terminal_event_contract_rejects_before_phase41(
+    tmp_path: Path, event_change: dict[str, object]
+) -> None:
+    state, events = targets(tmp_path, "failed", 2)
+    history = [event("succeeded", 1), replace(event("failed", 2), **event_change)]
+    events.write_text(
+        "".join(serialize_runtime_step_event_jsonl(item) for item in history)
+    )
+    before = state.read_bytes(), events.read_bytes()
+    with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+        route_prepared_start_persistence_bridge_reentry(
+            failure(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_routing_function=lambda *_: pytest.fail("called"),
+        )
+    assert_error(caught, "terminal_contract")
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("outcome", ["return", "safe", "unexpected"])
+@pytest.mark.parametrize("failed_target", ["state", "events", "both"])
+def test_rollback_failure_overrides_every_phase41_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    failed_target: str,
+) -> None:
+    state, events = targets(tmp_path)
+    original_write = Path.write_bytes
+    attempts: list[Path] = []
+    safe = PreparedStartPersistenceRoutingError("private safe error")
+
+    def phase41(*_: object) -> RunningStatePersistenceResult:
+        original_write(state, b"changed")
+        original_write(events, b"changed")
+        if outcome == "safe":
+            raise safe
+        if outcome == "unexpected":
+            raise RuntimeError("private unexpected error")
+        return RunningStatePersistenceResult(1)
+
+    def failing_restore(path: Path, contents: bytes) -> int:
+        attempts.append(path)
+        name = "state" if path is state else "events"
+        if failed_target in {name, "both"}:
+            raise OSError("private restoration failure")
+        return original_write(path, contents)
+
+    monkeypatch.setattr(Path, "write_bytes", failing_restore)
+    with pytest.raises(PreparedStartPersistenceBridgeCompatibilityError) as caught:
+        route_prepared_start_persistence_bridge_reentry(
+            start(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            persistence_routing_function=phase41,
         )
     assert_error(caught, "dependency_rollback")
     assert state in attempts and events in attempts
