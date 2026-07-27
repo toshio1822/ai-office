@@ -361,6 +361,17 @@ Phase 46: prepare_next_step → Phase 39 exactly once → existing PreparedWorkf
 future explicit approval/start or finalization boundary
 ```
 
+## Prepared-Step Start Routing Bridge（Phase 47）
+
+`route_prepared_step_start_bridge_reentry()`は、正確な`PreparedWorkflowStep`だけを、caller suppliedの`WorkflowDefinition`、`EmployeeDefinition`、state/event `Path` objectsとともに`route_prepared_step_start_reentry()`（Phase 40）へ正確に一度だけ委譲するread-only bridgeです。返却された同じ`PreparedStepExecutionStart` objectをそのまま返します。正確な`workflow_complete`と`persisted_failure`はstrict terminal state/historyを検証してPhase 40を呼ばず、同じ supplied objectのまま停止します。依存がtargetを変更した場合は元bytesへ補償復元します。Phase 34を直接呼ばず、running-state persistence、runtime event append、provider/tool execution、retry、自動継続、workflow completion/failure finalizationを行いません。
+
+```text
+Phase 47: PreparedWorkflowStep → Phase 40 exactly once → existing PreparedStepExecutionStart
+          workflow_complete | persisted_failure → unchanged stop
+    ↓
+future explicit running-state persistence or finalization boundary
+```
+
 ## Persisted Success Preparation Routing Reentry Boundary（Phase 39）
 
 `route_persisted_success_progression_reentry()`は、Phase 38 からの正確なPhase 31 decision を再判定して全 field を照合します。`prepare_next_step`だけを明示 approval と employee を伴ってPhase 32へ一度委譲し同じprepared-step objectを返し、`workflow_complete`はPhase 32を呼ばず同じsupplied decision objectを返します。approval作成、実行、running state、completion persistence/finalization、retry、provider実行、データ書込みは行いません。

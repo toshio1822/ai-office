@@ -94,6 +94,12 @@ from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStartError,
     prepare_prepared_step_execution_start,
 )
+from ai_office.engine.prepared_step_start_bridge_reentry import (
+    PreparedStepStartBridgeCompatibilityError,
+    PreparedStepStartBridgeError,
+    PreparedStepStartBridgeFailureDetail,
+    route_prepared_step_start_bridge_reentry,
+)
 from ai_office.engine.prepared_step_start_reentry import (
     PreparedStepStartReentryCompatibilityError,
     PreparedStepStartReentryError,
@@ -175,6 +181,10 @@ __all__ = [
     "PreparedStepStartRoutingError",
     "PreparedStepStartRoutingFailureDetail",
     "route_prepared_step_start_reentry",
+    "PreparedStepStartBridgeCompatibilityError",
+    "PreparedStepStartBridgeError",
+    "PreparedStepStartBridgeFailureDetail",
+    "route_prepared_step_start_bridge_reentry",
     "PreparedStartPersistenceRoutingCompatibilityError",
     "PreparedStartPersistenceRoutingError",
     "PreparedStartPersistenceRoutingFailureDetail",
