@@ -1,5 +1,4 @@
 """Read-only bridge from one Phase 45 result to the Phase 39 boundary."""
-# ruff: noqa: E501
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -77,8 +76,8 @@ def route_progression_preparation_reentry(
     workflow: object,
     state_path: object,
     events_path: object,
-    approval: object | None,
-    employee: object | None,
+    approval: object,
+    employee: object,
     *,
     preparation_routing_function: PreparationRoutingFunction = (
         route_persisted_success_progression_reentry
@@ -139,17 +138,17 @@ def _validate_inputs(
     workflow: object,
     state: object,
     events: object,
-    approval: object | None,
-    employee: object | None,
+    approval: object,
+    employee: object,
     function: object,
 ) -> None:
     if type(result) not in (WorkflowProgressionDecision, PersistedExecutionOutcome):
         _raise("result_type")
     if type(workflow) is not WorkflowDefinition:
         _raise("workflow_definition")
-    if approval is not None and type(approval) is not NextStepPreparationApproval:
+    if type(approval) is not NextStepPreparationApproval:
         _raise("approval_contract")
-    if employee is not None and type(employee) is not EmployeeDefinition:
+    if type(employee) is not EmployeeDefinition:
         _raise("employee_contract")
     if not isinstance(state, Path):
         _raise("state_target")
@@ -164,8 +163,8 @@ def _validate_inputs(
 def _validate_completion(
     value: WorkflowProgressionDecision,
     workflow: WorkflowDefinition,
-    approval: object | None,
-    employee: object | None,
+    approval: object,
+    employee: object,
 ) -> None:
     final = workflow.steps[-1]
     if not (
@@ -178,8 +177,6 @@ def _validate_completion(
         and value.next_step_index is None
         and value.next_employee_id is None
         and value.reason == "last_step_succeeded"
-        and approval is None
-        and employee is None
     ):
         _raise("completion_contract")
 
@@ -187,8 +184,8 @@ def _validate_completion(
 def _validate_progression(
     value: WorkflowProgressionDecision,
     workflow: WorkflowDefinition,
-    approval: object | None,
-    employee: object | None,
+    approval: object,
+    employee: object,
 ) -> None:
     if (
         value.decision != "prepare_next_step"
@@ -236,11 +233,9 @@ def _validate_progression(
 def _validate_failure(
     value: PersistedExecutionOutcome,
     workflow: WorkflowDefinition,
-    approval: object | None,
-    employee: object | None,
+    approval: object,
+    employee: object,
 ) -> None:
-    if approval is not None or employee is not None:
-        _raise("failure_contract")
     if not (
         value.outcome == "persisted_failure"
         and value.workflow_id == workflow.id
@@ -405,8 +400,8 @@ def _validate_prepared(
     value: object,
     workflow: WorkflowDefinition,
     decision: WorkflowProgressionDecision,
-    approval: object | None,
-    employee: object | None,
+    approval: object,
+    employee: object,
 ) -> None:
     if (
         type(value) is not PreparedWorkflowStep

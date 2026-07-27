@@ -213,8 +213,8 @@ def test_completion_is_read_only_and_keeps_same_object(tmp_path: Path) -> None:
             workflow(),
             state,
             events,
-            None,
-            None,
+            approval(),
+            employee(),
             preparation_routing_function=unexpected,
         )
         is supplied
@@ -237,8 +237,8 @@ def test_failure_is_read_only_and_keeps_same_object(tmp_path: Path) -> None:
             workflow(),
             state,
             events,
-            None,
-            None,
+            approval(),
+            employee(),
             preparation_routing_function=unexpected,
         )
         is outcome
@@ -282,8 +282,8 @@ def test_top_level_rejections_do_not_call_or_write(
                 workflow(),
                 state,
                 events,
-                None,
-                None,
+                approval(),
+                employee(),
                 preparation_routing_function=unexpected,
             )
     assert caught.value.detail.classification == classification
@@ -476,8 +476,8 @@ def test_completion_contract_precedes_missing_targets(tmp_path: Path) -> None:
             workflow(),
             state,
             events,
-            None,
-            None,
+            approval(),
+            employee(),
             preparation_routing_function=lambda *_: prepared(),
         )
     assert caught.value.detail.classification == "completion_contract"
@@ -497,8 +497,8 @@ def test_completion_contract_precedes_missing_targets(tmp_path: Path) -> None:
         (
             DecisionSubclass(*decision().__dict__.values()),
             None,
-            None,
-            None,
+            approval(),
+            employee(),
             None,
             None,
             "result_type",
@@ -506,8 +506,8 @@ def test_completion_contract_precedes_missing_targets(tmp_path: Path) -> None:
         (
             None,
             WorkflowSubclass(**workflow().__dict__),
-            None,
-            None,
+            approval(),
+            employee(),
             None,
             None,
             "workflow_definition",
@@ -516,7 +516,7 @@ def test_completion_contract_precedes_missing_targets(tmp_path: Path) -> None:
             None,
             None,
             ApprovalSubclass(*approval().__dict__.values()),
-            None,
+            employee(),
             None,
             None,
             "approval_contract",
@@ -524,7 +524,7 @@ def test_completion_contract_precedes_missing_targets(tmp_path: Path) -> None:
         (
             None,
             None,
-            None,
+            approval(),
             EmployeeSubclass(**employee().__dict__),
             None,
             None,
@@ -604,3 +604,40 @@ def test_rollback_failure_still_attempts_event_restoration(tmp_path: Path) -> No
     assert caught.value.detail.classification == "dependency_rollback"
     assert state in writes and events in writes
     assert "secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("actual_approval", "actual_employee", "classification"),
+    [
+        (type("ApprovalLike", (), {})(), employee(), "approval_contract"),
+        (approval(), type("EmployeeLike", (), {})(), "employee_contract"),
+    ],
+)
+def test_attribute_compatible_approval_and_employee_are_rejected_without_writes(
+    tmp_path: Path,
+    actual_approval: object,
+    actual_employee: object,
+    classification: str,
+) -> None:
+    state, events, _ = targets(tmp_path, final=True)
+    before, writes = (state.read_bytes(), events.read_bytes()), []
+    original = Path.write_bytes
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(ProgressionPreparationRoutingCompatibilityError) as caught:
+            route_progression_preparation_reentry(
+                decision(True),
+                workflow(),
+                state,
+                events,
+                actual_approval,
+                actual_employee,
+                preparation_routing_function=lambda *_: prepared(),
+            )
+    assert caught.value.detail.classification == classification
+    assert writes == [] and (state.read_bytes(), events.read_bytes()) == before

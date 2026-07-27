@@ -350,7 +350,7 @@ future explicit outcome routing
 
 ## Progression Preparation Routing Bridge（Phase 46）
 
-`route_progression_preparation_reentry()`は、正確なPhase 45 resultを受けるread-only bridgeです。`prepare_next_step`だけを、同じapproval・employee・workflow・target objectsのまま`route_persisted_success_progression_reentry()`（Phase 39）へ正確に一度だけ委譲し、その同じprepared-step result objectを返します。`workflow_complete`と`persisted_failure`はPhase 39を呼ばず、同じ supplied objectを返します。依存がtargetを変更した場合は元bytesへ補償復元します。Phase 31/32を直接呼ばず、approvalの作成・変更、start/execution、running persistence、retry、自動継続、completion/failure finalization、paid CLI/GUIを行いません。
+`route_progression_preparation_reentry()`は、正確なPhase 45 result、`NextStepPreparationApproval`、`EmployeeDefinition`を明示入力として受けるread-only bridgeです。`prepare_next_step`だけを、同じapproval・employee・workflow・target objectsのまま`route_persisted_success_progression_reentry()`（Phase 39）へ正確に一度だけ委譲し、その同じprepared-step result objectを返します。`workflow_complete`と`persisted_failure`はapproval・employeeを使用せずPhase 39を呼ばず、同じ supplied objectを返します。依存がtargetを変更した場合は元bytesへ補償復元します。Phase 31/32を直接呼ばず、approvalの作成・変更、start/execution、running persistence、retry、自動継続、completion/failure finalization、paid CLI/GUIを行いません。
 
 ```text
 Phase 45: prepare_next_step | workflow_complete | persisted_failure
