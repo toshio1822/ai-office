@@ -247,10 +247,12 @@ def _running(
         validate_model_invocation_execution_approval(
             start.request, tools, approval, provider="openai"
         )
+    except ValueError:
+        _raise("execution_inputs")
+    try:
         bytes_value = state.read_bytes()
         persisted = load_workflow_execution_state(state)
     except (
-        ValueError,
         OSError,
         WorkflowExecutionDataError,
         WorkflowExecutionLoadError,
@@ -276,7 +278,9 @@ def _running(
             and event.next_status == "succeeded"
             and event.failure_category is None
             and isinstance(event.response_id, str)
+            and bool(event.response_id)
             and isinstance(event.output_text, str)
+            and bool(event.output_text)
             and event.message is None
         ):
             _raise("persistence_contract")
