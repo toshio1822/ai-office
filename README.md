@@ -386,6 +386,10 @@ Phase 48: PreparedStepExecutionStart → Phase 41 exactly once
 future explicit execution or finalization boundary
 ```
 
+## Persisted-Running Execution Routing Bridge（Phase 49）
+
+`route_persisted_running_execution_bridge_reentry()`は、正確な`RunningStatePersistenceResult`だけを、caller suppliedの実行入力とともに`route_persisted_running_execution_reentry()`（Phase 42）へ正確に一度だけ委譲し、同じruntime execution result objectを返します。`workflow_complete`と`persisted_failure`はすべての実行入力を`None`としたstrict terminal routeであり、Phase 42を呼ばず同じobjectを返します。Phase 36を直接呼ばず、target改変は補償復元し、transition persistence、runtime-event append、retry、自動継続、completion/failure finalization、paid CLI/GUIを行いません。
+
 ## Persisted Success Preparation Routing Reentry Boundary（Phase 39）
 
 `route_persisted_success_progression_reentry()`は、Phase 38 からの正確なPhase 31 decision を再判定して全 field を照合します。`prepare_next_step`だけを明示 approval と employee を伴ってPhase 32へ一度委譲し同じprepared-step objectを返し、`workflow_complete`はPhase 32を呼ばず同じsupplied decision objectを返します。approval作成、実行、running state、completion persistence/finalization、retry、provider実行、データ書込みは行いません。
