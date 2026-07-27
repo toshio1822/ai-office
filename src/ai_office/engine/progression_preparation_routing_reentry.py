@@ -109,6 +109,9 @@ def route_progression_preparation_reentry(
         type(result) is WorkflowProgressionDecision
         and result.decision == "workflow_complete"
     ):
+        state, _ = _load_terminal_history(workflow, state_path, events_path)
+        if not _matches_completion(result, state):
+            _raise("terminal_contract")
         _require_unchanged(state_path, events_path, original)
         return result
     if type(result) is PersistedExecutionOutcome:
@@ -393,6 +396,18 @@ def _matches_failure(
         and value.current_step_index == state.current_step_index
         and value.current_employee_id == state.current_employee_id
         and value.failure_category == state.last_failure_category
+    )
+
+
+def _matches_completion(
+    value: WorkflowProgressionDecision, state: WorkflowExecutionState
+) -> bool:
+    return (
+        state.status == "succeeded"
+        and value.workflow_id == state.workflow_id
+        and value.current_step_id == state.current_step_id
+        and value.current_step_index == state.current_step_index
+        and value.current_employee_id == state.current_employee_id
     )
 
 

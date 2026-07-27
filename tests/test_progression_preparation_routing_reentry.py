@@ -222,6 +222,125 @@ def test_completion_is_read_only_and_keeps_same_object(tmp_path: Path) -> None:
     assert calls == 0 and (state.read_bytes(), events.read_bytes()) == before
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "invalid-state",
+        "invalid-events",
+        "running-state",
+        "wrong-completed",
+        "wrong-prior",
+        "wrong-terminal",
+        "wrong-success-response",
+    ],
+)
+def test_completion_requires_strict_final_succeeded_history(
+    tmp_path: Path, mode: str
+) -> None:
+    state, events, _ = targets(tmp_path, final=True)
+    if mode == "invalid-state":
+        state.write_bytes(b"not-json")
+    elif mode == "invalid-events":
+        events.write_bytes(b"not-json\n")
+    elif mode == "running-state":
+        running = WorkflowExecutionState(
+            "workflow", "running", "second", 2, "two", ("first",), None
+        )
+        state.write_bytes(serialize_workflow_execution_state_json(running).encode())
+    elif mode == "wrong-completed":
+        bad = WorkflowExecutionState(
+            "workflow", "succeeded", "second", 2, "two", ("first",), None
+        )
+        state.write_bytes(serialize_workflow_execution_state_json(bad).encode())
+    elif mode == "wrong-prior":
+        terminal = events.read_bytes().splitlines(keepends=True)[-1]
+        prior = RuntimeStepEvent(
+            "step_succeeded",
+            "workflow",
+            "second",
+            2,
+            "two",
+            "ready",
+            "succeeded",
+            "openai",
+            None,
+            "response",
+            "request",
+            "output",
+            None,
+        )
+        events.write_bytes(
+            serialize_runtime_step_event_jsonl(prior).encode() + terminal
+        )
+    elif mode == "wrong-terminal":
+        prior = events.read_bytes().splitlines(keepends=True)[0]
+        terminal = RuntimeStepEvent(
+            "step_failed",
+            "workflow",
+            "second",
+            2,
+            "two",
+            "running",
+            "failed",
+            "openai",
+            "api_error",
+            None,
+            "request",
+            None,
+            "safe",
+        )
+        events.write_bytes(
+            prior + serialize_runtime_step_event_jsonl(terminal).encode()
+        )
+    else:
+        prior = events.read_bytes().splitlines(keepends=True)[0]
+        terminal = RuntimeStepEvent(
+            "step_succeeded",
+            "workflow",
+            "second",
+            2,
+            "two",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            None,
+            "request",
+            "output",
+            None,
+        )
+        events.write_bytes(
+            prior + serialize_runtime_step_event_jsonl(terminal).encode()
+        )
+    before, writes, calls = (state.read_bytes(), events.read_bytes()), [], 0
+    original = Path.write_bytes
+
+    def record(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original(path, data)
+
+    def unexpected(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(ProgressionPreparationRoutingCompatibilityError) as caught:
+            route_progression_preparation_reentry(
+                decision(True),
+                workflow(),
+                state,
+                events,
+                approval(),
+                employee(),
+                preparation_routing_function=unexpected,
+            )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0 and writes == []
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
 def test_failure_is_read_only_and_keeps_same_object(tmp_path: Path) -> None:
     state, events, outcome = targets(tmp_path, "failed")
     calls = 0
