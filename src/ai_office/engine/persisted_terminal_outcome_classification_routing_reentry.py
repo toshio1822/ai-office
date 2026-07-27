@@ -225,6 +225,7 @@ def _validate_terminal_history(
     )
     if compressed != tuple(range(1, expected + 1)):
         _raise("terminal_contract")
+    _validate_earlier_events(workflow, state, events[:-1])
     event = events[-1]
     base = (
         event.workflow_id == state.workflow_id
@@ -255,6 +256,36 @@ def _validate_terminal_history(
         )
     )
     if not valid:
+        _raise("terminal_contract")
+
+
+def _validate_earlier_events(
+    workflow: WorkflowDefinition,
+    state: WorkflowExecutionState,
+    events: tuple[object, ...],
+) -> None:
+    positions = {step.id: index for index, step in enumerate(workflow.steps, 1)}
+    expected_ids = (
+        state.completed_step_ids[:-1]
+        if state.status == "succeeded"
+        else state.completed_step_ids
+    )
+    actual_ids: list[str] = []
+    for event in events:
+        if not (
+            event.workflow_id == state.workflow_id
+            and event.step_id in positions
+            and event.step_index == positions[event.step_id]
+            and event.employee_id == workflow.steps[event.step_index - 1].employee
+            and event.step_index < state.current_step_index
+            and event.step_id != state.current_step_id
+            and event.event_type == "step_succeeded"
+            and event.previous_status == "running"
+            and event.next_status == "succeeded"
+        ):
+            _raise("terminal_contract")
+        actual_ids.append(event.step_id)
+    if tuple(actual_ids) != expected_ids:
         _raise("terminal_contract")
 
 
