@@ -1,4 +1,4 @@
-"""Tests for Phase 43 with injected Phase 36 fakes only."""
+"""Tests for Phase 43 with injected transition reentry fakes only."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -15,12 +15,14 @@ from ai_office.engine import (
 )
 from ai_office.invocation import ModelInvocationFailure, ModelInvocationSuccess
 from ai_office.runtime import (
+    RuntimeStepEvent,
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
 )
 from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
+    serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
 
@@ -163,7 +165,7 @@ def test_runtime_result_routes_once_and_returns_exact_persistence_object(
     calls = 0
     expected = None
 
-    def phase36(*args: object):
+    def transition_reentry_fake(*args: object):
         nonlocal calls, expected
         calls += 1
         assert args == (result, workflow(), state, events)
@@ -172,7 +174,11 @@ def test_runtime_result_routes_once_and_returns_exact_persistence_object(
 
     assert (
         route_executed_result_transition_reentry(
-            result, workflow(), state, events, transition_reentry_function=phase36
+            result,
+            workflow(),
+            state,
+            events,
+            transition_reentry_function=transition_reentry_fake,
         )
         is expected
     )
@@ -459,7 +465,7 @@ def test_wrong_persistence_return_types_are_compensated(
     state, events, before_state, before_events = setup(tmp_path)
     calls = 0
 
-    def phase36(*_: object) -> object:
+    def transition_reentry_fake(*_: object) -> object:
         nonlocal calls
         calls += 1
         valid_persistence(state, events, success())
@@ -467,7 +473,11 @@ def test_wrong_persistence_return_types_are_compensated(
 
     with pytest.raises(ExecutedResultTransitionRoutingCompatibilityError) as caught:
         route_executed_result_transition_reentry(
-            success(), workflow(), state, events, transition_reentry_function=phase36
+            success(),
+            workflow(),
+            state,
+            events,
+            transition_reentry_function=transition_reentry_fake,
         )
     assert caught.value.detail.classification == "persistence_contract"
     assert (
@@ -504,7 +514,7 @@ def test_persistence_result_fields_are_validated_and_compensated(
     state, events, before_state, before_events = setup(tmp_path)
     calls = 0
 
-    def phase36(*_: object) -> object:
+    def transition_reentry_fake(*_: object) -> object:
         nonlocal calls
         calls += 1
         valid_persistence(state, events, success())
@@ -516,7 +526,7 @@ def test_persistence_result_fields_are_validated_and_compensated(
             workflow(),
             state,
             events,
-            transition_reentry_function=phase36,
+            transition_reentry_function=transition_reentry_fake,
         )
     assert caught.value.detail.classification == "persistence_contract"
     assert calls == 1
@@ -532,6 +542,337 @@ def _mutate(path: Path, mode: str) -> None:
         path.write_bytes(b"")
     else:
         path.write_bytes(path.read_bytes() + b"append")
+
+
+def terminal_state(
+    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
+    **changes: object,
+) -> WorkflowExecutionState:
+    success_result = type(result) is StepRuntimeExecutionSuccess
+    values: dict[str, object] = {
+        "workflow_id": "workflow",
+        "status": "succeeded" if success_result else "failed",
+        "current_step_id": "step",
+        "current_step_index": 1,
+        "current_employee_id": "employee",
+        "completed_step_ids": ("step",) if success_result else (),
+        "last_failure_category": None if success_result else "api_error",
+    }
+    values.update(changes)
+    return WorkflowExecutionState(**values)  # type: ignore[arg-type]
+
+
+def terminal_event(
+    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
+    **changes: object,
+) -> RuntimeStepEvent:
+    success_result = type(result) is StepRuntimeExecutionSuccess
+    values: dict[str, object] = {
+        "event_type": "step_succeeded" if success_result else "step_failed",
+        "workflow_id": "workflow",
+        "step_id": "step",
+        "step_index": 1,
+        "employee_id": "employee",
+        "previous_status": "running",
+        "next_status": "succeeded" if success_result else "failed",
+        "provider": "openai",
+        "failure_category": None if success_result else "api_error",
+        "response_id": "response" if success_result else None,
+        "request_id": "request",
+        "output_text": "out" if success_result else None,
+        "message": None if success_result else "safe",
+    }
+    values.update(changes)
+    return RuntimeStepEvent(**values)  # type: ignore[arg-type]
+
+
+def corrupting_reentry(
+    state: Path,
+    events: Path,
+    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
+    final_state: WorkflowExecutionState | bytes,
+    final_events: bytes | None = None,
+) -> WorkflowExecutionPersistenceResult:
+    state_bytes = (
+        serialize_workflow_execution_state_json(final_state).encode()
+        if isinstance(final_state, WorkflowExecutionState)
+        else final_state
+    )
+    event_bytes = (
+        serialize_runtime_step_event_jsonl(terminal_event(result)).encode()
+        if final_events is None
+        else final_events
+    )
+    state.write_bytes(state_bytes)
+    events.write_bytes(event_bytes)
+    return WorkflowExecutionPersistenceResult(
+        state, events, len(state_bytes), len(event_bytes)
+    )
+
+
+def assert_final_contract_rejected(
+    tmp_path: Path,
+    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
+    state_value: WorkflowExecutionState | bytes,
+    event_bytes: bytes | None = None,
+) -> None:
+    state, events, before_state, before_events = setup(tmp_path)
+    calls = 0
+
+    def fake(*_: object) -> WorkflowExecutionPersistenceResult:
+        nonlocal calls
+        calls += 1
+        return corrupting_reentry(state, events, result, state_value, event_bytes)
+
+    with pytest.raises(ExecutedResultTransitionRoutingCompatibilityError) as caught:
+        route_executed_result_transition_reentry(
+            result, workflow(), state, events, transition_reentry_function=fake
+        )
+    assert caught.value.detail.classification == "persistence_contract"
+    assert calls == 1
+    assert state.read_bytes() == before_state and events.read_bytes() == before_events
+
+
+@pytest.mark.parametrize("result", [success(), failure()])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"status": "running"},
+        {"status": "failed"},
+        {"status": "succeeded"},
+        {"workflow_id": "other"},
+        {"current_step_id": "other"},
+        {"current_step_index": 2},
+        {"current_employee_id": "other"},
+        {"completed_step_ids": ()},
+        {"completed_step_ids": ("step", "step")},
+        {"completed_step_ids": ("step", "other")},
+        {"last_failure_category": "api_error"},
+        {"last_failure_category": "transport_error"},
+    ],
+)
+def test_final_state_contract_rejection_restores_both_targets(
+    tmp_path: Path,
+    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
+    changes: dict[str, object],
+) -> None:
+    effective = changes
+    if type(result) is StepRuntimeExecutionSuccess and changes == {
+        "status": "succeeded"
+    }:
+        effective = {"status": "failed"}
+    elif type(result) is StepRuntimeExecutionFailure and changes == {
+        "status": "failed"
+    }:
+        effective = {"status": "succeeded"}
+    elif type(result) is StepRuntimeExecutionFailure and changes == {
+        "completed_step_ids": ()
+    }:
+        effective = {"completed_step_ids": ("step",)}
+    elif type(result) is StepRuntimeExecutionFailure and changes == {
+        "last_failure_category": "api_error"
+    }:
+        effective = {"last_failure_category": "transport_error"}
+    state = terminal_state(result, **effective)
+    assert_final_contract_rejected(tmp_path, result, state)
+
+
+@pytest.mark.parametrize("result", [success(), failure()])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"event_type": "step_failed"},
+        {"workflow_id": "other"},
+        {"step_id": "other"},
+        {"step_index": 2},
+        {"employee_id": "other"},
+        {"previous_status": "ready"},
+        {"next_status": "running"},
+        {"provider": "other"},
+        {"request_id": "other"},
+        {"response_id": "other"},
+        {"output_text": "other"},
+        {"failure_category": "transport_error"},
+        {"message": "other"},
+    ],
+)
+def test_final_event_contract_rejection_restores_both_targets(
+    tmp_path: Path,
+    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
+    changes: dict[str, object],
+) -> None:
+    # Skip mutations that equal the valid branch-specific field value.
+    if type(result) is StepRuntimeExecutionSuccess and changes in (
+        {"failure_category": "transport_error"},
+        {"message": "other"},
+    ):
+        assert_final_contract_rejected(
+            tmp_path,
+            result,
+            terminal_state(result),
+            serialize_runtime_step_event_jsonl(
+                terminal_event(result, **changes)
+            ).encode(),
+        )
+    elif type(result) is StepRuntimeExecutionFailure and changes in (
+        {"response_id": "other"},
+        {"output_text": "other"},
+    ):
+        assert_final_contract_rejected(
+            tmp_path,
+            result,
+            terminal_state(result),
+            serialize_runtime_step_event_jsonl(
+                terminal_event(result, **changes)
+            ).encode(),
+        )
+    elif type(result) is StepRuntimeExecutionFailure and changes == {
+        "event_type": "step_failed"
+    }:
+        assert_final_contract_rejected(
+            tmp_path,
+            result,
+            terminal_state(result),
+            serialize_runtime_step_event_jsonl(
+                terminal_event(result, event_type="step_succeeded")
+            ).encode(),
+        )
+    else:
+        assert_final_contract_rejected(
+            tmp_path,
+            result,
+            terminal_state(result),
+            serialize_runtime_step_event_jsonl(
+                terminal_event(result, **changes)
+            ).encode(),
+        )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "state-only",
+        "event-only",
+        "prefix-replaced",
+        "multiple-events",
+        "bad-state",
+        "history-mismatch",
+    ],
+)
+def test_missing_or_invalid_final_transition_is_compensated(
+    tmp_path: Path, mode: str
+) -> None:
+    result = success()
+    good_state = terminal_state(result)
+    good_event = serialize_runtime_step_event_jsonl(terminal_event(result)).encode()
+    if mode == "state-only":
+        events = b""
+        state = good_state
+    elif mode == "event-only":
+        events = good_event
+        state = serialize_workflow_execution_state_json(
+            WorkflowExecutionState(
+                "workflow", "running", "step", 1, "employee", (), None
+            )
+        ).encode()
+    elif mode == "prefix-replaced":
+        events = b"replaced\n"
+        state = good_state
+    elif mode == "multiple-events":
+        events = good_event + good_event
+        state = good_state
+    elif mode == "bad-state":
+        events = good_event
+        state = b"bad"
+    else:
+        events = good_event
+        state = terminal_state(result, completed_step_ids=())
+    assert_final_contract_rejected(tmp_path, result, state, events)
+
+
+def test_replaced_nonempty_original_event_prefix_is_compensated(tmp_path: Path) -> None:
+    state, events = tmp_path / "state.json", tmp_path / "events.jsonl"
+    two_step_workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "workflow",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "first", "name": "F", "employee": "one", "instructions": "a"},
+                {
+                    "id": "step",
+                    "name": "S",
+                    "employee": "employee",
+                    "instructions": "b",
+                },
+            ],
+        }
+    )
+    running = WorkflowExecutionState(
+        "workflow", "running", "step", 2, "employee", ("first",), None
+    )
+    prior = RuntimeStepEvent(
+        "step_succeeded",
+        "workflow",
+        "first",
+        1,
+        "one",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        "response",
+        "request",
+        "out",
+        None,
+    )
+    before_state = serialize_workflow_execution_state_json(running).encode()
+    before_events = serialize_runtime_step_event_jsonl(prior).encode()
+    state.write_bytes(before_state)
+    events.write_bytes(before_events)
+    result = StepRuntimeExecutionSuccess(
+        "workflow", "step", 2, "employee", success().invocation_result
+    )
+    calls = 0
+
+    def fake(*_: object) -> WorkflowExecutionPersistenceResult:
+        nonlocal calls
+        calls += 1
+        state_bytes = serialize_workflow_execution_state_json(
+            WorkflowExecutionState(
+                "workflow", "succeeded", "step", 2, "employee", ("first", "step"), None
+            )
+        ).encode()
+        replacement = serialize_runtime_step_event_jsonl(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "workflow",
+                "step",
+                2,
+                "employee",
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                "response",
+                "request",
+                "out",
+                None,
+            )
+        ).encode()
+        state.write_bytes(state_bytes)
+        events.write_bytes(replacement)
+        return WorkflowExecutionPersistenceResult(
+            state, events, len(state_bytes), len(replacement)
+        )
+
+    with pytest.raises(ExecutedResultTransitionRoutingCompatibilityError) as caught:
+        route_executed_result_transition_reentry(
+            result, two_step_workflow, state, events, transition_reentry_function=fake
+        )
+    assert caught.value.detail.classification == "persistence_contract"
+    assert calls == 1
+    assert state.read_bytes() == before_state and events.read_bytes() == before_events
 
 
 @pytest.mark.parametrize("mode", ["replace", "delete", "truncate", "append"])
@@ -617,3 +958,43 @@ def test_safe_and_unexpected_dependency_errors_restore_mutations(
         assert (
             state.read_bytes() == before_state and events.read_bytes() == before_events
         )
+
+
+@pytest.mark.parametrize("failed_target", ["state", "events"])
+def test_rollback_failure_is_safe_and_attempts_both_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_target: str
+) -> None:
+    state, events, before_state, before_events = setup(tmp_path)
+    original_write = Path.write_bytes
+    restored: list[Path] = []
+
+    def fail_one_restore(path: Path, data: bytes) -> int:
+        if data == (before_state if path == state else before_events):
+            restored.append(path)
+            if path.name == f"{failed_target}.json" or (
+                failed_target == "events" and path == events
+            ):
+                raise OSError("provider response output failure")
+        return original_write(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_one_restore)
+    calls = 0
+
+    def failing(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(b"changed-state")
+        events.write_bytes(b"changed-events")
+        raise RuntimeError("provider response output failure")
+
+    with pytest.raises(ExecutedResultTransitionRoutingCompatibilityError) as caught:
+        route_executed_result_transition_reentry(
+            success(), workflow(), state, events, transition_reentry_function=failing
+        )
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert calls == 1
+    assert state in restored and events in restored
+    assert str(state) not in str(caught.value)
+    assert "provider" not in str(caught.value)
+    assert "output" not in str(caught.value)
+    assert "failure" not in str(caught.value)
