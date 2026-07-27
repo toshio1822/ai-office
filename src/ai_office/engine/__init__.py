@@ -64,6 +64,12 @@ from ai_office.engine.persisted_success_progression import (
     PersistedSuccessProgressionFailureDetail,
     decide_persisted_success_progression,
 )
+from ai_office.engine.persisted_terminal_outcome_classification_routing_reentry import (
+    PersistedTerminalOutcomeClassificationRoutingCompatibilityError,
+    PersistedTerminalOutcomeClassificationRoutingError,
+    PersistedTerminalOutcomeClassificationRoutingFailureDetail,
+    route_persisted_terminal_outcome_classification_reentry,
+)
 from ai_office.engine.prepared_running_state_reentry import (
     PreparedRunningStateReentryCompatibilityError,
     PreparedRunningStateReentryError,
@@ -178,6 +184,10 @@ __all__ = [
     "PersistedExecutionOutcomeRoutingError",
     "PersistedExecutionOutcomeRoutingFailureDetail",
     "route_persisted_execution_outcome_reentry",
+    "PersistedTerminalOutcomeClassificationRoutingCompatibilityError",
+    "PersistedTerminalOutcomeClassificationRoutingError",
+    "PersistedTerminalOutcomeClassificationRoutingFailureDetail",
+    "route_persisted_terminal_outcome_classification_reentry",
     "PersistedRunningExecutionReentryCompatibilityError",
     "PersistedRunningExecutionReentryError",
     "PersistedRunningExecutionReentryFailureDetail",
