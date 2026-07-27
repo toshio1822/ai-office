@@ -90,8 +90,10 @@ def validate_strict_terminal_history(
             and event.previous_status == "running"
             and event.next_status == "succeeded"
             and event.failure_category is None
-            and isinstance(event.response_id, str)
-            and isinstance(event.output_text, str)
+            and type(event.response_id) is str
+            and event.response_id != ""
+            and type(event.output_text) is str
+            and event.output_text != ""
             and event.message is None
         ):
             _invalid()
@@ -115,8 +117,10 @@ def _validate_terminal_event(
             and event.next_status == "succeeded"
             and state.last_failure_category is None
             and event.failure_category is None
-            and isinstance(event.response_id, str)
-            and isinstance(event.output_text, str)
+            and type(event.response_id) is str
+            and event.response_id != ""
+            and type(event.output_text) is str
+            and event.output_text != ""
             and event.message is None
         )
     else:
