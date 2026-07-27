@@ -106,6 +106,12 @@ from ai_office.engine.prepared_step_start_routing_reentry import (
     PreparedStepStartRoutingFailureDetail,
     route_prepared_step_start_reentry,
 )
+from ai_office.engine.progression_preparation_routing_reentry import (
+    ProgressionPreparationRoutingCompatibilityError,
+    ProgressionPreparationRoutingError,
+    ProgressionPreparationRoutingFailureDetail,
+    route_progression_preparation_reentry,
+)
 from ai_office.engine.workflow_progression import (
     WorkflowProgressionCompatibilityDetail,
     WorkflowProgressionCompatibilityError,
@@ -185,6 +191,10 @@ __all__ = [
     "PersistedSuccessPreparationRoutingError",
     "PersistedSuccessPreparationRoutingFailureDetail",
     "route_persisted_success_progression_reentry",
+    "ProgressionPreparationRoutingCompatibilityError",
+    "ProgressionPreparationRoutingError",
+    "ProgressionPreparationRoutingFailureDetail",
+    "route_progression_preparation_reentry",
     "PersistedExecutionOutcome",
     "PersistedExecutionOutcomeCompatibilityError",
     "PersistedExecutionOutcomeError",
