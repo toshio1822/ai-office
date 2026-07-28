@@ -339,6 +339,21 @@ future explicit boundary
 
 `route_persisted_terminal_outcome_classification_bridge_reentry()`は、正確なPhase 50 resultを一つだけ受けるread-only bridgeです。`WorkflowExecutionPersistenceResult`だけを既存Phase 44 `route_persisted_terminal_outcome_classification_reentry()`へ正確に一度だけ委譲し、同じ`PersistedExecutionOutcome` objectを返します。`workflow_complete`と既存`persisted_failure`はstrict terminal state/historyをread-onlyで照合して同じobjectを返し、Phase 44を呼びません。依存によるtarget改変、例外、または不正な返却値は元bytesへ補償復元します。Phase 37/44を複製せず、classified outcomeの後続routing、progression、next-step preparation/execution、retry、自動継続、completion/failure finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
 
+## Persisted Terminal Outcome Classification Phase Bridge Reentry Boundary（Phase 58）
+
+`route_persisted_terminal_outcome_classification_phase_bridge_reentry()`は、正確なPhase 57 resultを一つだけ受けるread-only boundaryです。正確な`WorkflowExecutionPersistenceResult`だけを既存Phase 51へ一度だけ渡し、同じ`PersistedExecutionOutcome` objectを返します。`workflow_complete`と`persisted_failure`はstrict terminal state/historyを照合し、Phase 51を呼ばず同じsupplied objectを返します。全routeでtargetはread-onlyで、不正・malformed・unexpectedな依存改変は元bytesへ補償復元します。Phase 51/44/37を複製せず、classified outcomeの後続routing、progression、next-step preparation/execution、retry、自動継続、completion/failure finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+
+```text
+Phase 57
+persistence result | workflow_complete | persisted_failure
+    ↓
+Phase 58
+persistence result → Phase 51 exactly once → same PersistedExecutionOutcome
+workflow_complete | persisted_failure → unchanged stop
+    ↓
+future explicit boundary
+```
+
 ```text
 Phase 50
 persistence result | workflow_complete | persisted_failure
