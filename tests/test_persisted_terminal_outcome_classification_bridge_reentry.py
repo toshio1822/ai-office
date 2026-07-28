@@ -571,6 +571,61 @@ def test_dependency_errors_restore_every_mutated_target(
     assert (state.read_bytes(), events.read_bytes()) == before
 
 
+@pytest.mark.parametrize("error_kind", ["safe", "unexpected"])
+@pytest.mark.parametrize("operation", ["replace", "delete", "truncate", "append"])
+@pytest.mark.parametrize("target", ["state", "events", "both"])
+def test_safe_and_unexpected_errors_compensate_full_mutation_matrix(
+    tmp_path: Path, error_kind: str, operation: str, target: str
+) -> None:
+    state, events, persisted = setup(tmp_path)
+    before, calls = (state.read_bytes(), events.read_bytes()), 0
+    safe = PersistedTerminalOutcomeClassificationRoutingCompatibilityError(
+        "result_type"
+    )
+
+    def mutate(path: Path) -> None:
+        if operation == "replace":
+            path.write_bytes(b"replacement")
+        elif operation == "delete":
+            path.unlink()
+        elif operation == "truncate":
+            path.write_bytes(b"")
+        else:
+            path.write_bytes(path.read_bytes() + b"append")
+
+    def phase44(*_: object) -> PersistedExecutionOutcome:
+        nonlocal calls
+        calls += 1
+        if target in {"state", "both"}:
+            mutate(state)
+        if target in {"events", "both"}:
+            mutate(events)
+        if error_kind == "safe":
+            raise safe
+        raise RuntimeError("provider request response output")
+
+    expected = (
+        PersistedTerminalOutcomeClassificationRoutingCompatibilityError
+        if error_kind == "safe"
+        else PersistedTerminalOutcomeClassificationBridgeCompatibilityError
+    )
+    with pytest.raises(expected) as caught:
+        route_persisted_terminal_outcome_classification_bridge_reentry(
+            persisted,
+            workflow(),
+            state,
+            events,
+            classification_routing_function=phase44,
+        )
+    if error_kind == "safe":
+        assert caught.value is safe
+    else:
+        assert caught.value.detail.classification == "dependency_error"
+        assert "provider" not in str(caught.value)
+        assert "output" not in str(caught.value)
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
 @pytest.mark.parametrize("failed_target", ["state", "events", "both"])
 def test_rollback_failure_attempts_both_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_target: str
@@ -609,3 +664,61 @@ def test_rollback_failure_attempts_both_targets(
         )
     assert caught.value.detail.classification == "dependency_rollback"
     assert state in restored and events in restored
+
+
+@pytest.mark.parametrize("dependency_kind", ["normal", "safe", "unexpected"])
+@pytest.mark.parametrize("failed_restore", ["state", "events", "both"])
+def test_rollback_failure_overrides_every_dependency_outcome_and_attempts_both_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dependency_kind: str,
+    failed_restore: str,
+) -> None:
+    state, events, persisted = setup(tmp_path)
+    originals = {state: state.read_bytes(), events: events.read_bytes()}
+    original_write, restore_attempts, calls = Path.write_bytes, [], 0
+    safe = PersistedTerminalOutcomeClassificationRoutingCompatibilityError(
+        "result_type"
+    )
+
+    def fail_restore(path: Path, contents: bytes) -> int:
+        if contents == originals.get(path):
+            restore_attempts.append(path)
+            if (
+                failed_restore == "both"
+                or (failed_restore == "state" and path == state)
+                or (failed_restore == "events" and path == events)
+            ):
+                raise OSError("provider request response output")
+        return original_write(path, contents)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_restore)
+
+    def phase44(*_: object) -> PersistedExecutionOutcome:
+        nonlocal calls
+        calls += 1
+        original_write(state, b"changed-state")
+        original_write(events, b"changed-events")
+        if dependency_kind == "safe":
+            raise safe
+        if dependency_kind == "unexpected":
+            raise RuntimeError("provider request response output")
+        return PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "step", 1, "employee", "api_error"
+        )
+
+    with pytest.raises(
+        PersistedTerminalOutcomeClassificationBridgeCompatibilityError
+    ) as caught:
+        route_persisted_terminal_outcome_classification_bridge_reentry(
+            persisted,
+            workflow(),
+            state,
+            events,
+            classification_routing_function=phase44,
+        )
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert calls == 1
+    assert state in restore_attempts and events in restore_attempts
+    assert "provider" not in str(caught.value)
+    assert "output" not in str(caught.value)
