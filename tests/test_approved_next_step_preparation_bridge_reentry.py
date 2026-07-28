@@ -457,3 +457,436 @@ def test_rollback_failure_has_priority_and_attempts_both_targets(
     assert caught.value.detail.classification == "dependency_rollback"
     assert attempts == [state, events]
     assert "secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, 3, 1.0])
+@pytest.mark.parametrize("field", ["current_step_index", "next_step_index"])
+def test_decision_indexes_require_exact_in_range_int_before_phase32(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events, decision, approval, person = setup(tmp_path)
+    calls, writes = 0, []
+    original_write = Path.write_bytes
+
+    def phase32(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    def record(path: Path, content: bytes) -> int:
+        writes.append(path)
+        return original_write(path, content)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(
+            ApprovedNextStepPreparationBridgeCompatibilityError
+        ) as caught:
+            route_approved_next_step_preparation_bridge_reentry(
+                replace(decision, **{field: value}),
+                workflow(),
+                state,
+                events,
+                approval,
+                person,
+                preparation_function=phase32,
+            )
+    assert caught.value.detail.classification == "decision_contract"
+    assert calls == 0 and writes == []
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, 3, 1.0])
+@pytest.mark.parametrize("field", ["current_step_index", "next_step_index"])
+def test_approval_indexes_require_exact_in_range_int_before_phase32(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events, decision, approval, person = setup(tmp_path)
+    assert approval is not None
+    calls, writes = 0, []
+    original_write = Path.write_bytes
+
+    def phase32(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    def record(path: Path, content: bytes) -> int:
+        writes.append(path)
+        return original_write(path, content)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(
+            ApprovedNextStepPreparationBridgeCompatibilityError
+        ) as caught:
+            route_approved_next_step_preparation_bridge_reentry(
+                decision,
+                workflow(),
+                state,
+                events,
+                replace(approval, **{field: value}),
+                person,
+                preparation_function=phase32,
+            )
+    assert caught.value.detail.classification == "approval_contract"
+    assert calls == 0 and writes == []
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("workflow_id", "wrong"),
+        ("current_step_id", "wrong"),
+        ("current_step_index", 99),
+        ("next_step_id", "wrong"),
+        ("next_step_index", 99),
+        ("next_employee_id", "wrong"),
+    ],
+)
+def test_every_approval_identity_field_is_prevalidated(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events, decision, approval, person = setup(tmp_path)
+    assert approval is not None
+    with pytest.raises(ApprovedNextStepPreparationBridgeCompatibilityError) as caught:
+        route_approved_next_step_preparation_bridge_reentry(
+            decision,
+            workflow(),
+            state,
+            events,
+            replace(approval, **{field: value}),
+            person,
+            preparation_function=lambda *_: (_ for _ in ()).throw(AssertionError),
+        )
+    assert caught.value.detail.classification == "approval_contract"
+
+
+def test_exact_types_and_non_callable_dependency_are_rejected(tmp_path: Path) -> None:
+    state, events, decision, approval, person = setup(tmp_path)
+    assert approval is not None and person is not None
+
+    class DecisionSubclass(WorkflowProgressionDecision):
+        pass
+
+    class ApprovalSubclass(NextStepPreparationApproval):
+        pass
+
+    class EmployeeSubclass(EmployeeDefinition):
+        pass
+
+    class WorkflowSubclass(WorkflowDefinition):
+        pass
+
+    cases = [
+        (
+            DecisionSubclass(**decision.__dict__),
+            workflow(),
+            approval,
+            person,
+            lambda *_: None,
+            "result_type",
+        ),
+        (
+            decision,
+            WorkflowSubclass.model_validate(workflow().model_dump()),
+            approval,
+            person,
+            lambda *_: None,
+            "workflow_definition",
+        ),
+        (
+            decision,
+            workflow(),
+            ApprovalSubclass(**approval.__dict__),
+            person,
+            lambda *_: None,
+            "approval_contract",
+        ),
+        (
+            decision,
+            workflow(),
+            approval,
+            EmployeeSubclass(**person.model_dump()),
+            lambda *_: None,
+            "approval_contract",
+        ),
+        (
+            decision,
+            workflow(),
+            approval,
+            object(),
+            lambda *_: None,
+            "approval_contract",
+        ),
+        (decision, workflow(), approval, person, object(), "preparation_contract"),
+    ]
+    for (
+        result,
+        definition,
+        passed_approval,
+        passed_employee,
+        dependency,
+        classification,
+    ) in cases:
+        with pytest.raises(
+            ApprovedNextStepPreparationBridgeCompatibilityError
+        ) as caught:
+            route_approved_next_step_preparation_bridge_reentry(
+                result,
+                definition,
+                state,
+                events,
+                passed_approval,
+                passed_employee,
+                preparation_function=dependency,  # type: ignore[arg-type]
+            )
+        assert caught.value.detail.classification == classification
+
+
+def test_prepared_subclass_and_substitute_are_rejected(tmp_path: Path) -> None:
+    state, events, decision, approval, person = setup(tmp_path)
+    assert approval is not None and person is not None
+    expected = PreparedWorkflowStep(
+        "w", "two", 2, "b", "employee", "y", "model", ("tool",)
+    )
+
+    class PreparedSubclass(PreparedWorkflowStep):
+        pass
+
+    for returned in (PreparedSubclass(**expected.__dict__), object()):
+        with pytest.raises(
+            ApprovedNextStepPreparationBridgeCompatibilityError
+        ) as caught:
+            route_approved_next_step_preparation_bridge_reentry(
+                decision,
+                workflow(),
+                state,
+                events,
+                approval,
+                person,
+                preparation_function=lambda *_: returned,  # type: ignore[return-value]
+            )
+        assert caught.value.detail.classification == "preparation_contract"
+
+
+def test_terminal_contracts_reject_irrelevant_inputs_and_malformed_results(
+    tmp_path: Path,
+) -> None:
+    state, events, failure, _, _ = setup(tmp_path, "failed")
+    before = state.read_bytes(), events.read_bytes()
+    malformed = [
+        replace(failure, outcome="persisted_success"),
+        replace(failure, workflow_id="wrong"),
+        replace(failure, current_step_id="wrong"),
+        replace(failure, current_step_index=True),
+        replace(failure, current_employee_id="wrong"),
+        replace(failure, failure_category=None),
+    ]
+    for result in malformed:
+        with pytest.raises(
+            ApprovedNextStepPreparationBridgeCompatibilityError
+        ) as caught:
+            route_approved_next_step_preparation_bridge_reentry(
+                result,
+                workflow(),
+                state,
+                events,
+                None,
+                None,
+                preparation_function=lambda *_: None,
+            )
+        assert caught.value.detail.classification == "failure_contract"
+    with pytest.raises(ApprovedNextStepPreparationBridgeCompatibilityError) as caught:
+        route_approved_next_step_preparation_bridge_reentry(
+            failure,
+            workflow(),
+            state,
+            events,
+            object(),
+            None,
+            preparation_function=lambda *_: None,
+        )
+    assert caught.value.detail.classification == "failure_contract"
+    with pytest.raises(ApprovedNextStepPreparationBridgeCompatibilityError) as caught:
+        route_approved_next_step_preparation_bridge_reentry(
+            failure,
+            workflow(),
+            state,
+            events,
+            None,
+            object(),
+            preparation_function=lambda *_: None,
+        )
+    assert caught.value.detail.classification == "failure_contract"
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("index", [True, False, 0, -1, 3, 1.0])
+def test_terminal_result_indexes_require_exact_in_range_int(
+    tmp_path: Path, index: object
+) -> None:
+    state, events, failure, _, _ = setup(tmp_path, "failed")
+    with pytest.raises(ApprovedNextStepPreparationBridgeCompatibilityError) as caught:
+        route_approved_next_step_preparation_bridge_reentry(
+            replace(failure, current_step_index=index),
+            workflow(),
+            state,
+            events,
+            None,
+            None,
+            preparation_function=lambda *_: None,
+        )
+    assert caught.value.detail.classification == "failure_contract"
+
+
+@pytest.mark.parametrize(
+    "field,value,classification",
+    [
+        ("decision", "prepare_next_step", "approval_contract"),
+        ("workflow_id", "wrong", "completion_contract"),
+        ("current_step_id", "wrong", "completion_contract"),
+        ("current_step_index", True, "completion_contract"),
+        ("current_employee_id", "wrong", "completion_contract"),
+        ("next_step_id", "wrong", "completion_contract"),
+        ("next_step_index", 3, "completion_contract"),
+        ("next_employee_id", "wrong", "completion_contract"),
+        ("reason", "wrong", "completion_contract"),
+    ],
+)
+def test_every_completion_field_is_prevalidated(
+    tmp_path: Path, field: str, value: object, classification: str
+) -> None:
+    definition = workflow()
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    terminal = WorkflowExecutionState(
+        "w", "succeeded", "two", 2, "b", ("one", "two"), None
+    )
+    history = (
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "one",
+            1,
+            "a",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "first",
+            "request",
+            "out",
+            None,
+        ),
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "two",
+            2,
+            "b",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "final",
+            "request",
+            "out",
+            None,
+        ),
+    )
+    state_path.write_text(serialize_workflow_execution_state_json(terminal))
+    events_path.write_text(
+        "".join(serialize_runtime_step_event_jsonl(item) for item in history)
+    )
+    completion = WorkflowProgressionDecision(
+        "workflow_complete", "w", "two", 2, "b", None, None, None, "last_step_succeeded"
+    )
+    with pytest.raises(ApprovedNextStepPreparationBridgeCompatibilityError) as caught:
+        route_approved_next_step_preparation_bridge_reentry(
+            replace(completion, **{field: value}),
+            definition,
+            state_path,
+            events_path,
+            None,
+            None,
+            preparation_function=lambda *_: (_ for _ in ()).throw(AssertionError),
+        )
+    assert caught.value.detail.classification == classification
+    with pytest.raises(ApprovedNextStepPreparationBridgeCompatibilityError) as caught:
+        route_approved_next_step_preparation_bridge_reentry(
+            completion,
+            definition,
+            state_path,
+            events_path,
+            object(),
+            None,
+            preparation_function=lambda *_: None,
+        )
+    assert caught.value.detail.classification == "completion_contract"
+    with pytest.raises(ApprovedNextStepPreparationBridgeCompatibilityError) as caught:
+        route_approved_next_step_preparation_bridge_reentry(
+            completion,
+            definition,
+            state_path,
+            events_path,
+            None,
+            object(),
+            preparation_function=lambda *_: None,
+        )
+    assert caught.value.detail.classification == "completion_contract"
+
+
+@pytest.mark.parametrize(
+    "state_value,events_value,classification",
+    [
+        (object(), None, "state_target"),
+        (None, object(), "event_target"),
+        ("missing", None, "state_target"),
+        (None, "missing", "event_target"),
+        ("same", "same", "target_conflict"),
+    ],
+)
+def test_invalid_missing_and_conflicting_targets_are_prevalidated(
+    tmp_path: Path,
+    state_value: object,
+    events_value: object,
+    classification: str,
+) -> None:
+    state, events, decision, approval, person = setup(tmp_path)
+    assert approval is not None and person is not None
+    state_target = state if state_value is None else state_value
+    events_target = events if events_value is None else events_value
+    if state_value == "missing":
+        state_target = tmp_path / "missing-state.json"
+    if events_value == "missing":
+        events_target = tmp_path / "missing-events.jsonl"
+    if state_value == "same":
+        state_target = events_target = state
+    before, calls, writes = (state.read_bytes(), events.read_bytes()), 0, []
+    original_write = Path.write_bytes
+
+    def phase32(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    def record(path: Path, content: bytes) -> int:
+        writes.append(path)
+        return original_write(path, content)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(
+            ApprovedNextStepPreparationBridgeCompatibilityError
+        ) as caught:
+            route_approved_next_step_preparation_bridge_reentry(
+                decision,
+                workflow(),
+                state_target,
+                events_target,
+                approval,
+                person,
+                preparation_function=phase32,
+            )
+    assert caught.value.detail.classification == classification
+    assert calls == 0 and writes == []
+    assert (state.read_bytes(), events.read_bytes()) == before

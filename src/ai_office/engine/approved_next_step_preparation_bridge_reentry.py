@@ -101,6 +101,13 @@ def route_approved_next_step_preparation_bridge_reentry(
             or not (
                 result.outcome == "persisted_failure"
                 and result.failure_category in _CATEGORIES
+                and _is_exact_index(result.current_step_index)
+                and 1 <= result.current_step_index <= len(workflow.steps)
+                and result.workflow_id == workflow.id
+                and result.current_step_id
+                == workflow.steps[result.current_step_index - 1].id
+                and result.current_employee_id
+                == workflow.steps[result.current_step_index - 1].employee
             )
         ):
             _raise("failure_contract")
@@ -130,6 +137,7 @@ def route_approved_next_step_preparation_bridge_reentry(
             or not (
                 result.workflow_id == workflow.id
                 and result.current_step_id == final.id
+                and type(result.current_step_index) is int
                 and result.current_step_index == len(workflow.steps)
                 and result.current_employee_id == final.employee
                 and result.next_step_id
@@ -161,6 +169,8 @@ def route_approved_next_step_preparation_bridge_reentry(
         _raise("approval_contract")
     if not (
         1 <= result.current_step_index < len(workflow.steps)
+        and _is_exact_index(result.current_step_index)
+        and _is_exact_index(result.next_step_index)
         and result.workflow_id == workflow.id
         and result.current_step_id == workflow.steps[result.current_step_index - 1].id
         and result.current_employee_id
@@ -173,8 +183,12 @@ def route_approved_next_step_preparation_bridge_reentry(
         and result.next_step_index == result.current_step_index + 1
         and result.next_employee_id == next_step.employee
         and result.reason == "next_step_available"
-        and employee.id == next_step.employee
-        and approval.approved is True
+    ):
+        _raise("decision_contract")
+    if not (
+        approval.approved is True
+        and _is_exact_index(approval.current_step_index)
+        and _is_exact_index(approval.next_step_index)
         and (
             approval.workflow_id,
             approval.current_step_id,
@@ -192,6 +206,8 @@ def route_approved_next_step_preparation_bridge_reentry(
             result.next_employee_id,
         )
     ):
+        _raise("approval_contract")
+    if employee.id != next_step.employee:
         _raise("employee_contract")
     if state.status != "succeeded" or (
         state.workflow_id,
@@ -237,6 +253,10 @@ def _changed(path: Path, value: bytes) -> bool:
         return not path.is_file() or path.read_bytes() != value
     except OSError:
         return True
+
+
+def _is_exact_index(value: object) -> bool:
+    return type(value) is int
 
 
 def _restore(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
