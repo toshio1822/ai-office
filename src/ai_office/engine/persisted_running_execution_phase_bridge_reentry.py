@@ -11,10 +11,8 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
 from ai_office.engine.persisted_running_execution_bridge_reentry import (
+    PersistedRunningExecutionBridgeError,
     route_persisted_running_execution_bridge_reentry,
-)
-from ai_office.engine.persisted_running_execution_routing_reentry import (
-    PersistedRunningExecutionRoutingError,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.terminal_history_contract import (
@@ -166,7 +164,7 @@ def route_persisted_running_execution_phase_bridge_reentry(
             approval,
             transport,
         )
-    except PersistedRunningExecutionRoutingError as error:
+    except PersistedRunningExecutionBridgeError as error:
         _restore_if_changed(state_path, events_path, original)
         raise error
     except Exception:
@@ -425,8 +423,7 @@ def _restore(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
     failed = False
     for path, before in ((state, original[0]), (events, original[1])):
         try:
-            if _changed(path, before):
-                path.write_bytes(before)
+            path.write_bytes(before)
         except OSError:
             failed = True
     if failed:

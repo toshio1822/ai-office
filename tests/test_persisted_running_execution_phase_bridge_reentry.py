@@ -16,8 +16,8 @@ from ai_office.engine import (
     WorkflowProgressionDecision,
     route_persisted_running_execution_phase_bridge_reentry,
 )
-from ai_office.engine.persisted_running_execution_routing_reentry import (
-    PersistedRunningExecutionRoutingCompatibilityError,
+from ai_office.engine.persisted_running_execution_bridge_reentry import (
+    PersistedRunningExecutionBridgeCompatibilityError,
 )
 from ai_office.invocation import (
     ModelInvocationRequest,
@@ -477,25 +477,33 @@ def test_phase49_target_mutations_are_compensated(
 @pytest.mark.parametrize("kind", ["safe", "unexpected"])
 @pytest.mark.parametrize("mutate", [False, True])
 def test_dependency_errors_preserve_identity_or_sanitize_and_restore(
-    tmp_path: Path, kind: str, mutate: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, mutate: bool
 ) -> None:
     values, calls = inputs(tmp_path), 0
     state, events = values["state_path"], values["events_path"]
     before = state.read_bytes(), events.read_bytes()  # type: ignore[union-attr]
-    safe = PersistedRunningExecutionRoutingCompatibilityError("private detail")
+    original_write_bytes = Path.write_bytes
+    writes: list[Path] = []
+
+    def restore(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", restore)
+    safe = PersistedRunningExecutionBridgeCompatibilityError("private detail")
 
     def phase49(*_: object) -> object:
         nonlocal calls
         calls += 1
         if mutate:
-            state.write_bytes(b"private")
-            events.write_bytes(b"private")  # type: ignore[union-attr]
+            original_write_bytes(state, b"private")
+            original_write_bytes(events, b"private")  # type: ignore[arg-type]
         if kind == "safe":
             raise safe
         raise RuntimeError("private response")
 
     expected = (
-        PersistedRunningExecutionRoutingCompatibilityError
+        PersistedRunningExecutionBridgeCompatibilityError
         if kind == "safe"
         else PersistedRunningExecutionPhaseBridgeCompatibilityError
     )
@@ -509,6 +517,38 @@ def test_dependency_errors_preserve_identity_or_sanitize_and_restore(
             caught.value.detail.classification == "dependency_error"
             and "private" not in str(caught.value)
         )
+    assert writes == ([state, events] if mutate else [])
+
+
+@pytest.mark.parametrize("target", ["state", "events", "both"])
+def test_any_dependency_target_change_restores_both_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    values = inputs(tmp_path)
+    state, events = values["state_path"], values["events_path"]
+    original_write_bytes = Path.write_bytes
+    writes: list[Path] = []
+
+    def restore(path: Path, data: bytes) -> int:
+        writes.append(path)
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", restore)
+
+    def phase49(*_: object) -> object:
+        if target in ("state", "both"):
+            original_write_bytes(state, b"private")
+        if target in ("events", "both"):
+            original_write_bytes(events, b"private")
+        return success()
+
+    with pytest.raises(
+        PersistedRunningExecutionPhaseBridgeCompatibilityError
+    ) as caught:
+        call(values, phase49)
+
+    assert caught.value.detail.classification == "execution_result_contract"
+    assert writes == [state, events]
 
 
 @pytest.mark.parametrize("failed", ["state", "events", "both"])
