@@ -118,6 +118,12 @@ from ai_office.engine.prepared_start_persistence_bridge_reentry import (
     PreparedStartPersistenceBridgeFailureDetail,
     route_prepared_start_persistence_bridge_reentry,
 )
+from ai_office.engine.prepared_start_persistence_phase_bridge_reentry import (
+    PreparedStartPersistencePhaseBridgeCompatibilityError,
+    PreparedStartPersistencePhaseBridgeError,
+    PreparedStartPersistencePhaseBridgeFailureDetail,
+    route_prepared_start_persistence_phase_bridge_reentry,
+)
 from ai_office.engine.prepared_start_persistence_routing_reentry import (
     PreparedStartPersistenceRoutingCompatibilityError,
     PreparedStartPersistenceRoutingError,
@@ -243,6 +249,10 @@ __all__ = [
     "PreparedStepStartPhaseBridgeError",
     "PreparedStepStartPhaseBridgeFailureDetail",
     "route_prepared_step_start_phase_bridge_reentry",
+    "PreparedStartPersistencePhaseBridgeCompatibilityError",
+    "PreparedStartPersistencePhaseBridgeError",
+    "PreparedStartPersistencePhaseBridgeFailureDetail",
+    "route_prepared_start_persistence_phase_bridge_reentry",
     "PreparedStartPersistenceRoutingCompatibilityError",
     "PreparedStartPersistenceRoutingError",
     "PreparedStartPersistenceRoutingFailureDetail",
