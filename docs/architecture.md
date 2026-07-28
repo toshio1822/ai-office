@@ -8,6 +8,10 @@ Phase 50 accepts exactly one Phase 49 result. Exact runtime success/failure is d
 
 Phase 51 accepts exactly one Phase 50 result. An exact `WorkflowExecutionPersistenceResult` is validated against strict terminal state/history and delegated once to Phase 44, returning the dependency's identical `PersistedExecutionOutcome` object. Exact `workflow_complete` and existing `persisted_failure` are terminal, read-only routes which return their supplied object unchanged without calling Phase 44. The bridge compensates dependency mutations and does not call Phase 37 directly, route classified outcomes onward, decide progression, prepare or execute steps, retry, continue automatically, finalize terminal states, schedule, loop, or run in parallel.
 
+## Phase 52: classified persisted outcome routing bridge
+
+Phase 52 accepts exactly one Phase 51 result. Exact persisted success or failure is delegated once to Phase 45 and returns its identical routing result. Exact `workflow_complete` is a read-only stop route. The bridge compensates dependency mutations and does not call Phase 38 directly, prepare or execute steps, persist running state, invoke providers, retry, continue automatically, finalize terminal states, schedule, loop, or run in parallel.
+
 ## 構成
 
 ```text

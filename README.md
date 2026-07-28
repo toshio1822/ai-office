@@ -349,6 +349,10 @@ workflow_complete → unchanged stop
 persisted_failure → unchanged stop
 ```
 
+## Classified Persisted Outcome Routing Bridge Reentry Boundary（Phase 52）
+
+`route_classified_persisted_outcome_bridge_reentry()`は、正確なPhase 51 resultを一つだけ受けるread-only bridgeです。`persisted_success`と`persisted_failure`だけを既存Phase 45 `route_classified_persisted_outcome_reentry()`へ正確に一度だけ委譲し、同じdependency result objectを返します。`workflow_complete`はstrict terminal historyを照合して同じobjectを返し、Phase 45を呼びません。依存のtarget改変は元bytesへ補償復元し、Phase 38の直接呼出し、next-step preparation/execution、retry、自動継続、finalization、paid CLI/GUIは追加しません。
+
 ```text
 Phase 42 result
   StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | workflow_complete
