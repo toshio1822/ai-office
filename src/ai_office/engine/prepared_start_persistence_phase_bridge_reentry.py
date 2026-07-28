@@ -186,13 +186,11 @@ def _completion(
     if not (
         employee is None
         and _exact_str(value.decision, "workflow_complete")
-        and (
-            value.workflow_id,
-            value.current_step_id,
-            value.current_step_index,
-            value.current_employee_id,
-        )
-        == (workflow.id, final.id, len(workflow.steps), final.employee)
+        and _exact_str(value.workflow_id, workflow.id)
+        and _exact_str(value.current_step_id, final.id)
+        and type(value.current_step_index) is int
+        and value.current_step_index == len(workflow.steps)
+        and _exact_str(value.current_employee_id, final.employee)
         and value.next_step_id
         is value.next_step_index
         is value.next_employee_id
@@ -359,11 +357,11 @@ def _unchanged(
 
 
 def _restore(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
+    """Restore both targets after any detected mutation or lost target."""
     failed = False
     for path, before in ((state, original[0]), (events, original[1])):
         try:
-            if not path.is_file() or path.read_bytes() != before:
-                path.write_bytes(before)
+            path.write_bytes(before)
         except OSError:
             failed = True
     if failed:
