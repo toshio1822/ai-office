@@ -410,6 +410,21 @@ Phase 47: PreparedWorkflowStep → Phase 40 exactly once → existing PreparedSt
 future explicit running-state persistence or finalization boundary
 ```
 
+## Prepared-Step Start Phase Bridge（Phase 54）
+
+`route_prepared_step_start_phase_bridge_reentry()`は、正確なPhase 53 resultを一つだけ受けるread-only bridgeです。正確な`PreparedWorkflowStep`だけを、同一の`WorkflowDefinition`、`EmployeeDefinition`、state/event `Path` objectsのままPhase 47 `route_prepared_step_start_bridge_reentry()`へ正確に一度だけ委譲し、同じ`PreparedStepExecutionStart` objectを返します。`workflow_complete`と`persisted_failure`はemployeeを`None`にしてstrict terminal state/historyを照合し、Phase 47を呼ばず同じobjectを返します。依存のtarget改変、不正返却、例外は元bytesへ補償復元します。Phase 40/34を複製・直接呼出しせず、running-state persistence、provider/tool execution、retry、自動継続、terminal finalization、scheduler、loop、parallel execution、paid CLI/GUIを追加しません。
+
+```text
+Phase 53
+PreparedWorkflowStep | workflow_complete | persisted_failure
+    ↓
+Phase 54
+PreparedWorkflowStep + exact employee → Phase 47 exactly once → same PreparedStepExecutionStart
+workflow_complete | persisted_failure → unchanged stop
+    ↓
+future explicit persistence or finalization boundary
+```
+
 ## Prepared-Start Persistence Routing Bridge（Phase 48）
 
 `route_prepared_start_persistence_bridge_reentry()`は、正確なPhase 47 resultを受ける明示bridgeです。正確な`PreparedStepExecutionStart`だけをcaller suppliedの`WorkflowDefinition`、`EmployeeDefinition`、state/event `Path` objectsとともに`route_prepared_start_persistence_reentry()`（Phase 41）へ正確に一度だけ委譲し、同じ`RunningStatePersistenceResult` objectを返します。許可される副作用は提案済みの正確な`running` stateをstate targetへ永続化することだけであり、event targetはbyte-for-byte不変です。`workflow_complete`と`persisted_failure`はstrict terminal state/historyを検証してPhase 41を呼ばず、同じ supplied objectのまま停止します。Phase 35またはPhase 41の処理を複製せず、runtime event append、provider/tool execution、retry、自動継続、execution-result transition、completion/failure finalization、paid CLI/GUIを行いません。
