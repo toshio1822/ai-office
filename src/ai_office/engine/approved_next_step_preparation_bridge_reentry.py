@@ -240,11 +240,12 @@ def _changed(path: Path, value: bytes) -> bool:
 
 
 def _restore(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
+    if not _changed(state, original[0]) and not _changed(events, original[1]):
+        return
     failed = False
     for path, value in ((state, original[0]), (events, original[1])):
         try:
-            if _changed(path, value):
-                path.write_bytes(value)
+            path.write_bytes(value)
         except OSError:
             failed = True
     if failed:
