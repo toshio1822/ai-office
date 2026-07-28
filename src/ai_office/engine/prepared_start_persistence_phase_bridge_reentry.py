@@ -114,10 +114,10 @@ def route_prepared_start_persistence_phase_bridge_reentry(
     try:
         value = phase48_function(result, workflow, employee, state_path, events_path)
     except PreparedStartPersistenceBridgeError as error:
-        _restore(state_path, events_path, original)
+        _restore_if_changed(state_path, events_path, original)
         raise error
     except Exception:
-        _restore(state_path, events_path, original)
+        _restore_if_changed(state_path, events_path, original)
         _raise("dependency_error")
     _persisted(value, result, state_path, events_path, original)
     return value
@@ -366,6 +366,23 @@ def _restore(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
             failed = True
     if failed:
         _raise("dependency_rollback")
+
+
+def _restore_if_changed(
+    state: Path, events: Path, original: tuple[bytes, bytes]
+) -> None:
+    """Restore both targets only if either no longer matches its captured bytes."""
+    try:
+        changed = (
+            not state.is_file()
+            or not events.is_file()
+            or state.read_bytes() != original[0]
+            or events.read_bytes() != original[1]
+        )
+    except OSError:
+        changed = True
+    if changed:
+        _restore(state, events, original)
 
 
 def _raise(classification: Classification) -> None:

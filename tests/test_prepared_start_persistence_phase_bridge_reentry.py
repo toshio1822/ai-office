@@ -354,6 +354,49 @@ def test_dependency_errors_restore_and_are_safe(tmp_path: Path, kind: str) -> No
     assert (state.read_bytes(), events.read_bytes()) == before
 
 
+@pytest.mark.parametrize("kind", ["safe", "unexpected"])
+def test_unchanged_dependency_errors_do_not_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    safe = PreparedStartPersistenceBridgeError("private detail")
+    calls, writes = 0, []
+    original_write = Path.write_bytes
+
+    def phase48(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        if kind == "safe":
+            raise safe
+        raise RuntimeError("private detail")
+
+    def record(path: Path, contents: bytes) -> int:
+        writes.append(path)
+        return original_write(path, contents)
+
+    monkeypatch.setattr(Path, "write_bytes", record)
+    expected = (
+        PreparedStartPersistenceBridgeError
+        if kind == "safe"
+        else PreparedStartPersistencePhaseBridgeCompatibilityError
+    )
+    with pytest.raises(expected) as caught:
+        route_prepared_start_persistence_phase_bridge_reentry(
+            start(), workflow(), employee(), state, events, phase48_function=phase48
+        )
+    assert (
+        calls == 1
+        and writes == []
+        and (state.read_bytes(), events.read_bytes()) == before
+    )
+    if kind == "safe":
+        assert caught.value is safe
+    else:
+        assert caught.value.detail.classification == "dependency_error"
+        assert "private" not in str(caught.value)
+
+
 def test_rejects_start_substitute_employee_and_invalid_persistence_result(
     tmp_path: Path,
 ) -> None:
