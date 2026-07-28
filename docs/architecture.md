@@ -1,5 +1,9 @@
 # アーキテクチャ
 
+## Phase 57: executed-result transition persistence phase bridge
+
+Phase 57 accepts exactly one Phase 56 result. Exact runtime success/failure is delegated exactly once to the existing Phase 50 bridge and returns its identical `WorkflowExecutionPersistenceResult`. Exact `workflow_complete` and `persisted_failure` are strictly verified terminal, read-only stop routes that return their supplied object unchanged without calling Phase 50. Only the exact Phase 50 transition persistence side effects are allowed; malformed, partial, or unexpected dependency writes are compensated. Phase 57 does not duplicate Phase 50, Phase 43, or Phase 36 logic and does not classify outcomes, decide progression, prepare or execute another step, retry, continue automatically, finalize, schedule, loop, or run in parallel.
+
 ## Phase 50: executed-result transition persistence bridge
 
 Phase 50 accepts exactly one Phase 49 result. Exact runtime success/failure is delegated once to Phase 43 and returns the dependency's identical persistence-result object. Exact `workflow_complete` and `persisted_failure` are terminal, read-only routes that return their supplied object unchanged. The bridge validates persistence bytes and compensates malformed or partial Phase 43 writes; it does not call Phase 36 directly or add progression, execution, retry, continuation, finalization, scheduling, loops, or parallelism.
