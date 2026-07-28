@@ -20,6 +20,10 @@ Phase 53 accepts exactly one Phase 52 result. Exact `prepare_next_step` requires
 
 Phase 54 accepts exactly one Phase 53 result. Exact `PreparedWorkflowStep` requires the exact next employee, delegates once to Phase 47, and returns the dependency's identical `PreparedStepExecutionStart` object. Exact workflow completion and persisted failure require no employee, verify strict terminal state/history, and return their supplied object unchanged without calling Phase 47. The bridge is read-only, compensates dependency mutations, does not duplicate Phase 40 or Phase 34, and does not persist running state, invoke providers or tools, retry, continue automatically, finalize terminal states, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 55: prepared-start persistence phase bridge
+
+Phase 55 accepts exactly one Phase 54 result. Exact `PreparedStepExecutionStart` requires the exact employee and delegates once to Phase 48, returning that dependency's identical `RunningStatePersistenceResult`; only the exact proposed running state may replace the state target and the event target remains unchanged. Exact workflow completion and persisted failure require no employee, verify strict terminal state/history, and return their supplied object unchanged without calling Phase 48. It compensates invalid dependency mutations and errors, does not duplicate Phase 41 or Phase 35, append runtime events, invoke providers or tools, retry, continue automatically, execute the prepared request, transition results, finalize terminal states, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text
