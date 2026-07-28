@@ -199,6 +199,13 @@ from ai_office.runtime.persisted_start_execution import (
     execute_persisted_start_openai_step,
 )
 
+from .persisted_terminal_outcome_classification_phase_bridge_reentry import (
+    PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError,
+    PersistedTerminalOutcomeClassificationPhaseBridgeError,
+    PersistedTerminalOutcomeClassificationPhaseBridgeFailureDetail,
+    route_persisted_terminal_outcome_classification_phase_bridge_reentry,
+)
+
 __all__ = [
     "ClassifiedPersistedOutcomeRoutingCompatibilityError",
     "ClassifiedPersistedOutcomeRoutingError",
@@ -302,6 +309,10 @@ __all__ = [
     "PersistedTerminalOutcomeClassificationBridgeError",
     "PersistedTerminalOutcomeClassificationBridgeFailureDetail",
     "route_persisted_terminal_outcome_classification_bridge_reentry",
+    "PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError",
+    "PersistedTerminalOutcomeClassificationPhaseBridgeError",
+    "PersistedTerminalOutcomeClassificationPhaseBridgeFailureDetail",
+    "route_persisted_terminal_outcome_classification_phase_bridge_reentry",
     "PersistedExecutionOutcomeRoutingCompatibilityError",
     "PersistedExecutionOutcomeRoutingError",
     "PersistedExecutionOutcomeRoutingFailureDetail",
