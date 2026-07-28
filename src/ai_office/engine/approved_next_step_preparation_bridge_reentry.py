@@ -107,6 +107,18 @@ def route_approved_next_step_preparation_bridge_reentry(
         if (
             state.status != "failed"
             or state.last_failure_category != result.failure_category
+            or (
+                state.workflow_id,
+                state.current_step_id,
+                state.current_step_index,
+                state.current_employee_id,
+            )
+            != (
+                result.workflow_id,
+                result.current_step_id,
+                result.current_step_index,
+                result.current_employee_id,
+            )
         ):
             _raise("terminal_contract")
         return result
@@ -128,7 +140,17 @@ def route_approved_next_step_preparation_bridge_reentry(
             )
         ):
             _raise("completion_contract")
-        if state.status != "succeeded":
+        if state.status != "succeeded" or (
+            state.workflow_id,
+            state.current_step_id,
+            state.current_step_index,
+            state.current_employee_id,
+        ) != (
+            result.workflow_id,
+            result.current_step_id,
+            result.current_step_index,
+            result.current_employee_id,
+        ):
             _raise("terminal_contract")
         return result
     if not (
@@ -140,6 +162,9 @@ def route_approved_next_step_preparation_bridge_reentry(
     if not (
         1 <= result.current_step_index < len(workflow.steps)
         and result.workflow_id == workflow.id
+        and result.current_step_id == workflow.steps[result.current_step_index - 1].id
+        and result.current_employee_id
+        == workflow.steps[result.current_step_index - 1].employee
     ):
         _raise("decision_contract")
     next_step = workflow.steps[result.current_step_index]
@@ -149,9 +174,36 @@ def route_approved_next_step_preparation_bridge_reentry(
         and result.next_employee_id == next_step.employee
         and result.reason == "next_step_available"
         and employee.id == next_step.employee
+        and approval.approved is True
+        and (
+            approval.workflow_id,
+            approval.current_step_id,
+            approval.current_step_index,
+            approval.next_step_id,
+            approval.next_step_index,
+            approval.next_employee_id,
+        )
+        == (
+            result.workflow_id,
+            result.current_step_id,
+            result.current_step_index,
+            result.next_step_id,
+            result.next_step_index,
+            result.next_employee_id,
+        )
     ):
         _raise("employee_contract")
-    if state.status != "succeeded":
+    if state.status != "succeeded" or (
+        state.workflow_id,
+        state.current_step_id,
+        state.current_step_index,
+        state.current_employee_id,
+    ) != (
+        result.workflow_id,
+        result.current_step_id,
+        result.current_step_index,
+        result.current_employee_id,
+    ):
         _raise("terminal_contract")
     try:
         value = preparation_function(
@@ -166,7 +218,16 @@ def route_approved_next_step_preparation_bridge_reentry(
     if _changed(state_path, original[0]) or _changed(events_path, original[1]):
         _restore(state_path, events_path, original)
         _raise("preparation_contract")
-    if type(value) is not PreparedWorkflowStep:
+    if type(value) is not PreparedWorkflowStep or not (
+        value.workflow_id == workflow.id
+        and value.step_id == next_step.id
+        and value.step_index == result.next_step_index
+        and value.employee_id == employee.id
+        and value.employee_instructions == employee.instructions
+        and value.step_instructions == next_step.instructions
+        and value.model == employee.model
+        and value.allowed_tool_names == tuple(employee.allowed_tools)
+    ):
         _raise("preparation_contract")
     return value
 
