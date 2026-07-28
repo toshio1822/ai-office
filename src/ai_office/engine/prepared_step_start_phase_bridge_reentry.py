@@ -117,11 +117,7 @@ def route_prepared_step_start_phase_bridge_reentry(
         _unchanged(state_path, events_path, original, "terminal_contract")
         return result
     assert type(employee) is EmployeeDefinition
-    if not (
-        state.status == "succeeded"
-        and state.current_step_index == result.step_index - 1
-    ):
-        _raise("terminal_contract")
+    _validate_prepared_predecessor(result, workflow, state)
     try:
         value = start_bridge_function(
             result, workflow, employee, state_path, events_path
@@ -148,13 +144,14 @@ def _validate_prepared(
         _raise("prepared_step_contract")
     step = workflow.steps[value.step_index - 1]
     if not (
-        value.workflow_id == workflow.id
-        and value.step_id == step.id
-        and value.employee_id == step.employee == employee.id
-        and value.employee_instructions == employee.instructions
-        and value.step_instructions == step.instructions
-        and value.model == employee.model
-        and value.allowed_tool_names == tuple(employee.allowed_tools)
+        _exact_str(value.workflow_id, workflow.id)
+        and _exact_str(value.step_id, step.id)
+        and _exact_str(value.employee_id, step.employee)
+        and _exact_str(value.employee_id, employee.id)
+        and _exact_str(value.employee_instructions, employee.instructions)
+        and _exact_str(value.step_instructions, step.instructions)
+        and _exact_str(value.model, employee.model)
+        and _exact_str_tuple(value.allowed_tool_names, tuple(employee.allowed_tools))
     ):
         _raise("prepared_step_contract")
 
@@ -167,7 +164,7 @@ def _validate_completion(
     final = workflow.steps[-1]
     if not (
         employee is None
-        and value.decision == "workflow_complete"
+        and _exact_str(value.decision, "workflow_complete")
         and (
             value.workflow_id,
             value.current_step_id,
@@ -179,7 +176,7 @@ def _validate_completion(
         is value.next_step_index
         is value.next_employee_id
         is None
-        and value.reason == "last_step_succeeded"
+        and _exact_str(value.reason, "last_step_succeeded")
     ):
         _raise("completion_contract")
 
@@ -191,13 +188,18 @@ def _validate_failure(
 ) -> None:
     if not (
         employee is None
-        and value.outcome == "persisted_failure"
-        and value.workflow_id == workflow.id
+        and _exact_str(value.outcome, "persisted_failure")
+        and _exact_str(value.workflow_id, workflow.id)
         and type(value.current_step_index) is int
         and 1 <= value.current_step_index <= len(workflow.steps)
-        and value.current_step_id == workflow.steps[value.current_step_index - 1].id
-        and value.current_employee_id
-        == workflow.steps[value.current_step_index - 1].employee
+        and _exact_str(
+            value.current_step_id, workflow.steps[value.current_step_index - 1].id
+        )
+        and _exact_str(
+            value.current_employee_id,
+            workflow.steps[value.current_step_index - 1].employee,
+        )
+        and type(value.failure_category) is str
         and value.failure_category in _CATEGORIES
     ):
         _raise("failure_contract")
@@ -253,6 +255,28 @@ def _state_matches(
     )
 
 
+def _validate_prepared_predecessor(
+    prepared: PreparedWorkflowStep,
+    workflow: WorkflowDefinition,
+    state: WorkflowExecutionState,
+) -> None:
+    """Bind a prepared next step to the complete, exact prior terminal state."""
+    previous_index = prepared.step_index - 1
+    previous = workflow.steps[previous_index - 1]
+    expected_completed = tuple(step.id for step in workflow.steps[:previous_index])
+    if not (
+        _exact_str(state.workflow_id, workflow.id)
+        and _exact_str(state.status, "succeeded")
+        and _exact_str(state.current_step_id, previous.id)
+        and type(state.current_step_index) is int
+        and state.current_step_index == previous_index
+        and _exact_str(state.current_employee_id, previous.employee)
+        and _exact_str_tuple(state.completed_step_ids, expected_completed)
+        and state.last_failure_category is None
+    ):
+        _raise("terminal_contract")
+
+
 def _validate_start(
     value: object, prepared: PreparedWorkflowStep, state: WorkflowExecutionState
 ) -> None:
@@ -262,10 +286,10 @@ def _validate_start(
     if not (
         type(request) is ModelInvocationRequest
         and type(running) is WorkflowExecutionState
-        and request.model == prepared.model
-        and request.system_instructions == prepared.employee_instructions
-        and request.task_instructions == prepared.step_instructions
-        and request.allowed_tools == prepared.allowed_tool_names
+        and _exact_str(request.model, prepared.model)
+        and _exact_str(request.system_instructions, prepared.employee_instructions)
+        and _exact_str(request.task_instructions, prepared.step_instructions)
+        and _exact_str_tuple(request.allowed_tools, prepared.allowed_tool_names)
         and (
             running.workflow_id,
             running.status,
@@ -280,10 +304,22 @@ def _validate_start(
             prepared.step_index,
             prepared.employee_id,
         )
-        and running.completed_step_ids == state.completed_step_ids
+        and _exact_str_tuple(running.completed_step_ids, state.completed_step_ids)
         and running.last_failure_category is None
     ):
         _raise("start_contract")
+
+
+def _exact_str(value: object, expected: str) -> bool:
+    return type(value) is str and value == expected
+
+
+def _exact_str_tuple(value: object, expected: tuple[str, ...]) -> bool:
+    return (
+        type(value) is tuple
+        and all(type(item) is str for item in value)
+        and value == expected
+    )
 
 
 def _restore(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
