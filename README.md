@@ -353,6 +353,10 @@ persisted_failure → unchanged stop
 
 `route_classified_persisted_outcome_bridge_reentry()`は、正確なPhase 51 resultを一つだけ受けるread-only bridgeです。`persisted_success`と`persisted_failure`だけを既存Phase 45 `route_classified_persisted_outcome_reentry()`へ正確に一度だけ委譲し、同じdependency result objectを返します。`workflow_complete`はstrict terminal historyを照合して同じobjectを返し、Phase 45を呼びません。依存のtarget改変は元bytesへ補償復元し、Phase 38の直接呼出し、next-step preparation/execution、retry、自動継続、finalization、paid CLI/GUIは追加しません。
 
+## Approved Next-Step Preparation Bridge Reentry Boundary（Phase 53）
+
+`route_approved_next_step_preparation_bridge_reentry()`は、正確なPhase 52 `prepare_next_step`に明示approvalと正確なnext employeeを要求し、既存Phase 32へ一度だけ委譲するread-only bridgeです。`workflow_complete`と`persisted_failure`はapproval/employeeなしで無変更のまま返します。approval作成・employee選択・running state保存・実行・retry・自動継続・finalization・paid CLI/GUIは行いません。
+
 ```text
 Phase 42 result
   StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | workflow_complete

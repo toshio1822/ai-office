@@ -12,6 +12,10 @@ Phase 51 accepts exactly one Phase 50 result. An exact `WorkflowExecutionPersist
 
 Phase 52 accepts exactly one Phase 51 result. Exact persisted success or failure is delegated once to Phase 45 and returns its identical routing result. Exact `workflow_complete` is a read-only stop route. The bridge compensates dependency mutations and does not call Phase 38 directly, prepare or execute steps, persist running state, invoke providers, retry, continue automatically, finalize terminal states, schedule, loop, or run in parallel.
 
+## Phase 53: approved next-step preparation bridge
+
+Phase 53 accepts exactly one Phase 52 result. Exact `prepare_next_step` requires one explicit approval and exact next employee, delegates once to Phase 32, and returns the identical prepared-step result. Completion and persisted failure are read-only stop routes. It does not create approval, select employees, persist state, execute providers or tools, retry, continue automatically, or finalize terminal states.
+
 ## 構成
 
 ```text
