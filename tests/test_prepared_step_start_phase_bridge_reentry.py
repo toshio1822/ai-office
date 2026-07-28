@@ -264,6 +264,10 @@ def test_prepared_step_rejects_every_malformed_field(
         ("completion", "workflow_id", "other", "completion_contract"),
         ("completion", "current_step_id", "first", "completion_contract"),
         ("completion", "current_step_index", 1, "completion_contract"),
+        ("completion", "current_step_index", 2.0, "completion_contract"),
+        ("completion", "current_step_index", "2", "completion_contract"),
+        ("completion", "current_step_index", None, "completion_contract"),
+        ("completion", "current_step_index", object(), "completion_contract"),
         ("completion", "current_employee_id", "one", "completion_contract"),
         ("completion", "next_step_id", "second", "completion_contract"),
         ("completion", "next_step_index", 2, "completion_contract"),
@@ -511,6 +515,60 @@ def test_dependency_errors_are_safe_and_not_retried(tmp_path: Path, kind: str) -
     assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
 
 
+@pytest.mark.parametrize("target", ["state", "events", "both"])
+@pytest.mark.parametrize("mutation", ["replace", "delete", "truncate", "append"])
+@pytest.mark.parametrize("kind", ["safe", "unexpected"])
+def test_dependency_error_mutations_are_compensated(
+    tmp_path: Path, target: str, mutation: str, kind: str
+) -> None:
+    state, events = targets(tmp_path, "succeeded", 1)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+    safe = PreparedStepStartBridgeError("safe dependency error")
+
+    def phase47(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        paths = (
+            (state, events)
+            if target == "both"
+            else ((state,) if target == "state" else (events,))
+        )
+        for path in paths:
+            if mutation == "replace":
+                path.write_bytes(b"secret replacement")
+            elif mutation == "delete":
+                path.unlink()
+            elif mutation == "truncate":
+                path.write_bytes(b"")
+            else:
+                path.write_bytes(path.read_bytes() + b"secret append")
+        if kind == "safe":
+            raise safe
+        raise RuntimeError("secret unexpected dependency detail")
+
+    expected = (
+        PreparedStepStartBridgeError
+        if kind == "safe"
+        else PreparedStepStartPhaseBridgeCompatibilityError
+    )
+    with pytest.raises(expected) as caught:
+        route_prepared_step_start_phase_bridge_reentry(
+            prepared(),
+            workflow(),
+            employee(),
+            state,
+            events,
+            start_bridge_function=phase47,
+        )
+    if kind == "safe":
+        assert caught.value is safe
+    else:
+        assert caught.value.detail.classification == "dependency_error"
+    assert "secret" not in str(caught.value)
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
 @pytest.mark.parametrize(
     ("part", "field", "value"),
     [
@@ -523,6 +581,10 @@ def test_dependency_errors_are_safe_and_not_retried(tmp_path: Path, kind: str) -
         ("running", "status", "failed"),
         ("running", "current_step_id", "first"),
         ("running", "current_step_index", 1),
+        ("running", "current_step_index", 2.0),
+        ("running", "current_step_index", "2"),
+        ("running", "current_step_index", None),
+        ("running", "current_step_index", object()),
         ("running", "current_employee_id", "one"),
         ("running", "completed_step_ids", ()),
         ("running", "last_failure_category", "api_error"),
@@ -593,9 +655,12 @@ def test_rollback_failure_is_sanitized_for_every_target_matrix(
     state, events = targets(tmp_path, "succeeded", 1)
     original_write = Path.write_bytes
     original = state.read_bytes(), events.read_bytes()
+    restore_attempts: list[Path] = []
+    calls = 0
 
     def fail_restore(path: Path, data: bytes) -> int:
         if data in original:
+            restore_attempts.append(path)
             # The fake only changes targets to a distinct marker.
             # Restoration writes the captured original bytes.
             if (target == "both" or target == "state") and path == state:
@@ -605,6 +670,8 @@ def test_rollback_failure_is_sanitized_for_every_target_matrix(
         return original_write(path, data)
 
     def phase47(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
         for path in (
             (state, events)
             if target == "both"
@@ -636,3 +703,5 @@ def test_rollback_failure_is_sanitized_for_every_target_matrix(
         )
     assert caught.value.detail.classification == "dependency_rollback"
     assert "secret" not in str(caught.value)
+    assert calls == 1
+    assert restore_attempts == [state, events]

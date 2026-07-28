@@ -165,6 +165,7 @@ def _validate_completion(
     if not (
         employee is None
         and _exact_str(value.decision, "workflow_complete")
+        and type(value.current_step_index) is int
         and (
             value.workflow_id,
             value.current_step_id,
@@ -294,16 +295,16 @@ def _validate_start(
             running.workflow_id,
             running.status,
             running.current_step_id,
-            running.current_step_index,
             running.current_employee_id,
         )
         == (
             prepared.workflow_id,
             "running",
             prepared.step_id,
-            prepared.step_index,
             prepared.employee_id,
         )
+        and type(running.current_step_index) is int
+        and running.current_step_index == prepared.step_index
         and _exact_str_tuple(running.completed_step_ids, state.completed_step_ids)
         and running.last_failure_category is None
     ):
