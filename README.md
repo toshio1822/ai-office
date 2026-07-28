@@ -441,6 +441,22 @@ workflow_complete | persisted_failure → unchanged stop
 future explicit provider-execution or finalization boundary
 ```
 
+## Persisted-Running Execution Phase Bridge（Phase 56）
+
+`route_persisted_running_execution_phase_bridge_reentry()`は正確なPhase 55 resultを一つだけ受ける明示boundaryです。正確な`RunningStatePersistenceResult`だけを、同一の元`PreparedStepExecutionStart`、matching employee、resolved tools、`OpenAIApiKey`、paid-execution approvalとともにPhase 49へ正確に一度だけ渡し、同じstep runtime execution resultを返します。`workflow_complete`と`persisted_failure`はexecution-only inputsをすべて`None`としてstrict terminal state/historyを検証し、Phase 49を呼ばず同じobjectで停止します。state/event targetはread-onlyで、依存の不正変更・例外は変更時だけ両targetを補償復元し、無変更エラーでは書き込みません。Phase 42/36/29/21やprovider、approval、credential、tool-resolution logicを複製・直接呼出しせず、execution-result transition/persistence、retry、自動継続、terminal finalization、scheduler、loop、parallel execution、paid CLI/GUIを追加しません。
+
+```text
+Phase 55
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 56
+RunningStatePersistenceResult + exact prepared start/employee/tools/credential/approval
+    → Phase 49 exactly once → same step runtime execution result
+workflow_complete | persisted_failure → unchanged stop
+    ↓
+future explicit transition or finalization boundary
+```
+
 ## Prepared-Start Persistence Routing Bridge（Phase 48）
 
 `route_prepared_start_persistence_bridge_reentry()`は、正確なPhase 47 resultを受ける明示bridgeです。正確な`PreparedStepExecutionStart`だけをcaller suppliedの`WorkflowDefinition`、`EmployeeDefinition`、state/event `Path` objectsとともに`route_prepared_start_persistence_reentry()`（Phase 41）へ正確に一度だけ委譲し、同じ`RunningStatePersistenceResult` objectを返します。許可される副作用は提案済みの正確な`running` stateをstate targetへ永続化することだけであり、event targetはbyte-for-byte不変です。`workflow_complete`と`persisted_failure`はstrict terminal state/historyを検証してPhase 41を呼ばず、同じ supplied objectのまま停止します。Phase 35またはPhase 41の処理を複製せず、runtime event append、provider/tool execution、retry、自動継続、execution-result transition、completion/failure finalization、paid CLI/GUIを行いません。
