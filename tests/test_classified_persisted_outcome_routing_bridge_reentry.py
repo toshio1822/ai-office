@@ -400,3 +400,167 @@ def test_rollback_failure_overrides_dependency_and_attempts_both(
     assert caught.value.detail.classification == "dependency_rollback"
     assert calls == 1 and state in attempted and events in attempted
     assert "provider" not in str(caught.value) and "output" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"decision": "workflow_complete"},
+        {"workflow_id": "bad"},
+        {"current_step_id": "bad"},
+        {"current_step_index": 2},
+        {"current_employee_id": "bad"},
+        {"next_step_id": "bad"},
+        {"next_step_index": 3},
+        {"next_employee_id": "bad"},
+        {"reason": "bad"},
+    ],
+)
+def test_prepare_next_step_return_rejects_every_wrong_field(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    state, events, outcome, definition = setup(tmp_path, two=True)
+    values = dict(
+        decision="prepare_next_step",
+        workflow_id="w",
+        current_step_id="one",
+        current_step_index=1,
+        current_employee_id="a",
+        next_step_id="two",
+        next_step_index=2,
+        next_employee_id="b",
+        reason="next_step_available",
+    )
+    values.update(changes)
+    returned = WorkflowProgressionDecision(**values)  # type: ignore[arg-type]
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError):
+        route_classified_persisted_outcome_bridge_reentry(
+            outcome, definition, state, events, routing_function=lambda *_: returned
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"decision": "prepare_next_step"},
+        {"workflow_id": "bad"},
+        {"current_step_id": "bad"},
+        {"current_step_index": 2},
+        {"current_employee_id": "bad"},
+        {"next_step_id": "two"},
+        {"next_step_index": 2},
+        {"next_employee_id": "b"},
+        {"reason": "bad"},
+    ],
+)
+def test_workflow_complete_return_rejects_every_wrong_field(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    values = dict(
+        decision="workflow_complete",
+        workflow_id="w",
+        current_step_id="one",
+        current_step_index=1,
+        current_employee_id="a",
+        next_step_id=None,
+        next_step_index=None,
+        next_employee_id=None,
+        reason="last_step_succeeded",
+    )
+    values.update(changes)
+    returned = WorkflowProgressionDecision(**values)  # type: ignore[arg-type]
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError):
+        route_classified_persisted_outcome_bridge_reentry(
+            outcome, definition, state, events, routing_function=lambda *_: returned
+        )
+
+
+def test_failure_rejects_equivalent_but_distinct_return_object(tmp_path: Path) -> None:
+    state, events, outcome, definition = setup(tmp_path, status="failed")
+    equivalent = PersistedExecutionOutcome(*outcome.__dict__.values())
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError):
+        route_classified_persisted_outcome_bridge_reentry(
+            outcome, definition, state, events, routing_function=lambda *_: equivalent
+        )
+
+
+@pytest.mark.parametrize("missing", ["state", "events"])
+def test_missing_target_has_zero_calls_writes_and_unchanged_other(
+    tmp_path: Path, missing: str
+) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    other = events if missing == "state" else state
+    before, calls = other.read_bytes(), 0
+    (state if missing == "state" else events).unlink()
+
+    def dependency(*_: object) -> PersistedExecutionOutcome:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError):
+        route_classified_persisted_outcome_bridge_reentry(
+            outcome, definition, state, events, routing_function=dependency
+        )
+    assert calls == 0 and other.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["safe", "unexpected"])
+def test_unchanged_dependency_errors_preserve_identity_or_sanitize_without_writes(
+    tmp_path: Path, kind: str
+) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    before, calls = (state.read_bytes(), events.read_bytes()), 0
+    safe = ClassifiedPersistedOutcomeRoutingCompatibilityError("result_type")
+
+    def dependency(*_: object) -> PersistedExecutionOutcome:
+        nonlocal calls
+        calls += 1
+        if kind == "safe":
+            raise safe
+        raise RuntimeError("provider request response output")
+
+    expected = (
+        ClassifiedPersistedOutcomeRoutingCompatibilityError
+        if kind == "safe"
+        else ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError
+    )
+    with pytest.raises(expected) as caught:
+        route_classified_persisted_outcome_bridge_reentry(
+            outcome, definition, state, events, routing_function=dependency
+        )
+    if kind == "safe":
+        assert caught.value is safe
+    else:
+        assert (
+            caught.value.detail.classification == "dependency_error"
+            and "provider" not in str(caught.value)
+        )
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("current_step_index", 0),
+        ("current_step_index", True),
+        ("current_step_id", "bad"),
+        ("current_employee_id", "bad"),
+    ],
+)
+def test_invalid_outcome_identity_rejects_before_dependency(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    values = dict(outcome.__dict__)
+    values[field] = value
+    bad = PersistedExecutionOutcome(**values)  # type: ignore[arg-type]
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError):
+        route_classified_persisted_outcome_bridge_reentry(
+            bad,
+            definition,
+            state,
+            events,
+            routing_function=lambda *_: (_ for _ in ()).throw(AssertionError),
+        )
