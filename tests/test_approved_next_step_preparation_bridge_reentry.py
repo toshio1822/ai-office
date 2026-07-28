@@ -459,7 +459,7 @@ def test_rollback_failure_has_priority_and_attempts_both_targets(
     assert "secret" not in str(caught.value)
 
 
-@pytest.mark.parametrize("value", [True, False, 0, -1, 3, 1.0])
+@pytest.mark.parametrize("value", [True, False, 0, -1, 3, 1.0, None, "two", object()])
 @pytest.mark.parametrize("field", ["current_step_index", "next_step_index"])
 def test_decision_indexes_require_exact_in_range_int_before_phase32(
     tmp_path: Path, field: str, value: object
@@ -493,9 +493,10 @@ def test_decision_indexes_require_exact_in_range_int_before_phase32(
             )
     assert caught.value.detail.classification == "decision_contract"
     assert calls == 0 and writes == []
+    assert "TypeError" not in str(caught.value)
 
 
-@pytest.mark.parametrize("value", [True, False, 0, -1, 3, 1.0])
+@pytest.mark.parametrize("value", [True, False, 0, -1, 3, 1.0, None, "two", object()])
 @pytest.mark.parametrize("field", ["current_step_index", "next_step_index"])
 def test_approval_indexes_require_exact_in_range_int_before_phase32(
     tmp_path: Path, field: str, value: object
@@ -608,7 +609,7 @@ def test_exact_types_and_non_callable_dependency_are_rejected(tmp_path: Path) ->
             approval,
             EmployeeSubclass(**person.model_dump()),
             lambda *_: None,
-            "approval_contract",
+            "employee_contract",
         ),
         (
             decision,
@@ -616,7 +617,7 @@ def test_exact_types_and_non_callable_dependency_are_rejected(tmp_path: Path) ->
             approval,
             object(),
             lambda *_: None,
-            "approval_contract",
+            "employee_contract",
         ),
         (decision, workflow(), approval, person, object(), "preparation_contract"),
     ]
@@ -641,6 +642,54 @@ def test_exact_types_and_non_callable_dependency_are_rejected(tmp_path: Path) ->
                 preparation_function=dependency,  # type: ignore[arg-type]
             )
         assert caught.value.detail.classification == classification
+
+
+@pytest.mark.parametrize("kind", ["none", "subclass", "substitute", "wrong_id"])
+def test_employee_prevalidation_is_separate_and_read_only(
+    tmp_path: Path, kind: str
+) -> None:
+    state, events, decision, approval, person = setup(tmp_path)
+    assert approval is not None and person is not None
+    calls, writes = 0, []
+    original_write = Path.write_bytes
+
+    class EmployeeSubclass(EmployeeDefinition):
+        pass
+
+    employees: dict[str, object] = {
+        "none": None,
+        "subclass": EmployeeSubclass(**person.model_dump()),
+        "substitute": object(),
+        "wrong_id": person.model_copy(update={"id": "wrong"}),
+    }
+
+    def phase32(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    def record(path: Path, content: bytes) -> int:
+        writes.append(path)
+        return original_write(path, content)
+
+    before = state.read_bytes(), events.read_bytes()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(Path, "write_bytes", record)
+        with pytest.raises(
+            ApprovedNextStepPreparationBridgeCompatibilityError
+        ) as caught:
+            route_approved_next_step_preparation_bridge_reentry(
+                decision,
+                workflow(),
+                state,
+                events,
+                approval,
+                employees[kind],
+                preparation_function=phase32,
+            )
+    assert caught.value.detail.classification == "employee_contract"
+    assert calls == 0 and writes == []
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 def test_prepared_subclass_and_substitute_are_rejected(tmp_path: Path) -> None:

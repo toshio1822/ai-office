@@ -161,16 +161,20 @@ def route_approved_next_step_preparation_bridge_reentry(
         ):
             _raise("terminal_contract")
         return result
-    if not (
-        result.decision == "prepare_next_step"
-        and type(approval) is NextStepPreparationApproval
-        and type(employee) is EmployeeDefinition
+    if (
+        result.decision != "prepare_next_step"
+        or type(approval) is not NextStepPreparationApproval
     ):
         _raise("approval_contract")
+    if type(employee) is not EmployeeDefinition:
+        _raise("employee_contract")
+    if not (
+        _is_exact_index(result.current_step_index)
+        and _is_exact_index(result.next_step_index)
+    ):
+        _raise("decision_contract")
     if not (
         1 <= result.current_step_index < len(workflow.steps)
-        and _is_exact_index(result.current_step_index)
-        and _is_exact_index(result.next_step_index)
         and result.workflow_id == workflow.id
         and result.current_step_id == workflow.steps[result.current_step_index - 1].id
         and result.current_employee_id
