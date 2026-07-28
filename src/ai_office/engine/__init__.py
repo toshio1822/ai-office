@@ -1,5 +1,11 @@
 """Deterministic workflow execution engine."""
 
+from ai_office.engine.approved_next_step_preparation_bridge_reentry import (
+    ApprovedNextStepPreparationBridgeCompatibilityError,
+    ApprovedNextStepPreparationBridgeError,
+    ApprovedNextStepPreparationBridgeFailureDetail,
+    route_approved_next_step_preparation_bridge_reentry,
+)
 from ai_office.engine.approved_next_step_reentry import (
     ApprovedNextStepReentryCompatibilityError,
     ApprovedNextStepReentryError,
@@ -194,6 +200,10 @@ __all__ = [
     "ApprovedNextStepReentryError",
     "ApprovedNextStepReentryFailureDetail",
     "prepare_approved_next_step_reentry",
+    "ApprovedNextStepPreparationBridgeCompatibilityError",
+    "ApprovedNextStepPreparationBridgeError",
+    "ApprovedNextStepPreparationBridgeFailureDetail",
+    "route_approved_next_step_preparation_bridge_reentry",
     "WorkflowProgressionCompatibilityDetail",
     "WorkflowProgressionCompatibilityError",
     "WorkflowProgressionDecision",
