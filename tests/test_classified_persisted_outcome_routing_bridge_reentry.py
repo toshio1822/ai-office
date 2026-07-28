@@ -11,11 +11,26 @@ from ai_office.engine import (
     WorkflowProgressionDecision,
     route_classified_persisted_outcome_bridge_reentry,
 )
+from ai_office.engine.classified_persisted_outcome_routing_reentry import (
+    ClassifiedPersistedOutcomeRoutingCompatibilityError,
+)
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
+
+
+class OutcomeSubclass(PersistedExecutionOutcome):
+    pass
+
+
+class DecisionSubclass(WorkflowProgressionDecision):
+    pass
+
+
+class WorkflowSubclass(WorkflowDefinition):
+    pass
 
 
 def workflow(two: bool = False) -> WorkflowDefinition:
@@ -206,3 +221,182 @@ def test_mutating_or_malformed_dependency_is_compensated(
             outcome, definition, state, events, routing_function=phase45
         )
     assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        OutcomeSubclass("persisted_success", "w", "one", 1, "a", None),
+        DecisionSubclass(
+            "workflow_complete",
+            "w",
+            "one",
+            1,
+            "a",
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        ),
+        object(),
+    ],
+)
+def test_exact_types_and_substitutes_reject_without_calls(
+    tmp_path: Path, result: object
+) -> None:
+    state, events, _, definition = setup(tmp_path)
+    calls = 0
+
+    def dependency(*_: object) -> PersistedExecutionOutcome:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError):
+        route_classified_persisted_outcome_bridge_reentry(
+            result, definition, state, events, routing_function=dependency
+        )
+    assert calls == 0
+
+
+@pytest.mark.parametrize("bad", ["workflow", "state", "events", "same", "function"])
+def test_workflow_target_and_dependency_prevalidation(tmp_path: Path, bad: str) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    args: list[object] = [outcome, definition, state, events]
+    if bad == "workflow":
+        args[1] = WorkflowSubclass(**definition.__dict__)
+    if bad == "state":
+        args[2] = "bad"
+    if bad == "events":
+        args[3] = "bad"
+    if bad == "same":
+        args[3] = state
+    function: object = object() if bad == "function" else lambda *_: outcome
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError):
+        route_classified_persisted_outcome_bridge_reentry(
+            *args, routing_function=function
+        )  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        PersistedExecutionOutcome("persisted_success", "w", "one", 1, "a", "api_error"),
+        PersistedExecutionOutcome("persisted_failure", "w", "one", 1, "a", None),
+        PersistedExecutionOutcome("persisted_failure", "w", "bad", 1, "a", "api_error"),
+    ],
+)
+def test_malformed_success_and_failure_reject_before_dependency(
+    tmp_path: Path, outcome: PersistedExecutionOutcome
+) -> None:
+    state, events, _, definition = setup(tmp_path)
+    with pytest.raises(ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError):
+        route_classified_persisted_outcome_bridge_reentry(
+            outcome,
+            definition,
+            state,
+            events,
+            routing_function=lambda *_: (_ for _ in ()).throw(AssertionError),
+        )
+
+
+@pytest.mark.parametrize("operation", ["replace", "delete", "truncate", "append"])
+@pytest.mark.parametrize("target", ["state", "events", "both"])
+@pytest.mark.parametrize("kind", ["normal", "safe", "unexpected"])
+def test_dependency_mutation_error_matrix(
+    tmp_path: Path, operation: str, target: str, kind: str
+) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    before, calls = (state.read_bytes(), events.read_bytes()), 0
+    safe = ClassifiedPersistedOutcomeRoutingCompatibilityError("result_type")
+
+    def mutate(path: Path) -> None:
+        if operation == "delete":
+            path.unlink()
+        elif operation == "truncate":
+            path.write_bytes(b"")
+        elif operation == "append":
+            path.write_bytes(path.read_bytes() + b"x")
+        else:
+            path.write_bytes(b"changed")
+
+    def dependency(*_: object) -> PersistedExecutionOutcome:
+        nonlocal calls
+        calls += 1
+        if target in {"state", "both"}:
+            mutate(state)
+        if target in {"events", "both"}:
+            mutate(events)
+        if kind == "safe":
+            raise safe
+        if kind == "unexpected":
+            raise RuntimeError("provider response output")
+        return outcome
+
+    expected = (
+        ClassifiedPersistedOutcomeRoutingCompatibilityError
+        if kind == "safe"
+        else ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError
+    )
+    with pytest.raises(expected) as caught:
+        route_classified_persisted_outcome_bridge_reentry(
+            outcome, definition, state, events, routing_function=dependency
+        )
+    if kind == "safe":
+        assert caught.value is safe
+    else:
+        assert caught.value.detail.classification in {
+            "routing_contract",
+            "dependency_error",
+        }
+        assert "provider" not in str(caught.value) and "output" not in str(caught.value)
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("kind", ["normal", "safe", "unexpected"])
+@pytest.mark.parametrize("failed", ["state", "events", "both"])
+def test_rollback_failure_overrides_dependency_and_attempts_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, failed: str
+) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    originals, original_write, attempted, calls = (
+        {state: state.read_bytes(), events: events.read_bytes()},
+        Path.write_bytes,
+        [],
+        0,
+    )
+    safe = ClassifiedPersistedOutcomeRoutingCompatibilityError("result_type")
+
+    def write(path: Path, contents: bytes) -> int:
+        if contents == originals.get(path):
+            attempted.append(path)
+            if (
+                failed == "both"
+                or (failed == "state" and path == state)
+                or (failed == "events" and path == events)
+            ):
+                raise OSError("provider output")
+        return original_write(path, contents)
+
+    monkeypatch.setattr(Path, "write_bytes", write)
+
+    def dependency(*_: object) -> PersistedExecutionOutcome:
+        nonlocal calls
+        calls += 1
+        original_write(state, b"x")
+        original_write(events, b"x")
+        if kind == "safe":
+            raise safe
+        if kind == "unexpected":
+            raise RuntimeError("provider output")
+        return outcome
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_bridge_reentry(
+            outcome, definition, state, events, routing_function=dependency
+        )
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert calls == 1 and state in attempted and events in attempted
+    assert "provider" not in str(caught.value) and "output" not in str(caught.value)
