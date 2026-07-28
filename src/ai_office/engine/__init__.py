@@ -6,6 +6,12 @@ from ai_office.engine.approved_next_step_reentry import (
     ApprovedNextStepReentryFailureDetail,
     prepare_approved_next_step_reentry,
 )
+from ai_office.engine.classified_persisted_outcome_routing_bridge_reentry import (
+    ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError,
+    ClassifiedPersistedOutcomeRoutingBridgeError,
+    ClassifiedPersistedOutcomeRoutingBridgeFailureDetail,
+    route_classified_persisted_outcome_bridge_reentry,
+)
 from ai_office.engine.classified_persisted_outcome_routing_reentry import (
     ClassifiedPersistedOutcomeRoutingCompatibilityError,
     ClassifiedPersistedOutcomeRoutingError,
@@ -168,6 +174,10 @@ __all__ = [
     "ClassifiedPersistedOutcomeRoutingError",
     "ClassifiedPersistedOutcomeRoutingFailureDetail",
     "route_classified_persisted_outcome_reentry",
+    "ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError",
+    "ClassifiedPersistedOutcomeRoutingBridgeError",
+    "ClassifiedPersistedOutcomeRoutingBridgeFailureDetail",
+    "route_classified_persisted_outcome_bridge_reentry",
     "ExecutedResultTransitionReentryCompatibilityError",
     "ExecutedResultTransitionReentryError",
     "ExecutedResultTransitionReentryFailureDetail",
