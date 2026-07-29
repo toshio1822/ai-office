@@ -558,6 +558,8 @@ RunningStatePersistenceResult + execution inputs
 workflow_complete | persisted_failure
     → no execution-only inputs
     → unchanged stop
+    ↓
+Phase 64
 ```
 
 ## Persisted Terminal Outcome Classification Bridge Reentry Boundary（Phase 51）
