@@ -195,27 +195,17 @@ def _validate_prepare(
     assert type(approval) is NextStepPreparationApproval
     if not (
         approval.approved is True
+        and _exact_str(approval.workflow_id, value.workflow_id)
+        and _exact_str(approval.current_step_id, value.current_step_id)
         and type(approval.current_step_index) is int
+        and approval.current_step_index == value.current_step_index
+        and _exact_str(approval.next_step_id, value.next_step_id)
         and type(approval.next_step_index) is int
-        and (
-            approval.workflow_id,
-            approval.current_step_id,
-            approval.current_step_index,
-            approval.next_step_id,
-            approval.next_step_index,
-            approval.next_employee_id,
-        )
-        == (
-            value.workflow_id,
-            value.current_step_id,
-            value.current_step_index,
-            value.next_step_id,
-            value.next_step_index,
-            value.next_employee_id,
-        )
+        and approval.next_step_index == value.next_step_index
+        and _exact_str(approval.next_employee_id, value.next_employee_id)
     ):
         _raise("approval_contract")
-    if employee.id != value.next_employee_id:
+    if not _exact_str(employee.id, value.next_employee_id):
         _raise("employee_contract")
 
 

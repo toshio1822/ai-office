@@ -69,6 +69,14 @@ def employee() -> EmployeeDefinition:
     )
 
 
+class StringSubclass(str):
+    pass
+
+
+class IntegerSubclass(int):
+    pass
+
+
 def decision() -> WorkflowProgressionDecision:
     return WorkflowProgressionDecision(
         "prepare_next_step",
@@ -303,6 +311,82 @@ def test_approval_mismatch_is_rejected_before_dependency(tmp_path: Path) -> None
             decision(), workflow(), state, events, bad, employee()
         )
     assert error.value.detail.classification == "approval_contract"
+
+
+@pytest.mark.parametrize(
+    "field, bad_value",
+    [
+        ("approved", False),
+        ("approved", 1),
+        ("workflow_id", "wrong"),
+        ("workflow_id", StringSubclass("workflow")),
+        ("current_step_id", "wrong"),
+        ("current_step_id", StringSubclass("first")),
+        ("current_step_index", 2),
+        ("current_step_index", IntegerSubclass(1)),
+        ("next_step_id", "wrong"),
+        ("next_step_id", StringSubclass("second")),
+        ("next_step_index", 1),
+        ("next_step_index", IntegerSubclass(2)),
+        ("next_employee_id", "wrong"),
+        ("next_employee_id", StringSubclass("two")),
+    ],
+)
+def test_every_approval_field_requires_exact_type_and_value(
+    tmp_path: Path, field: str, bad_value: object
+) -> None:
+    state, events = targets(tmp_path)
+    bad = replace(approval(), **{field: bad_value})
+    calls = 0
+
+    def phase60(*args: object):
+        nonlocal calls
+        calls += 1
+        return prepared()
+
+    with pytest.raises(
+        ApprovedNextStepPreparationPhaseBridgeContinuationError
+    ) as error:
+        route_approved_next_step_preparation_phase_bridge_continuation(
+            decision(),
+            workflow(),
+            state,
+            events,
+            bad,
+            employee(),
+            phase60_function=phase60,
+        )
+    assert error.value.detail.classification == "approval_contract"
+    assert calls == 0
+
+
+@pytest.mark.parametrize("bad_id", ["wrong", 2, StringSubclass("two")])
+def test_employee_id_requires_exact_string_and_decision_match(
+    tmp_path: Path, bad_id: object
+) -> None:
+    state, events = targets(tmp_path)
+    bad_employee = employee().model_copy(update={"id": bad_id})
+    calls = 0
+
+    def phase60(*args: object):
+        nonlocal calls
+        calls += 1
+        return prepared()
+
+    with pytest.raises(
+        ApprovedNextStepPreparationPhaseBridgeContinuationError
+    ) as error:
+        route_approved_next_step_preparation_phase_bridge_continuation(
+            decision(),
+            workflow(),
+            state,
+            events,
+            approval(),
+            bad_employee,
+            phase60_function=phase60,
+        )
+    assert error.value.detail.classification == "employee_contract"
+    assert calls == 0
 
 
 @pytest.mark.parametrize("which", ["state", "events"])
