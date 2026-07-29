@@ -273,6 +273,7 @@ def _validate_outcome(value: object, state: WorkflowExecutionState) -> None:
         and type(value.current_employee_id) is str and value.current_employee_id == state.current_employee_id
         and ((value.failure_category is None) == (state.status == "succeeded"))
         and (value.failure_category is None or value.failure_category in _FAILURE_CATEGORIES)
+        and value.failure_category == state.last_failure_category
     ):
         _raise("outcome_contract")
 

@@ -221,6 +221,31 @@ def test_malformed_phase58_return_is_rejected_without_retry(tmp_path: Path, valu
     assert calls == 1 and (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
+def test_failed_outcome_category_must_match_persisted_state_without_retry(
+    tmp_path: Path,
+) -> None:
+    state, events, result, definition, before_state, before_events = setup(
+        tmp_path, status="failed"
+    )
+    returned = replace(failure(), failure_category="transport_error")
+    calls = 0
+
+    def phase58(*_: object) -> PersistedExecutionOutcome:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    with pytest.raises(
+        PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError
+    ) as caught:
+        route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
+            result, definition, state, events, phase58_function=phase58
+        )
+    assert caught.value.detail.classification == "outcome_contract"
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 @pytest.mark.parametrize("kind", ["safe", "unexpected"])
 @pytest.mark.parametrize("mutation", ["state", "events", "both"])
 def test_dependency_errors_and_mutations_are_compensated_without_retry(
