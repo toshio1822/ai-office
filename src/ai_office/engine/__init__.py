@@ -118,6 +118,12 @@ from ai_office.engine.persisted_running_execution_reentry import (
     PersistedRunningExecutionReentryFailureDetail,
     execute_persisted_running_openai_step,
 )
+from ai_office.engine.persisted_running_execution_routing_phase_bridge_continuation import (  # noqa: E501
+    PersistedRunningExecutionRoutingPhaseBridgeContinuationCompatibilityError,
+    PersistedRunningExecutionRoutingPhaseBridgeContinuationError,
+    PersistedRunningExecutionRoutingPhaseBridgeContinuationFailureDetail,
+    route_persisted_running_execution_routing_phase_bridge_continuation,
+)
 from ai_office.engine.persisted_running_execution_routing_phase_bridge_reentry import (
     PersistedRunningExecutionRoutingPhaseBridgeCompatibilityError,
     PersistedRunningExecutionRoutingPhaseBridgeError,
@@ -442,6 +448,10 @@ __all__ = [
     "PersistedRunningExecutionRoutingPhaseBridgeCompatibilityError",
     "PersistedRunningExecutionRoutingPhaseBridgeError",
     "PersistedRunningExecutionRoutingPhaseBridgeFailureDetail",
+    "PersistedRunningExecutionRoutingPhaseBridgeContinuationCompatibilityError",
+    "PersistedRunningExecutionRoutingPhaseBridgeContinuationError",
+    "PersistedRunningExecutionRoutingPhaseBridgeContinuationFailureDetail",
+    "route_persisted_running_execution_routing_phase_bridge_continuation",
     "route_persisted_running_execution_routing_phase_bridge_reentry",
     "PersistedRunningExecutionRoutingCompatibilityError",
     "PersistedRunningExecutionRoutingError",
