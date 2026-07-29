@@ -129,6 +129,10 @@ Phase 64 accepts exactly one Phase 63 runtime result. Exact `StepRuntimeExecutio
 
 Phase 65 accepts exactly one Phase 64 `WorkflowExecutionPersistenceResult`. It validates the exact persisted terminal state/history and delegates once to Phase 58 with the identical result, workflow, and state/event targets, returning the exact `PersistedExecutionOutcome`. Exact `workflow_complete` and `persisted_failure` are strict read-only stop routes that do not call Phase 58. The boundary verifies byte counts and outcome identity, preserves safe dependency errors, sanitizes unexpected errors, compensates all detected mutations, and never retries. It does not duplicate Phase 51 or Phase 58 classification logic, execute providers or tools, persist transitions, route classified outcomes, decide progression, prepare steps, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 66: classified persisted outcome routing phase bridge continuation
+
+Phase 66 accepts exactly one Phase 65 `PersistedExecutionOutcome` or `workflow_complete` decision. Exact persisted success and failure outcomes are validated against terminal state/history and delegated exactly once to Phase 59 with identical argument identity. Success accepts only the exact next-step or completion decision produced by Phase 59; failure accepts only the same supplied failure object. Exact workflow completion is a zero-call read-only stop. Dependency mutations and errors are compensated safely, unexpected details are sanitized, and retry is not performed. Phase 66 does not duplicate Phase 52 or Phase 59, execute providers or tools, persist transitions, prepare or execute steps, create approvals, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text
