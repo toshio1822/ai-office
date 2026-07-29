@@ -496,6 +496,10 @@ Phase 65
 persisted_success | persisted_failure | workflow_complete
     ↓
 Phase 66
+
+## Approved Next-Step Preparation Phase Bridge Continuation Boundary（Phase 67）
+
+`route_approved_next_step_preparation_phase_bridge_continuation()`は、正確なPhase 66 resultを一つだけ受けるread-only boundaryです。`prepare_next_step`には明示approvalと正確なnext employeeを要求し、同じresult、workflow、state/event `Path`、approval、employee objectsのまま既存Phase 60へ正確に一度だけ委譲し、正確な`PreparedWorkflowStep`だけを受け入れます。`workflow_complete`と`persisted_failure`はapproval/employeeなしでstrict terminal state/historyとtargetの不変を確認し、依存Phaseを呼ばず同じobjectで停止します。state/eventsは別々に検査・読み込みし、依存のtarget改変、不正返却、safe/unexpected error、rollback failureは安全に分類・補償復元し、retryは行いません。approval作成、employee選択、step開始、state persistence、provider/tool実行、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
 persisted_success/failure → Phase 59 exactly once
     → prepare_next_step | workflow_complete | same persisted_failure
 workflow_complete → unchanged stop
