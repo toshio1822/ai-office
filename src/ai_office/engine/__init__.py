@@ -241,6 +241,12 @@ from .persisted_terminal_outcome_classification_phase_bridge_reentry import (
     PersistedTerminalOutcomeClassificationPhaseBridgeFailureDetail,
     route_persisted_terminal_outcome_classification_phase_bridge_reentry,
 )
+from .persisted_terminal_outcome_classification_routing_phase_bridge_reentry import (
+    PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError,
+    PersistedTerminalOutcomeClassificationRoutingPhaseBridgeError,
+    PersistedTerminalOutcomeClassificationRoutingPhaseBridgeFailureDetail,
+    route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry,
+)
 
 __all__ = [
     "ClassifiedPersistedOutcomeRoutingCompatibilityError",
@@ -369,6 +375,10 @@ __all__ = [
     "PersistedTerminalOutcomeClassificationPhaseBridgeError",
     "PersistedTerminalOutcomeClassificationPhaseBridgeFailureDetail",
     "route_persisted_terminal_outcome_classification_phase_bridge_reentry",
+    "PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError",
+    "PersistedTerminalOutcomeClassificationRoutingPhaseBridgeError",
+    "PersistedTerminalOutcomeClassificationRoutingPhaseBridgeFailureDetail",
+    "route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry",
     "PersistedExecutionOutcomeRoutingCompatibilityError",
     "PersistedExecutionOutcomeRoutingError",
     "PersistedExecutionOutcomeRoutingFailureDetail",
