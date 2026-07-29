@@ -331,7 +331,7 @@ def _validate_persistence(
 ) -> None:
     if type(value) is not WorkflowExecutionPersistenceResult:
         _raise("persistence_contract")
-    if value.state_path != state or value.events_path != events:
+    if value.state_path is not state or value.events_path is not events:
         _raise("persistence_contract")
     if type(value.state_bytes_written) is not int or value.state_bytes_written <= 0:
         _raise("persistence_contract")

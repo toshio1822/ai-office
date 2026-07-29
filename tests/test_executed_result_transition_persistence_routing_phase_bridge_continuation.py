@@ -113,6 +113,37 @@ def setup(tmp_path: Path, status: str = "running") -> tuple[Path, Path]:
     return state_path, events_path
 
 
+def two_step_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "e", "instructions": "one"},
+                {"id": "two", "name": "Two", "employee": "e", "instructions": "two"},
+            ],
+        }
+    )
+
+
+def predecessor_event(step_id: str, step_index: int) -> RuntimeStepEvent:
+    return RuntimeStepEvent(
+        "step_succeeded", "w", step_id, step_index, "e", "running", "succeeded",
+        "openai", None, f"response-{step_id}", f"request-{step_id}", "output", None
+    )
+
+
+def setup_two_step_history(tmp_path: Path, mode: str) -> tuple[Path, Path]:
+    state = WorkflowExecutionState("w", "running", "two", 2, "e", ("one",), None)
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_text(serialize_workflow_execution_state_json(state))
+    first = serialize_runtime_step_event_jsonl(predecessor_event("one", 1))
+    second = serialize_runtime_step_event_jsonl(predecessor_event("two", 2))
+    events_path.write_text({"valid": first, "missing": "", "duplicate": first + first, "reordered": second + first}[mode])
+    return state_path, events_path
+
+
 def persist_fake(
     result: object, _workflow: object, state: Path, events: Path
 ) -> WorkflowExecutionPersistenceResult:
@@ -295,6 +326,21 @@ def test_running_state_and_predecessor_history_are_revalidated(tmp_path: Path) -
     assert caught.value.detail.classification == "runtime_contract"
 
 
+@pytest.mark.parametrize("mode", ["missing", "duplicate", "reordered"])
+def test_missing_duplicate_and_reordered_predecessor_history_is_rejected(
+    tmp_path: Path, mode: str
+) -> None:
+    state, events = setup_two_step_history(tmp_path, mode)
+    result = StepRuntimeExecutionSuccess(
+        "w", "two", 2, "e", ModelInvocationSuccess("openai", "r", "q", "done", ("out",), "out")
+    )
+    with pytest.raises(
+        ExecutedResultTransitionPersistenceRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        call(result, two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
+    assert caught.value.detail.classification == "runtime_contract"
+
+
 @pytest.mark.parametrize(
     "mutator",
     [
@@ -318,6 +364,57 @@ def test_persistence_result_paths_and_byte_counts_are_exact(
     ) as caught:
         call(success(), workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
+
+
+@pytest.mark.parametrize("field", ["state_path", "events_path"])
+def test_equal_but_nonidentical_persistence_path_is_rejected(
+    tmp_path: Path, field: str
+) -> None:
+    state, events = setup(tmp_path)
+
+    def dependency(*args: object) -> object:
+        value = persist_fake(*args)  # type: ignore[arg-type]
+        replacement = Path(str(state if field == "state_path" else events))
+        return replace(value, **{field: replacement})
+
+    with pytest.raises(
+        ExecutedResultTransitionPersistenceRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+
+
+@pytest.mark.parametrize(
+    "result,field,value",
+    [
+        (success(), "provider", "other"),
+        (success(), "response_id", None),
+        (success(), "request_id", True),
+        (success(), "status", None),
+        (success(), "text_parts", ["out"]),
+        (success(), "text", "wrong"),
+        (failure(), "provider", "other"),
+        (failure(), "category", "unknown"),
+        (failure(), "message", None),
+        (failure(), "request_id", True),
+        (failure(), "status_code", True),
+        (failure(), "provider_error_type", True),
+        (failure(), "provider_error_code", True),
+    ],
+)
+def test_runtime_payload_fields_and_exact_types_are_revalidated(
+    tmp_path: Path, result: object, field: str, value: object
+) -> None:
+    state, events = setup(tmp_path)
+    invalid = replace(
+        result,
+        invocation_result=replace(result.invocation_result, **{field: value}),  # type: ignore[union-attr]
+    )
+    with pytest.raises(
+        ExecutedResultTransitionPersistenceRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        call(invalid, workflow(), state, events, lambda *_: pytest.fail("called"))
+    assert caught.value.detail.classification == "runtime_contract"
 
 
 def test_direct_persisted_success_is_rejected(tmp_path: Path) -> None:
@@ -373,6 +470,23 @@ def test_top_level_and_target_contracts_reject_before_dependency(
         call(success(), workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == (
         "state_target" if name == "state_path" else "event_target"
+    )
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+def test_directory_target_is_rejected_before_dependency(
+    tmp_path: Path, target: str
+) -> None:
+    state, events = setup(tmp_path)
+    path = state if target == "state" else events
+    path.unlink()
+    path.mkdir()
+    with pytest.raises(
+        ExecutedResultTransitionPersistenceRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        call(success(), workflow(), state, events, lambda *_: pytest.fail("called"))
+    assert caught.value.detail.classification == (
+        "state_target" if target == "state" else "event_target"
     )
 
 
