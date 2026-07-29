@@ -407,6 +407,33 @@ def test_request_fields_are_strict(tmp_path: Path, field: str, value: object) ->
     assert caught.value.detail.classification == "start_contract"
 
 
+@pytest.mark.parametrize("operation", ["is_file", "read_bytes"])
+@pytest.mark.parametrize("target", ["state", "events"])
+def test_target_oserror_is_classified_before_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    target: str,
+) -> None:
+    values = inputs(tmp_path)
+    state, events = values["state_path"], values["events_path"]
+    original = getattr(Path, operation)
+
+    def fail(path: Path, *args: object, **kwargs: object) -> object:
+        if path == (state if target == "state" else events):
+            raise OSError("target unavailable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation, fail)
+    with pytest.raises(
+        PersistedRunningExecutionRoutingPhaseBridgeCompatibilityError
+    ) as caught:
+        call(values, lambda *_: pytest.fail("dependency must not be called"))
+    assert caught.value.detail.classification == (
+        "state_target" if target == "state" else "event_target"
+    )
+
+
 @pytest.mark.parametrize("target", ["state", "events", "both"])
 @pytest.mark.parametrize("operation", ["replace", "delete", "truncate", "append"])
 def test_dependency_mutations_are_compensated(

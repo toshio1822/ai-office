@@ -315,17 +315,24 @@ def _validate_targets(state: Path, events: Path) -> None:
     try:
         if not state.is_file():
             _raise("state_target")
+    except OSError:
+        _raise("state_target")
+    try:
         if not events.is_file():
             _raise("event_target")
     except OSError:
-        _raise("state_target")
+        _raise("event_target")
 
 
 def _capture(state: Path, events: Path) -> tuple[bytes, bytes]:
     try:
-        return state.read_bytes(), events.read_bytes()
+        state_bytes = state.read_bytes()
     except OSError:
         _raise("state_target")
+    try:
+        return state_bytes, events.read_bytes()
+    except OSError:
+        _raise("event_target")
 
 
 def _validate_terminal(
