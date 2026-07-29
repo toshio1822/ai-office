@@ -51,6 +51,32 @@ workflow_complete / persisted_failure → no approval/employee → unchanged sto
 Phase 54
 ```
 
+## Phase 61: prepared next-step start routing phase bridge reentry
+
+Phase 61 accepts exactly one Phase 60 result. An exact
+`PreparedWorkflowStep` with the exact employee is validated against the
+workflow and the immediately preceding succeeded terminal state/history, then
+delegated exactly once to Phase 54 with all supplied objects unchanged. The
+exact `PreparedStepExecutionStart` dependency result is validated and returned.
+Exact `workflow_complete` and `persisted_failure` require no employee, verify
+strict terminal state/history and unchanged targets, and return their supplied
+objects without calling Phase 54. Dependency mutations, malformed returns,
+safe errors, and unexpected errors are compensated safely without retry. Phase
+61 does not select/load employees, persist running state, execute
+providers/tools, continue automatically, finalize, schedule, loop, run in
+parallel, or add paid CLI/GUI behavior.
+
+```text
+Phase 60
+PreparedWorkflowStep | workflow_complete | persisted_failure
+    ↓
+Phase 61
+PreparedWorkflowStep + employee → Phase 54 exactly once → PreparedStepExecutionStart
+workflow_complete / persisted_failure → no employee → unchanged stop
+    ↓
+Phase 55
+```
+
 ## Phase 57: executed-result transition persistence phase bridge
 
 Phase 57 accepts exactly one Phase 56 result. Exact runtime success/failure is delegated exactly once to the existing Phase 50 bridge and returns its identical `WorkflowExecutionPersistenceResult`. Exact `workflow_complete` and `persisted_failure` are strictly verified terminal, read-only stop routes that return their supplied object unchanged without calling Phase 50. Only the exact Phase 50 transition persistence side effects are allowed; malformed, partial, or unexpected dependency writes are compensated. Phase 57 does not duplicate Phase 50, Phase 43, or Phase 36 logic and does not classify outcomes, decide progression, prepare or execute another step, retry, continue automatically, finalize, schedule, loop, or run in parallel.
