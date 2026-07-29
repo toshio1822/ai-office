@@ -260,6 +260,7 @@ def _validate_persistence(
         _raise("terminal_contract")
     if state.status not in ("succeeded", "failed"):
         _raise("persistence_contract")
+    _validate_terminal_event_types(state, history[-1])
     final_event = serialize_runtime_step_event_jsonl(history[-1]).encode()
     if (
         len(state_bytes) != result.state_bytes_written
@@ -268,6 +269,31 @@ def _validate_persistence(
     ):
         _raise("persistence_contract")
     return state
+
+
+def _validate_terminal_event_types(
+    state: WorkflowExecutionState, event: object
+) -> None:
+    if type(event.event_type) is not str or type(event.workflow_id) is not str:
+        _raise("terminal_contract")
+    if type(event.step_id) is not str or type(event.step_index) is not int:
+        _raise("terminal_contract")
+    if type(event.employee_id) is not str or type(event.previous_status) is not str:
+        _raise("terminal_contract")
+    if type(event.next_status) is not str or type(event.provider) is not str:
+        _raise("terminal_contract")
+    if type(event.request_id) is not str:
+        _raise("terminal_contract")
+    if state.status == "succeeded":
+        if type(event.response_id) is not str or type(event.output_text) is not str:
+            _raise("terminal_contract")
+        if event.failure_category is not None or event.message is not None:
+            _raise("terminal_contract")
+    else:
+        if event.response_id is not None or event.output_text is not None:
+            _raise("terminal_contract")
+        if type(event.failure_category) is not str or type(event.message) is not str:
+            _raise("terminal_contract")
 
 
 def _validate_outcome(value: object, state: WorkflowExecutionState) -> None:

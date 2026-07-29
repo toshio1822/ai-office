@@ -1,5 +1,6 @@
 """Focused Phase 72 boundary tests."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,10 @@ class ResultSubclass(WorkflowExecutionPersistenceResult):
 
 
 class OutcomeSubclass(PersistedExecutionOutcome):
+    pass
+
+
+class IntSubclass(int):
     pass
 
 
@@ -103,6 +108,20 @@ def failure() -> PersistedExecutionOutcome:
     )
 
 
+def rewrite_json(path: Path, field: str, value: object) -> None:
+    data = json.loads(path.read_text())
+    data[field] = value
+    path.write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+
+def result_with_current_sizes(
+    state: Path, events: Path
+) -> WorkflowExecutionPersistenceResult:
+    return WorkflowExecutionPersistenceResult(
+        state, events, state.stat().st_size, events.stat().st_size
+    )
+
+
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
 def test_valid_result_delegates_once_with_exact_identity_and_maps_outcome(
     tmp_path: Path, status: str
@@ -157,6 +176,83 @@ def test_terminal_stop_routes_do_not_call_phase65(
         before_state,
         before_events,
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("decision", "prepare_next_step"),
+        ("workflow_id", "other"),
+        ("current_step_id", "other"),
+        ("current_step_index", True),
+        ("current_employee_id", "other"),
+        ("next_step_id", "next"),
+        ("next_step_index", 2),
+        ("next_employee_id", "b"),
+        ("reason", "other"),
+    ],
+)
+def test_workflow_complete_stop_route_checks_each_field(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events, _, definition, _, _ = setup(tmp_path, "succeeded")
+    supplied = replace(completion(), **{field: value})
+    with pytest.raises(
+        PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            supplied, definition, state, events
+        )
+    assert caught.value.detail.classification == "completion_contract"
+
+
+def test_workflow_complete_stop_route_checks_terminal_match(tmp_path: Path) -> None:
+    state, events, _, definition, _, _ = setup(tmp_path, "succeeded")
+    rewrite_json(state, "workflow_id", "other")
+    with pytest.raises(
+        PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            completion(), definition, state, events
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("outcome", "persisted_success"),
+        ("workflow_id", "other"),
+        ("current_step_id", "other"),
+        ("current_step_index", True),
+        ("current_employee_id", "other"),
+        ("failure_category", "timeout"),
+    ],
+)
+def test_persisted_failure_stop_route_checks_each_field(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events, _, definition, _, _ = setup(tmp_path, "failed")
+    supplied = replace(failure(), **{field: value})
+    with pytest.raises(
+        PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            supplied, definition, state, events
+        )
+    assert caught.value.detail.classification == "failure_contract"
+
+
+def test_persisted_failure_stop_route_checks_terminal_match(tmp_path: Path) -> None:
+    state, events, _, definition, _, _ = setup(tmp_path, "failed")
+    rewrite_json(state, "last_failure_category", "timeout")
+    with pytest.raises(
+        PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            failure(), definition, state, events
+        )
+    assert caught.value.detail.classification == "terminal_contract"
 
 
 def test_exact_input_types_and_target_identity_are_checked_before_dependency(
@@ -245,6 +341,145 @@ def test_persistence_result_path_identity_is_required(
             phase65_function=lambda *_: object(),
         )
     assert caught.value.detail.classification == "persistence_contract"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("state_bytes_written", True),
+        ("state_bytes_written", 0),
+        ("state_bytes_written", -1),
+        ("state_bytes_written", IntSubclass(1)),
+        ("event_bytes_appended", True),
+        ("event_bytes_appended", 0),
+        ("event_bytes_appended", -1),
+        ("event_bytes_appended", IntSubclass(1)),
+    ],
+)
+def test_persistence_result_every_byte_count_type_and_value_is_checked(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events, result, definition, _, _ = setup(tmp_path)
+    bad = replace(result, **{field: value})
+    with pytest.raises(
+        PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            bad, definition, state, events
+        )
+    assert caught.value.detail.classification == "persistence_contract"
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_state_byte_count_mismatch_is_checked_independently(
+    tmp_path: Path, status: str
+) -> None:
+    state, events, result, definition, _, _ = setup(tmp_path, status)
+    bad = replace(result, state_bytes_written=result.state_bytes_written + 1)
+    with pytest.raises(
+        PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            bad, definition, state, events
+        )
+    assert caught.value.detail.classification == "persistence_contract"
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_event_byte_count_mismatch_is_checked_independently(
+    tmp_path: Path, status: str
+) -> None:
+    state, events, result, definition, _, _ = setup(tmp_path, status)
+    bad = replace(result, event_bytes_appended=result.event_bytes_appended + 1)
+    with pytest.raises(
+        PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            bad, definition, state, events
+        )
+    assert caught.value.detail.classification == "persistence_contract"
+
+
+@pytest.mark.parametrize(
+    ("field", "succeeded_value", "failed_value"),
+    [
+        ("workflow_id", "other", "other"),
+        ("status", "failed", "succeeded"),
+        ("current_step_id", "other", "other"),
+        ("current_step_index", 2, 2),
+        ("current_employee_id", "other", "other"),
+        ("completed_step_ids", [], ["one"]),
+        ("last_failure_category", "api_error", None),
+    ],
+)
+def test_succeeded_and_failed_terminal_state_fields_are_each_checked(
+    tmp_path: Path, field: str, succeeded_value: object, failed_value: object
+) -> None:
+    for status, value in (("succeeded", succeeded_value), ("failed", failed_value)):
+        case_path = tmp_path / status
+        case_path.mkdir()
+        state, events, _, definition, _, _ = setup(case_path, status)
+        rewrite_json(state, field, value)
+        bad = result_with_current_sizes(state, events)
+        with pytest.raises(
+            PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+        ):
+            route_persisted_outcome_classification_routing_phase_bridge_continuation(
+                bad, definition, state, events
+            )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "event_type",
+        "workflow_id",
+        "step_id",
+        "step_index",
+        "employee_id",
+        "previous_status",
+        "next_status",
+        "provider",
+        "failure_category",
+        "response_id",
+        "request_id",
+        "output_text",
+        "message",
+    ],
+)
+def test_succeeded_and_failed_terminal_event_fields_are_each_checked(
+    tmp_path: Path, field: str
+) -> None:
+    values = {
+        "workflow_id": "other",
+        "step_id": "other",
+        "step_index": 2,
+        "employee_id": "other",
+        "previous_status": "ready",
+        "provider": True,
+        "response_id": 1,
+        "request_id": True,
+        "output_text": 1,
+        "message": 1,
+    }
+    for status in ("succeeded", "failed"):
+        case_path = tmp_path / status
+        case_path.mkdir()
+        state, events, _, definition, _, _ = setup(case_path, status)
+        status_values = {
+            "event_type": "step_failed" if status == "succeeded" else "step_succeeded",
+            "next_status": "failed" if status == "succeeded" else "succeeded",
+            "failure_category": "api_error" if status == "succeeded" else None,
+            **values,
+        }
+        rewrite_json(events, field, status_values[field])
+        bad = result_with_current_sizes(state, events)
+        with pytest.raises(
+            PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+        ):
+            route_persisted_outcome_classification_routing_phase_bridge_continuation(
+                bad, definition, state, events
+            )
 
 
 @pytest.mark.parametrize("kind", ["missing", "directory"])
@@ -392,6 +627,7 @@ def test_persisted_outcome_exact_index_type_is_required(tmp_path: Path) -> None:
     "bad",
     [
         object(),
+        OutcomeSubclass("persisted_success", "w", "one", 1, "a", None),
         failure(),
     ],
 )
@@ -482,6 +718,30 @@ def test_dependency_errors_are_safe_and_compensated_without_retry(
         assert caught.value is safe
     else:
         assert caught.value.detail.classification == "dependency_error"
+
+
+def test_safe_dependency_error_identity_is_preserved_without_target_mutation(
+    tmp_path: Path,
+) -> None:
+    state, events, result, definition, before_state, before_events = setup(tmp_path)
+    safe = PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError(
+        "terminal_contract"
+    )
+    calls = 0
+
+    def phase65(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise safe
+
+    with pytest.raises(
+        PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            result, definition, state, events, phase65_function=phase65
+        )
+    assert caught.value is safe and calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("failed", ["state", "events", "both"])
