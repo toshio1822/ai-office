@@ -544,14 +544,22 @@ Phase 68
 PreparedStepExecutionStart | workflow_complete | persisted_failure
     ↓
 Phase 69
-PreparedStepExecutionStart + employee
-    → Phase 62 exactly once
-    → RunningStatePersistenceResult
+```
+
+## Persisted Running Execution Routing Phase Bridge Continuation Boundary（Phase 70）
+
+`route_persisted_running_execution_routing_phase_bridge_continuation()`は、正確なPhase 69 `RunningStatePersistenceResult`を一つだけ受けるread-only continuation boundaryです。matchingする正確な`PreparedStepExecutionStart`、`EmployeeDefinition`、resolved tools、credential、approval、transportを検証し、state/eventsと先行step historyを再検証した後、同じ引数identityで既存Phase 63へ正確に一度だけ委譲します。Phase 63からはmatchingする正確なruntime success/failureだけを受け入れ、state/eventsの不変を確認します。`workflow_complete`と`persisted_failure`はexecution-only inputなしでstrict terminal state/historyを確認し、Phase 63を呼ばず停止します。state/eventsは別々に検査・読み込みし、不正返却、依存エラー、target mutation、rollback failureは分類・補償復元し、retryは行いません。employee選択、provider/tool実行、outcome分類、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+
+```text
+Phase 69
+RunningStatePersistenceResult + execution inputs
+    → Phase 63 exactly once
+    → StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
 workflow_complete | persisted_failure
-    → no employee
+    → no execution-only inputs
     → unchanged stop
     ↓
-Phase 63
+Phase 64
 ```
 
 ## Persisted Terminal Outcome Classification Bridge Reentry Boundary（Phase 51）
