@@ -137,6 +137,10 @@ Phase 66 accepts exactly one Phase 65 `PersistedExecutionOutcome` or `workflow_c
 
 Phase 67 accepts exactly one Phase 66 `prepare_next_step`, `workflow_complete`, or `persisted_failure` result. The prepare route requires the exact approval and next employee, then delegates exactly once to the existing Phase 60 preparation boundary with identical object identity and accepts only its exact `PreparedWorkflowStep`. Terminal routes require no approval or employee, validate strict terminal state/history, and return the supplied object unchanged without delegation. Targets are inspected and captured independently; dependency errors, malformed returns, mutations, and rollback failures are classified safely, compensated where possible, and never retried. Phase 67 does not create approvals, select employees, start steps, persist transitions, execute providers or tools, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 68: prepared next-step start routing phase bridge continuation
+
+Phase 68 accepts exactly one Phase 67 `PreparedWorkflowStep`, `workflow_complete`, or `persisted_failure` result. The prepared route requires the exact matching `EmployeeDefinition`, validates the predecessor terminal history, then delegates exactly once to the existing Phase 61 start-routing boundary with identical object identity and accepts only its exact `PreparedStepExecutionStart`. Terminal routes require no employee, validate strict terminal state/history, and return the supplied object unchanged without delegation. Targets are inspected and captured independently; dependency errors, malformed returns, mutations, and rollback failures are classified safely, compensated where possible, and never retried. Phase 68 does not select employees, persist running state, execute providers or tools, classify results, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text
