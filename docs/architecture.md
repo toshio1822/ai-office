@@ -141,6 +141,10 @@ Phase 67 accepts exactly one Phase 66 `prepare_next_step`, `workflow_complete`, 
 
 Phase 68 accepts exactly one Phase 67 `PreparedWorkflowStep`, `workflow_complete`, or `persisted_failure` result. The prepared route requires the exact matching `EmployeeDefinition`, validates the predecessor terminal history, then delegates exactly once to the existing Phase 61 start-routing boundary with identical object identity and accepts only its exact `PreparedStepExecutionStart`. Terminal routes require no employee, validate strict terminal state/history, and return the supplied object unchanged without delegation. Targets are inspected and captured independently; dependency errors, malformed returns, mutations, and rollback failures are classified safely, compensated where possible, and never retried. Phase 68 does not select employees, persist running state, execute providers or tools, classify results, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 69: prepared start persistence routing phase bridge continuation
+
+Phase 69 accepts exactly one Phase 68 `PreparedStepExecutionStart`, `workflow_complete`, or `persisted_failure` result. The start route requires the exact matching `EmployeeDefinition`, validates the predecessor terminal history, then delegates exactly once to the existing Phase 62 persistence-routing boundary. It permits only the exact running-state persistence effect, validates the exact persisted state bytes and byte count, and returns the exact `RunningStatePersistenceResult`. Terminal routes require no employee, validate strict terminal state/history, and return the supplied object unchanged without delegation. Unrelated changes, malformed results, dependency errors, and rollback failures are classified safely and compensated where possible; retry is never performed. Phase 69 does not select employees, execute providers or tools, classify results, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text
