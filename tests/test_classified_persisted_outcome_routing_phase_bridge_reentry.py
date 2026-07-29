@@ -371,6 +371,86 @@ def test_dependency_mutations_errors_and_malformed_returns_are_compensated(
     assert (state.read_bytes(), events.read_bytes()) == before
 
 
+@pytest.mark.parametrize("failed", ["state", "events", "both"])
+@pytest.mark.parametrize("kind", ["safe", "unexpected", "malformed"])
+def test_rollback_failures_attempt_both_targets_and_sanitize_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed: str,
+    kind: str,
+) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    originals = {state: state.read_bytes(), events: events.read_bytes()}
+    original_write = Path.write_bytes
+    attempts: list[Path] = []
+    calls = 0
+    safe = ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError("routing_contract")
+
+    def fail_restore(path: Path, contents: bytes) -> int:
+        if contents == originals[path]:
+            attempts.append(path)
+            if failed == "both" or (failed == "state" and path == state) or (
+                failed == "events" and path == events
+            ):
+                raise OSError("sensitive dependency detail")
+        return original_write(path, contents)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_restore)
+
+    def phase52(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        original_write(state, b"changed")
+        original_write(events, b"changed")
+        if kind == "safe":
+            raise safe
+        if kind == "unexpected":
+            raise RuntimeError("sensitive dependency detail")
+        return object()
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeRoutingPhaseBridgeCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_routing_phase_bridge_reentry(
+            outcome, definition, state, events, phase52_function=phase52
+        )
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert calls == 1
+    assert attempts[:2] == [state, events]
+    assert "sensitive" not in str(caught.value)
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+@pytest.mark.parametrize("condition", ["missing", "directory"])
+def test_missing_and_non_regular_targets_are_rejected_before_dependency(
+    tmp_path: Path, target: str, condition: str
+) -> None:
+    state, events, outcome, definition = setup(tmp_path)
+    selected = state if target == "state" else events
+    if condition == "missing":
+        selected.unlink()
+    else:
+        selected.unlink()
+        selected.mkdir()
+    calls = 0
+
+    def phase52(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeRoutingPhaseBridgeCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_routing_phase_bridge_reentry(
+            outcome, definition, state, events, phase52_function=phase52
+        )
+    assert caught.value.detail.classification == (
+        "state_target" if target == "state" else "event_target"
+    )
+    assert calls == 0
+
+
 @pytest.mark.parametrize("bad", ["workflow", "state", "events", "same", "function"])
 def test_workflow_targets_and_dependency_are_prevalidated(
     tmp_path: Path, bad: str
