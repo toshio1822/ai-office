@@ -125,6 +125,10 @@ Phase 63 accepts exactly one Phase 62 result. Exact `RunningStatePersistenceResu
 
 Phase 64 accepts exactly one Phase 63 runtime result. Exact `StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure` is validated against the persisted running state and predecessor history, then delegated exactly once to Phase 57 with identical workflow and state/event targets, returning its identical `WorkflowExecutionPersistenceResult`. Success permits only the exact succeeded state and one `step_succeeded` event; failure permits only the exact failed state and one `step_failed` event, with byte counts and history validated. Malformed, partial, unrelated, or reordered dependency changes are compensated to the original bytes, safe Phase 57 errors preserve identity, and unexpected errors are sanitized. Exact completion and persisted failure are unchanged stop routes without calling Phase 57. It does not duplicate Phase 50 or Phase 57, execute providers or tools, create runtime results, classify outcomes, decide progression, prepare steps, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 65: persisted terminal outcome classification routing phase bridge reentry
+
+Phase 65 accepts exactly one Phase 64 `WorkflowExecutionPersistenceResult`. It validates the exact persisted terminal state/history and delegates once to Phase 58 with the identical result, workflow, and state/event targets, returning the exact `PersistedExecutionOutcome`. Exact `workflow_complete` and `persisted_failure` are strict read-only stop routes that do not call Phase 58. The boundary verifies byte counts and outcome identity, preserves safe dependency errors, sanitizes unexpected errors, compensates all detected mutations, and never retries. It does not duplicate Phase 51 or Phase 58 classification logic, execute providers or tools, persist transitions, route classified outcomes, decide progression, prepare steps, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text
