@@ -133,6 +133,10 @@ Phase 65 accepts exactly one Phase 64 `WorkflowExecutionPersistenceResult`. It v
 
 Phase 66 accepts exactly one Phase 65 `PersistedExecutionOutcome` or `workflow_complete` decision. Exact persisted success and failure outcomes are validated against terminal state/history and delegated exactly once to Phase 59 with identical argument identity. Success accepts only the exact next-step or completion decision produced by Phase 59; failure accepts only the same supplied failure object. Exact workflow completion is a zero-call read-only stop. Dependency mutations and errors are compensated safely, unexpected details are sanitized, and retry is not performed. Phase 66 does not duplicate Phase 52 or Phase 59, execute providers or tools, persist transitions, prepare or execute steps, create approvals, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 67: approved next-step preparation phase bridge continuation
+
+Phase 67 accepts exactly one Phase 66 `prepare_next_step`, `workflow_complete`, or `persisted_failure` result. The prepare route requires the exact approval and next employee, then delegates exactly once to the existing Phase 60 preparation boundary with identical object identity and accepts only its exact `PreparedWorkflowStep`. Terminal routes require no approval or employee, validate strict terminal state/history, and return the supplied object unchanged without delegation. Targets are inspected and captured independently; dependency errors, malformed returns, mutations, and rollback failures are classified safely, compensated where possible, and never retried. Phase 67 does not create approvals, select employees, start steps, persist transitions, execute providers or tools, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text

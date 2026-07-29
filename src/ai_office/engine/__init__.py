@@ -6,6 +6,12 @@ from ai_office.engine.approved_next_step_preparation_bridge_reentry import (
     ApprovedNextStepPreparationBridgeFailureDetail,
     route_approved_next_step_preparation_bridge_reentry,
 )
+from ai_office.engine.approved_next_step_preparation_phase_bridge_continuation import (
+    ApprovedNextStepPreparationPhaseBridgeContinuationCompatibilityError,
+    ApprovedNextStepPreparationPhaseBridgeContinuationError,
+    ApprovedNextStepPreparationPhaseBridgeContinuationFailureDetail,
+    route_approved_next_step_preparation_phase_bridge_continuation,
+)
 from ai_office.engine.approved_next_step_preparation_phase_bridge_reentry import (
     ApprovedNextStepPreparationPhaseBridgeCompatibilityError,
     ApprovedNextStepPreparationPhaseBridgeError,
@@ -303,6 +309,10 @@ __all__ = [
     "ApprovedNextStepPreparationPhaseBridgeError",
     "ApprovedNextStepPreparationPhaseBridgeFailureDetail",
     "route_approved_next_step_preparation_phase_bridge_reentry",
+    "ApprovedNextStepPreparationPhaseBridgeContinuationCompatibilityError",
+    "ApprovedNextStepPreparationPhaseBridgeContinuationError",
+    "ApprovedNextStepPreparationPhaseBridgeContinuationFailureDetail",
+    "route_approved_next_step_preparation_phase_bridge_continuation",
     "WorkflowProgressionCompatibilityDetail",
     "WorkflowProgressionCompatibilityError",
     "WorkflowProgressionDecision",
