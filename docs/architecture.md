@@ -117,6 +117,10 @@ Phase 56 accepts exactly one Phase 55 result. Exact `RunningStatePersistenceResu
 
 Phase 62 accepts exactly one Phase 61 result. Exact `PreparedStepExecutionStart` and employee are delegated exactly once to Phase 55 with identical workflow, employee, and state/event targets, returning its identical `RunningStatePersistenceResult`. Only the exact proposed running-state persistence transition may change the state target; the event target remains byte-for-byte unchanged. Exact workflow completion and persisted failure require no employee, verify strict terminal state/history, and return their supplied object unchanged without calling Phase 55. The bridge compensates malformed, partial, unrelated, or unexpected dependency changes and errors. It does not duplicate Phase 48 or Phase 55, select or load employees, execute providers or tools, classify results, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 63: persisted-running execution routing phase bridge reentry
+
+Phase 63 accepts exactly one Phase 62 result. Exact `RunningStatePersistenceResult`, original `PreparedStepExecutionStart`, matching employee, resolved tools, `OpenAIApiKey`, valid execution approval, and transport are validated against the persisted running state and predecessor history, then delegated exactly once to Phase 56 with identical argument identity. The state and event targets must remain byte-for-byte unchanged; malformed results, dependency mutations, and unexpected errors are compensated safely, while exact safe Phase 56 errors are preserved. Exact workflow completion and persisted failure require all execution-only inputs to be absent, verify strict terminal state/history, and return their supplied objects unchanged without calling Phase 56. It does not duplicate Phase 49 or Phase 56, select employees, resolve tools, create credentials or approvals, invoke providers or tools directly, persist execution results, classify outcomes, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text
