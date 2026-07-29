@@ -562,6 +562,22 @@ workflow_complete | persisted_failure
 Phase 64
 ```
 
+## Executed-Result Transition Persistence Routing Phase Bridge Continuation Boundary（Phase 71）
+
+`route_executed_result_transition_persistence_routing_phase_bridge_continuation()`は、正確なPhase 70 runtime resultを一つだけ受けるread-only continuation boundaryです。正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を、persisted running stateとpredecessor historyに照合した後、同じresult、workflow、state/event `Path` objectsのまま既存Phase 64へ正確に一度だけ委譲し、正確な`WorkflowExecutionPersistenceResult`だけを受け入れます。successは正確なsucceeded stateと一つの`step_succeeded` event、failureは正確なfailed stateと一つの`step_failed` eventだけを許可し、byte count、path、history、transitionを検証します。`workflow_complete`と`persisted_failure`はstrict terminal state/historyを確認してPhase 64を呼ばず同じobjectで停止します。依存の不正返却、partial/unrelated mutation、safe/unexpected error、rollback failureは安全に分類・補償復元し、retryは行いません。provider/tool実行、runtime result作成、outcome分類、progression、next-step preparation、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+
+```text
+Phase 70
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+| workflow_complete | persisted_failure
+    ↓
+Phase 71
+runtime result → Phase 64 exactly once → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure → unchanged stop
+    ↓
+Phase 65
+```
+
 ## Persisted Terminal Outcome Classification Bridge Reentry Boundary（Phase 51）
 
 `route_persisted_terminal_outcome_classification_bridge_reentry()`は、正確なPhase 50 resultを一つだけ受けるread-only bridgeです。`WorkflowExecutionPersistenceResult`だけを既存Phase 44 `route_persisted_terminal_outcome_classification_reentry()`へ正確に一度だけ委譲し、同じ`PersistedExecutionOutcome` objectを返します。`workflow_complete`と既存`persisted_failure`はstrict terminal state/historyをread-onlyで照合して同じobjectを返し、Phase 44を呼びません。依存によるtarget改変、例外、または不正な返却値は元bytesへ補償復元します。Phase 37/44を複製せず、classified outcomeの後続routing、progression、next-step preparation/execution、retry、自動継続、completion/failure finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
