@@ -102,8 +102,9 @@ def route_classified_persisted_outcome_routing_phase_bridge_continuation(
     try:
         _require_unchanged(state_path, events_path, original, "routing_contract")
         _validate_return(routed, result, workflow)
-    except ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationCompatibilityError:
-        _restore_if_changed(state_path, events_path, original)
+    except ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationCompatibilityError as error:
+        if error.detail.classification != "dependency_rollback":
+            _restore_if_changed(state_path, events_path, original)
         raise
     return routed
 

@@ -238,6 +238,71 @@ def test_reconstructed_failure_return_is_rejected_without_retry(tmp_path: Path) 
     assert calls == 1 and (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
+def test_malformed_return_with_both_target_mutation_is_restored_without_retry(
+    tmp_path: Path,
+) -> None:
+    state, events, outcome, definition, before_state, before_events = setup(tmp_path)
+    calls = 0
+    original_write = Path.write_bytes
+
+    def phase59(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        original_write(state, b"mutated state")
+        original_write(events, b"mutated events")
+        return object()
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_routing_phase_bridge_continuation(
+            outcome, definition, state, events, phase59_function=phase59
+        )
+    assert caught.value.detail.classification == "routing_contract"
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("failed_target", ["state", "events", "both"])
+def test_rollback_failures_attempt_both_restorations_and_do_not_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_target: str
+) -> None:
+    state, events, outcome, definition, before_state, before_events = setup(tmp_path)
+    calls = 0
+    attempted: list[Path] = []
+    original_write = Path.write_bytes
+    failed_paths = {
+        state if failed_target in ("state", "both") else None,
+        events if failed_target in ("events", "both") else None,
+    }
+
+    def phase59(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        original_write(state, b"mutated state")
+        original_write(events, b"mutated events")
+        return object()
+
+    def restore(path: Path, contents: bytes) -> int:
+        attempted.append(path)
+        if path in failed_paths:
+            raise OSError("rollback failure")
+        return original_write(path, contents)
+
+    monkeypatch.setattr(Path, "write_bytes", restore)
+    with pytest.raises(
+        ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_routing_phase_bridge_continuation(
+            outcome, definition, state, events, phase59_function=phase59
+        )
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert calls == 1
+    assert attempted == [state, events]
+    assert state.read_bytes() == (before_state if failed_target == "events" else b"mutated state")
+    assert events.read_bytes() == (before_events if failed_target == "state" else b"mutated events")
+
+
 @pytest.mark.parametrize("which", ["state", "events"])
 @pytest.mark.parametrize("operation", ["is_file", "read_bytes"])
 def test_target_oserrors_are_classified_separately(
