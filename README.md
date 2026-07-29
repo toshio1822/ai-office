@@ -439,6 +439,22 @@ workflow_complete | persisted_failure
 Phase 57
 ```
 
+## Executed-Result Transition Persistence Routing Phase Bridge Reentry Boundary（Phase 64）
+
+`route_executed_result_transition_persistence_routing_phase_bridge_reentry()`は、正確なPhase 63 runtime resultを一つだけ受けるread-only routing boundaryです。正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を、workflowとstate/event `Path` objectsのまま既存Phase 57へ正確に一度だけ委譲し、同じ`WorkflowExecutionPersistenceResult` objectを返します。successは正確なsucceeded stateと`step_succeeded` event、failureは正確なfailed stateと`step_failed` eventのtransitionだけを許可し、malformed・partial・unrelated・reorderedな変更は元bytesへ補償復元します。`workflow_complete`と`persisted_failure`はPhase 57を呼ばず同じobjectで停止します。Phase 50/57を複製・直接呼出しせず、provider/tool実行、runtime result作成、outcome分類、progression、next-step preparation、retry、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+
+```text
+Phase 63
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+| workflow_complete | persisted_failure
+    ↓
+Phase 64
+runtime result → Phase 57 exactly once → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure → unchanged stop
+    ↓
+Phase 58
+```
+
 ## Persisted Terminal Outcome Classification Bridge Reentry Boundary（Phase 51）
 
 `route_persisted_terminal_outcome_classification_bridge_reentry()`は、正確なPhase 50 resultを一つだけ受けるread-only bridgeです。`WorkflowExecutionPersistenceResult`だけを既存Phase 44 `route_persisted_terminal_outcome_classification_reentry()`へ正確に一度だけ委譲し、同じ`PersistedExecutionOutcome` objectを返します。`workflow_complete`と既存`persisted_failure`はstrict terminal state/historyをread-onlyで照合して同じobjectを返し、Phase 44を呼びません。依存によるtarget改変、例外、または不正な返却値は元bytesへ補償復元します。Phase 37/44を複製せず、classified outcomeの後続routing、progression、next-step preparation/execution、retry、自動継続、completion/failure finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
