@@ -1,5 +1,31 @@
 # アーキテクチャ
 
+## Phase 59: classified persisted outcome routing phase bridge reentry
+
+Phase 59 accepts exactly one Phase 58 result. Exact `persisted_success` and
+`persisted_failure` outcomes are verified against strict terminal state/history
+and delegated exactly once to Phase 52 with the caller-supplied workflow,
+state/event `Path` objects, and result object unchanged. It returns the exact
+Phase 52 decision or supplied failure object. Exact `workflow_complete` is a
+read-only, unchanged stop route with zero Phase 52 calls. Dependency mutations,
+malformed returns, and unexpected errors are compensated safely. Phase 59 does
+not duplicate Phase 52, Phase 45, or Phase 38 logic; prepare or execute a next
+step, persist state, invoke providers/tools, retry, continue automatically,
+finalize terminal outcomes, schedule, loop, run in parallel, or add paid
+CLI/GUI behavior.
+
+```text
+Phase 58
+persisted_success | persisted_failure | workflow_complete
+    ↓
+Phase 59
+persisted_success/failure → Phase 52 exactly once
+    → prepare_next_step | workflow_complete | same persisted_failure
+workflow_complete → unchanged stop
+    ↓
+future explicit boundary
+```
+
 ## Phase 57: executed-result transition persistence phase bridge
 
 Phase 57 accepts exactly one Phase 56 result. Exact runtime success/failure is delegated exactly once to the existing Phase 50 bridge and returns its identical `WorkflowExecutionPersistenceResult`. Exact `workflow_complete` and `persisted_failure` are strictly verified terminal, read-only stop routes that return their supplied object unchanged without calling Phase 50. Only the exact Phase 50 transition persistence side effects are allowed; malformed, partial, or unexpected dependency writes are compensated. Phase 57 does not duplicate Phase 50, Phase 43, or Phase 36 logic and does not classify outcomes, decide progression, prepare or execute another step, retry, continue automatically, finalize, schedule, loop, or run in parallel.
