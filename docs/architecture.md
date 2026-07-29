@@ -26,6 +26,31 @@ workflow_complete → unchanged stop
 future explicit boundary
 ```
 
+## Phase 60: approved next-step preparation phase bridge reentry
+
+Phase 60 accepts exactly one Phase 59 result. Exact `prepare_next_step` requires
+one exact approval and the exact next employee, delegates exactly once to Phase
+53 with all supplied objects unchanged, and returns the exact
+`PreparedWorkflowStep` dependency result. Exact `workflow_complete` and
+`persisted_failure` require no approval or employee, verify strict terminal
+state/history and unchanged targets, and return their supplied objects without
+calling Phase 53. Dependency mutations, malformed returns, safe errors, and
+unexpected errors are handled with safe compensation and no retry. Phase 60
+does not create approvals, select or load employees, start steps, persist state,
+execute providers/tools, continue automatically, finalize, schedule, loop, run
+in parallel, or add paid CLI/GUI behavior.
+
+```text
+Phase 59
+prepare_next_step | workflow_complete | persisted_failure
+    ↓
+Phase 60
+prepare_next_step + approval + employee → Phase 53 exactly once → PreparedWorkflowStep
+workflow_complete / persisted_failure → no approval/employee → unchanged stop
+    ↓
+Phase 54
+```
+
 ## Phase 57: executed-result transition persistence phase bridge
 
 Phase 57 accepts exactly one Phase 56 result. Exact runtime success/failure is delegated exactly once to the existing Phase 50 bridge and returns its identical `WorkflowExecutionPersistenceResult`. Exact `workflow_complete` and `persisted_failure` are strictly verified terminal, read-only stop routes that return their supplied object unchanged without calling Phase 50. Only the exact Phase 50 transition persistence side effects are allowed; malformed, partial, or unexpected dependency writes are compensated. Phase 57 does not duplicate Phase 50, Phase 43, or Phase 36 logic and does not classify outcomes, decide progression, prepare or execute another step, retry, continue automatically, finalize, schedule, loop, or run in parallel.
