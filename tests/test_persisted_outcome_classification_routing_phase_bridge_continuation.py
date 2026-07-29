@@ -10,6 +10,8 @@ from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
     PersistedExecutionOutcome,
     PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError,
+    PersistedOutcomeClassificationRoutingPhaseBridgeContinuationError,
+    PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError,
     WorkflowProgressionDecision,
     route_persisted_outcome_classification_routing_phase_bridge_continuation,
 )
@@ -245,6 +247,28 @@ def test_persistence_result_path_identity_is_required(
     assert caught.value.detail.classification == "persistence_contract"
 
 
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+def test_missing_and_non_regular_targets_are_rejected(
+    tmp_path: Path, kind: str
+) -> None:
+    state, events, result, definition, _, _ = setup(tmp_path)
+    target = state if kind == "missing" else events
+    if kind == "missing":
+        target.unlink()
+    else:
+        events.unlink()
+        events.mkdir()
+    with pytest.raises(
+        PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            result, definition, state, events
+        )
+    assert caught.value.detail.classification == (
+        "state_target" if target == state else "event_target"
+    )
+
+
 @pytest.mark.parametrize("which", ["state", "events"])
 def test_state_and_event_oserrors_are_classified_separately(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, which: str
@@ -420,6 +444,44 @@ def test_dependency_mutation_is_compensated_and_rollback_attempts_both(
         before_state,
         before_events,
     )
+
+
+@pytest.mark.parametrize("kind", ["safe", "unexpected"])
+def test_dependency_errors_are_safe_and_compensated_without_retry(
+    tmp_path: Path, kind: str
+) -> None:
+    state, events, result, definition, before_state, before_events = setup(tmp_path)
+    calls = 0
+    safe = PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError(
+        "terminal_contract"
+    )
+
+    def phase65(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(b"changed")
+        events.write_bytes(b"changed")
+        if kind == "safe":
+            raise safe
+        raise RuntimeError("secret")
+
+    with pytest.raises(
+        (
+            PersistedOutcomeClassificationRoutingPhaseBridgeContinuationError,
+            PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError,
+        )
+    ) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_continuation(
+            result, definition, state, events, phase65_function=phase65
+        )
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == (
+        before_state,
+        before_events,
+    )
+    if kind == "safe":
+        assert caught.value is safe
+    else:
+        assert caught.value.detail.classification == "dependency_error"
 
 
 @pytest.mark.parametrize("failed", ["state", "events", "both"])
