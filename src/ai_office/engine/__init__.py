@@ -106,6 +106,12 @@ from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     PersistedExecutionOutcomeRoutingFailureDetail,
     route_persisted_execution_outcome_reentry,
 )
+from ai_office.engine.persisted_outcome_classification_routing_phase_bridge_continuation import (  # noqa: E501
+    PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError,
+    PersistedOutcomeClassificationRoutingPhaseBridgeContinuationError,
+    PersistedOutcomeClassificationRoutingPhaseBridgeContinuationFailureDetail,
+    route_persisted_outcome_classification_routing_phase_bridge_continuation,
+)
 from ai_office.engine.persisted_running_execution_bridge_reentry import (
     PersistedRunningExecutionBridgeCompatibilityError,
     PersistedRunningExecutionBridgeError,
@@ -439,6 +445,10 @@ __all__ = [
     "PersistedExecutionOutcomeRoutingError",
     "PersistedExecutionOutcomeRoutingFailureDetail",
     "route_persisted_execution_outcome_reentry",
+    "PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError",
+    "PersistedOutcomeClassificationRoutingPhaseBridgeContinuationError",
+    "PersistedOutcomeClassificationRoutingPhaseBridgeContinuationFailureDetail",
+    "route_persisted_outcome_classification_routing_phase_bridge_continuation",
     "PersistedTerminalOutcomeClassificationRoutingCompatibilityError",
     "PersistedTerminalOutcomeClassificationRoutingError",
     "PersistedTerminalOutcomeClassificationRoutingFailureDetail",
