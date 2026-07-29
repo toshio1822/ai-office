@@ -336,3 +336,16 @@ Persisted-Running Execution Routing Bridge（Phase 49）は、正確なPhase 48 
 Prepared-Step Start Routing Reentry Boundary（Phase 40）は、caller suppliedな正確なPhase 39 resultを明示targetに対して検証するread-only boundaryである。正確な`PreparedWorkflowStep`だけを正確なmatching employeeとともにPhase 34へ一度委譲し、requestとproposed `running` stateの契約を照合した同じ`PreparedStepExecutionStart` objectを返す。正確な`workflow_complete` decisionはPhase 34を呼ばず同じdecision objectを返して停止し、completion persistence/finalizationを行わない。state/event target bytesは依存呼出し前後に検証し、改変時のみ補償復元する。running-state/event persistence、provider実行、tool/credential resolution、retry、自動継続、paid CLI/GUI、data writeを行わない。flowは `Phase 39 PreparedWorkflowStep → explicit employee → Phase 34 → PreparedStepExecutionStart`、または `Phase 39 workflow_complete → stop` とし、その後のrunning-state persistenceとcompletion persistence/finalizationは将来の明示boundaryに委ねる。
 
 Prepared-Start Persistence Routing Reentry Boundary（Phase 41）は、正確なPhase 40 resultをPhase 35へ明示的にroutingするboundaryである。正確な`PreparedStepExecutionStart`だけを正確なmatching employeeとともに一度委譲し、same `RunningStatePersistenceResult`を返す。許可されるside effectは提案済み`running` stateのstate targetへの永続化だけであり、event targetはbyte-for-byte不変でなければならない。`workflow_complete`はPhase 35を呼ばず同じdecision objectを返して停止する。provider実行、credentials/tools/approval、runtime event append、transition、retry、自動継続、completion persistence/finalizationを行わない。
+
+## Phase 73: classified outcome routing phase bridge continuation
+
+Phase 73 accepts one exact Phase 72 `PersistedExecutionOutcome` or the existing
+final `WorkflowProgressionDecision`. A persisted success is validated against
+the succeeded terminal state/history and delegated exactly once to the existing
+Phase 59 classified-outcome routing boundary, returning its exact progression
+decision. A persisted failure and workflow completion are strict, unchanged,
+zero-call stop routes. Dependency errors and malformed returns are detail-safe;
+all dependency mutations are compensated byte-for-byte, without retry. This
+boundary does not select employees, invoke providers or tools, persist
+transitions, classify outcomes, prepare or execute steps, retry, auto-continue,
+finalize, schedule, loop, parallelize, or add paid CLI/GUI behavior.
