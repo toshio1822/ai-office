@@ -786,3 +786,15 @@ workflow_complete → stop unchanged
     ↓
 future explicit runtime-result transition and terminal persistence
 ```
+
+## Classified Outcome Routing Phase Bridge Continuation Boundary（Phase 73）
+
+`route_classified_outcome_routing_phase_bridge_continuation()`は、Phase 72
+の正確な`persisted_success`だけを既存Phase 59へ同じresult、workflow、
+state/event target objectのまま一度だけ渡します。`persisted_failure`と
+workflow completionはPhase 59を呼ばず同じobjectで停止します。targetの
+byte-for-byte不変、safe error identity、unexpected error sanitization、
+dependency mutationの両target補償、rollback failure、no-retryを保証し、
+provider/tool実行、persistence、outcome classification、progression再実行、
+next-step execution、retry、自動継続、finalization、scheduler、loop、parallel
+execution、paid CLI/GUIは追加しません。
