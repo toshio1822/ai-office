@@ -316,14 +316,15 @@ def _validate_prepared(
 ) -> None:
     next_step = workflow.steps[decision.current_step_index]
     if type(value) is not PreparedWorkflowStep or not (
-        value.workflow_id == workflow.id
-        and value.step_id == next_step.id
+        _exact_str(value.workflow_id, workflow.id)
+        and _exact_str(value.step_id, next_step.id)
+        and type(value.step_index) is int
         and value.step_index == decision.next_step_index
-        and value.employee_id == employee.id
-        and value.employee_instructions == employee.instructions
-        and value.step_instructions == next_step.instructions
-        and value.model == employee.model
-        and value.allowed_tool_names == tuple(employee.allowed_tools)
+        and _exact_str(value.employee_id, employee.id)
+        and _exact_str(value.employee_instructions, employee.instructions)
+        and _exact_str(value.step_instructions, next_step.instructions)
+        and _exact_str(value.model, employee.model)
+        and _exact_tuple(value.allowed_tool_names, tuple(employee.allowed_tools))
     ):
         _raise("preparation_contract")
 
@@ -360,6 +361,14 @@ def _require_unchanged(
 
 def _exact_str(value: object, expected: str) -> bool:
     return type(value) is str and value == expected
+
+
+def _exact_tuple(value: object, expected: tuple[str, ...]) -> bool:
+    return (
+        type(value) is tuple
+        and all(type(item) is str for item in value)
+        and value == expected
+    )
 
 
 def _raise(classification: Classification) -> None:

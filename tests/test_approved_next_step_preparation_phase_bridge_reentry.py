@@ -84,6 +84,10 @@ def prepared() -> PreparedWorkflowStep:
     )
 
 
+class StringSubclass(str):
+    pass
+
+
 def event(status: str, index: int) -> RuntimeStepEvent:
     step, person = ("first", "one") if index == 1 else ("second", "two")
     return RuntimeStepEvent(
@@ -361,6 +365,101 @@ def test_prepared_return_fields_are_strict_without_retry(
                 )
             },
         )
+
+    with pytest.raises(
+        ApprovedNextStepPreparationPhaseBridgeCompatibilityError
+    ) as caught:
+        route_approved_next_step_preparation_phase_bridge_reentry(
+            decision(),
+            workflow(),
+            state,
+            events,
+            approval(),
+            employee(),
+            phase53_function=phase53,
+        )
+    assert caught.value.detail.classification == "preparation_contract"
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "workflow_id",
+        "step_id",
+        "employee_id",
+        "employee_instructions",
+        "step_instructions",
+        "model",
+    ],
+)
+def test_prepared_return_string_subclasses_are_rejected_without_retry(
+    tmp_path: Path, field: str
+) -> None:
+    state, events = targets(tmp_path)
+    expected = prepared()
+    calls = 0
+
+    def phase53(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return replace(expected, **{field: StringSubclass(getattr(expected, field))})
+
+    with pytest.raises(
+        ApprovedNextStepPreparationPhaseBridgeCompatibilityError
+    ) as caught:
+        route_approved_next_step_preparation_phase_bridge_reentry(
+            decision(),
+            workflow(),
+            state,
+            events,
+            approval(),
+            employee(),
+            phase53_function=phase53,
+        )
+    assert caught.value.detail.classification == "preparation_contract"
+    assert calls == 1
+
+
+@pytest.mark.parametrize("value", [True, False, 2.0, "2"])
+def test_prepared_return_step_index_requires_exact_int_without_retry(
+    tmp_path: Path, value: object
+) -> None:
+    state, events = targets(tmp_path)
+    calls = 0
+
+    def phase53(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return replace(prepared(), step_index=value)  # type: ignore[arg-type]
+
+    with pytest.raises(
+        ApprovedNextStepPreparationPhaseBridgeCompatibilityError
+    ) as caught:
+        route_approved_next_step_preparation_phase_bridge_reentry(
+            decision(),
+            workflow(),
+            state,
+            events,
+            approval(),
+            employee(),
+            phase53_function=phase53,
+        )
+    assert caught.value.detail.classification == "preparation_contract"
+    assert calls == 1
+
+
+@pytest.mark.parametrize("value", [["tool"], (StringSubclass("tool"),)])
+def test_prepared_return_tool_names_require_exact_tuple_and_string_types(
+    tmp_path: Path, value: object
+) -> None:
+    state, events = targets(tmp_path)
+    calls = 0
+
+    def phase53(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return replace(prepared(), allowed_tool_names=value)  # type: ignore[arg-type]
 
     with pytest.raises(
         ApprovedNextStepPreparationPhaseBridgeCompatibilityError
