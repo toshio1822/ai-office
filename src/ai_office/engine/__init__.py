@@ -48,6 +48,12 @@ from ai_office.engine.executed_result_transition_persistence_phase_bridge_reentr
     ExecutedResultTransitionPersistencePhaseBridgeFailureDetail,
     route_executed_result_transition_persistence_phase_bridge_reentry,
 )
+from ai_office.engine.executed_result_transition_persistence_routing_phase_bridge_reentry import (  # noqa: E501
+    ExecutedResultTransitionPersistenceRoutingPhaseBridgeCompatibilityError,
+    ExecutedResultTransitionPersistenceRoutingPhaseBridgeError,
+    ExecutedResultTransitionPersistenceRoutingPhaseBridgeFailureDetail,
+    route_executed_result_transition_persistence_routing_phase_bridge_reentry,
+)
 from ai_office.engine.executed_result_transition_reentry import (
     ExecutedResultTransitionReentryCompatibilityError,
     ExecutedResultTransitionReentryError,
@@ -265,6 +271,10 @@ __all__ = [
     "ExecutedResultTransitionPersistencePhaseBridgeError",
     "ExecutedResultTransitionPersistencePhaseBridgeFailureDetail",
     "route_executed_result_transition_persistence_phase_bridge_reentry",
+    "ExecutedResultTransitionPersistenceRoutingPhaseBridgeCompatibilityError",
+    "ExecutedResultTransitionPersistenceRoutingPhaseBridgeError",
+    "ExecutedResultTransitionPersistenceRoutingPhaseBridgeFailureDetail",
+    "route_executed_result_transition_persistence_routing_phase_bridge_reentry",
     "ApprovedNextStepReentryCompatibilityError",
     "ApprovedNextStepReentryError",
     "ApprovedNextStepReentryFailureDetail",
