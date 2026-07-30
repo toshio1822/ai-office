@@ -48,6 +48,12 @@ from ai_office.engine.classified_outcome_routing_phase_bridge_cycle_continuation
     ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationFailureDetail,
     route_classified_outcome_routing_phase_bridge_cycle_continuation,
 )
+from ai_office.engine.classified_outcome_routing_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
+    ClassifiedOutcomeRoutingPhaseBridgeCycleReentryContinuationCompatibilityError,
+    ClassifiedOutcomeRoutingPhaseBridgeCycleReentryContinuationError,
+    ClassifiedOutcomeRoutingPhaseBridgeCycleReentryContinuationFailureDetail,
+    route_classified_outcome_routing_phase_bridge_cycle_reentry_continuation,
+)
 from ai_office.engine.classified_persisted_outcome_routing_bridge_reentry import (
     ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError,
     ClassifiedPersistedOutcomeRoutingBridgeError,
@@ -395,6 +401,10 @@ __all__ = [
     "ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationError",
     "ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationFailureDetail",
     "route_classified_outcome_routing_phase_bridge_cycle_continuation",
+    "ClassifiedOutcomeRoutingPhaseBridgeCycleReentryContinuationCompatibilityError",
+    "ClassifiedOutcomeRoutingPhaseBridgeCycleReentryContinuationError",
+    "ClassifiedOutcomeRoutingPhaseBridgeCycleReentryContinuationFailureDetail",
+    "route_classified_outcome_routing_phase_bridge_cycle_reentry_continuation",
     "ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationCompatibilityError",
     "ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationError",
     "ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationFailureDetail",
