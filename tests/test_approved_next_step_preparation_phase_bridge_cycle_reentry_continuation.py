@@ -2,6 +2,7 @@
 
 # ruff: noqa: E501
 
+import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -12,13 +13,16 @@ import pytest
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
+    ApprovedNextStepPreparationPhaseBridgeCycleContinuationError,
     ApprovedNextStepPreparationPhaseBridgeCycleReentryContinuationCompatibilityError,
-    ApprovedNextStepPreparationPhaseBridgeError,
     NextStepPreparationApproval,
     PersistedExecutionOutcome,
     PreparedWorkflowStep,
     WorkflowProgressionDecision,
     route_approved_next_step_preparation_phase_bridge_cycle_reentry_continuation,
+)
+from ai_office.engine.approved_next_step_preparation_phase_bridge_cycle_continuation import (
+    route_approved_next_step_preparation_phase_bridge_cycle_continuation,
 )
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
@@ -111,14 +115,20 @@ def test_prepare_delegates_all_six_dependency_arguments_by_identity_and_returns_
     expected = prepared()
     received: list[object] = []
 
-    def phase74(result_arg: object, workflow_arg: object, state_arg: object, events_arg: object, approval_arg: object, employee_arg: object) -> object:
-        received.extend((result_arg, workflow_arg, state_arg, events_arg, approval_arg, employee_arg))
+    def phase74(result_arg: object, workflow_arg: object, approval_arg: object, employee_arg: object, state_arg: object, events_arg: object) -> object:
+        received.extend((result_arg, workflow_arg, approval_arg, employee_arg, state_arg, events_arg))
         return expected
 
     returned = invoke(result, workflow, approved, employee, state, events, phase74)
     assert returned is expected
-    assert received == [result, workflow, state, events, approved, employee]
-    assert all(a is b for a, b in zip(received, [result, workflow, state, events, approved, employee], strict=True))
+    expected_args = [result, workflow, approved, employee, state, events]
+    assert received == expected_args
+    assert all(a is b for a, b in zip(received, expected_args, strict=True))
+
+
+def test_default_phase74_dependency_uses_canonical_argument_order(tmp_path: Path) -> None:
+    parameters = tuple(inspect.signature(route_approved_next_step_preparation_phase_bridge_cycle_continuation).parameters)
+    assert parameters[:6] == ("result", "workflow", "approval", "employee", "state_path", "events_path")
 
 
 def test_stop_routes_require_absent_context_and_preserve_identity(tmp_path: Path) -> None:
@@ -247,7 +257,7 @@ def test_terminal_mismatch_is_rejected(tmp_path: Path) -> None:
 def test_safe_error_identity_and_compensation_for_each_mutation(tmp_path: Path, mutation: str) -> None:
     state, events = targets(tmp_path)
     before = state.read_bytes(), events.read_bytes()
-    safe = ApprovedNextStepPreparationPhaseBridgeError("safe")
+    safe = ApprovedNextStepPreparationPhaseBridgeCycleContinuationError("safe")
 
     def phase74(*_: object) -> object:
         if mutation in ("state", "both"):
@@ -256,7 +266,7 @@ def test_safe_error_identity_and_compensation_for_each_mutation(tmp_path: Path, 
             events.write_bytes(b"changed-events")
         raise safe
 
-    with pytest.raises(ApprovedNextStepPreparationPhaseBridgeError) as caught:
+    with pytest.raises(ApprovedNextStepPreparationPhaseBridgeCycleContinuationError) as caught:
         invoke(progress(), definition(), approval(), person(), state, events, phase74)
     assert caught.value is safe and (state.read_bytes(), events.read_bytes()) == before
 

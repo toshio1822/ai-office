@@ -9,9 +9,9 @@ from typing import Literal, get_args
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
-from ai_office.engine.approved_next_step_preparation_phase_bridge_continuation import (
-    ApprovedNextStepPreparationPhaseBridgeError,
-    route_approved_next_step_preparation_phase_bridge_continuation,
+from ai_office.engine.approved_next_step_preparation_phase_bridge_cycle_continuation import (
+    ApprovedNextStepPreparationPhaseBridgeCycleContinuationError,
+    route_approved_next_step_preparation_phase_bridge_cycle_continuation,
 )
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
@@ -62,7 +62,7 @@ def route_approved_next_step_preparation_phase_bridge_cycle_reentry_continuation
     state_path: object,
     events_path: object,
     *,
-    phase74_function: Phase74Function = route_approved_next_step_preparation_phase_bridge_continuation,
+    phase74_function: Phase74Function = route_approved_next_step_preparation_phase_bridge_cycle_continuation,
 ) -> PreparedWorkflowStep | WorkflowProgressionDecision | PersistedExecutionOutcome:
     _validate_inputs(result, workflow, approval, employee, state_path, events_path, phase74_function)
     assert type(workflow) is WorkflowDefinition
@@ -87,8 +87,8 @@ def route_approved_next_step_preparation_phase_bridge_cycle_reentry_continuation
     assert type(result) is WorkflowProgressionDecision
     _validate_terminal(result, workflow, state_path, events_path, "succeeded")
     try:
-        prepared = phase74_function(result, workflow, state_path, events_path, approval, employee)
-    except ApprovedNextStepPreparationPhaseBridgeError as error:
+        prepared = phase74_function(result, workflow, approval, employee, state_path, events_path)
+    except ApprovedNextStepPreparationPhaseBridgeCycleContinuationError as error:
         _restore_if_changed(state_path, events_path, original)
         raise error
     except Exception:
