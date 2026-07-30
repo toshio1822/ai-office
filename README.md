@@ -865,3 +865,7 @@ dependency mutationの両target補償、rollback failure、no-retryを保証し�
 provider/tool実行、persistence、outcome classification、progression再実行、
 next-step execution、retry、自動継続、finalization、scheduler、loop、parallel
 execution、paid CLI/GUIは追加しません。
+
+## Persisted Outcome Classification Routing Phase Bridge Cycle Continuation Boundary（Phase 79）
+
+`route_persisted_outcome_classification_routing_phase_bridge_cycle_continuation()`は、正確なPhase 78 `WorkflowExecutionPersistenceResult`を一つだけ受けるread-only continuation boundaryです。state/events Path object identity、terminal state/history、byte count、最後のterminal eventを再検証した後、同じresult、workflow、state/event `Path` objectsのまま既存Phase 72へ正確に一度だけ委譲し、matchingする正確な`PersistedExecutionOutcome`だけを受け入れます。succeeded persistenceは`persisted_success`、failed persistenceはmatching failure categoryの`persisted_failure`へ対応します。`workflow_complete`と`persisted_failure`はstrict terminal state/historyを確認してPhase 72を呼ばず同じobjectで停止します。依存の不正返却、mutation、safe/unexpected error、rollback failureは安全に分類・補償復元し、retryは行いません。employee/tool/provider実行、transition persistence、classification logicの複製、classified outcome routing、progression、next-step preparation、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
