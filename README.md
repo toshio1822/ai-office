@@ -517,6 +517,21 @@ workflow_complete | persisted_failure
 Phase 61
 ```
 
+## Approved Next-Step Preparation Phase Bridge Cycle Continuation Boundary（Phase 74）
+
+`route_approved_next_step_preparation_phase_bridge_cycle_continuation()`は、Phase 73の正確なresultを一つだけ受けるread-only boundaryです。`prepare_next_step`では明示approvalと一致するnext employeeを要求し、同じresult、workflow、approval、employee、state/event targetsを既存Phase 67へ正確に一度だけ委譲し、正確な`PreparedWorkflowStep`を同じobjectで返します。`workflow_complete`と`persisted_failure`はapproval/employeeなしでstrict terminal state/historyとtargetの不変を確認し、Phase 67を呼ばず同じobjectで停止します。依存によるtarget改変、不正返却、safe/unexpected errorは安全に分類し、両targetをbyte-for-byte補償復元します。approval作成、employee選択、step開始、persistence、provider/tool実行、retry、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+
+```text
+Phase 73
+prepare_next_step | workflow_complete | persisted_failure
+    ↓
+Phase 74
+prepare_next_step + approval + next employee → Phase 67 exactly once → PreparedWorkflowStep
+workflow_complete | persisted_failure → unchanged stop
+    ↓
+Phase 68
+```
+
 ## Prepared Next-Step Start Routing Phase Bridge Continuation Boundary（Phase 68）
 
 `route_prepared_next_step_start_routing_phase_bridge_continuation()`は、正確なPhase 67 resultを一つだけ受けるread-only continuation boundaryです。正確な`PreparedWorkflowStep`とmatchingする正確な`EmployeeDefinition`を、同じresult、workflow、employee、state/event `Path` objectsのまま既存Phase 61へ正確に一度だけ委譲し、正確な`PreparedStepExecutionStart`だけを受け入れます。`workflow_complete`と`persisted_failure`はemployeeなしでstrict terminal state/historyとtargetの不変を確認し、Phase 61を呼ばず同じobjectで停止します。state/eventsは別々に検査・読み込みし、依存のtarget改変、不正返却、safe/unexpected error、rollback failureは安全に分類・補償復元し、retryは行いません。employee選択、running-state persistence、provider/tool実行、outcome分類、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。

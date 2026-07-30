@@ -12,6 +12,12 @@ from ai_office.engine.approved_next_step_preparation_phase_bridge_continuation i
     ApprovedNextStepPreparationPhaseBridgeContinuationFailureDetail,
     route_approved_next_step_preparation_phase_bridge_continuation,
 )
+from ai_office.engine.approved_next_step_preparation_phase_bridge_cycle_continuation import (  # noqa: E501
+    ApprovedNextStepPreparationPhaseBridgeCycleContinuationCompatibilityError,
+    ApprovedNextStepPreparationPhaseBridgeCycleContinuationError,
+    ApprovedNextStepPreparationPhaseBridgeCycleContinuationFailureDetail,
+    route_approved_next_step_preparation_phase_bridge_cycle_continuation,
+)
 from ai_office.engine.approved_next_step_preparation_phase_bridge_reentry import (
     ApprovedNextStepPreparationPhaseBridgeCompatibilityError,
     ApprovedNextStepPreparationPhaseBridgeError,
@@ -357,6 +363,10 @@ __all__ = [
     "ApprovedNextStepPreparationPhaseBridgeContinuationError",
     "ApprovedNextStepPreparationPhaseBridgeContinuationFailureDetail",
     "route_approved_next_step_preparation_phase_bridge_continuation",
+    "ApprovedNextStepPreparationPhaseBridgeCycleContinuationCompatibilityError",
+    "ApprovedNextStepPreparationPhaseBridgeCycleContinuationError",
+    "ApprovedNextStepPreparationPhaseBridgeCycleContinuationFailureDetail",
+    "route_approved_next_step_preparation_phase_bridge_cycle_continuation",
     "WorkflowProgressionCompatibilityDetail",
     "WorkflowProgressionCompatibilityError",
     "WorkflowProgressionDecision",
