@@ -179,6 +179,19 @@ Phase 82 accepts exactly one Phase 81 `PreparedWorkflowStep`, `workflow_complete
 
 ## Phase 89: prepared next-step start dispatch phase bridge cycle reentry continuation
 
+Phase 90 accepts exactly one Phase 89 `PreparedStepExecutionStart`,
+`workflow_complete`, or `persisted_failure`. The prepared-start route requires
+the exact employee and predecessor succeeded history, then directly delegates
+once to Phase 83 in canonical five-argument order. Only the exact Phase 83
+running-state persistence transition is accepted; state bytes must match the
+running state, events must remain unchanged, and the exact persistence result
+is returned. Completion and persisted failure require no employee and return
+their supplied objects unchanged without calling Phase 83. Errors and invalid
+dependency mutations are detail-safe and compensated on both targets without
+retry. Phase 90 does not select employees, execute providers/tools, classify
+outcomes, call Phase 76, continue automatically, finalize, schedule, loop,
+parallelize, or add paid CLI/GUI behavior.
+
 Phase 89 accepts exactly one Phase 88 `PreparedWorkflowStep`, `workflow_complete`, or `persisted_failure`. A prepared step requires the exact employee and immediately preceding succeeded terminal state/history, then dispatches exactly once to Phase 82 with canonical identity and order `(result, workflow, employee, state_path, events_path)`, returning the exact `PreparedStepExecutionStart`. Completion and persisted failure require an absent employee and are strict zero-call unchanged stop routes. Dependency errors, malformed starts, mutations, and rollback failures are classified safely and compensated with both restoration attempts where possible; safe error identity is preserved and retry is never performed. Phase 89 does not select or load employees, persist running state, execute providers/tools, classify results, call Phase 75 directly, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
 ## Phase 84: persisted-running execution routing phase bridge cycle reentry continuation
