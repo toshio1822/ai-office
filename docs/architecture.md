@@ -159,7 +159,7 @@ Phase 72 accepts exactly one Phase 71 `WorkflowExecutionPersistenceResult`, `wor
 
 ## Phase 78: executed-result transition persistence routing phase bridge cycle continuation
 
-Phase 78 accepts exactly one Phase 77 runtime success/failure, `workflow_complete`, or `persisted_failure`. Runtime results are passed by identical object identity to Phase 71 exactly once and its exact persistence result is returned. Completion and persisted failure are strict zero-call read-only stop routes. Phase 71's strict boundary and compensation behavior is reused; Phase 78 does not execute providers or tools, create runtime results, classify outcomes, decide progression, prepare steps, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+Phase 78 accepts exactly one Phase 77 runtime success/failure, `workflow_complete`, or `persisted_failure`. It prevalidates inputs, snapshots both targets, calls the injected Phase 71 function directly exactly once with identical argument identity, and validates the exact persistence result and persisted transition itself. Safe Phase 71 errors preserve identity after unchanged targets or successful compensation; malformed effects are compensated with both restoration attempts. Completion and persisted failure are strict zero-call read-only stop routes. Phase 78 does not execute providers or tools, create runtime results, classify outcomes, decide progression, prepare steps, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
 ## 構成
 

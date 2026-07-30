@@ -627,7 +627,7 @@ Phase 71
 
 ## Executed-Result Transition Persistence Routing Phase Bridge Cycle Continuation Boundary（Phase 78）
 
-`route_executed_result_transition_persistence_routing_phase_bridge_cycle_continuation()`は、Phase 77から渡された正確なruntime success/failureを、同じresult、workflow、state/event `Path` objectsのまま既存Phase 71へ正確に一度だけ委譲し、Phase 71の正確な`WorkflowExecutionPersistenceResult`をそのまま返します。`workflow_complete`と`persisted_failure`はstrict terminal state/historyを確認してPhase 71を呼ばず、同じobjectで停止します。Phase 71の厳格な型・target・history・byte count・transition・補償復元・safe error規約を再利用し、retry、runtime result作成、provider/tool実行、outcome分類、progression、next-step preparation、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+`route_executed_result_transition_persistence_routing_phase_bridge_cycle_continuation()`は、Phase 77から渡された正確なruntime success/failureを、同じresult、workflow、state/event `Path` objectsのままPhase 71へ正確に一度だけ直接委譲し、Phase 78自身で入力、snapshot、永続化結果、state/event effectを検証して正確な`WorkflowExecutionPersistenceResult`を返します。`workflow_complete`と`persisted_failure`はstrict terminal state/historyを確認してPhase 71を呼ばず、同じobjectで停止します。safe error identityと両targetの補償復元を保持し、retry、runtime result作成、provider/tool実行、outcome分類、progression、next-step preparation、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
 
 ## Executed-Result Transition Persistence Routing Phase Bridge Continuation Boundary（Phase 71）
 
