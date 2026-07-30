@@ -286,6 +286,12 @@ from ai_office.engine.prepared_start_persistence_bridge_reentry import (
     PreparedStartPersistenceBridgeFailureDetail,
     route_prepared_start_persistence_bridge_reentry,
 )
+from ai_office.engine.prepared_start_persistence_dispatch_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
+    PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError,
+    PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationError,
+    PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationFailureDetail,
+    route_prepared_start_persistence_dispatch_phase_bridge_cycle_reentry_continuation,
+)
 from ai_office.engine.prepared_start_persistence_phase_bridge_reentry import (
     PreparedStartPersistencePhaseBridgeCompatibilityError,
     PreparedStartPersistencePhaseBridgeError,
@@ -534,6 +540,10 @@ __all__ = [
     "PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationError",
     "PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationFailureDetail",
     "route_prepared_start_persistence_routing_phase_bridge_cycle_reentry_continuation",
+    "PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError",
+    "PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationError",
+    "PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationFailureDetail",
+    "route_prepared_start_persistence_dispatch_phase_bridge_cycle_reentry_continuation",
     "PreparedStartPersistenceRoutingCompatibilityError",
     "PreparedStartPersistenceRoutingError",
     "PreparedStartPersistenceRoutingFailureDetail",
