@@ -607,6 +607,24 @@ workflow_complete | persisted_failure
 Phase 64
 ```
 
+## Persisted Running Execution Routing Phase Bridge Cycle Continuation Boundary（Phase 77）
+
+`route_persisted_running_execution_routing_phase_bridge_cycle_continuation()`は、Phase 76の正確な`RunningStatePersistenceResult`、`workflow_complete`、または`persisted_failure`を受けるread-only cycle continuation boundaryです。execution routeでは元の正確な`PreparedStepExecutionStart`、workflow、employee、resolved tools、OpenAI API key、approval、transportを検証し、state/event targetsと先行step historyを再検証した後、同じ10引数のobject identityで既存Phase 70へ正確に一度だけ委譲し、正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を返します。completion/failure stop routeはexecution-only inputsをすべて`None`としてstrict terminal state/historyを検証し、Phase 70を呼ばず同じobjectで停止します。依存のtarget改変、不正返却、safe/unexpected error、rollback failureは両targetをbyte-for-byte補償復元し、安全なdetail classificationに変換します。employee/tool/credential/approval選択、provider/tool実行、transition persistence、outcome分類、retry、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+
+```text
+Phase 76
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 77
+RunningStatePersistenceResult + execution inputs → Phase 70 exactly once
+    → StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+workflow_complete | persisted_failure
+    → all execution-only inputs absent
+    → unchanged stop
+    ↓
+Phase 71
+```
+
 ## Executed-Result Transition Persistence Routing Phase Bridge Continuation Boundary（Phase 71）
 
 `route_executed_result_transition_persistence_routing_phase_bridge_continuation()`は、正確なPhase 70 runtime resultを一つだけ受けるread-only continuation boundaryです。正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を、persisted running stateとpredecessor historyに照合した後、同じresult、workflow、state/event `Path` objectsのまま既存Phase 64へ正確に一度だけ委譲し、正確な`WorkflowExecutionPersistenceResult`だけを受け入れます。successは正確なsucceeded stateと一つの`step_succeeded` event、failureは正確なfailed stateと一つの`step_failed` eventだけを許可し、byte count、path、history、transitionを検証します。`workflow_complete`と`persisted_failure`はstrict terminal state/historyを確認してPhase 64を呼ばず同じobjectで停止します。依存の不正返却、partial/unrelated mutation、safe/unexpected error、rollback failureは安全に分類・補償復元し、retryは行いません。provider/tool実行、runtime result作成、outcome分類、progression、next-step preparation、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
