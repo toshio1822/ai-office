@@ -204,6 +204,9 @@ def test_valid_start_delegates_once_with_identity_and_returns_exact_result(
     state, events = targets(tmp_path)
     supplied, definition, person = start(), workflow(), employee()
     calls = 0
+    expected = RunningStatePersistenceResult(
+        len(serialize_workflow_execution_state_json(supplied.running_state).encode())
+    )
 
     def phase69(*args: object) -> RunningStatePersistenceResult:
         nonlocal calls
@@ -214,16 +217,13 @@ def test_valid_start_delegates_once_with_identity_and_returns_exact_result(
                 args, (supplied, definition, person, state, events), strict=True
             )
         )
-        return RunningStatePersistenceResult(write_valid_state(state, supplied))
+        write_valid_state(state, supplied)
+        return expected
 
     result = route_prepared_start_persistence_routing_phase_bridge_cycle_continuation(
         supplied, definition, person, state, events, phase69_function=phase69
     )
-    assert (
-        isinstance(result, RunningStatePersistenceResult)
-        and calls == 1
-        and events.read_bytes()
-    )
+    assert result is expected and calls == 1 and events.read_bytes()
 
 
 @pytest.mark.parametrize(
