@@ -72,6 +72,10 @@ class ApprovalSubclass(ModelInvocationExecutionApproval):
     pass
 
 
+class StringSubclass(str):
+    pass
+
+
 def workflow() -> WorkflowDefinition:
     return WorkflowDefinition.model_validate(
         {
@@ -479,6 +483,44 @@ def test_employee_identity_and_derived_request_fields_are_revalidated(
     ) as caught:
         call(supplied, lambda *_: pytest.fail("Phase 63 must not be called"))
     assert caught.value.detail.classification == "start_contract"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("id", 1),
+        ("id", StringSubclass("e")),
+        ("name", None),
+        ("name", StringSubclass("E")),
+        ("role", True),
+        ("role", StringSubclass("R")),
+        ("instructions", 1.0),
+        ("instructions", StringSubclass("system")),
+        ("model", None),
+        ("model", StringSubclass("model")),
+        ("allowed_tools", ("tool", "other")),
+        ("allowed_tools", [1, "other"]),
+        ("allowed_tools", [StringSubclass("tool"), "other"]),
+    ],
+)
+def test_employee_all_fields_require_exact_builtin_types_and_zero_phase77_calls(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    supplied = values(tmp_path)
+    supplied["employee"] = employee().model_copy(update={field: value})
+    calls = 0
+
+    def phase77(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 77 must not be called")
+
+    with pytest.raises(
+        PersistedRunningExecutionRoutingPhaseBridgeCycleReentryContinuationCompatibilityError
+    ) as caught:
+        call(supplied, phase77)
+    assert caught.value.detail.classification == "employee_contract"
+    assert calls == 0
 
 
 @pytest.mark.parametrize(

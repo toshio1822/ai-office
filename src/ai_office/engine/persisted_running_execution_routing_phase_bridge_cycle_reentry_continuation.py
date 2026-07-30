@@ -231,6 +231,7 @@ def _validate_execution_inputs(
         _raise("start_contract")
     if type(employee) is not EmployeeDefinition:
         _raise("employee_contract")
+    _validate_employee(employee)
     if type(tools) is not tuple or not all(
         type(tool) is ToolDefinition for tool in tools
     ):
@@ -274,6 +275,19 @@ def _validate_execution_inputs(
         )
     except ValueError:
         _raise("approval_contract")
+
+
+def _validate_employee(employee: EmployeeDefinition) -> None:
+    if not (
+        type(employee.id) is str
+        and type(employee.name) is str
+        and type(employee.role) is str
+        and type(employee.instructions) is str
+        and type(employee.model) is str
+        and type(employee.allowed_tools) is list
+        and all(type(tool) is str for tool in employee.allowed_tools)
+    ):
+        _raise("employee_contract")
 
 
 def _validate_completion(
