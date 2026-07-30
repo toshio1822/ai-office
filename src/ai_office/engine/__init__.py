@@ -226,6 +226,12 @@ from ai_office.engine.prepared_next_step_start_routing_phase_bridge_cycle_contin
     PreparedNextStepStartRoutingPhaseBridgeCycleContinuationFailureDetail,
     route_prepared_next_step_start_routing_phase_bridge_cycle_continuation,
 )
+from ai_office.engine.prepared_next_step_start_routing_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
+    PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationCompatibilityError,
+    PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationError,
+    PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationFailureDetail,
+    route_prepared_next_step_start_routing_phase_bridge_cycle_reentry_continuation,
+)
 from ai_office.engine.prepared_next_step_start_routing_phase_bridge_reentry import (
     PreparedNextStepStartRoutingPhaseBridgeCompatibilityError,
     PreparedNextStepStartRoutingPhaseBridgeError,
@@ -494,6 +500,10 @@ __all__ = [
     "PreparedNextStepStartRoutingPhaseBridgeCycleContinuationError",
     "PreparedNextStepStartRoutingPhaseBridgeCycleContinuationFailureDetail",
     "route_prepared_next_step_start_routing_phase_bridge_cycle_continuation",
+    "PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationCompatibilityError",
+    "PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationError",
+    "PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationFailureDetail",
+    "route_prepared_next_step_start_routing_phase_bridge_cycle_reentry_continuation",
     "PersistedSuccessProgressionCompatibilityError",
     "PersistedSuccessProgressionError",
     "PersistedSuccessProgressionFailureDetail",
