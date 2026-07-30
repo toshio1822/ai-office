@@ -169,6 +169,10 @@ Phase 79 accepts exactly one Phase 78 `WorkflowExecutionPersistenceResult`, `wor
 
 Phase 80 accepts exactly one Phase 79 `PersistedExecutionOutcome`, `workflow_complete`, or `persisted_failure`. A persisted success is checked against the exact succeeded terminal state/history, then delegated exactly once to Phase 73 with identical argument identity; only the exact matching `prepare_next_step` or `workflow_complete` decision is returned unchanged. Persisted failure and workflow completion are strict zero-call read-only stop routes. Dependency errors, malformed decisions, mutations, and rollback failures are classified safely and compensated with both restoration attempts where possible; safe error identity is preserved and retry is never performed. Phase 80 does not select employees, resolve tools, create credentials or approvals, invoke providers or tools, create runtime results, persist transitions, classify persisted outcomes, prepare or execute the next step, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 81: approved next-step preparation phase bridge cycle reentry continuation
+
+Phase 81 accepts exactly one Phase 80 `prepare_next_step`, `workflow_complete`, or `persisted_failure`. A prepare decision requires the exact approval and next employee, validates the succeeded terminal state/history, and delegates exactly once to Phase 74 with identical argument identity. Only the exact matching `PreparedWorkflowStep` is returned. Completion and persisted failure require absent approval and employee and are strict zero-call read-only stop routes. Dependency errors, malformed prepared steps, mutations, and rollback failures are classified safely and compensated with both restoration attempts where possible; safe error identity is preserved and retry is never performed. Phase 81 does not create approvals, select/load employees, start steps, persist state, execute providers/tools, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text
