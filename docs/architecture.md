@@ -173,6 +173,10 @@ Phase 80 accepts exactly one Phase 79 `PersistedExecutionOutcome`, `workflow_com
 
 Phase 81 accepts exactly one Phase 80 `prepare_next_step`, `workflow_complete`, or `persisted_failure`. A prepare decision requires the exact approval and next employee, validates the succeeded terminal state/history, and delegates exactly once to Phase 74 with identical argument identity. Only the exact matching `PreparedWorkflowStep` is returned. Completion and persisted failure require absent approval and employee and are strict zero-call read-only stop routes. Dependency errors, malformed prepared steps, mutations, and rollback failures are classified safely and compensated with both restoration attempts where possible; safe error identity is preserved and retry is never performed. Phase 81 does not create approvals, select/load employees, start steps, persist state, execute providers/tools, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 82: prepared next-step start routing phase bridge cycle reentry continuation
+
+Phase 82 accepts exactly one Phase 81 `PreparedWorkflowStep`, `workflow_complete`, or `persisted_failure`. A prepared step requires the exact employee and the immediately preceding succeeded terminal state/history, then delegates exactly once to Phase 75 with identical argument identity in canonical order `(result, workflow, employee, state_path, events_path)`. Only the exact matching `PreparedStepExecutionStart` is returned. Completion and persisted failure require an absent employee and are strict zero-call read-only stop routes. Dependency errors, malformed starts, mutations, and rollback failures are classified safely and compensated with both restoration attempts where possible; safe error identity is preserved and retry is never performed. Phase 82 does not select employees, persist running state, execute providers/tools, classify results, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
 ## 構成
 
 ```text
