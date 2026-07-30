@@ -141,6 +141,16 @@ def _validate_prepare(value: WorkflowProgressionDecision, workflow: WorkflowDefi
         _raise("approval_contract")
     if type(employee) is not EmployeeDefinition:
         _raise("employee_contract")
+    if not (
+        type(employee.id) is str
+        and _exact_str(employee.name, employee.name)
+        and _exact_str(employee.role, employee.role)
+        and _exact_str(employee.instructions, employee.instructions)
+        and _exact_str(employee.model, employee.model)
+        and type(employee.allowed_tools) is list
+        and all(type(tool) is str for tool in employee.allowed_tools)
+    ):
+        _raise("employee_contract")
     current = (workflow.steps[value.current_step_index - 1] if type(value.current_step_index) is int
                and 1 <= value.current_step_index <= len(workflow.steps) else None)
     next_step = (workflow.steps[value.next_step_index - 1] if type(value.next_step_index) is int
@@ -154,6 +164,8 @@ def _validate_prepare(value: WorkflowProgressionDecision, workflow: WorkflowDefi
         and _exact_str(value.reason, "next_step_available")
     ):
         _raise("decision_contract")
+    if not _exact_str(employee.id, value.next_employee_id):
+        _raise("employee_contract")
     if not (
         approval.approved is True and _exact_str(approval.workflow_id, value.workflow_id)
         and _exact_str(approval.current_step_id, value.current_step_id)
@@ -161,13 +173,8 @@ def _validate_prepare(value: WorkflowProgressionDecision, workflow: WorkflowDefi
         and _exact_str(approval.next_step_id, value.next_step_id)
         and type(approval.next_step_index) is int and approval.next_step_index == value.next_step_index
         and _exact_str(approval.next_employee_id, value.next_employee_id)
-        and _exact_str(employee.id, value.next_employee_id)
     ):
-        _raise(
-            "employee_contract"
-            if not _exact_str(employee.id, value.next_employee_id)
-            else "approval_contract"
-        )
+        _raise("approval_contract")
 
 
 def _validate_completion(value: WorkflowProgressionDecision, workflow: WorkflowDefinition,
