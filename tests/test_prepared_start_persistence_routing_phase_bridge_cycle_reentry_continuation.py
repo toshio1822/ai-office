@@ -16,6 +16,7 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
 )
 from ai_office.engine.prepared_start_persistence_routing_phase_bridge_cycle_continuation import (
     PreparedStartPersistenceRoutingPhaseBridgeCycleContinuationError,
+    route_prepared_start_persistence_routing_phase_bridge_cycle_continuation,
 )
 from ai_office.engine.prepared_start_persistence_routing_phase_bridge_cycle_reentry_continuation import (
     PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationError,
@@ -230,7 +231,7 @@ def test_valid_start_delegates_once_with_identity_and_returns_exact_result(
 def test_phase76_public_signature_uses_canonical_argument_order() -> None:
     parameters = tuple(
         inspect.signature(
-            route_prepared_start_persistence_routing_phase_bridge_cycle_reentry_continuation
+            route_prepared_start_persistence_routing_phase_bridge_cycle_continuation
         ).parameters
     )
     assert parameters[:5] == (
@@ -329,6 +330,30 @@ def test_unsupported_progression_and_terminal_substitutes_are_rejected(
     }
 
 
+def test_exact_persisted_success_is_rejected_without_phase76_call(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path, "succeeded", 1)
+    result = PersistedExecutionOutcome(
+        "persisted_success", "workflow", "first", 1, "one", None
+    )
+    calls = 0
+
+    def phase76(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 76 must not be called")
+
+    with pytest.raises(
+        PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationError
+    ) as error:
+        route_prepared_start_persistence_routing_phase_bridge_cycle_reentry_continuation(
+            result, workflow(), None, state, events, phase76_function=phase76
+        )
+    assert error.value.detail.classification == "failure_contract"
+    assert calls == 0
+
+
 @pytest.mark.parametrize(
     "bad_employee",
     [
@@ -348,6 +373,40 @@ def test_start_requires_exact_matching_employee(tmp_path: Path, bad_employee) ->
             start(), workflow(), bad_employee, state, events
         )
     assert error.value.detail.classification == "employee_contract"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("id", StringSubclass("two")),
+        ("name", StringSubclass("Two")),
+        ("role", StringSubclass("role")),
+        ("instructions", StringSubclass("employee")),
+        ("model", StringSubclass("model")),
+        ("allowed_tools", [StringSubclass("tool")]),
+        ("allowed_tools", ("tool",)),
+    ],
+)
+def test_employee_all_fields_require_exact_builtin_types(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events = targets(tmp_path)
+    bad_employee = employee().model_copy(update={field: value})
+    calls = 0
+
+    def phase76(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 76 must not be called")
+
+    with pytest.raises(
+        PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationError
+    ) as error:
+        route_prepared_start_persistence_routing_phase_bridge_cycle_reentry_continuation(
+            start(), workflow(), bad_employee, state, events, phase76_function=phase76
+        )
+    assert error.value.detail.classification == "employee_contract"
+    assert calls == 0
 
 
 @pytest.mark.parametrize(

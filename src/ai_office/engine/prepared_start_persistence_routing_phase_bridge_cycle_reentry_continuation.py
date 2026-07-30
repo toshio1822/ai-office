@@ -104,6 +104,7 @@ def route_prepared_start_persistence_routing_phase_bridge_cycle_reentry_continua
     if type(result) is PreparedStepExecutionStart:
         if type(employee) is not EmployeeDefinition:
             _raise("employee_contract")
+        _validate_employee(employee)
         if not _exact_str(employee.id, result.running_state.current_employee_id):
             _raise("employee_contract")
         _validate_start(result, workflow, employee)
@@ -198,6 +199,19 @@ def _validate_start(
         and _exact_tuple(request.allowed_tools, tuple(employee.allowed_tools))
     ):
         _raise("start_contract")
+
+
+def _validate_employee(employee: EmployeeDefinition) -> None:
+    if not (
+        type(employee.id) is str
+        and type(employee.name) is str
+        and type(employee.role) is str
+        and type(employee.instructions) is str
+        and type(employee.model) is str
+        and type(employee.allowed_tools) is list
+        and all(type(tool) is str for tool in employee.allowed_tools)
+    ):
+        _raise("employee_contract")
 
 
 def _validate_completion(
