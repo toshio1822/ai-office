@@ -35,6 +35,10 @@ class PreparedSubclass(PreparedWorkflowStep):
     pass
 
 
+class StartedSubclass(PreparedStepExecutionStart):
+    pass
+
+
 class EmployeeSubclass(EmployeeDefinition):
     pass
 
@@ -81,6 +85,10 @@ def completion() -> WorkflowProgressionDecision:
 
 def failure() -> PersistedExecutionOutcome:
     return PersistedExecutionOutcome("persisted_failure", "workflow", "first", 1, "one", "api_error")
+
+
+def persisted_success() -> PersistedExecutionOutcome:
+    return PersistedExecutionOutcome("persisted_success", "workflow", "first", 1, "one", None)
 
 
 def targets(tmp_path: Path, status: str = "succeeded", index: int = 1) -> tuple[Path, Path]:
@@ -214,7 +222,12 @@ def test_every_returned_running_state_field_is_rejected(tmp_path: Path, field: s
     assert error.value.detail.classification == "start_contract"
 
 
-@pytest.mark.parametrize("bad", [PreparedSubclass("workflow", "second", 2, "two", "employee", "b", "model", ("tool",)), SimpleNamespace(request=started().request, running_state=started().running_state), object()])
+@pytest.mark.parametrize("bad", [
+    PreparedSubclass("workflow", "second", 2, "two", "employee", "b", "model", ("tool",)),
+    StartedSubclass(started().request, started().running_state),
+    SimpleNamespace(request=started().request, running_state=started().running_state),
+    object(),
+])
 def test_dependency_return_model_and_substitute_are_rejected(tmp_path: Path, bad: object) -> None:
     state, events = targets(tmp_path)
     with pytest.raises(PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationCompatibilityError) as error:
@@ -223,11 +236,25 @@ def test_dependency_return_model_and_substitute_are_rejected(tmp_path: Path, bad
 
 
 @pytest.mark.parametrize("value", [object(), SimpleNamespace(decision="prepare_next_step")])
-def test_unsupported_progression_and_direct_persisted_success_are_rejected(tmp_path: Path, value: object) -> None:
+def test_unsupported_progression_is_rejected(tmp_path: Path, value: object) -> None:
     state, events = targets(tmp_path)
     with pytest.raises(PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationCompatibilityError) as error:
         invoke(value, None, state, events)
     assert error.value.detail.classification == "result_type"
+
+
+def test_exact_persisted_success_is_rejected_without_phase75_call(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    calls = 0
+
+    def phase75(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 75 must not run")
+
+    with pytest.raises(PreparedNextStepStartRoutingPhaseBridgeCycleReentryContinuationCompatibilityError) as error:
+        invoke(persisted_success(), None, state, events, phase75)
+    assert error.value.detail.classification == "failure_contract" and calls == 0
 
 
 def test_terminal_predecessor_mismatch_is_rejected(tmp_path: Path) -> None:
