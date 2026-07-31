@@ -184,6 +184,85 @@ def test_dependency_paths_compensate_and_do_not_retry(tmp_path: Path, mutation: 
         assert getattr(caught.value, "detail", None).classification in {"dependency_error", "outcome_contract"}
 
 
+@pytest.mark.parametrize("mutation", ["state", "events", "both"])
+def test_valid_outcome_after_dependency_mutation_is_rejected_and_restored(
+    tmp_path: Path, mutation: str
+) -> None:
+    state, events, result, workflow, before_state, before_events = _setup(tmp_path)
+    expected = PersistedExecutionOutcome("persisted_success", "w", "one", 1, "a", None)
+    calls = 0
+    restored: set[str] = set()
+    original_write = Path.write_bytes
+
+    def write(path: Path, data: bytes) -> int:
+        if data == before_state and path == state:
+            restored.add("state")
+        if data == before_events and path == events:
+            restored.add("events")
+        return original_write(path, data)
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        if mutation in {"state", "both"}:
+            state.write_bytes(b"changed-state")
+        if mutation in {"events", "both"}:
+            events.write_bytes(b"changed-events")
+        return expected
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(Path, "write_bytes", write)
+    try:
+        with pytest.raises(PersistedOutcomeClassificationDispatchContinuationCompatibilityError) as caught:
+            route_persisted_outcome_classification_dispatch_continuation_boundary(
+                result, workflow, state, events, phase93_function=fake
+            )
+        assert caught.value.detail.classification == "outcome_contract"
+    finally:
+        monkeypatch.undo()
+    assert calls == 1
+    assert restored == {"state", "events"}
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_valid_outcome_mutation_rollback_failure_attempts_both_targets_without_retry(
+    tmp_path: Path,
+) -> None:
+    state, events, result, workflow, before_state, before_events = _setup(tmp_path)
+    expected = PersistedExecutionOutcome("persisted_success", "w", "one", 1, "a", None)
+    calls = 0
+    restoration_attempts: list[str] = []
+    original_write = Path.write_bytes
+
+    def write(path: Path, data: bytes) -> int:
+        if data == before_state:
+            restoration_attempts.append("state")
+            raise OSError("state restore failed")
+        if data == before_events:
+            restoration_attempts.append("events")
+        return original_write(path, data)
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(b"changed-state")
+        events.write_bytes(b"changed-events")
+        return expected
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(Path, "write_bytes", write)
+    try:
+        with pytest.raises(PersistedOutcomeClassificationDispatchContinuationCompatibilityError) as caught:
+            route_persisted_outcome_classification_dispatch_continuation_boundary(
+                result, workflow, state, events, phase93_function=fake
+            )
+        assert caught.value.detail.classification == "dependency_rollback"
+    finally:
+        monkeypatch.undo()
+    assert calls == 1
+    assert restoration_attempts == ["state", "events"]
+
+
 def test_outcome_subclass_and_substitute_rejected(tmp_path: Path) -> None:
     state, events, result, workflow, *_ = _setup(tmp_path)
     class Sub(PersistedExecutionOutcome):

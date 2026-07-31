@@ -78,7 +78,8 @@ def route_persisted_outcome_classification_dispatch_continuation_boundary(
         _restore_if_changed(state_path, events_path, original)
         _raise("dependency_error")
     try:
-        _unchanged(state_path, events_path, original)
+        if _restore_if_changed(state_path, events_path, original):
+            _raise("outcome_contract")
         _outcome(value, state)
     except PersistedOutcomeClassificationDispatchContinuationCompatibilityError:
         raise
@@ -194,23 +195,20 @@ def _outcome(value: object, state: object) -> None:
         _raise("outcome_contract")
 
 
-def _restore_if_changed(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
+def _restore_if_changed(state: Path, events: Path, original: tuple[bytes, bytes]) -> bool:
     changed = False
     try: changed = not state.is_file() or state.read_bytes() != original[0]
     except OSError: changed = True
     try: changed = changed or not events.is_file() or events.read_bytes() != original[1]
     except OSError: changed = True
-    if not changed: return
+    if not changed:
+        return False
     failed = False
     for path, contents in ((state, original[0]), (events, original[1])):
         try: path.write_bytes(contents)
         except OSError: failed = True
     if failed: _raise("dependency_rollback")
-
-
-def _unchanged(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
-    _restore_if_changed(state, events, original)
-    if _changed(state, original[0]) or _changed(events, original[1]): _raise("outcome_contract")
+    return True
 
 
 def _changed(path: Path, before: bytes) -> bool:
