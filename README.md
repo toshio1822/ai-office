@@ -927,3 +927,6 @@ execution、paid CLI/GUIは追加しません。
 ## Classified Outcome Dispatch Phase Bridge Cycle Reentry Continuation Boundary（Phase 94）
 
 `route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation()`は、正確なPhase 93 `persisted_success`、`persisted_failure`、または`workflow_complete`を受けるdispatch boundaryです。`persisted_success`ではsucceeded terminal state/historyを厳密に検証し、同じ4引数をcanonical orderで既存Phase 87へ正確に一度だけ直接渡し、正確な`prepare_next_step`または`workflow_complete` decisionを返します。`persisted_failure`とcompletion stop routeはPhase 87を呼ばず同じobjectで停止します。依存の不正返却、mutation、safe/unexpected error、rollback failureはdetail-safeに分類し、必要時は両targetをbyte-for-byte補償復元します。Phase 80直接呼出し、employee/tool/provider実行、persistence、outcome分類、step preparation/execution、retry、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは追加しません。
+## Phase 95 approved next-step preparation dispatch
+
+Phase 95 adds the read-only `route_approved_next_step_preparation_dispatch_phase_bridge_cycle_reentry_continuation()` boundary. It validates one exact Phase 94 progression result, delegates `prepare_next_step` to Phase 88 exactly once, and preserves completion/failure stop results unchanged with zero dependency calls. Target mutation is detected and byte-for-byte compensated; no retry, provider call, persistence, or automatic continuation is introduced.

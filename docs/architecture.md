@@ -468,3 +468,6 @@ all dependency mutations are compensated byte-for-byte, without retry. This
 boundary does not select employees, invoke providers or tools, persist
 transitions, classify outcomes, prepare or execute steps, retry, auto-continue,
 finalize, schedule, loop, parallelize, or add paid CLI/GUI behavior.
+### Phase 95
+
+The approved-next-step preparation dispatch boundary accepts the exact Phase 94 decision or persisted failure. A prepare decision, matching approval, and next employee are passed directly to Phase 88 once; workflow completion and persisted failure are strict terminal, zero-call stop routes. The boundary is read-only and sanitizes unexpected dependency failures while compensating both persistence targets without retry.
