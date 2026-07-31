@@ -3,7 +3,9 @@
 # ruff: noqa: E501
 
 import inspect
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +28,22 @@ from ai_office.storage import (
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
+
+
+class WorkflowChild(WorkflowDefinition):
+    pass
+
+
+class EmployeeChild(EmployeeDefinition):
+    pass
+
+
+class StartChild(PreparedStepExecutionStart):
+    pass
+
+
+class ResultChild(RunningStatePersistenceResult):
+    pass
 
 
 def reject_classification(callable_object, classification: str) -> None:
@@ -400,3 +418,138 @@ def test_unexpected_error_is_sanitized(tmp_path: Path) -> None:
         invoke(start(), person(), state, events, dependency)
     assert caught.value.detail.classification == "dependency_error"
     assert "secret" not in str(caught.value)
+
+
+def test_public_signature_kinds_default_identity_and_non_callable_dependency(tmp_path: Path) -> None:
+    signature = inspect.signature(route_prepared_start_persistence_dispatch_continuation_boundary)
+    assert [parameter.kind for parameter in signature.parameters.values()] == [
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ]
+    assert signature.parameters["phase90_function"].default is not None
+    state, events = targets(tmp_path)
+    for dependency in (None, 1, object()):
+        reject_classification(lambda dependency=dependency: route_prepared_start_persistence_dispatch_continuation_boundary(start(), definition(), person(), state, events, phase90_function=dependency), "persistence_contract")
+
+
+@pytest.mark.parametrize("field, value", [
+    ("id", 1), ("name", 1), ("description", 1), ("steps", ()),
+])
+def test_workflow_all_field_types_and_substitutes_are_rejected(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path)
+    bad = definition().model_copy(update={field: value})
+    reject_classification(lambda: route_prepared_start_persistence_dispatch_continuation_boundary(start(), bad, person(), state, events), "workflow_definition")
+    substitute = SimpleNamespace(**definition().model_dump())
+    reject_classification(lambda: route_prepared_start_persistence_dispatch_continuation_boundary(start(), substitute, person(), state, events), "workflow_definition")
+    child = WorkflowChild.model_validate(definition().model_dump())
+    reject_classification(lambda: route_prepared_start_persistence_dispatch_continuation_boundary(start(), child, person(), state, events), "workflow_definition")
+
+
+@pytest.mark.parametrize("field, value", [
+    ("id", 1), ("name", 1), ("role", 1), ("instructions", 1), ("model", 1), ("allowed_tools", ("tool",)),
+])
+def test_employee_all_fields_and_allowed_tool_elements_are_strict(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path)
+    bad = person().model_copy(update={field: value})
+    reject_classification(lambda: invoke(start(), bad, state, events), "employee_contract")
+    child = EmployeeChild.model_validate(person().model_dump())
+    reject_classification(lambda: invoke(start(), child, state, events), "employee_contract")
+    substitute = SimpleNamespace(**person().model_dump())
+    reject_classification(lambda: invoke(start(), substitute, state, events), "employee_contract")
+
+
+@pytest.mark.parametrize("field, value", [
+    ("model", "different"), ("system_instructions", "different"),
+    ("task_instructions", "different"), ("allowed_tools", ("different",)),
+])
+def test_employee_derived_request_matching_is_strict(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path)
+    bad = start()
+    object.__setattr__(bad.request, field, value)
+    reject_classification(lambda: invoke(bad, person(), state, events), "start_contract")
+
+
+def test_start_model_and_nested_attribute_substitutes_are_exact(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    substitute = SimpleNamespace(request=start().request, running_state=start().running_state)
+    reject_classification(lambda: invoke(substitute, person(), state, events), "result_type")
+    child = StartChild(start().request, start().running_state)
+    reject_classification(lambda: invoke(child, person(), state, events), "result_type")
+    request_substitute = SimpleNamespace(model="model", system_instructions="employee", task_instructions="b", allowed_tools=("tool",))
+    state_substitute = SimpleNamespace(workflow_id="workflow", status="running", current_step_id="second", current_step_index=2, current_employee_id="two", completed_step_ids=("first",), last_failure_category=None)
+    reject_classification(lambda: invoke(PreparedStepExecutionStart(request_substitute, state_substitute), person(), state, events), "start_contract")
+
+
+def test_path_identity_and_conflict_are_strict(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    received: list[object] = []
+    expected = RunningStatePersistenceResult(len(serialize_workflow_execution_state_json(start().running_state).encode()))
+    def dependency(*args: object) -> object:
+        received.extend(args)
+        state.write_bytes(serialize_workflow_execution_state_json(start().running_state).encode())
+        return expected
+    equal_state = Path(str(state))
+    assert route_prepared_start_persistence_dispatch_continuation_boundary(start(), definition(), person(), equal_state, events, phase90_function=dependency) is expected
+    assert received[3] is equal_state and received[4] is events
+    reject_classification(lambda: invoke(start(), person(), state, state), "target_conflict")
+    reject_classification(lambda: invoke(start(), person(), str(state), events), "state_target")
+    reject_classification(lambda: invoke(start(), person(), state, str(events)), "event_target")
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "missing", "reordered", "unrelated"])
+def test_predecessor_completion_prefix_and_terminal_events_are_strict(tmp_path: Path, mutation: str) -> None:
+    state, events = targets(tmp_path)
+    first = RuntimeStepEvent("step_succeeded", "workflow", "first", 1, "one", "running", "succeeded", "openai", None, "response", "request", "output", None)
+    current = RuntimeStepEvent("step_succeeded", "workflow", "second", 2, "two", "running", "succeeded", "openai", None, "response", "request", "output", None)
+    unrelated = RuntimeStepEvent("step_succeeded", "other", "first", 1, "one", "running", "succeeded", "openai", None, "response", "request", "output", None)
+    records = {"duplicate": [first, first, current], "missing": [current], "reordered": [current, first], "unrelated": [first, unrelated, current]}[mutation]
+    events.write_text("".join(serialize_runtime_step_event_jsonl(item) for item in records), encoding="utf-8")
+    reject_classification(lambda: invoke(start(), person(), state, events), "terminal_contract")
+
+
+@pytest.mark.parametrize("field, value", [
+    ("state_bytes_written", True), ("state_bytes_written", 0),
+    ("state_bytes_written", 1),
+])
+def test_persistence_result_every_field_type_and_value_is_exact(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path)
+    expected_bytes = serialize_workflow_execution_state_json(start().running_state).encode()
+    result = RunningStatePersistenceResult(len(expected_bytes))
+    if value == len(expected_bytes):
+        pytest.skip("control value")
+    bad = replace(result, **{field: value})
+    reject_classification(lambda: invoke(start(), person(), state, events, lambda *_: (state.write_bytes(expected_bytes), bad)[1]), "persistence_contract")
+    assert events.read_bytes()
+
+
+def test_persistence_result_subclass_and_attribute_substitute_are_rejected(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    expected_bytes = serialize_workflow_execution_state_json(start().running_state).encode()
+    child = ResultChild(len(expected_bytes))
+    substitute = SimpleNamespace(state_bytes_written=len(expected_bytes))
+    for value in (child, substitute):
+        reject_classification(lambda value=value: invoke(start(), person(), state, events, lambda *_: (state.write_bytes(expected_bytes), value)[1]), "persistence_contract")
+
+
+@pytest.mark.parametrize("kind", ["unexpected", "malformed"])
+@pytest.mark.parametrize("mutation", ["none", "state", "event", "both"])
+def test_unexpected_and_malformed_dependency_paths_are_one_call_and_compensated(tmp_path: Path, kind: str, mutation: str) -> None:
+    state, events = targets(tmp_path)
+    original = state.read_bytes(), events.read_bytes()
+    calls = 0
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        if mutation in {"state", "both"}:
+            state.write_bytes(b"changed-state")
+        if mutation in {"event", "both"}:
+            events.write_bytes(b"changed-event")
+        if kind == "unexpected":
+            raise RuntimeError("secret")
+        return object()
+    reject_classification(lambda: invoke(start(), person(), state, events, dependency), "dependency_error" if kind == "unexpected" else "persistence_contract")
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == original
