@@ -198,6 +198,22 @@ Phase 89 accepts exactly one Phase 88 `PreparedWorkflowStep`, `workflow_complete
 
 Phase 84 accepts exactly one Phase 83 `RunningStatePersistenceResult`, `workflow_complete`, or `persisted_failure`. A running persistence result requires all exact execution inputs and the strict running state/history, then delegates exactly once to Phase 77 with the canonical ten-argument identity and returns its exact runtime success/failure. Completion and persisted failure require every execution-only input to be absent and are strict zero-call read-only stop routes. Dependency errors, malformed returns, mutations, and rollback failures are classified safely and compensated with both restoration attempts where possible; safe error identity is preserved and retry is never performed. Phase 84 does not select employees, resolve tools, create credentials or approvals, invoke providers/tools, persist transitions, classify outcomes, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 91: persisted-running execution dispatch phase bridge cycle reentry continuation
+
+Phase 91 accepts exactly one Phase 90 `RunningStatePersistenceResult`,
+`workflow_complete`, or `persisted_failure`. A running persistence result
+requires every exact execution input, persisted running state/history, and
+target contract, then delegates once to Phase 84 in canonical ten-argument
+order and returns its exact runtime success/failure. Completion and persisted
+failure require every execution-only input to be absent and are unchanged,
+zero-call stop routes. Dependency errors, malformed runtime results, target
+mutations, and rollback failures are detail-safe and compensated with both
+restoration attempts where possible; safe errors preserve identity and Phase
+84 is never retried. Phase 91 does not resolve tools, create credentials or
+approvals, invoke providers/tools, persist transitions, classify outcomes,
+call Phase 77, continue automatically, finalize, schedule, loop, parallelize,
+or add paid CLI/GUI behavior.
+
 ## Phase 85: executed-result transition persistence routing phase bridge cycle reentry continuation
 
 Phase 85 accepts exactly one Phase 84 runtime success/failure, `workflow_complete`, or `persisted_failure`. A runtime result requires exact persisted running state/history and target validation, then delegates exactly once to the injected Phase 78 function with canonical identity and order `(result, workflow, state_path, events_path)`, returning the exact `WorkflowExecutionPersistenceResult`. Completion and persisted failure are strict zero-call read-only stop routes. Dependency errors, malformed results, mutations, and rollback failures are classified safely and compensated with both restoration attempts where possible; safe error identity is preserved and retry is never performed. Phase 85 does not execute providers/tools, create runtime results, call Phase 71 directly, classify outcomes, decide progression, prepare steps, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
