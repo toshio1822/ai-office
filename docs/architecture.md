@@ -249,6 +249,21 @@ directly, duplicate classification, route outcomes, decide progression, prepare
 steps, retry, continue automatically, finalize, schedule, loop, parallelize, or
 add paid CLI/GUI behavior.
 
+## Phase 94: classified outcome dispatch phase bridge cycle reentry continuation
+
+Phase 94 accepts exactly one Phase 93 `PersistedExecutionOutcome` or
+`workflow_complete`. A `persisted_success` validates the succeeded terminal
+state/history and directly delegates once to Phase 87 in canonical `(result,
+workflow, state_path, events_path)` order, returning its exact progression
+decision. `persisted_failure` and workflow completion are unchanged zero-call
+stop routes. Dependency errors, malformed decisions, target mutations, and
+rollback failures are detail-safe, compensated on both targets where possible,
+and never retried. Phase 94 does not select employees, resolve tools, create
+credentials or approvals, invoke providers/tools, create runtime results,
+persist transitions, classify outcomes, call Phase 80 directly, prepare or
+execute steps, retry, continue automatically, finalize, schedule, loop,
+parallelize, or add paid CLI/GUI behavior.
+
 ## Phase 83: prepared start persistence routing phase bridge cycle reentry continuation
 
 Phase 83 accepts exactly one Phase 82 `PreparedStepExecutionStart`, `workflow_complete`, or `persisted_failure`. A prepared start requires the exact employee and the immediately preceding succeeded terminal state/history, then delegates exactly once to Phase 76 with identical argument identity in canonical order `(result, workflow, employee, state_path, events_path)`, returning its exact `RunningStatePersistenceResult`. Completion and persisted failure require an absent employee and are strict zero-call unchanged stop routes. Only the exact Phase 76/69/62 running-state persistence transition is permitted; malformed returns, missing or partial writes, unrelated writes, event mutation, and invalid history are rejected. Dependency errors, mutations, and rollback failures are detail-safe and compensated with both restoration attempts where possible; no retry is performed. Phase 83 does not select employees, execute providers/tools, classify results, retry, continue automatically, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
