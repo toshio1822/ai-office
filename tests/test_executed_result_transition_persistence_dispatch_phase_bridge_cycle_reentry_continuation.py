@@ -2,6 +2,7 @@
 
 # ruff: noqa: E501
 
+import inspect
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -196,6 +197,20 @@ def call(
     )  # type: ignore[arg-type]
 
 
+def test_public_signature_is_canonical_and_keyword_only_dependency() -> None:
+    signature = inspect.signature(
+        route_executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation
+    )
+    assert tuple(signature.parameters) == (
+        "result", "workflow", "state_path", "events_path", "phase85_function"
+    )
+    assert all(
+        signature.parameters[name].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        for name in ("result", "workflow", "state_path", "events_path")
+    )
+    assert signature.parameters["phase85_function"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
 @pytest.mark.parametrize("result", [success(), failure()])
 def test_valid_routes_delegate_once_and_return_exact_dependency_object(
     tmp_path: Path, result: object
@@ -249,6 +264,24 @@ def test_stop_routes_return_identity_without_dependency(
         is result
     )
     assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "result,classification",
+    [
+        (replace(WorkflowProgressionDecision("workflow_complete", "w", "step", 1, "e", None, None, None, "last_step_succeeded"), decision="prepare_next_step"), "completion_contract"),
+        (replace(WorkflowProgressionDecision("workflow_complete", "w", "step", 1, "e", None, None, None, "last_step_succeeded"), reason="wrong"), "completion_contract"),
+        (replace(PersistedExecutionOutcome("persisted_failure", "w", "step", 1, "e", "api_error"), failure_category="unknown"), "failure_contract"),
+        (replace(PersistedExecutionOutcome("persisted_failure", "w", "step", 1, "e", "api_error"), current_step_index=True), "failure_contract"),
+    ],
+)
+def test_malformed_stop_and_unsupported_progression_are_zero_call(
+    tmp_path: Path, result: object, classification: str
+) -> None:
+    state, events = setup(tmp_path, "succeeded" if type(result) is WorkflowProgressionDecision else "failed")
+    with pytest.raises(ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(result, workflow(), state, events, lambda *_: pytest.fail("called"))
+    assert caught.value.detail.classification == classification
 
 
 @pytest.mark.parametrize(
@@ -366,6 +399,21 @@ def test_persistence_result_paths_and_byte_counts_are_exact(
     assert caught.value.detail.classification == "persistence_contract"
 
 
+@pytest.mark.parametrize("field,delta", [("state_bytes_written", 1), ("event_bytes_appended", 1)])
+def test_positive_but_mismatched_byte_count_is_rejected(
+    tmp_path: Path, field: str, delta: int
+) -> None:
+    state, events = setup(tmp_path)
+
+    def dependency(*args: object) -> object:
+        value = persist_fake(*args)  # type: ignore[arg-type]
+        return replace(value, **{field: getattr(value, field) + delta})
+
+    with pytest.raises(ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+
+
 @pytest.mark.parametrize("field", ["state_path", "events_path"])
 def test_equal_but_nonidentical_persistence_path_is_rejected(
     tmp_path: Path, field: str
@@ -442,6 +490,58 @@ def test_extra_history_event_is_rejected_and_restored(tmp_path: Path) -> None:
         call(success(), workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
     assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("suffix", [b"x", b"\n"])
+def test_extra_appended_event_bytes_are_rejected_and_restored(
+    tmp_path: Path, suffix: bytes
+) -> None:
+    state, events = setup(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+
+    def dependency(*args: object) -> object:
+        value = persist_fake(*args)  # type: ignore[arg-type]
+        events.write_bytes(events.read_bytes() + suffix)
+        return value
+
+    with pytest.raises(ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("variant", ["missing", "reordered", "unrelated"])
+def test_terminal_event_shape_is_required_and_dependency_is_not_called(
+    tmp_path: Path, variant: str
+) -> None:
+    state, events = setup(tmp_path, "succeeded")
+    terminal = RuntimeStepEvent(
+        "step_succeeded", "w", "step", 1, "e", "running", "succeeded",
+        "openai", None, "r", "q", "out", None
+    )
+    if variant == "missing":
+        events.write_bytes(b"")
+    elif variant == "reordered":
+        events.write_bytes(serialize_runtime_step_event_jsonl(terminal).encode() + events.read_bytes())
+    else:
+        events.write_bytes(serialize_runtime_step_event_jsonl(replace(terminal, step_id="other")).encode())
+    with pytest.raises(ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(WorkflowProgressionDecision("workflow_complete", "w", "step", 1, "e", None, None, None, "last_step_succeeded"), workflow(), state, events, lambda *_: pytest.fail("called"))
+    assert caught.value.detail.classification == "terminal_contract"
+
+
+@pytest.mark.parametrize("field,value", [("workflow_id", "other"), ("current_step_id", "other"), ("current_employee_id", "other"), ("current_step_index", 2)])
+def test_terminal_result_mismatch_is_zero_call(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events = setup(tmp_path, "succeeded")
+    result = replace(
+        WorkflowProgressionDecision("workflow_complete", "w", "step", 1, "e", None, None, None, "last_step_succeeded"),
+        **{field: value},
+    )
+    with pytest.raises(ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(result, workflow(), state, events, lambda *_: pytest.fail("called"))
+    assert caught.value.detail.classification == "completion_contract"
 
 
 @pytest.mark.parametrize("name", ["workflow", "state_path", "events_path"])
@@ -537,6 +637,23 @@ def test_malformed_persistence_return_is_rejected_and_restored(
     assert (state.read_bytes(), events.read_bytes()) == before
 
 
+def test_dependency_no_write_is_rejected_without_mutating_targets(tmp_path: Path) -> None:
+    state, events = setup(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return WorkflowExecutionPersistenceResult(state, events, 1, 1)
+
+    with pytest.raises(ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
 def test_invalid_transition_is_compensated(tmp_path: Path) -> None:
     state, events = setup(tmp_path)
     before = state.read_bytes(), events.read_bytes()
@@ -608,6 +725,46 @@ def test_safe_error_identity_is_preserved_after_successful_compensation(
 
 
 @pytest.mark.parametrize("target", ["state", "events", "both"])
+def test_safe_error_compensates_each_mutation_shape_and_calls_once(
+    tmp_path: Path, target: str
+) -> None:
+    state, events = setup(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    safe = ExecutedResultTransitionPersistenceRoutingPhaseBridgeCycleReentryContinuationError("private")
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        if target in {"state", "both"}:
+            state.write_bytes(b"state mutation")
+        if target in {"events", "both"}:
+            events.write_bytes(b"event mutation")
+        raise safe
+
+    with pytest.raises(ExecutedResultTransitionPersistenceRoutingPhaseBridgeCycleReentryContinuationError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value is safe
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("field,value", [("state_path", object()), ("events_path", object()), ("state_bytes_written", 1.5), ("event_bytes_appended", "1")])
+def test_persistence_result_fields_require_exact_builtin_types(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events = setup(tmp_path)
+
+    def dependency(*args: object) -> object:
+        result = persist_fake(*args)  # type: ignore[arg-type]
+        return replace(result, **{field: value})
+
+    with pytest.raises(ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+
+
+@pytest.mark.parametrize("target", ["state", "events", "both"])
 def test_mutations_are_compensated_and_dependency_is_called_once(
     tmp_path: Path, target: str
 ) -> None:
@@ -664,4 +821,3 @@ def test_rollback_failures_attempt_both_targets_and_do_not_retry(
         call(success(), workflow(), state, events, dependency)
     assert caught.value.detail.classification == "dependency_rollback"
     assert attempts.count(state) == 1 and attempts.count(events) == 1 and calls == 1
-
