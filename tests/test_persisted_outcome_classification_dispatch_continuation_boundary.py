@@ -6,6 +6,7 @@ import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
+from pathlib import Path as _TestPath
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ from ai_office.engine import (
     PersistedOutcomeClassificationDispatchPhaseBridgeCycleReentryContinuationError,
     WorkflowProgressionDecision,
     route_persisted_outcome_classification_dispatch_continuation_boundary,
+    route_persisted_outcome_classification_dispatch_phase_bridge_cycle_reentry_continuation,
 )
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
@@ -66,7 +68,16 @@ def test_public_signature_and_default_identity() -> None:
     assert [p.kind for p in parameters[:4]] == [inspect.Parameter.POSITIONAL_OR_KEYWORD] * 4
     assert parameters[4].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters[4].name == "phase93_function"
-    assert parameters[4].default is not None
+    assert parameters[4].default is route_persisted_outcome_classification_dispatch_phase_bridge_cycle_reentry_continuation
+
+
+def test_implementation_does_not_reference_phase_private_internals() -> None:
+    source = _TestPath(
+        "src/ai_office/engine/persisted_outcome_classification_dispatch_continuation_boundary.py"
+    ).read_text()
+    assert "_phase93" not in source
+    assert "_phase86" not in source
+    assert "route_persisted_outcome_classification_dispatch_phase_bridge_cycle_reentry_continuation" in source
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
