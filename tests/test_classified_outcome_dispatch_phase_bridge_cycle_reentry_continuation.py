@@ -33,6 +33,18 @@ class DecisionSubclass(WorkflowProgressionDecision):
     pass
 
 
+class WorkflowSubclass(WorkflowDefinition):
+    pass
+
+
+class PathSubclass(type(Path())):
+    pass
+
+
+class IntSubclass(int):
+    pass
+
+
 def workflow(single: bool = False) -> WorkflowDefinition:
     steps = [{"id": "one", "name": "One", "employee": "a", "instructions": "x"}]
     if not single:
@@ -69,6 +81,20 @@ def rewrite(path: Path, field: str, value: object) -> None:
     path.write_text(json.dumps(data, separators=(",", ":")) + "\n")
 
 
+def setup_two_step_terminal(tmp_path: Path):
+    definition = workflow()
+    state_model = WorkflowExecutionState("w", "succeeded", "two", 2, "b", ("one", "two"), None)
+    first = RuntimeStepEvent("step_succeeded", "w", "one", 1, "a", "running", "succeeded", "openai", None, "response-1", "request-1", "output-1", None)
+    terminal = RuntimeStepEvent("step_succeeded", "w", "two", 2, "b", "running", "succeeded", "openai", None, "response-2", "request-2", "output-2", None)
+    state, events = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state.write_bytes(serialize_workflow_execution_state_json(state_model).encode())
+    first_bytes = serialize_runtime_step_event_jsonl(first).encode()
+    terminal_bytes = serialize_runtime_step_event_jsonl(terminal).encode()
+    events.write_bytes(first_bytes + terminal_bytes)
+    result = PersistedExecutionOutcome("persisted_success", "w", "two", 2, "b", None)
+    return result, definition, state, events, first_bytes, terminal_bytes
+
+
 def test_public_signature_and_canonical_order(tmp_path: Path):
     signature = inspect.signature(route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation)
     parameters = list(signature.parameters.values())
@@ -86,10 +112,106 @@ def test_public_signature_and_canonical_order(tmp_path: Path):
     assert all(calls[0][i] is value for i, value in enumerate((result, definition, state, events)))
 
 
+@pytest.mark.parametrize("bad_workflow", [WorkflowSubclass.model_validate({"id": "w", "name": "W", "description": "D", "steps": [{"id": "one", "name": "One", "employee": "a", "instructions": "x"}]}), SimpleNamespace(id="w")])
+def test_workflow_requires_exact_model_and_rejects_subclass_substitute(tmp_path: Path, bad_workflow: object):
+    result, _, state, events = setup(tmp_path)
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, bad_workflow, state, events)
+    assert caught.value.detail.classification == "workflow_definition"
+
+
+def test_paths_require_exact_identity_type_and_target_conflict(tmp_path: Path):
+    result, definition, state, events = setup(tmp_path)
+    for supplied_state, supplied_events, classification in [
+        (PathSubclass(state), events, "state_target"),
+        (state, PathSubclass(events), "event_target"),
+        (state, state, "target_conflict"),
+        (SimpleNamespace(is_file=lambda: True), events, "state_target"),
+        (state, SimpleNamespace(is_file=lambda: True), "event_target"),
+    ]:
+        with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+            route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, supplied_state, supplied_events)
+        assert caught.value.detail.classification == classification
+
+
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("field,value", [
+    ("outcome", True), ("outcome", 1.0), ("outcome", 1),
+    ("workflow_id", True), ("workflow_id", 1), ("current_step_id", True),
+    ("current_step_index", True), ("current_step_index", 1.0),
+    ("current_step_index", "1"), ("current_employee_id", True),
+    ("failure_category", True), ("failure_category", 1.0),
+])
+def test_persisted_outcome_every_field_requires_exact_builtin_type(tmp_path: Path, failed: bool, field: str, value: object):
+    result, definition, state, events = setup(tmp_path, failed=failed)
+    bad = replace(result, **{field: value})
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(bad, definition, state, events)
+
+
+def test_persisted_outcome_int_subclass_is_rejected(tmp_path: Path):
+    result, definition, state, events = setup(tmp_path)
+    bad = replace(result, current_step_index=IntSubclass(1))
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(bad, definition, state, events)
+
+
 def test_final_success_route_returns_exact_completion(tmp_path: Path):
     result, definition, state, events = setup(tmp_path, single=True)
     expected = complete()
     assert route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events, phase87_function=lambda *_: expected) is expected
+
+
+@pytest.mark.parametrize("field,value", [
+    ("decision", True), ("decision", 1), ("workflow_id", True),
+    ("current_step_id", True), ("current_step_index", True),
+    ("current_step_index", 1.0), ("current_employee_id", True),
+    ("next_step_id", None), ("next_step_index", None),
+    ("next_employee_id", None), ("reason", True),
+])
+def test_prepare_next_step_every_field_and_type_is_validated(tmp_path: Path, field: str, value: object):
+    result, definition, state, events = setup(tmp_path)
+    bad = replace(prepare(), **{field: value})
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events, phase87_function=lambda *_: bad)
+    assert caught.value.detail.classification == "progression_contract"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("decision", True), ("workflow_id", True), ("current_step_id", True),
+    ("current_step_index", True), ("current_step_index", 1.0),
+    ("current_employee_id", True), ("next_step_id", "next"),
+    ("next_step_index", 2), ("next_employee_id", "b"), ("reason", True),
+])
+def test_workflow_complete_dependency_decision_every_field_and_type_is_validated(tmp_path: Path, field: str, value: object):
+    result, definition, state, events = setup(tmp_path, single=True)
+    bad = replace(complete(), **{field: value})
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events, phase87_function=lambda *_: bad)
+    assert caught.value.detail.classification == "progression_contract"
+
+
+@pytest.mark.parametrize("event_bytes", [
+    lambda first, terminal: first + first + terminal,
+    lambda first, terminal: terminal,
+    lambda first, terminal: terminal + first,
+    lambda first, terminal: first + terminal + first,
+])
+def test_multiple_step_duplicate_missing_reordered_unrelated_history_is_rejected(tmp_path: Path, event_bytes):
+    result, definition, state, events, first, terminal = setup_two_step_terminal(tmp_path)
+    events.write_bytes(event_bytes(first, terminal))
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events)
+    assert caught.value.detail.classification == "terminal_contract"
+
+
+@pytest.mark.parametrize("completed", [(), ("two",), ("one", "one"), ("two", "one")])
+def test_completion_prefix_must_match_terminal_event(tmp_path: Path, completed: tuple[str, ...]):
+    result, definition, state, events, _, _ = setup_two_step_terminal(tmp_path)
+    rewrite(state, "completed_step_ids", list(completed))
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events)
+    assert caught.value.detail.classification == "terminal_contract"
 
 
 @pytest.mark.parametrize("value,failed", [(complete(), False), (PersistedExecutionOutcome("persisted_failure", "w", "one", 1, "a", "api_error"), True)])
@@ -155,16 +277,18 @@ def test_malformed_failure_stop_fields_rejected_zero_call(tmp_path: Path, field:
 def test_terminal_state_mismatch_rejected(tmp_path: Path, field: str, value: object):
     result, definition, state, events = setup(tmp_path)
     rewrite(state, field, value)
-    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
         route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events)
+    assert caught.value.detail.classification == "terminal_contract"
 
 
 @pytest.mark.parametrize("field,value", [("event_type", "step_failed"), ("workflow_id", "other"), ("step_id", "other"), ("step_index", 2), ("employee_id", "other"), ("previous_status", "ready"), ("next_status", "failed"), ("failure_category", "api_error"), ("response_id", None), ("output_text", None)])
 def test_terminal_event_mismatch_rejected(tmp_path: Path, field: str, value: object):
     result, definition, state, events = setup(tmp_path)
     rewrite(events, field, value)
-    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
         route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events)
+    assert caught.value.detail.classification == "terminal_contract"
 
 
 @pytest.mark.parametrize("bad", [WorkflowProgressionDecision("stopped_failed", "w", "one", 1, "a", None, None, None, "latest_step_failed"), DecisionSubclass("prepare_next_step", "w", "one", 1, "a", "two", 2, "b", "next_step_available"), SimpleNamespace(decision="prepare_next_step")])
@@ -197,6 +321,24 @@ def test_dependency_error_mutation_compensation_and_identity(tmp_path: Path, kin
     if kind == "safe": assert caught.value is safe
     else: assert caught.value.detail.classification == "dependency_error"
     assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("kind", ["safe", "unexpected"])
+@pytest.mark.parametrize("mutation", ["unchanged", "state", "events", "both"])
+def test_each_dependency_error_path_calls_phase87_once_without_retry(tmp_path: Path, kind: str, mutation: str):
+    result, definition, state, events = setup(tmp_path)
+    calls = 0
+    safe = ClassifiedOutcomeRoutingPhaseBridgeContinuationError("safe")
+    def fake(*_):
+        nonlocal calls
+        calls += 1
+        if mutation in ("state", "both"): state.write_bytes(b"state-change")
+        if mutation in ("events", "both"): events.write_bytes(b"events-change")
+        if kind == "safe": raise safe
+        raise RuntimeError("secret")
+    with pytest.raises((ClassifiedOutcomeRoutingPhaseBridgeContinuationError, ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError)):
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events, phase87_function=fake)
+    assert calls == 1
 
 
 @pytest.mark.parametrize("mutation", ["state", "events", "both"])
@@ -248,9 +390,13 @@ def test_target_oserror_is_classified_separately(tmp_path: Path, monkeypatch: py
 
 
 @pytest.mark.parametrize("which", ["state", "events"])
-def test_missing_nonregular_and_equal_paths_rejected(tmp_path: Path, which: str):
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+def test_missing_and_directory_targets_are_classified_separately(tmp_path: Path, which: str, kind: str):
     result, definition, state, events = setup(tmp_path)
     target = state if which == "state" else events
-    target.unlink(); target.mkdir()
-    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+    target.unlink()
+    if kind == "directory":
+        target.mkdir()
+    with pytest.raises(ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
         route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(result, definition, state, events)
+    assert caught.value.detail.classification == ("state_target" if which == "state" else "event_target")
