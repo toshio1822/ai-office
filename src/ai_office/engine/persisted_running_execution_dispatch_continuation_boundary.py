@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
 
+from pydantic import SecretStr
+
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import PersistedExecutionOutcome
@@ -23,7 +25,7 @@ from ai_office.runtime import StepRuntimeExecutionFailure, StepRuntimeExecutionS
 from ai_office.storage import RunningStatePersistenceResult, load_workflow_execution_history, load_workflow_execution_state
 from ai_office.storage.workflow_execution_history import WorkflowExecutionDataError, WorkflowExecutionLoadError
 from ai_office.storage.workflow_execution_persistence import WorkflowExecutionPersistenceTargets
-from ai_office.tools import ToolDefinition
+from ai_office.tools import ToolDefinition, ToolParameterDefinition
 
 Classification = Literal[
     "result_type", "workflow_definition", "execution_inputs", "persistence_result_contract",
@@ -132,14 +134,18 @@ def _employee(value: EmployeeDefinition) -> None:
     if not (type(value.id) is str and type(value.name) is str and type(value.role) is str and type(value.instructions) is str and type(value.model) is str and type(value.allowed_tools) is list and all(type(item) is str for item in value.allowed_tools)): _raise("employee_contract")
 
 
+def _tool(value: ToolDefinition) -> bool:
+    return type(value.name) is str and type(value.description) is str and type(value.parameters) is tuple and all(type(parameter) is ToolParameterDefinition and type(parameter.name) is str and type(parameter.description) is str and type(parameter.type) is str and type(parameter.required) is bool for parameter in value.parameters)
+
+
 def _execution_inputs(result: RunningStatePersistenceResult, start: object | None, workflow: WorkflowDefinition, employee: object | None, tools: object | None, key: object | None, approval: object | None, transport: object | None) -> None:
     if type(result.state_bytes_written) is not int or result.state_bytes_written <= 0: _raise("persistence_result_contract")
     if type(start) is not PreparedStepExecutionStart: _raise("start_contract")
     if type(employee) is not EmployeeDefinition: _raise("employee_contract")
     _employee(employee)
-    if type(tools) is not tuple or not all(type(tool) is ToolDefinition for tool in tools): _raise("tools_contract")
-    if type(key) is not OpenAIApiKey: _raise("credential_contract")
-    if type(approval) is not ModelInvocationExecutionApproval: _raise("approval_contract")
+    if type(tools) is not tuple or not all(type(tool) is ToolDefinition and _tool(tool) for tool in tools): _raise("tools_contract")
+    if type(key) is not OpenAIApiKey or type(key.value) is not SecretStr or not key.value.get_secret_value(): _raise("credential_contract")
+    if type(approval) is not ModelInvocationExecutionApproval or not (type(approval.approved) is bool and type(approval.provider) is str and type(approval.request_fingerprint) is str and type(approval.approved_by) is str and type(approval.approval_id) is str): _raise("approval_contract")
     if not callable(transport): _raise("execution_inputs")
     request, running = start.request, start.running_state
     if type(request) is not ModelInvocationRequest or type(running) is not WorkflowExecutionState: _raise("start_contract")
