@@ -90,6 +90,12 @@ from ai_office.engine.executed_result_transition_persistence_bridge_reentry impo
     ExecutedResultTransitionPersistenceBridgeFailureDetail,
     route_executed_result_transition_persistence_bridge_reentry,
 )
+from ai_office.engine.executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
+    ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError,
+    ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationError,
+    ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationFailureDetail,
+    route_executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation,
+)
 from ai_office.engine.executed_result_transition_persistence_phase_bridge_reentry import (  # noqa: E501
     ExecutedResultTransitionPersistencePhaseBridgeCompatibilityError,
     ExecutedResultTransitionPersistencePhaseBridgeError,
@@ -464,6 +470,10 @@ __all__ = [
     "ExecutedResultTransitionPersistenceRoutingPhaseBridgeCycleReentryContinuationError",
     "ExecutedResultTransitionPersistenceRoutingPhaseBridgeCycleReentryContinuationFailureDetail",
     "route_executed_result_transition_persistence_routing_phase_bridge_cycle_reentry_continuation",
+    "ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError",
+    "ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationError",
+    "ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationFailureDetail",
+    "route_executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation",
     "route_executed_result_transition_persistence_routing_phase_bridge_reentry",
     "ApprovedNextStepReentryCompatibilityError",
     "ApprovedNextStepReentryError",
