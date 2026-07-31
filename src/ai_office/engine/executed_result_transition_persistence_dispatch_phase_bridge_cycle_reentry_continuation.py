@@ -1,4 +1,4 @@
-"""Continue exact Phase 84 results through the Phase 78 boundary."""
+"""Dispatch exact Phase 91 results through the Phase 85 boundary."""
 
 # ruff: noqa: E501
 
@@ -72,7 +72,7 @@ class ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinua
 class ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationError(
     ValueError
 ):
-    """Raised when Phase 78 cannot safely continue the supplied result."""
+    """Raised when Phase 92 cannot safely dispatch the supplied result."""
 
 
 class ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError(
@@ -80,7 +80,7 @@ class ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinua
 ):
     def __init__(self, classification: Classification) -> None:
         super().__init__(
-            "executed-result transition persistence routing phase bridge cycle continuation inputs are incompatible"
+            "executed-result transition persistence dispatch phase bridge cycle reentry continuation inputs are incompatible"
         )
         self.detail = ExecutedResultTransitionPersistenceDispatchPhaseBridgeCycleReentryContinuationFailureDetail(
             classification
