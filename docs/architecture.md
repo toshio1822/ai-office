@@ -490,3 +490,24 @@ The executed-result transition persistence dispatch continuation boundary accept
 ### Phase 100
 
 The persisted-outcome classification dispatch continuation boundary accepts an exact Phase 99 persistence result and delegates the canonical four inputs to Phase 93 exactly once. Workflow completion and persisted failure remain strict unchanged zero-call stop routes. Terminal persistence, outcome consistency, target identity, dependency mutation, and rollback behavior are validated without retry.
+
+### Phase 101
+
+The classified-outcome cycle-closure continuation boundary accepts exactly one Phase 100 `PersistedExecutionOutcome` or `workflow_complete` decision. A persisted success validates succeeded terminal state/history and directly delegates once to Phase 94 in canonical `(result, workflow, state_path, events_path)` order, returning the exact matching `prepare_next_step` or `workflow_complete` decision. Persisted failure and workflow completion are strict zero-call unchanged stop routes. Dependency safe errors preserve identity when targets are restored, unexpected errors are sanitized, malformed returns and target mutations are compensated on both targets where possible, and retry is never performed.
+
+```text
+Phase 100
+PersistedExecutionOutcome
+| workflow_complete
+    ↓
+Phase 101 cycle-closure continuation boundary
+persisted_success
+    → Phase 94 exactly once
+    → exact prepare_next_step | workflow_complete
+persisted_failure | workflow_complete
+    → unchanged zero-call stop
+    ↓
+Phase 95 (future explicit caller action)
+```
+
+Phase 101 closes only the outcome-classification-to-progression edge. It does not call Phase 95, load/select employees, resolve tools, create credentials or approvals, prepare or execute a step, persist state, invoke providers/tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
