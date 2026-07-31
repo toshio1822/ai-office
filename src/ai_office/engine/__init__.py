@@ -6,6 +6,12 @@ from ai_office.engine.approved_next_step_preparation_bridge_reentry import (
     ApprovedNextStepPreparationBridgeFailureDetail,
     route_approved_next_step_preparation_bridge_reentry,
 )
+from ai_office.engine.approved_next_step_preparation_dispatch_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
+    ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError,
+    ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationError,
+    ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationFailureDetail,
+    route_approved_next_step_preparation_dispatch_phase_bridge_cycle_reentry_continuation,
+)
 from ai_office.engine.approved_next_step_preparation_phase_bridge_continuation import (
     ApprovedNextStepPreparationPhaseBridgeContinuationCompatibilityError,
     ApprovedNextStepPreparationPhaseBridgeContinuationError,
@@ -519,6 +525,10 @@ __all__ = [
     "ApprovedNextStepPreparationRoutingPhaseBridgeCycleReentryContinuationError",
     "ApprovedNextStepPreparationRoutingPhaseBridgeCycleReentryContinuationFailureDetail",
     "route_approved_next_step_preparation_routing_phase_bridge_cycle_reentry_continuation",
+    "ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError",
+    "ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationError",
+    "ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationFailureDetail",
+    "route_approved_next_step_preparation_dispatch_phase_bridge_cycle_reentry_continuation",
     "WorkflowProgressionCompatibilityDetail",
     "WorkflowProgressionCompatibilityError",
     "WorkflowProgressionDecision",
