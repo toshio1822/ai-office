@@ -51,6 +51,18 @@ class OutcomeSubclass(PersistedExecutionOutcome):
     pass
 
 
+class WorkflowSubclass(WorkflowDefinition):
+    pass
+
+
+class RequestSubclass(ModelInvocationRequest):
+    pass
+
+
+class StateSubclass(WorkflowExecutionState):
+    pass
+
+
 def workflow() -> WorkflowDefinition:
     return WorkflowDefinition.model_validate({"id": "workflow", "name": "Workflow", "description": "test", "steps": [
         {"id": "first", "name": "First", "employee": "one", "instructions": "a"},
@@ -189,6 +201,16 @@ def test_dependency_return_is_exact(tmp_path: Path, bad: object) -> None:
     assert caught.value.detail.classification == "start_contract"
 
 
+def test_start_nested_models_reject_subclasses_and_attribute_substitutes(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    bad_request = RequestSubclass("model", "employee", "b", ("tool",))
+    bad_state = StateSubclass("workflow", "running", "second", 2, "two", ("first",), None)
+    for bad in [PreparedStepExecutionStart(bad_request, started().running_state), PreparedStepExecutionStart(started().request, bad_state), SimpleNamespace(request=started().request, running_state=started().running_state)]:
+        with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+            invoke(prepared(), employee(), state, events, lambda *_: bad)
+        assert caught.value.detail.classification == "start_contract"
+
+
 def test_direct_success_and_terminal_predecessor_mismatch_are_rejected(tmp_path: Path) -> None:
     state, events = targets(tmp_path)
     with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError):
@@ -283,3 +305,246 @@ def test_missing_target_and_target_conflict_are_rejected(tmp_path: Path) -> None
     with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
         route_prepared_next_step_start_dispatch_continuation_boundary(prepared(), workflow(), employee(), state, state)
     assert caught.value.detail.classification == "target_conflict"
+
+
+def test_public_signature_parameter_kinds_and_dependency_contract() -> None:
+    signature = inspect.signature(route_prepared_next_step_start_dispatch_continuation_boundary)
+    assert [parameter.kind for parameter in signature.parameters.values()] == [
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ]
+    assert signature.parameters["phase89_function"].default is route_prepared_next_step_start_dispatch_phase_bridge_cycle_reentry_continuation
+
+
+@pytest.mark.parametrize("dependency", [None, 1, object()])
+def test_non_callable_dependency_is_rejected_before_dispatch(tmp_path: Path, dependency: object) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        route_prepared_next_step_start_dispatch_continuation_boundary(prepared(), workflow(), employee(), state, events, phase89_function=dependency)
+    assert caught.value.detail.classification == "start_contract"
+
+
+@pytest.mark.parametrize("state_value, events_value, classification", [
+    ("state", Path("events"), "state_target"),
+    (Path("state"), "events", "event_target"),
+])
+def test_targets_require_exact_path_models(tmp_path: Path, state_value: object, events_value: object, classification: str) -> None:
+    state, events = targets(tmp_path)
+    bad_state = state_value if state_value != "state" else str(state)
+    bad_events = events_value if events_value != "events" else str(events)
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        route_prepared_next_step_start_dispatch_continuation_boundary(prepared(), workflow(), employee(), bad_state, bad_events)
+    assert caught.value.detail.classification == classification
+
+
+@pytest.mark.parametrize("bad_workflow", [WorkflowSubclass.model_validate(workflow().model_dump()), SimpleNamespace(**workflow().model_dump())])
+def test_workflow_exact_model_and_every_field_is_prevalidated(tmp_path: Path, bad_workflow: object) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        route_prepared_next_step_start_dispatch_continuation_boundary(prepared(), bad_workflow, employee(), state, events)
+    assert caught.value.detail.classification == "workflow_definition"
+
+
+@pytest.mark.parametrize("field, value", [
+    ("id", 1), ("name", 1), ("description", 1), ("steps", ()),
+])
+def test_workflow_field_types_are_strict(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        route_prepared_next_step_start_dispatch_continuation_boundary(prepared(), workflow().model_copy(update={field: value}), employee(), state, events)
+    assert caught.value.detail.classification == "workflow_definition"
+
+
+@pytest.mark.parametrize("field, value", [("id", "wrong"), ("employee", "wrong"), ("instructions", "wrong")])
+def test_workflow_step_field_values_are_checked(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path)
+    steps = list(workflow().steps)
+    steps[1] = steps[1].model_copy(update={field: value})
+    bad_workflow = workflow().model_copy(update={"steps": steps})
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        route_prepared_next_step_start_dispatch_continuation_boundary(prepared(), bad_workflow, employee(), state, events)
+    assert caught.value.detail.classification in {"workflow_definition", "prepared_step_contract", "employee_contract"}
+
+
+@pytest.mark.parametrize("field, value", [
+    ("id", 1), ("name", 1), ("role", 1), ("instructions", 1), ("model", 1),
+    ("allowed_tools", ("tool",)),
+])
+def test_employee_every_field_and_allowed_tool_types_are_strict(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path)
+    bad = employee().model_copy(update={field: value})
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        invoke(prepared(), bad, state, events)
+    assert caught.value.detail.classification == "employee_contract"
+
+
+@pytest.mark.parametrize("value", [1, None, True])
+def test_employee_allowed_tool_element_types_are_strict(tmp_path: Path, value: object) -> None:
+    state, events = targets(tmp_path)
+    bad = employee().model_copy(update={"allowed_tools": [value]})
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        invoke(prepared(), bad, state, events)
+    assert caught.value.detail.classification == "employee_contract"
+
+
+@pytest.mark.parametrize("field, value", [
+    ("workflow_id", "wrong"), ("step_id", "wrong"), ("step_index", 1),
+    ("employee_id", "wrong"), ("employee_instructions", "wrong"),
+    ("step_instructions", "wrong"), ("model", "wrong"), ("allowed_tool_names", ("wrong",)),
+])
+def test_prepared_every_value_mismatch_is_rejected(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        invoke(replace(prepared(), **{field: value}), employee(), state, events)
+    assert caught.value.detail.classification in {"prepared_step_contract", "employee_contract"}
+
+
+def test_path_identity_and_equal_but_distinct_paths_are_not_a_dependency_route(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    equal_state = Path(str(state))
+    received: list[object] = []
+
+    def phase89(*args: object) -> object:
+        received.extend(args)
+        return started()
+
+    assert route_prepared_next_step_start_dispatch_continuation_boundary(prepared(), workflow(), employee(), equal_state, events, phase89_function=phase89).request.model == "model"
+    assert received[3] is equal_state and received[4] is events
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        route_prepared_next_step_start_dispatch_continuation_boundary(prepared(), workflow(), employee(), state, Path(str(state)))
+    assert caught.value.detail.classification == "target_conflict"
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "missing", "reordered", "unrelated"])
+def test_terminal_history_event_sequence_is_strict(tmp_path: Path, mutation: str) -> None:
+    state, events = targets(tmp_path)
+    first = RuntimeStepEvent("step_succeeded", "workflow", "first", 1, "one", "running", "succeeded", "openai", None, "response", "request", "output", None)
+    terminal = RuntimeStepEvent("step_succeeded", "workflow", "second", 2, "two", "running", "succeeded", "openai", None, "response", "request", "output", None)
+    unrelated = RuntimeStepEvent("step_succeeded", "other", "first", 1, "one", "running", "succeeded", "openai", None, "response", "request", "output", None)
+    records = {"duplicate": [first, first, terminal], "missing": [terminal], "reordered": [terminal, first], "unrelated": [first, unrelated, terminal]}[mutation]
+    events.write_text("".join(serialize_runtime_step_event_jsonl(item) for item in records), encoding="utf-8")
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        invoke(completion(), None, state, events)
+    assert caught.value.detail.classification == "terminal_contract"
+
+
+@pytest.mark.parametrize("field, value", [
+    ("decision", "prepare_next_step"), ("workflow_id", "wrong"), ("current_step_id", "wrong"),
+    ("current_step_index", True), ("current_employee_id", "wrong"), ("next_step_id", "wrong"),
+    ("next_step_index", 1), ("next_employee_id", "wrong"), ("reason", "wrong"),
+])
+def test_completion_all_fields_are_strict_and_zero_call(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path, "succeeded", 2)
+    calls = 0
+    bad = replace(completion(), **{field: value})
+
+    def phase89(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return started()
+
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError):
+        invoke(bad, None, state, events, phase89)
+    assert calls == 0
+
+
+@pytest.mark.parametrize("field, value", [
+    ("outcome", "persisted_success"), ("workflow_id", "wrong"), ("current_step_id", "wrong"),
+    ("current_step_index", True), ("current_employee_id", "wrong"), ("failure_category", 1),
+])
+def test_failure_all_fields_are_strict_and_unsupported_progression_is_rejected(tmp_path: Path, field: str, value: object) -> None:
+    state, events = targets(tmp_path, "failed", 1)
+    bad = replace(failure(), **{field: value})
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError):
+        invoke(bad, None, state, events)
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+def test_missing_and_directory_targets_are_classified_separately(tmp_path: Path, target: str) -> None:
+    state, events = targets(tmp_path)
+    path = state if target == "state" else events
+    path.unlink()
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        invoke(prepared(), employee(), state, events)
+    assert caught.value.detail.classification == ("state_target" if target == "state" else "event_target")
+    path.mkdir()
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        invoke(prepared(), employee(), state, events)
+    assert caught.value.detail.classification == ("state_target" if target == "state" else "event_target")
+
+
+@pytest.mark.parametrize("method, target, classification", [
+    ("is_file", "state", "state_target"), ("is_file", "events", "event_target"),
+    ("read_bytes", "state", "state_target"), ("read_bytes", "events", "event_target"),
+])
+def test_target_oserror_is_classified_by_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str, target: str, classification: str) -> None:
+    state, events = targets(tmp_path)
+    original = getattr(Path, method)
+    selected = state if target == "state" else events
+
+    def fail(path: Path, *args: object, **kwargs: object):
+        if path == selected:
+            raise OSError("io")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, fail)
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        invoke(prepared(), employee(), state, events)
+    assert caught.value.detail.classification == classification
+
+
+@pytest.mark.parametrize("kind", ["safe", "unexpected", "malformed"])
+@pytest.mark.parametrize("mutation", ["none", "state", "events", "both"])
+def test_every_dependency_path_is_one_call_and_byte_for_byte_compensated(tmp_path: Path, kind: str, mutation: str) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+    safe = PreparedNextStepStartDispatchPhaseBridgeCycleReentryContinuationError("safe")
+
+    def phase89(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        if mutation in {"state", "both"}:
+            state.write_bytes(b"changed-state")
+        if mutation in {"events", "both"}:
+            events.write_bytes(b"changed-events")
+        if kind == "safe":
+            raise safe
+        if kind == "unexpected":
+            raise RuntimeError("secret")
+        return object()
+
+    expected = PreparedNextStepStartDispatchPhaseBridgeCycleReentryContinuationError if kind == "safe" else PreparedNextStepStartDispatchContinuationCompatibilityError
+    with pytest.raises(expected):
+        invoke(prepared(), employee(), state, events, phase89)
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("failing", ["state", "events", "both"])
+def test_rollback_failure_attempts_both_targets_once_without_second_restoration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str) -> None:
+    state, events = targets(tmp_path)
+    original = Path.write_bytes
+    attempts: list[Path] = []
+
+    def write(path: Path, data: bytes) -> int:
+        if data.startswith(b"{"):
+            attempts.append(path)
+            if path == state and failing in {"state", "both"} or path == events and failing in {"events", "both"}:
+                raise OSError("rollback")
+        return original(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", write)
+
+    def phase89(*_: object) -> object:
+        original(state, b"changed-state")
+        original(events, b"changed-events")
+        return object()
+
+    with pytest.raises(PreparedNextStepStartDispatchContinuationCompatibilityError) as caught:
+        invoke(prepared(), employee(), state, events, phase89)
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert attempts == [state, events]
