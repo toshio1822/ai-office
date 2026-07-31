@@ -487,3 +487,6 @@ The persisted-running execution dispatch continuation boundary accepts the exact
 ### Phase 99
 
 The executed-result transition persistence dispatch continuation boundary accepts an exact Phase 98 runtime result and delegates the canonical four inputs to Phase 92 exactly once. Workflow completion and persisted failure remain strict unchanged zero-call routes; malformed dependency returns, mutations, and errors are compensated without retry.
+### Phase 100
+
+The persisted-outcome classification dispatch continuation boundary accepts an exact Phase 99 persistence result and delegates the canonical four inputs to Phase 93 exactly once. Workflow completion and persisted failure remain strict unchanged zero-call stop routes. Terminal persistence, outcome consistency, target identity, dependency mutation, and rollback behavior are validated without retry.
