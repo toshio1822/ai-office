@@ -322,6 +322,12 @@ from ai_office.engine.prepared_start_persistence_bridge_reentry import (
     PreparedStartPersistenceBridgeFailureDetail,
     route_prepared_start_persistence_bridge_reentry,
 )
+from ai_office.engine.prepared_start_persistence_dispatch_continuation_boundary import (
+    PreparedStartPersistenceDispatchContinuationCompatibilityError,
+    PreparedStartPersistenceDispatchContinuationError,
+    PreparedStartPersistenceDispatchContinuationFailureDetail,
+    route_prepared_start_persistence_dispatch_continuation_boundary,
+)
 from ai_office.engine.prepared_start_persistence_dispatch_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
     PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError,
     PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationError,
@@ -592,6 +598,10 @@ __all__ = [
     "PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationError",
     "PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationFailureDetail",
     "route_prepared_start_persistence_dispatch_phase_bridge_cycle_reentry_continuation",
+    "PreparedStartPersistenceDispatchContinuationCompatibilityError",
+    "PreparedStartPersistenceDispatchContinuationError",
+    "PreparedStartPersistenceDispatchContinuationFailureDetail",
+    "route_prepared_start_persistence_dispatch_continuation_boundary",
     "PreparedStartPersistenceRoutingCompatibilityError",
     "PreparedStartPersistenceRoutingError",
     "PreparedStartPersistenceRoutingFailureDetail",
