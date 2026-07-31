@@ -938,3 +938,5 @@ execution、paid CLI/GUIは追加しません。
 ## Phase 95 approved next-step preparation dispatch
 
 Phase 95 adds the read-only `route_approved_next_step_preparation_dispatch_phase_bridge_cycle_reentry_continuation()` boundary. It validates one exact Phase 94 progression result, delegates `prepare_next_step` to Phase 88 exactly once, and preserves completion/failure stop results unchanged with zero dependency calls. Target mutation is detected and byte-for-byte compensated; no retry, provider call, persistence, or automatic continuation is introduced.
+
+Phase 98 adds `route_persisted_running_execution_dispatch_continuation_boundary()`. An exact Phase 97 running persistence result is forwarded to Phase 91 with the canonical ten arguments exactly once; completion and persisted failure are unchanged zero-call stop routes. Target mutation, malformed returns, and dependency errors are classified safely and compensated byte-for-byte without retry.

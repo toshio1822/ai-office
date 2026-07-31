@@ -202,6 +202,12 @@ from ai_office.engine.persisted_running_execution_bridge_reentry import (
     PersistedRunningExecutionBridgeFailureDetail,
     route_persisted_running_execution_bridge_reentry,
 )
+from ai_office.engine.persisted_running_execution_dispatch_continuation_boundary import (  # noqa: E501
+    PersistedRunningExecutionDispatchContinuationCompatibilityError,
+    PersistedRunningExecutionDispatchContinuationError,
+    PersistedRunningExecutionDispatchContinuationFailureDetail,
+    route_persisted_running_execution_dispatch_continuation_boundary,
+)
 from ai_office.engine.persisted_running_execution_dispatch_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
     PersistedRunningExecutionDispatchPhaseBridgeCycleReentryContinuationCompatibilityError,
     PersistedRunningExecutionDispatchPhaseBridgeCycleReentryContinuationError,
@@ -722,6 +728,10 @@ __all__ = [
     "PersistedRunningExecutionDispatchPhaseBridgeCycleReentryContinuationError",
     "PersistedRunningExecutionDispatchPhaseBridgeCycleReentryContinuationFailureDetail",
     "route_persisted_running_execution_dispatch_phase_bridge_cycle_reentry_continuation",
+    "PersistedRunningExecutionDispatchContinuationCompatibilityError",
+    "PersistedRunningExecutionDispatchContinuationError",
+    "PersistedRunningExecutionDispatchContinuationFailureDetail",
+    "route_persisted_running_execution_dispatch_continuation_boundary",
     "route_persisted_running_execution_routing_phase_bridge_reentry",
     "PersistedRunningExecutionRoutingCompatibilityError",
     "PersistedRunningExecutionRoutingError",
