@@ -3,6 +3,7 @@
 # ruff: noqa: E501, E702, F401
 
 import inspect
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -133,3 +134,284 @@ def test_mutation_is_compensated_and_malformed_return_rejected(tmp_path: Path) -
     with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
         call(decision(), wf(), approval(), employee(), state, events, phase88_function=fake)
     assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_signature_has_keyword_only_dependency() -> None:
+    parameters = inspect.signature(
+        route_approved_next_step_preparation_dispatch_phase_bridge_cycle_reentry_continuation
+    ).parameters
+    assert parameters["phase88_function"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+@pytest.mark.parametrize("field", [
+    "decision", "workflow_id", "current_step_id", "current_step_index",
+    "current_employee_id", "next_step_id", "next_step_index", "next_employee_id", "reason",
+])
+def test_prepare_decision_field_matrix(tmp_path: Path, field: str) -> None:
+    state, events = targets(tmp_path)
+    invalid = {
+        "decision": "unsupported", "workflow_id": 1, "current_step_id": 1,
+        "current_step_index": True, "current_employee_id": 1, "next_step_id": 1,
+        "next_step_index": True, "next_employee_id": 1, "reason": 1,
+    }
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(replace(decision(), **{field: invalid[field]}), wf(), approval(), employee(), state, events)
+
+
+@pytest.mark.parametrize("field", [
+    "approved", "workflow_id", "current_step_id", "current_step_index",
+    "next_step_id", "next_step_index", "next_employee_id",
+])
+def test_approval_field_matrix(tmp_path: Path, field: str) -> None:
+    state, events = targets(tmp_path)
+    invalid = {
+        "approved": 1, "workflow_id": 1, "current_step_id": 1,
+        "current_step_index": True, "next_step_id": 1, "next_step_index": True,
+        "next_employee_id": 1,
+    }
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(decision(), wf(), replace(approval(), **{field: invalid[field]}), employee(), state, events)
+
+
+@pytest.mark.parametrize("field", ["id", "name", "role", "instructions", "model", "allowed_tools"])
+def test_employee_field_matrix(tmp_path: Path, field: str) -> None:
+    state, events = targets(tmp_path)
+    invalid = {"id": 1, "name": 1, "role": 1, "instructions": 1, "model": 1, "allowed_tools": ("tool",)}
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(decision(), wf(), approval(), employee().model_copy(update={field: invalid[field]}), state, events)
+
+
+@pytest.mark.parametrize("kind", ["result", "workflow", "approval", "employee"])
+def test_subclass_models_are_rejected_before_dependency(tmp_path: Path, kind: str) -> None:
+    state, events = targets(tmp_path)
+    class DecisionChild(WorkflowProgressionDecision):
+        pass
+    class WorkflowChild(WorkflowDefinition):
+        pass
+    class ApprovalChild(NextStepPreparationApproval):
+        pass
+    class EmployeeChild(EmployeeDefinition):
+        pass
+    values = {
+        "result": DecisionChild(**decision().__dict__),
+        "workflow": WorkflowChild.model_validate(wf().model_dump()),
+        "approval": ApprovalChild(**approval().__dict__),
+        "employee": EmployeeChild.model_validate(employee().model_dump()),
+    }
+    supplied = {"result": decision(), "workflow": wf(), "approval": approval(), "employee": employee()}
+    supplied[kind] = values[kind]
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(supplied["result"], supplied["workflow"], supplied["approval"], supplied["employee"], state, events)
+
+
+@pytest.mark.parametrize("kind", ["result", "workflow", "approval", "employee"])
+def test_attribute_compatible_substitutes_are_rejected(tmp_path: Path, kind: str) -> None:
+    state, events = targets(tmp_path)
+    class Substitute:
+        pass
+    supplied = {"result": decision(), "workflow": wf(), "approval": approval(), "employee": employee()}
+    substitute = Substitute()
+    for name, value in supplied[kind].__dict__.items():
+        setattr(substitute, name, value)
+    supplied[kind] = substitute
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(supplied["result"], supplied["workflow"], supplied["approval"], supplied["employee"], state, events)
+
+
+def test_path_type_and_target_conflict(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(decision(), wf(), approval(), employee(), str(state), events)
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(decision(), wf(), approval(), employee(), state, state)
+
+
+@pytest.mark.parametrize("field", [
+    "workflow_id", "step_id", "step_index", "employee_id", "employee_instructions",
+    "step_instructions", "model", "allowed_tool_names",
+])
+def test_prepared_return_field_matrix(tmp_path: Path, field: str) -> None:
+    state, events = targets(tmp_path)
+    invalid = {
+        "workflow_id": 1, "step_id": 1, "step_index": True, "employee_id": 1,
+        "employee_instructions": 1, "step_instructions": 1, "model": 1,
+        "allowed_tool_names": ["tool"],
+    }
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(decision(), wf(), approval(), employee(), state, events,
+             phase88_function=lambda *_: replace(prepared(), **{field: invalid[field]}))
+
+
+def test_prepared_subclass_and_substitute_rejected(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    class PreparedChild(PreparedWorkflowStep):
+        pass
+    child = PreparedChild(**prepared().__dict__)
+    for value in (child, object()):
+        with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+            call(decision(), wf(), approval(), employee(), state, events, phase88_function=lambda *_: value)
+
+
+def test_unsupported_progression_and_direct_persisted_success_rejected(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    unsupported = replace(
+        decision(), decision="stopped_failed", next_step_id=None,
+        next_step_index=None, next_employee_id=None, reason="latest_step_failed",
+    )
+    success = PersistedExecutionOutcome("persisted_success", "workflow", "first", 1, "one", None)
+    for value in (unsupported, success):
+        with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+            call(value, wf(), approval(), employee(), state, events)
+
+
+def test_stop_routes_reject_extra_context_and_terminal_mismatch(tmp_path: Path) -> None:
+    state, events = targets(tmp_path, "succeeded", 2)
+    complete = WorkflowProgressionDecision(
+        "workflow_complete", "workflow", "second", 2, "two", None, None, None,
+        "last_step_succeeded",
+    )
+    for extra in ((approval(), None), (None, employee()), (approval(), employee())):
+        with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+            call(complete, wf(), *extra, state, events)
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(replace(complete, current_step_id="first"), wf(), None, None, state, events)
+
+
+def test_terminal_prefix_duplicate_missing_reordered_and_unrelated_events(tmp_path: Path) -> None:
+    state, events = targets(tmp_path, "succeeded", 2)
+    original = events.read_text()
+    lines = original.splitlines(keepends=True)
+    variants = (
+        lines + [lines[-1],],
+        lines[:1],
+        list(reversed(lines)),
+        [lines[0].replace('"first"', '"other"', 1), lines[1]],
+    )
+    complete = WorkflowProgressionDecision(
+        "workflow_complete", "workflow", "second", 2, "two", None, None, None,
+        "last_step_succeeded",
+    )
+    for variant in variants:
+        events.write_text("".join(variant))
+        with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+            call(complete, wf(), None, None, state, events)
+    events.write_text(original)
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+def test_missing_and_non_regular_targets(tmp_path: Path, target: str, kind: str) -> None:
+    state, events = targets(tmp_path)
+    selected = state if target == "state" else events
+    selected.unlink()
+    if kind == "directory":
+        selected.mkdir()
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(decision(), wf(), approval(), employee(), state, events)
+    assert caught.value.detail.classification == ("state_target" if target == "state" else "event_target")
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+@pytest.mark.parametrize("method", ["is_file", "read_bytes"])
+def test_state_and_event_oserror_are_separately_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, method: str,
+) -> None:
+    state, events = targets(tmp_path)
+    selected = state if target == "state" else events
+    original = getattr(Path, method)
+    def fail(path: Path, *args: object, **kwargs: object):
+        if path == selected:
+            raise OSError("unavailable")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, method, fail)
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(decision(), wf(), approval(), employee(), state, events)
+    assert caught.value.detail.classification == ("state_target" if target == "state" else "event_target")
+
+
+def _mutating_error_fake(state: Path, events: Path, target_kind: str, error: BaseException):
+    def fake(*_: object) -> object:
+        if target_kind in ("state", "both"):
+            state.open("wb").write(b"changed-state")
+        if target_kind in ("events", "both"):
+            events.open("wb").write(b"changed-events")
+        raise error
+    return fake
+
+
+@pytest.mark.parametrize("target_kind", ["unchanged", "state", "events", "both"])
+def test_safe_error_identity_after_each_mutation(tmp_path: Path, target_kind: str) -> None:
+    state, events = targets(tmp_path)
+    safe = ApprovedNextStepPreparationRoutingPhaseBridgeCycleReentryContinuationError("safe")
+    with pytest.raises(ApprovedNextStepPreparationRoutingPhaseBridgeCycleReentryContinuationError) as caught:
+        call(decision(), wf(), approval(), employee(), state, events,
+             phase88_function=_mutating_error_fake(state, events, target_kind, safe))
+    assert caught.value is safe
+
+
+@pytest.mark.parametrize("target_kind", ["unchanged", "state", "events", "both"])
+def test_unexpected_error_sanitized_after_each_mutation(tmp_path: Path, target_kind: str) -> None:
+    state, events = targets(tmp_path)
+    fake = _mutating_error_fake(state, events, target_kind, RuntimeError("secret"))
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(decision(), wf(), approval(), employee(), state, events, phase88_function=fake)
+    assert caught.value.detail.classification == "dependency_error"
+
+
+@pytest.mark.parametrize("target_kind", ["unchanged", "state", "events", "both"])
+def test_malformed_return_rejected_after_each_mutation(tmp_path: Path, target_kind: str) -> None:
+    state, events = targets(tmp_path)
+    def fake(*_: object) -> object:
+        if target_kind in ("state", "both"):
+            state.open("wb").write(b"changed-state")
+        if target_kind in ("events", "both"):
+            events.open("wb").write(b"changed-events")
+        return object()
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError):
+        call(decision(), wf(), approval(), employee(), state, events, phase88_function=fake)
+
+
+@pytest.mark.parametrize("target_kind", ["state", "events", "both"])
+def test_rollback_failure_attempts_both_targets_once_without_second_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_kind: str,
+) -> None:
+    state, events = targets(tmp_path)
+    attempts: list[Path] = []
+    def fake(*_: object) -> object:
+        state.open("wb").write(b"changed-state")
+        events.open("wb").write(b"changed-events")
+        return object()
+    original = Path.write_bytes
+    def restore(path: Path, data: bytes) -> int:
+        attempts.append(path)
+        if target_kind in ("state", "both") and path == state:
+            raise OSError("state rollback")
+        if target_kind in ("events", "both") and path == events:
+            raise OSError("event rollback")
+        return original(path, data)
+    monkeypatch.setattr(Path, "write_bytes", restore)
+    with pytest.raises(ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        call(decision(), wf(), approval(), employee(), state, events, phase88_function=fake)
+    assert caught.value.detail.classification == "dependency_rollback"
+    assert attempts.count(state) == 1 and attempts.count(events) == 1
+
+
+@pytest.mark.parametrize("outcome", ["safe", "unexpected", "malformed"])
+def test_dependency_call_count_one_no_retry_for_every_error_path(tmp_path: Path, outcome: str) -> None:
+    state, events = targets(tmp_path)
+    calls = 0
+    safe = ApprovedNextStepPreparationRoutingPhaseBridgeCycleReentryContinuationError("safe")
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        if outcome == "safe":
+            raise safe
+        if outcome == "unexpected":
+            raise RuntimeError("unexpected")
+        return object()
+    with pytest.raises((
+        ApprovedNextStepPreparationDispatchPhaseBridgeCycleReentryContinuationError,
+        ApprovedNextStepPreparationRoutingPhaseBridgeCycleReentryContinuationError,
+    )):
+        call(decision(), wf(), approval(), employee(), state, events, phase88_function=fake)
+    assert calls == 1
