@@ -553,3 +553,24 @@ Phase 97 (future explicit caller action)
 ```
 
 Phase 103 advances only preparation-to-start construction. It does not call Phase 89 directly, persist running state, execute providers/tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 104
+
+The prepared-start persistence cycle continuation boundary accepts exactly one Phase 103 `PreparedStepExecutionStart`, `workflow_complete` decision, or persisted failure. A prepared execution start requires the exact matching employee, validates the succeeded predecessor state/history, and delegates directly to the public Phase 97 boundary exactly once in canonical `(result, workflow, employee, state_path, events_path)` order. The dependency must return the identical exact valid `RunningStatePersistenceResult`, with the exact proposed running state bytes and byte count, unchanged event history, and supplied target identity. Workflow completion and persisted failure require employee to be absent and are strict zero-call unchanged stop routes. Safe Phase 97 errors preserve identity after successful compensation; unexpected errors are sanitized; missing, partial, unrelated, malformed, or otherwise invalid persistence transitions are rejected and both targets are restored where possible without retry.
+
+```text
+Phase 103
+PreparedStepExecutionStart | workflow_complete | persisted_failure
+    ↓
+Phase 104 prepared-start persistence cycle continuation boundary
+PreparedStepExecutionStart + employee
+    → Phase 97 exactly once
+    → exact RunningStatePersistenceResult
+workflow_complete | persisted_failure
+    → employee absent
+    → unchanged zero-call stop
+    ↓
+Phase 98 (future explicit caller action)
+```
+
+Phase 104 advances only execution-start-to-running-persistence. Its only permitted side effect is the exact existing running-state persistence transition. It does not call Phase 90 directly or Phase 98, execute providers/tools, classify runtime results, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
