@@ -511,3 +511,24 @@ Phase 95 (future explicit caller action)
 ```
 
 Phase 101 closes only the outcome-classification-to-progression edge. It does not call Phase 95, load/select employees, resolve tools, create credentials or approvals, prepare or execute a step, persist state, invoke providers/tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 102
+
+The approved-next-step cycle continuation boundary accepts exactly one Phase 101 `prepare_next_step` or `workflow_complete` decision, or one exact persisted failure. A prepare decision requires the exact matching approval and next employee, validates succeeded terminal state/history, and delegates directly to Phase 95 exactly once in canonical `(result, workflow, approval, employee, state_path, events_path)` order, returning the exact matching `PreparedWorkflowStep`. Workflow completion and persisted failure require approval and employee to be absent and are strict zero-call unchanged stop routes. Dependency safe errors preserve identity after successful compensation, unexpected errors are sanitized, target mutation and malformed returns are rejected, both targets are restored where possible, and retry is never performed.
+
+```text
+Phase 101
+prepare_next_step | workflow_complete | persisted_failure
+    ↓
+Phase 102 approved next-step cycle continuation boundary
+prepare_next_step + approval + next employee
+    → Phase 95 exactly once
+    → exact PreparedWorkflowStep
+workflow_complete | persisted_failure
+    → approval/employee absent
+    → unchanged zero-call stop
+    ↓
+Phase 96 (future explicit caller action)
+```
+
+Phase 102 advances only progression-to-preparation. It does not call Phase 96, create approvals, select or load employees, start steps, persist state, execute providers/tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
