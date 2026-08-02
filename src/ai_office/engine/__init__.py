@@ -1,5 +1,11 @@
 """Deterministic workflow execution engine."""
 
+from ai_office.engine.approved_next_step_cycle_continuation_boundary import (
+    ApprovedNextStepCycleContinuationCompatibilityError,
+    ApprovedNextStepCycleContinuationError,
+    ApprovedNextStepCycleContinuationFailureDetail,
+    route_approved_next_step_cycle_continuation_boundary,
+)
 from ai_office.engine.approved_next_step_preparation_bridge_reentry import (
     ApprovedNextStepPreparationBridgeCompatibilityError,
     ApprovedNextStepPreparationBridgeError,
@@ -465,6 +471,10 @@ from .persisted_terminal_outcome_classification_routing_phase_bridge_reentry imp
 )
 
 __all__ = [
+    "ApprovedNextStepCycleContinuationCompatibilityError",
+    "ApprovedNextStepCycleContinuationError",
+    "ApprovedNextStepCycleContinuationFailureDetail",
+    "route_approved_next_step_cycle_continuation_boundary",
     "ClassifiedPersistedOutcomeRoutingCompatibilityError",
     "ClassifiedPersistedOutcomeRoutingError",
     "ClassifiedPersistedOutcomeRoutingFailureDetail",
