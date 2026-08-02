@@ -532,3 +532,24 @@ Phase 96 (future explicit caller action)
 ```
 
 Phase 102 advances only progression-to-preparation. It does not call Phase 96, create approvals, select or load employees, start steps, persist state, execute providers/tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 103
+
+The prepared-step start cycle continuation boundary accepts exactly one Phase 102 `PreparedWorkflowStep`, `workflow_complete` decision, or persisted failure. A prepared step requires the exact matching employee, validates the succeeded predecessor state/history, and delegates directly to the public Phase 96 boundary exactly once in canonical `(result, workflow, employee, state_path, events_path)` order, returning the exact matching `PreparedStepExecutionStart`. Workflow completion and persisted failure require employee to be absent and are strict zero-call unchanged stop routes. Dependency safe errors preserve identity after successful compensation, unexpected errors are sanitized, target mutation and malformed returns are rejected, both targets are restored where possible, and retry is never performed.
+
+```text
+Phase 102
+PreparedWorkflowStep | workflow_complete | persisted_failure
+    ↓
+Phase 103 prepared-step start cycle continuation boundary
+PreparedWorkflowStep + exact employee
+    → Phase 96 exactly once
+    → exact PreparedStepExecutionStart
+workflow_complete | persisted_failure
+    → employee absent
+    → unchanged zero-call stop
+    ↓
+Phase 97 (future explicit caller action)
+```
+
+Phase 103 advances only preparation-to-start construction. It does not call Phase 89 directly, persist running state, execute providers/tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
