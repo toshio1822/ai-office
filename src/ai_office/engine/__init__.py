@@ -48,6 +48,12 @@ from ai_office.engine.approved_next_step_reentry import (
     ApprovedNextStepReentryFailureDetail,
     prepare_approved_next_step_reentry,
 )
+from ai_office.engine.classified_outcome_cycle_closure_continuation_boundary import (
+    ClassifiedOutcomeCycleClosureContinuationCompatibilityError,
+    ClassifiedOutcomeCycleClosureContinuationError,
+    ClassifiedOutcomeCycleClosureContinuationFailureDetail,
+    route_classified_outcome_cycle_closure_continuation_boundary,
+)
 from ai_office.engine.classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
     ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError,
     ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationError,
@@ -487,6 +493,10 @@ __all__ = [
     "ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationError",
     "ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationFailureDetail",
     "route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation",
+    "ClassifiedOutcomeCycleClosureContinuationCompatibilityError",
+    "ClassifiedOutcomeCycleClosureContinuationError",
+    "ClassifiedOutcomeCycleClosureContinuationFailureDetail",
+    "route_classified_outcome_cycle_closure_continuation_boundary",
     "ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationCompatibilityError",
     "ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationError",
     "ClassifiedPersistedOutcomeRoutingPhaseBridgeContinuationFailureDetail",
