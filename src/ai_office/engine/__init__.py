@@ -310,6 +310,12 @@ from ai_office.engine.persisted_terminal_outcome_classification_routing_reentry 
     PersistedTerminalOutcomeClassificationRoutingFailureDetail,
     route_persisted_terminal_outcome_classification_reentry,
 )
+from ai_office.engine.persisted_transition_outcome_classification_cycle_continuation_boundary import (  # noqa: E501
+    PersistedTransitionOutcomeClassificationCycleContinuationCompatibilityError,
+    PersistedTransitionOutcomeClassificationCycleContinuationError,
+    PersistedTransitionOutcomeClassificationCycleContinuationFailureDetail,
+    route_persisted_transition_outcome_classification_cycle_continuation_boundary,
+)
 from ai_office.engine.prepared_next_step_start_dispatch_continuation_boundary import (
     PreparedNextStepStartDispatchContinuationCompatibilityError,
     PreparedNextStepStartDispatchContinuationError,
@@ -761,6 +767,10 @@ __all__ = [
     "PersistedOutcomeClassificationDispatchContinuationError",
     "PersistedOutcomeClassificationDispatchContinuationFailureDetail",
     "route_persisted_outcome_classification_dispatch_continuation_boundary",
+    "PersistedTransitionOutcomeClassificationCycleContinuationCompatibilityError",
+    "PersistedTransitionOutcomeClassificationCycleContinuationError",
+    "PersistedTransitionOutcomeClassificationCycleContinuationFailureDetail",
+    "route_persisted_transition_outcome_classification_cycle_continuation_boundary",
     "PersistedTerminalOutcomeClassificationRoutingCompatibilityError",
     "PersistedTerminalOutcomeClassificationRoutingError",
     "PersistedTerminalOutcomeClassificationRoutingFailureDetail",

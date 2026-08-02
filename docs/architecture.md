@@ -615,3 +615,20 @@ Phase 100 (future explicit caller action)
 ```
 
 Phase 106 advances only runtime-result-to-terminal-transition persistence. Its only permitted side effect is the exact existing terminal transition persistence. It does not call Phase 92 directly or Phase 100, classify persisted outcomes, decide progression, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 107
+The persisted-transition outcome classification cycle continuation boundary accepts exactly one Phase 106 persistence result, workflow-complete decision, or persisted failure. A persistence result is validated against its exact terminal state/history and delegated directly to the public Phase 100 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order, returning the exact matching `PersistedExecutionOutcome`. Workflow completion and persisted failure are strict zero-call unchanged stop routes. Safe Phase 100 errors preserve identity after successful compensation; unexpected errors are sanitized; target mutation and malformed returns are rejected; both targets are restored where possible without retry.
+```text
+Phase 106
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 107 persisted-transition outcome classification cycle continuation boundary
+persistence result
+    → Phase 100 exactly once
+    → exact persisted_success | persisted_failure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 101 (future explicit caller action)
+```
+Phase 107 advances only persisted terminal transitions into persisted outcome classification. It does not call Phase 93 directly, decide progression, prepare the next step, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
