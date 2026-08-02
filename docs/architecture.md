@@ -595,3 +595,23 @@ Phase 99 (future explicit caller action)
 ```
 
 Phase 105 advances only persisted-running state to runtime execution. It does not call Phase 91 directly or Phase 99, persist terminal transitions, classify persisted outcomes, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 106
+The runtime-result transition persistence cycle continuation boundary accepts exactly one Phase 105 runtime success, runtime failure, workflow-complete decision, or persisted failure. A runtime result is validated against the exact persisted running predecessor state/history and delegated directly to the public Phase 99 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order, returning the exact matching `WorkflowExecutionPersistenceResult`. Workflow completion and persisted failure are strict zero-call unchanged stop routes. Dependency safe errors preserve identity after successful compensation, unexpected errors are sanitized, invalid writes and malformed returns are rejected, both targets are restored where possible, and retry is never performed.
+
+```text
+Phase 105
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+| workflow_complete | persisted_failure
+    ↓
+Phase 106 runtime-result transition persistence cycle continuation boundary
+runtime result
+    → Phase 99 exactly once
+    → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 100 (future explicit caller action)
+```
+
+Phase 106 advances only runtime-result-to-terminal-transition persistence. Its only permitted side effect is the exact existing terminal transition persistence. It does not call Phase 92 directly or Phase 100, classify persisted outcomes, decide progression, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
