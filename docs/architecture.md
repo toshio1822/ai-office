@@ -574,3 +574,24 @@ Phase 98 (future explicit caller action)
 ```
 
 Phase 104 advances only execution-start-to-running-persistence. Its only permitted side effect is the exact existing running-state persistence transition. It does not call Phase 90 directly or Phase 98, execute providers/tools, classify runtime results, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 105
+
+The persisted-running execution cycle continuation boundary accepts exactly one Phase 104 `RunningStatePersistenceResult`, `workflow_complete` decision, or persisted failure. A persisted-running result requires all exact execution inputs and delegates directly to the public Phase 98 boundary exactly once in canonical `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)` order. It accepts and returns only the identical exact matching `StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure`. Workflow completion and persisted failure require every execution-only input to be absent and are strict zero-call unchanged stop routes. Safe Phase 98 errors preserve identity after successful compensation; unexpected errors are sanitized; target mutation and malformed returns are rejected; both targets are restored where possible without retry.
+
+```text
+Phase 104
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 105 persisted-running execution cycle continuation boundary
+RunningStatePersistenceResult + execution inputs
+    → Phase 98 exactly once
+    → exact StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+workflow_complete | persisted_failure
+    → all execution-only inputs absent
+    → unchanged zero-call stop
+    ↓
+Phase 99 (future explicit caller action)
+```
+
+Phase 105 advances only persisted-running state to runtime execution. It does not call Phase 91 directly or Phase 99, persist terminal transitions, classify persisted outcomes, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
