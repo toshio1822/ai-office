@@ -652,3 +652,5 @@ Phase 102 (future explicit caller action)
 ```
 
 Phase 108 advances only classified persisted success into progression and closes one complete execution-cycle edge. It does not call Phase 94 directly, prepare the next step, persist running state, execute providers or tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+- Phase 109 `route_progression_to_approved_preparation_cycle_reentry_continuation_boundary()` consumes one exact Phase 108 result. Only an exact `prepare_next_step` decision with its exact approval and next employee delegates once to public Phase 102 in canonical six-argument order and returns its exact `PreparedWorkflowStep`; exact completion and persisted failure remain unchanged zero-call stop routes. The boundary revalidates all exact route/linkage fields and canonical terminal history, preserves state and event targets as a read-only two-target transaction with compensation, preserves only safe Phase 102 errors after successful rollback, and never bypasses Phase 102 or starts or executes the prepared step.
