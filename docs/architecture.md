@@ -675,3 +675,25 @@ Phase 104 (future explicit caller action)
 ```
 
 Phase 110 advances only prepared-step-to-execution-start preparation. It does not call Phase 96 directly or Phase 104, persist running state, execute providers or tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 111
+
+The prepared-start persistence cycle reentry continuation boundary accepts exactly one Phase 110 `PreparedStepExecutionStart`, `workflow_complete` decision, or persisted failure. An execution start requires its exact matching employee and delegates directly to the public Phase 104 boundary exactly once in canonical `(result, workflow, employee, state_path, events_path)` order, returning the exact matching `RunningStatePersistenceResult`. This route permits only Phase 104's exact running-state persistence effect. Workflow completion and persisted failure require the employee to be absent and are strict zero-call unchanged stop routes. Dependency safe errors preserve identity after successful compensation; unexpected errors are sanitized; invalid persistence, unrelated or partial writes, target mutation, and malformed returns are rejected; both targets are restored where possible without retry.
+
+```text
+Phase 110
+PreparedStepExecutionStart | workflow_complete | persisted_failure
+    ↓
+Phase 111 prepared-start persistence cycle reentry continuation boundary
+PreparedStepExecutionStart + employee
+    → Phase 104 exactly once
+    → exact RunningStatePersistenceResult
+    → only exact running-state persistence effect allowed
+workflow_complete | persisted_failure
+    → employee absent
+    → unchanged zero-call stop
+    ↓
+Phase 105 (future explicit caller action)
+```
+
+Phase 111 advances only execution-start preparation into running-state persistence. It does not call Phase 97 directly or Phase 105, execute providers or tools, create runtime results, transition terminal state, classify outcomes, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
