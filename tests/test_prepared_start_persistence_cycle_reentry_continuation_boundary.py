@@ -93,7 +93,7 @@ def invoke(result: object, employee: object | None, state: Path, events: Path, f
 
 
 def test_implementation_uses_only_public_phase104_dependency() -> None:
-    source = Path("src/ai_office/engine/prepared_start_persistence_cycle_continuation_boundary.py").read_text()
+    source = Path("src/ai_office/engine/prepared_start_persistence_cycle_reentry_continuation_boundary.py").read_text()
     assert "route_prepared_start_persistence_cycle_continuation_boundary" in source
     assert "phase90" not in source.lower()
     assert "dispatch_phase_bridge" not in source
