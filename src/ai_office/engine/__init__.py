@@ -442,6 +442,12 @@ from ai_office.engine.prepared_step_start_cycle_continuation_boundary import (
     PreparedStepStartCycleContinuationFailureDetail,
     route_prepared_step_start_cycle_continuation_boundary,
 )
+from ai_office.engine.prepared_step_start_cycle_reentry_continuation_boundary import (  # noqa: E501
+    PreparedStepStartCycleReentryContinuationCompatibilityError,
+    PreparedStepStartCycleReentryContinuationError,
+    PreparedStepStartCycleReentryContinuationFailureDetail,
+    route_prepared_step_start_cycle_reentry_continuation_boundary,
+)
 from ai_office.engine.prepared_step_start_phase_bridge_reentry import (
     PreparedStepStartPhaseBridgeCompatibilityError,
     PreparedStepStartPhaseBridgeError,
@@ -733,7 +739,11 @@ __all__ = [
     "PreparedStepStartCycleContinuationCompatibilityError",
     "PreparedStepStartCycleContinuationError",
     "PreparedStepStartCycleContinuationFailureDetail",
+    "PreparedStepStartCycleReentryContinuationCompatibilityError",
+    "PreparedStepStartCycleReentryContinuationError",
+    "PreparedStepStartCycleReentryContinuationFailureDetail",
     "route_prepared_step_start_cycle_continuation_boundary",
+    "route_prepared_step_start_cycle_reentry_continuation_boundary",
     "PersistedSuccessProgressionCompatibilityError",
     "PersistedSuccessProgressionError",
     "PersistedSuccessProgressionFailureDetail",
