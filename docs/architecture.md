@@ -654,3 +654,24 @@ Phase 102 (future explicit caller action)
 Phase 108 advances only classified persisted success into progression and closes one complete execution-cycle edge. It does not call Phase 94 directly, prepare the next step, persist running state, execute providers or tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
 
 - Phase 109 `route_progression_to_approved_preparation_cycle_reentry_continuation_boundary()` consumes one exact Phase 108 result. Only an exact `prepare_next_step` decision with its exact approval and next employee delegates once to public Phase 102 in canonical six-argument order and returns its exact `PreparedWorkflowStep`; exact completion and persisted failure remain unchanged zero-call stop routes. The boundary revalidates all exact route/linkage fields and canonical terminal history, preserves state and event targets as a read-only two-target transaction with compensation, preserves only safe Phase 102 errors after successful rollback, and never bypasses Phase 102 or starts or executes the prepared step.
+
+### Phase 110
+
+The prepared-step start cycle reentry continuation boundary accepts exactly one Phase 109 `PreparedWorkflowStep`, `workflow_complete` decision, or persisted failure. A prepared step requires its exact matching employee and delegates directly to the public Phase 103 boundary exactly once in canonical `(result, workflow, employee, state_path, events_path)` order, returning the exact matching `PreparedStepExecutionStart`. Workflow completion and persisted failure require the employee to be absent and are strict zero-call unchanged stop routes. Phase 110 is read-only: safe Phase 103 errors preserve identity when targets remain unchanged or after successful compensation; unexpected errors are sanitized; target mutation and malformed returns are rejected; both targets are restored where possible without retry.
+
+```text
+Phase 109
+PreparedWorkflowStep | workflow_complete | persisted_failure
+    ↓
+Phase 110 prepared-step start cycle reentry continuation boundary
+PreparedWorkflowStep + employee
+    → Phase 103 exactly once
+    → exact PreparedStepExecutionStart
+workflow_complete | persisted_failure
+    → employee absent
+    → unchanged zero-call stop
+    ↓
+Phase 104 (future explicit caller action)
+```
+
+Phase 110 advances only prepared-step-to-execution-start preparation. It does not call Phase 96 directly or Phase 104, persist running state, execute providers or tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
