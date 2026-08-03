@@ -78,10 +78,17 @@ def call(*args: object, phase102_function=None) -> object:
     return route_progression_to_approved_preparation_cycle_reentry_continuation_boundary(*args, **kwargs)
 
 
-def test_implementation_uses_only_public_phase95_dependency() -> None:
-    source = Path("src/ai_office/engine/approved_next_step_cycle_continuation_boundary.py").read_text()
+def test_implementation_uses_only_public_phase102_dependency() -> None:
+    source = Path(
+        "src/ai_office/engine/"
+        "progression_to_approved_preparation_cycle_reentry_continuation_boundary.py"
+    ).read_text()
     assert "route_approved_next_step_cycle_continuation_boundary" in source
-    assert "phase88" not in source.lower()
+    assert (
+        "route_approved_next_step_preparation_dispatch_phase_bridge_"
+        "cycle_reentry_continuation" not in source
+    )
+    assert "phase95" not in source.lower()
     assert "._validate_" not in source
     assert "._raise" not in source
 
