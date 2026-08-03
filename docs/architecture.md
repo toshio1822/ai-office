@@ -632,3 +632,23 @@ workflow_complete | persisted_failure
 Phase 101 (future explicit caller action)
 ```
 Phase 107 advances only persisted terminal transitions into persisted outcome classification. It does not call Phase 93 directly, decide progression, prepare the next step, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 108
+The classified persisted-outcome progression cycle continuation boundary accepts exactly one Phase 107 persisted success, persisted failure, or workflow-complete decision. A persisted success is validated against its exact succeeded terminal state/history and delegated directly to the public Phase 101 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order, returning the exact matching `prepare_next_step` or `workflow_complete` progression decision. Persisted failure and workflow completion are strict zero-call unchanged stop routes. Dependency safe errors preserve identity after successful compensation, unexpected errors are sanitized, target mutation and malformed returns are rejected, both targets are restored where possible, and retry is never performed.
+
+```text
+Phase 107
+PersistedExecutionOutcome
+| workflow_complete
+    ↓
+Phase 108 classified persisted-outcome progression cycle continuation boundary
+persisted_success
+    → Phase 101 exactly once
+    → exact prepare_next_step | workflow_complete
+persisted_failure | workflow_complete
+    → unchanged zero-call stop
+    ↓
+Phase 102 (future explicit caller action)
+```
+
+Phase 108 advances only classified persisted success into progression and closes one complete execution-cycle edge. It does not call Phase 94 directly, prepare the next step, persist running state, execute providers or tools, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
