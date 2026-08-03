@@ -117,7 +117,7 @@ def _validate_inputs(result: object, workflow: object, state: object, events: ob
     if state == events:
         _raise("target_conflict")
     if not callable(function):
-        _raise("dependency_error")
+        _raise("start_contract")
 
 
 def _validate_employee(value: object | None, prepared: PreparedWorkflowStep) -> None:
