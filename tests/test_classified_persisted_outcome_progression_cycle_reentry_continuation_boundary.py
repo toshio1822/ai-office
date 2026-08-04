@@ -25,6 +25,23 @@ from ai_office.storage import (
 )
 
 
+def test_implementation_uses_only_public_phase108_dependency() -> None:
+    source = Path(
+        "src/ai_office/engine/"
+        "classified_persisted_outcome_progression_cycle_reentry_continuation_boundary.py"
+    ).read_text()
+
+    assert (
+        "route_classified_persisted_outcome_progression_cycle_continuation_boundary"
+        in source
+    )
+    assert "phase101" not in source.lower()
+    assert "classified_outcome_cycle_closure_continuation_boundary" not in source
+    assert "._validate_inputs" not in source
+    assert "._validate_terminal" not in source
+    assert "._validate_progression" not in source
+    assert "._raise" not in source
+
 class OutcomeSubclass(PersistedExecutionOutcome):
     pass
 

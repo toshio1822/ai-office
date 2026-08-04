@@ -62,7 +62,7 @@ def route_classified_persisted_outcome_progression_cycle_reentry_continuation_bo
     *,
     phase108_function: Phase108Function = route_classified_persisted_outcome_progression_cycle_continuation_boundary,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Advance only a valid persisted success through the public Phase 101 edge."""
+    """Advance only a valid persisted success through the public Phase 108 boundary."""
     _validate_inputs(result, workflow, state_path, events_path, phase108_function)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
