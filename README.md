@@ -968,3 +968,20 @@ Phase 110 adds `route_prepared_step_start_cycle_reentry_continuation_boundary()`
 Phase 111 adds `route_prepared_start_persistence_cycle_reentry_continuation_boundary()`. An exact Phase 110 `PreparedStepExecutionStart` with the exact employee is forwarded directly to the public Phase 104 boundary in canonical five-argument order exactly once and must return the exact matching `RunningStatePersistenceResult`. Exact workflow completion and persisted failure require employee to be absent and are strict unchanged zero-call stop routes. Phase 111 advances only execution-start preparation into running-state persistence; it does not call Phase 97 directly or Phase 105, execute providers or tools, create runtime results, transition terminal state, classify outcomes, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
 
 Phase 112 adds `route_persisted_running_execution_cycle_reentry_continuation_boundary()`, the read-only boundary that receives one exact Phase 111 `RunningStatePersistenceResult`, `workflow_complete` decision, or `persisted_failure`. For a running persistence result, it revalidates the complete execution-only inputs, strict persisted-running state/history, and both state/event targets, then delegates directly to the public Phase 105 boundary exactly once in canonical ten-argument order and returns its exact matching `StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure` unchanged. Workflow completion and persisted failure require every execution-only input to be absent and remain strict unchanged zero-call stop routes. Malformed dependency returns, target mutation, safe or unexpected dependency errors, and rollback failures are classified detail-safely; both targets are compensated byte-for-byte where possible, without retry. Phase 112 does not call Phase 98 directly or Phase 106, duplicate execution logic, resolve tools, create credentials or approvals, persist terminal transitions, classify outcomes, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
+Phase 113 adds `route_runtime_result_transition_persistence_cycle_reentry_continuation_boundary()`. One exact Phase 112 `StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure` is forwarded directly to the public Phase 106 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order and must return its exact matching `WorkflowExecutionPersistenceResult`. Exact `workflow_complete` and `persisted_failure` results are strict read-only, unchanged zero-call stop routes. Phase 113 advances only one exact runtime result into one terminal transition persistence through Phase 106; it does not call Phase 99 directly or Phase 107, classify persisted outcomes, decide progression, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+```text
+Phase 112
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+| workflow_complete | persisted_failure
+    ↓
+Phase 113 runtime-result transition persistence cycle reentry continuation boundary
+runtime success | runtime failure
+    → Phase 106 exactly once in canonical four-argument order
+    → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 107 (future explicit caller action)
+```
