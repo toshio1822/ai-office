@@ -496,6 +496,12 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_continuation_b
     RuntimeResultTransitionPersistenceCycleContinuationFailureDetail,
     route_runtime_result_transition_persistence_cycle_continuation_boundary,
 )
+from ai_office.engine.runtime_result_transition_persistence_cycle_reentry_continuation_boundary import (  # noqa: E501
+    RuntimeResultTransitionPersistenceCycleReentryContinuationCompatibilityError,
+    RuntimeResultTransitionPersistenceCycleReentryContinuationError,
+    RuntimeResultTransitionPersistenceCycleReentryContinuationFailureDetail,
+    route_runtime_result_transition_persistence_cycle_reentry_continuation_boundary,
+)
 from ai_office.engine.workflow_progression import (
     WorkflowProgressionCompatibilityDetail,
     WorkflowProgressionCompatibilityError,
@@ -868,6 +874,10 @@ __all__ = [
     "RuntimeResultTransitionPersistenceCycleContinuationError",
     "RuntimeResultTransitionPersistenceCycleContinuationFailureDetail",
     "route_runtime_result_transition_persistence_cycle_continuation_boundary",
+    "RuntimeResultTransitionPersistenceCycleReentryContinuationCompatibilityError",
+    "RuntimeResultTransitionPersistenceCycleReentryContinuationError",
+    "RuntimeResultTransitionPersistenceCycleReentryContinuationFailureDetail",
+    "route_runtime_result_transition_persistence_cycle_reentry_continuation_boundary",
     "ExecutedResultTransitionPersistenceDispatchContinuationCompatibilityError",
     "ExecutedResultTransitionPersistenceDispatchContinuationError",
     "ExecutedResultTransitionPersistenceDispatchContinuationFailureDetail",
