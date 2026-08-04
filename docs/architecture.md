@@ -717,3 +717,25 @@ Phase 106 (future explicit caller action)
 ```
 
 Phase 112 is read-only. Dependency-return mismatches, target mutation, safe or unexpected dependency errors, and rollback failures are classified detail-safely; both targets are compensated byte-for-byte where possible, and no dependency call is retried. It advances only persisted-running state into runtime execution through Phase 105. It does not call Phase 98 directly or Phase 106, duplicate provider/tool execution, resolve tools, create credentials or approvals, persist terminal transitions, classify outcomes, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 113
+
+The runtime-result transition persistence cycle reentry continuation boundary accepts exactly one Phase 112 `StepRuntimeExecutionSuccess`, `StepRuntimeExecutionFailure`, `workflow_complete` decision, or persisted failure. A runtime execution result is validated against the exact persisted running predecessor state and history, then delegated directly to the public Phase 106 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order, returning its exact matching `WorkflowExecutionPersistenceResult`. This route permits only Phase 106's exact terminal-transition persistence effect. Workflow completion and persisted failure are strict read-only, zero-call, unchanged stop routes. Dependency safe errors preserve identity after successful compensation; unexpected errors are sanitized; invalid persistence, unrelated or partial writes, target mutation, and malformed returns are rejected; both targets are restored where possible without retry.
+
+```text
+Phase 112
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+| workflow_complete | persisted_failure
+    ↓
+Phase 113 runtime-result transition persistence cycle reentry continuation boundary
+runtime result
+    → Phase 106 exactly once
+    → exact WorkflowExecutionPersistenceResult
+    → only exact terminal-transition persistence effect allowed
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 107 (future explicit caller action)
+```
+
+Phase 113 advances only one exact runtime execution result into one explicit terminal-transition persistence through Phase 106. It does not call Phase 99 directly or Phase 107, classify persisted outcomes, decide progression, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
