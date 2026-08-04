@@ -985,3 +985,19 @@ workflow_complete | persisted_failure
     ↓
 Phase 107 (future explicit caller action)
 ```
+
+Phase 114 adds `route_persisted_transition_outcome_classification_cycle_reentry_continuation_boundary()`. One exact Phase 113 `WorkflowExecutionPersistenceResult` is forwarded directly to the public Phase 107 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order and must return its exact matching `PersistedExecutionOutcome`. Exact `workflow_complete` and `persisted_failure` results are strict read-only, unchanged zero-call stop routes. Phase 114 advances only one exact persisted terminal transition into one persisted-outcome classification through Phase 107; it does not call Phase 100 directly or Phase 108, decide progression, prepare the next step, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+```text
+Phase 113
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 114 persisted-transition outcome classification cycle reentry continuation boundary
+persisted transition
+    → Phase 107 exactly once in canonical four-argument order
+    → exact PersistedExecutionOutcome
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 108 (future explicit caller action)
+```
