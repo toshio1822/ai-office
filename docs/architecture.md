@@ -759,3 +759,9 @@ Phase 108 (future explicit caller action)
 ```
 
 Phase 114 advances only one exact persisted terminal transition into one explicit persisted-outcome classification through Phase 107. It does not call Phase 100 directly or Phase 108, decide progression, prepare the next step, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
+## Phase 115: Classified Persisted Outcome Progression Cycle Reentry Continuation Boundary
+
+`route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary()` advances exactly one classified persisted success from Phase 114 into one explicit progression decision by delegating directly to Phase 108 in canonical `(result, workflow, state_path, events_path)` order. It validates exact persisted-success, persisted-failure, and workflow-complete objects, exact workflow/step linkage, exact built-in field values, existing regular state/event `Path` targets, and strict terminal state/history before returning.
+
+The boundary is read-only. It captures both targets before dependency execution, requires byte-for-byte unchanged targets on success and stop routes, restores both targets after malformed dependency returns or dependency errors with mutation, preserves safe Phase 108 error identity after unchanged targets or successful compensation, sanitizes unexpected dependency errors, and reports rollback failure as `dependency_rollback`. It never calls Phase 101 directly and does not prepare next steps, start execution, retry, persist, auto-continue, finalize, schedule, loop, run providers/tools, or launch paid CLI/GUI flows.

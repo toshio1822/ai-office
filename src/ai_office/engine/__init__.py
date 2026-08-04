@@ -90,6 +90,12 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_continuatio
     ClassifiedPersistedOutcomeProgressionCycleContinuationFailureDetail,
     route_classified_persisted_outcome_progression_cycle_continuation_boundary,
 )
+from ai_office.engine.classified_persisted_outcome_progression_cycle_reentry_continuation_boundary import (  # noqa: E501
+    ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError,
+    ClassifiedPersistedOutcomeProgressionCycleReentryContinuationError,
+    ClassifiedPersistedOutcomeProgressionCycleReentryContinuationFailureDetail,
+    route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary,
+)
 from ai_office.engine.classified_persisted_outcome_routing_bridge_reentry import (
     ClassifiedPersistedOutcomeRoutingBridgeCompatibilityError,
     ClassifiedPersistedOutcomeRoutingBridgeError,
@@ -583,6 +589,10 @@ __all__ = [
     "ClassifiedPersistedOutcomeProgressionCycleContinuationError",
     "ClassifiedPersistedOutcomeProgressionCycleContinuationFailureDetail",
     "route_classified_persisted_outcome_progression_cycle_continuation_boundary",
+    "ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError",
+    "ClassifiedPersistedOutcomeProgressionCycleReentryContinuationError",
+    "ClassifiedPersistedOutcomeProgressionCycleReentryContinuationFailureDetail",
+    "route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary",
     "ProgressionToApprovedPreparationCycleReentryContinuationCompatibilityError",
     "ProgressionToApprovedPreparationCycleReentryContinuationError",
     "ProgressionToApprovedPreparationCycleReentryContinuationFailureDetail",

@@ -1001,3 +1001,6 @@ workflow_complete | persisted_failure
     ↓
 Phase 108 (future explicit caller action)
 ```
+
+## Classified Persisted Outcome Progression Cycle Reentry Continuation Boundary（Phase 115）
+`route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary()`は、正確なPhase 114の`PersistedExecutionOutcome`または`workflow_complete`を受けるread-only boundaryです。`persisted_success`だけを同じresult、workflow、state/event target objectのまま既存Phase 108へcanonical 4引数で正確に一度だけ渡し、matchingする`prepare_next_step`または`workflow_complete`の`WorkflowProgressionDecision`を同じobjectで返します。`persisted_failure`とcompletionはstrict terminal state/historyを確認してPhase 108を呼ばず同じobjectで停止します。依存の不正返却、mutation、safe/unexpected error、rollback failureは安全に分類・補償復元し、retryは行いません。Phase 115はnext-step preparation、execution start、persistence、provider/tool実行、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIを追加せず、Phase 101を直接呼びません。
