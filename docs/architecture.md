@@ -739,3 +739,23 @@ Phase 107 (future explicit caller action)
 ```
 
 Phase 113 advances only one exact runtime execution result into one explicit terminal-transition persistence through Phase 106. It does not call Phase 99 directly or Phase 107, classify persisted outcomes, decide progression, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 114
+
+The persisted-transition outcome classification cycle reentry continuation boundary accepts exactly one Phase 113 `WorkflowExecutionPersistenceResult`, `workflow_complete` decision, or persisted failure. A persisted terminal transition is validated against its exact terminal state and history, then delegated directly to the public Phase 107 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order, returning its exact matching `PersistedExecutionOutcome`. Workflow completion and persisted failure are strict read-only, zero-call, unchanged stop routes. Dependency safe errors preserve identity after successful compensation; unexpected errors are sanitized; invalid outcomes, unrelated or partial writes, target mutation, and malformed returns are rejected; both targets are restored where possible without retry.
+
+```text
+Phase 113
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 114 persisted-transition outcome classification cycle reentry continuation boundary
+persisted transition
+    → Phase 107 exactly once in canonical four-argument order
+    → exact PersistedExecutionOutcome
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 108 (future explicit caller action)
+```
+
+Phase 114 advances only one exact persisted terminal transition into one explicit persisted-outcome classification through Phase 107. It does not call Phase 100 directly or Phase 108, decide progression, prepare the next step, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
