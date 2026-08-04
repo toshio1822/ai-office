@@ -697,3 +697,23 @@ Phase 105 (future explicit caller action)
 ```
 
 Phase 111 advances only execution-start preparation into running-state persistence. It does not call Phase 97 directly or Phase 105, execute providers or tools, create runtime results, transition terminal state, classify outcomes, retry, automatically continue, loop, finalize, schedule, run in parallel, or add paid CLI/GUI behavior.
+
+### Phase 112
+
+The persisted-running execution cycle reentry continuation boundary accepts exactly one Phase 111 `RunningStatePersistenceResult`, `workflow_complete` decision, or persisted failure. A running persistence result requires the complete exact execution-only inputs and is revalidated against strict persisted-running state/history and the state/event targets. It is then delegated directly to the public Phase 105 boundary exactly once in canonical `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)` order, returning the exact matching `StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure` unchanged. Workflow completion and persisted failure require all execution-only inputs to be absent and are strict zero-call unchanged stop routes.
+
+```text
+Phase 111
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 112 persisted-running execution cycle reentry continuation boundary
+running persistence result
+    → Phase 105 exactly once in canonical ten-argument order
+    → exact StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 106 (future explicit caller action)
+```
+
+Phase 112 is read-only. Dependency-return mismatches, target mutation, safe or unexpected dependency errors, and rollback failures are classified detail-safely; both targets are compensated byte-for-byte where possible, and no dependency call is retried. It advances only persisted-running state into runtime execution through Phase 105. It does not call Phase 98 directly or Phase 106, duplicate provider/tool execution, resolve tools, create credentials or approvals, persist terminal transitions, classify outcomes, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
