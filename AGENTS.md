@@ -22,6 +22,10 @@ GitHub Issue を仕様の正本として扱う。作業前に対象 Issue、関�
 5. `pytest` と `ruff check .` を実行し、失敗を解消する。
 6. 変更ファイル、設計判断、テスト結果、未解決事項、完了条件の充足状況を報告する。
 
+Phase 実装では、対象 Issue に加えて
+[`docs/development/phase-implementation-contract.md`](docs/development/phase-implementation-contract.md)
+を読み、その共通規約に従うこと。Issue が明確に上書きする要件だけは、その指定を優先する。
+
 ## コマンド
 
 ```bash
