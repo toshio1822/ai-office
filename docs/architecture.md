@@ -700,7 +700,7 @@ Phase 111 advances only execution-start preparation into running-state persisten
 
 ### Phase 112
 
-The persisted-running execution cycle reentry continuation boundary accepts exactly one Phase 111 `RunningStatePersistenceResult`, `workflow_complete` decision, or persisted failure. A running persistence result requires the complete exact execution-only inputs and is revalidated against strict persisted-running state/history and the state/event targets. It is then delegated directly to the public Phase 105 boundary exactly once in canonical `(result, workflow, employee, tool, credential, approval, payload, provider_executor, state_path, events_path)` order, returning the exact matching `StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure` unchanged. Workflow completion and persisted failure require all execution-only inputs to be absent and are strict zero-call unchanged stop routes.
+The persisted-running execution cycle reentry continuation boundary accepts exactly one Phase 111 `RunningStatePersistenceResult`, `workflow_complete` decision, or persisted failure. A running persistence result requires the complete exact execution-only inputs and is revalidated against strict persisted-running state/history and the state/event targets. It is then delegated directly to the public Phase 105 boundary exactly once in canonical `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)` order, returning the exact matching `StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure` unchanged. Workflow completion and persisted failure require all execution-only inputs to be absent and are strict zero-call unchanged stop routes.
 
 ```text
 Phase 111
