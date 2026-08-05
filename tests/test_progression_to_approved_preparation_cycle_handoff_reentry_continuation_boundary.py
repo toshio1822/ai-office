@@ -84,10 +84,7 @@ def test_implementation_uses_only_public_phase109_dependency() -> None:
         "progression_to_approved_preparation_cycle_handoff_reentry_continuation_boundary.py"
     ).read_text()
     assert "route_progression_to_approved_preparation_cycle_reentry_continuation_boundary" in source
-    assert (
-        "route_approved_next_step_preparation_dispatch_phase_bridge_"
-        "cycle_reentry_continuation" not in source
-    )
+    assert "approved_next_step_preparation" not in source
     assert "phase95" not in source.lower()
     assert "._validate_" not in source
     assert "._raise" not in source
