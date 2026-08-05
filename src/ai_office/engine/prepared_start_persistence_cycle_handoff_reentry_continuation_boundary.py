@@ -51,7 +51,7 @@ class PreparedStartPersistenceCycleHandoffReentryContinuationFailureDetail:
 
 
 class PreparedStartPersistenceCycleHandoffReentryContinuationError(ValueError):
-    """Raised when Phase 104 cannot safely continue its supplied result."""
+    """Raised when the Phase 118 handoff cannot safely continue its result."""
 
 
 class PreparedStartPersistenceCycleHandoffReentryContinuationCompatibilityError(
@@ -65,7 +65,7 @@ class PreparedStartPersistenceCycleHandoffReentryContinuationCompatibilityError(
 def route_prepared_start_persistence_cycle_handoff_reentry_continuation_boundary(
     result: object,
     workflow: object,
-    employee: object | None,
+    employee: object,
     state_path: object,
     events_path: object,
     *,

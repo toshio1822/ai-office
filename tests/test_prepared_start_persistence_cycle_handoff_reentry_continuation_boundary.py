@@ -105,6 +105,7 @@ def test_implementation_uses_only_public_phase111_dependency() -> None:
 def test_signature_is_canonical() -> None:
     signature = inspect.signature(route_prepared_start_persistence_cycle_handoff_reentry_continuation_boundary)
     assert tuple(signature.parameters)[:5] == ("result", "workflow", "employee", "state_path", "events_path")
+    assert signature.parameters["employee"].annotation is object
     assert signature.parameters["phase111_function"].default is route_prepared_start_persistence_cycle_reentry_continuation_boundary
 
 
