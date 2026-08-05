@@ -394,6 +394,12 @@ from ai_office.engine.prepared_start_persistence_cycle_continuation_boundary imp
     PreparedStartPersistenceCycleContinuationFailureDetail,
     route_prepared_start_persistence_cycle_continuation_boundary,
 )
+from ai_office.engine.prepared_start_persistence_cycle_handoff_reentry_continuation_boundary import (  # noqa: E501
+    PreparedStartPersistenceCycleHandoffReentryContinuationCompatibilityError,
+    PreparedStartPersistenceCycleHandoffReentryContinuationError,
+    PreparedStartPersistenceCycleHandoffReentryContinuationFailureDetail,
+    route_prepared_start_persistence_cycle_handoff_reentry_continuation_boundary,
+)
 from ai_office.engine.prepared_start_persistence_cycle_reentry_continuation_boundary import (  # noqa: E501
     PreparedStartPersistenceCycleReentryContinuationCompatibilityError,
     PreparedStartPersistenceCycleReentryContinuationError,
@@ -754,6 +760,10 @@ __all__ = [
     "PreparedStartPersistenceCycleReentryContinuationError",
     "PreparedStartPersistenceCycleReentryContinuationFailureDetail",
     "route_prepared_start_persistence_cycle_reentry_continuation_boundary",
+    "PreparedStartPersistenceCycleHandoffReentryContinuationCompatibilityError",
+    "PreparedStartPersistenceCycleHandoffReentryContinuationError",
+    "PreparedStartPersistenceCycleHandoffReentryContinuationFailureDetail",
+    "route_prepared_start_persistence_cycle_handoff_reentry_continuation_boundary",
     "PreparedStartPersistenceRoutingCompatibilityError",
     "PreparedStartPersistenceRoutingError",
     "PreparedStartPersistenceRoutingFailureDetail",
