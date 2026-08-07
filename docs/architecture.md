@@ -781,3 +781,22 @@ Exact workflow completion and persisted failure are read-only zero-call stop rou
 ## Phase 118: prepared start persistence cycle handoff reentry continuation boundary
 
 Phase 118 is the explicit handoff from the prepared-step start cycle into the prepared-start persistence cycle. It accepts only exact Phase 117 outcomes. For an exact `PreparedStepExecutionStart`, it validates the continuation-step linkage, predecessor terminal history, state/event targets, and dependency persistence result before returning the exact `RunningStatePersistenceResult` produced by Phase 111. For exact terminal completion/failure outcomes, it validates matching terminal persistence and returns the original object without invoking Phase 111. It does not call Phase 104 directly, execute providers/tools, retry, or continue beyond the single handoff.
+
+## Phase 119: Persisted Running Execution Cycle Handoff Reentry Continuation Boundary
+`route_persisted_running_execution_cycle_handoff_reentry_continuation_boundary()` accepts exactly one Phase 118 `RunningStatePersistenceResult`, `workflow_complete` decision, or persisted failure. For the execution route it validates the matching Phase 117 `PreparedStepExecutionStart`, explicit employee/tools/credential/approval/transport inputs, and persisted running state/history, then delegates exactly once to the public Phase 112 boundary in canonical ten-argument order and returns the exact matching runtime success or failure object. Completion and persisted failure are strict read-only, unchanged, zero-call stop routes.
+
+Phase 119 is one explicitly authorized runtime-execution handoff through Phase 112. With real execution inputs the injected dependency may perform one provider/tool attempt, but Phase 119 itself does not call Phase 105 directly, persist or classify the runtime result, retry, automatically continue, progress, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Focused tests use injected fakes only and make no real provider, network, paid API, or external tool calls.
+```text
+Phase 118
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 119 persisted-running execution cycle handoff reentry continuation boundary
+RunningStatePersistenceResult + matching PreparedStepExecutionStart
++ exact employee/tools/credential/approval/transport
+    → Phase 112 exactly once in canonical ten-argument order
+    → exact StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 113 (future explicit caller action)
+```
