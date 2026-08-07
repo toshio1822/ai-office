@@ -25,9 +25,6 @@ from ai_office.engine.persisted_running_execution_cycle_reentry_continuation_bou
     PersistedRunningExecutionCycleReentryContinuationError,
     route_persisted_running_execution_cycle_reentry_continuation_boundary,
 )
-from ai_office.engine.persisted_running_execution_cycle_continuation_boundary import (
-    PersistedRunningExecutionCycleContinuationError,
-)
 from ai_office.invocation import ModelInvocationFailure, ModelInvocationRequest, ModelInvocationSuccess, approve_model_invocation_execution
 from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import RuntimeStepEvent, StepRuntimeExecutionFailure, StepRuntimeExecutionSuccess, WorkflowExecutionState
@@ -128,19 +125,20 @@ def failed_targets(tmp_path: Path) -> tuple[Path, Path]:
     return state_path, events_path
 
 
-def test_implementation_uses_only_public_phase105_dependency() -> None:
-    source = Path("src/ai_office/engine/persisted_running_execution_cycle_reentry_continuation_boundary.py").read_text()
+def test_implementation_uses_only_public_phase112_dependency() -> None:
+    source = Path("src/ai_office/engine/persisted_running_execution_cycle_handoff_reentry_continuation_boundary.py").read_text()
     assert "route_persisted_running_execution_cycle_reentry_continuation_boundary" in source
-    assert "phase91" not in source.lower()
-    assert "dispatch_phase_bridge" not in source
+    assert "phase105" not in source.lower()
+    assert "persisted_running_execution_cycle_continuation_boundary" not in source
+    assert "._validate_" not in source
     assert "._top" not in source
-    assert "._execution_inputs" not in source
     assert "._raise" not in source
 
 
 def test_public_signature_and_canonical_ten_argument_identity(tmp_path: Path) -> None:
     params = list(inspect.signature(route_persisted_running_execution_cycle_handoff_reentry_continuation_boundary).parameters.values())
     assert [p.name for p in params[:10]] == ["result", "start", "workflow", "employee", "state_path", "events_path", "resolved_tools", "api_key", "approval", "transport"]
+    assert all(p.annotation is object for p in params[:10])
     assert params[10].kind is inspect.Parameter.KEYWORD_ONLY
     values = setup(tmp_path); calls: list[tuple[object, ...]] = []
     expected = runtime()
@@ -305,12 +303,12 @@ def test_read_bytes_oserror_is_classified_by_target(tmp_path: Path, target: str,
     reject(values, "state_target" if target == "state_path" else "event_target")
 
 
-def test_safe_phase105_error_identity_is_preserved_and_no_retry(tmp_path: Path) -> None:
+def test_safe_phase112_error_identity_is_preserved_and_no_retry(tmp_path: Path) -> None:
     values = setup(tmp_path); calls = 0
-    supplied = PersistedRunningExecutionCycleContinuationError("safe")
+    supplied = PersistedRunningExecutionCycleReentryContinuationError("safe")
     def dependency(*_: object) -> object:
         nonlocal calls; calls += 1; raise supplied
-    with pytest.raises(PersistedRunningExecutionCycleContinuationError) as caught:
+    with pytest.raises(PersistedRunningExecutionCycleReentryContinuationError) as caught:
         route_persisted_running_execution_cycle_handoff_reentry_continuation_boundary(**values, phase112_function=dependency)  # type: ignore[arg-type]
     assert caught.value is supplied and calls == 1
 
@@ -357,7 +355,7 @@ def test_dependency_matrix_compensates_without_retry(tmp_path: Path, mutation: s
         if mutation in ("state", "both"): state.write_bytes(b"state-mutated")
         if mutation in ("events", "both"): events.write_bytes(b"events-mutated")
         if error_kind == "safe":
-            raise PersistedRunningExecutionCycleContinuationError("safe")
+            raise PersistedRunningExecutionCycleReentryContinuationError("safe")
         if error_kind == "unexpected": raise RuntimeError("secret")
         return object()
     with pytest.raises(Exception): route_persisted_running_execution_cycle_handoff_reentry_continuation_boundary(**values, phase112_function=dependency)  # type: ignore[arg-type]

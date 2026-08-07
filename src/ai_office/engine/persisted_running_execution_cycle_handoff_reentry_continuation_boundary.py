@@ -12,8 +12,10 @@ from pydantic import SecretStr
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import PersistedExecutionOutcome
-from ai_office.engine.persisted_running_execution_cycle_continuation_boundary import PersistedRunningExecutionCycleContinuationError
-from ai_office.engine.persisted_running_execution_cycle_reentry_continuation_boundary import route_persisted_running_execution_cycle_reentry_continuation_boundary
+from ai_office.engine.persisted_running_execution_cycle_reentry_continuation_boundary import (
+    PersistedRunningExecutionCycleReentryContinuationError,
+    route_persisted_running_execution_cycle_reentry_continuation_boundary,
+)
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.terminal_history_contract import TerminalHistoryContractError, load_strict_terminal_history
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
@@ -56,15 +58,15 @@ class PersistedRunningExecutionCycleHandoffReentryContinuationCompatibilityError
 
 def route_persisted_running_execution_cycle_handoff_reentry_continuation_boundary(
     result: object,
-    start: object | None,
+    start: object,
     workflow: object,
-    employee: object | None,
+    employee: object,
     state_path: object,
     events_path: object,
-    resolved_tools: object | None,
-    api_key: object | None,
-    approval: object | None,
-    transport: object | None,
+    resolved_tools: object,
+    api_key: object,
+    approval: object,
+    transport: object,
     *,
     phase112_function: Phase112Function = route_persisted_running_execution_cycle_reentry_continuation_boundary,
 ) -> StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | WorkflowProgressionDecision | PersistedExecutionOutcome:
@@ -94,7 +96,7 @@ def route_persisted_running_execution_cycle_handoff_reentry_continuation_boundar
     _predecessor(start, workflow, state_path, events_path)
     try:
         value = phase112_function(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)
-    except PersistedRunningExecutionCycleContinuationError as error:
+    except PersistedRunningExecutionCycleReentryContinuationError as error:
         _restore_if_changed(state_path, events_path, original)
         raise error
     except Exception:
@@ -147,7 +149,7 @@ def _execution_inputs(result: RunningStatePersistenceResult, start: object | Non
     if not callable(transport): _compatibility_error("execution_inputs")
     request, running = start.request, start.running_state
     if type(request) is not ModelInvocationRequest or type(running) is not WorkflowExecutionState: _compatibility_error("start_contract")
-    if type(running.current_step_index) is not int or not 1 <= running.current_step_index <= len(workflow.steps): _compatibility_error("start_contract")
+    if type(running.current_step_index) is not int or not 2 <= running.current_step_index <= len(workflow.steps): _compatibility_error("start_contract")
     step = workflow.steps[running.current_step_index - 1]
     prefix = tuple(item.id for item in workflow.steps[: running.current_step_index - 1])
     if not (_str(running.status, "running") and running.last_failure_category is None and _str(running.workflow_id, workflow.id) and _str(running.current_step_id, step.id) and _str(running.current_employee_id, step.employee) and _str(employee.id, running.current_employee_id) and _tuple(running.completed_step_ids, prefix) and _str(request.model, employee.model) and _str(request.system_instructions, employee.instructions) and _str(request.task_instructions, step.instructions) and _tuple(request.allowed_tools, tuple(employee.allowed_tools)) and _tuple(tuple(tool.name for tool in tools), request.allowed_tools)): _compatibility_error("start_contract")
