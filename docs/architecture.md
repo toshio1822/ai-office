@@ -758,6 +758,26 @@ workflow_complete | persisted_failure
 Phase 108 (future explicit caller action)
 ```
 
+## Phase 120: runtime-result transition persistence cycle handoff reentry continuation boundary
+Phase 120 accepts exactly one Phase 119 `StepRuntimeExecutionSuccess`, `StepRuntimeExecutionFailure`, `WorkflowProgressionDecision(workflow_complete)`, or `PersistedExecutionOutcome(persisted_failure)`. Exact runtime success or failure is validated and delegated exactly once to the public Phase 113 boundary in canonical four-argument order `(result, workflow, state_path, events_path)`, returning the exact `WorkflowExecutionPersistenceResult` produced by that dependency. Exact workflow completion and persisted failure are strict read-only, unchanged zero-call stop routes that return the same supplied object.
+
+Phase 120 performs only the runtime-result persistence handoff through Phase 113. It does not call Phase 106 directly or advance automatically to Phase 114. It does not classify persisted outcomes, perform workflow progression, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Focused tests inject a Phase 113 fake and make no real provider, network, paid API, or external tool calls.
+
+```text
+Phase 119
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+| workflow_complete | persisted_failure
+    ↓
+Phase 120 runtime-result transition persistence cycle handoff reentry continuation boundary
+runtime success | runtime failure
+    → Phase 113 exactly once in canonical four-argument order
+    → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 114 (future explicit caller action)
+```
+
 Phase 114 advances only one exact persisted terminal transition into one explicit persisted-outcome classification through Phase 107. It does not call Phase 100 directly or Phase 108, decide progression, prepare the next step, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
 ## Phase 115: Classified Persisted Outcome Progression Cycle Reentry Continuation Boundary

@@ -532,6 +532,12 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_continuation_b
     RuntimeResultTransitionPersistenceCycleContinuationFailureDetail,
     route_runtime_result_transition_persistence_cycle_continuation_boundary,
 )
+from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary import (  # noqa: E501
+    RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError,
+    RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationError,
+    RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationFailureDetail,
+    route_runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary,
+)
 from ai_office.engine.runtime_result_transition_persistence_cycle_reentry_continuation_boundary import (  # noqa: E501
     RuntimeResultTransitionPersistenceCycleReentryContinuationCompatibilityError,
     RuntimeResultTransitionPersistenceCycleReentryContinuationError,
@@ -938,6 +944,10 @@ __all__ = [
     "RuntimeResultTransitionPersistenceCycleReentryContinuationError",
     "RuntimeResultTransitionPersistenceCycleReentryContinuationFailureDetail",
     "route_runtime_result_transition_persistence_cycle_reentry_continuation_boundary",
+    "RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError",
+    "RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationError",
+    "RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationFailureDetail",
+    "route_runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary",
     "ExecutedResultTransitionPersistenceDispatchContinuationCompatibilityError",
     "ExecutedResultTransitionPersistenceDispatchContinuationError",
     "ExecutedResultTransitionPersistenceDispatchContinuationFailureDetail",
