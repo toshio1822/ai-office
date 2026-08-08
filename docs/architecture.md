@@ -845,3 +845,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 113 (future explicit caller action)
 ```
+
+## Phase 123: Progression To Approved Preparation Cycle Handoff Chain Reentry Continuation Boundary
+
+`route_progression_to_approved_preparation_cycle_handoff_chain_reentry_continuation_boundary()` accepts one exact Phase 122 result. An exact `WorkflowProgressionDecision(prepare_next_step)` with matching workflow, approval, employee, terminal history, and regular state/event targets is delegated exactly once to the public Phase 116 boundary in canonical `(result, workflow, approval, employee, state_path, events_path)` order and returns the exact `PreparedWorkflowStep` produced by that dependency. Exact `workflow_complete` and `PersistedExecutionOutcome(persisted_failure)` results are strict unchanged zero-call stops.
+
+Phase 123 performs one explicitly authorized progression-to-approved-preparation handoff through Phase 116. It does not call Phase 109 directly, start the prepared step, persist start state, execute a provider or tool, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Focused tests inject Phase 116 fakes only and make no real provider, network, paid API, or external tool calls.
+
+```text
+Phase 122
+prepare_next_step | workflow_complete | persisted_failure
+    ↓
+Phase 123 progression-to-approved-preparation cycle handoff chain reentry continuation boundary
+prepare_next_step + exact approval + exact employee
+    → Phase 116 exactly once in canonical six-argument order
+    → exact PreparedWorkflowStep
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 117 (future explicit caller action)
+```
