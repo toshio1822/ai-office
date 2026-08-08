@@ -852,6 +852,26 @@ Phase 113 (future explicit caller action)
 
 Phase 123 performs one explicitly authorized progression-to-approved-preparation handoff through Phase 116. It does not call Phase 109 directly, start the prepared step, persist start state, execute a provider or tool, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Focused tests inject Phase 116 fakes only and make no real provider, network, paid API, or external tool calls.
 
+## Phase 124: Prepared Step Start Cycle Handoff Chain Reentry Continuation Boundary
+
+`route_prepared_step_start_cycle_handoff_chain_reentry_continuation_boundary()` accepts one exact Phase 123 result. An exact `PreparedWorkflowStep` from the continuation path, with `step_index >= 3` and matching workflow, employee, predecessor terminal history, and regular state/event targets, is delegated exactly once to the public Phase 117 boundary in canonical `(result, workflow, employee, state_path, events_path)` order and returns its exact `PreparedStepExecutionStart`. Exact `WorkflowProgressionDecision(workflow_complete)` and `PersistedExecutionOutcome(persisted_failure)` results are strict unchanged zero-call stops.
+
+Phase 124 performs one explicitly authorized prepared-step start handoff through Phase 117. It does not call Phase 110 directly, persist prepared-start state, execute a provider or tool, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Dependency errors, malformed returns, and target mutation are classified safely with byte-for-byte compensation and no retry. Focused tests inject Phase 117 fakes only and make no real provider, network, paid API, or external tool calls.
+
+```text
+Phase 123
+PreparedWorkflowStep | workflow_complete | persisted_failure
+    ↓
+Phase 124 prepared-step start cycle handoff chain reentry continuation boundary
+PreparedWorkflowStep + exact employee
+    → Phase 117 exactly once in canonical five-argument order
+    → exact PreparedStepExecutionStart
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 118 (future explicit caller action)
+```
+
 ```text
 Phase 122
 prepare_next_step | workflow_complete | persisted_failure
