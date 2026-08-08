@@ -74,6 +74,10 @@ def test_public_signature_and_default_identity() -> None:
     parameters = list(signature.parameters.values())
     assert [p.name for p in parameters[:4]] == ["result", "workflow", "state_path", "events_path"]
     assert [p.kind for p in parameters[:4]] == [inspect.Parameter.POSITIONAL_OR_KEYWORD] * 4
+    assert all(
+        parameter.annotation is object
+        for parameter in parameters[:4]
+    )
     assert parameters[4].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters[4].name == "phase114_function"
     assert parameters[4].default is route_persisted_transition_outcome_classification_cycle_reentry_continuation_boundary
@@ -238,8 +242,9 @@ def test_valid_outcome_after_dependency_mutation_is_rejected_and_restored(
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
+@pytest.mark.parametrize("failed_targets", [{"state"}, {"events"}, {"state", "events"}])
 def test_valid_outcome_mutation_rollback_failure_attempts_both_targets_without_retry(
-    tmp_path: Path,
+    tmp_path: Path, failed_targets: set[str]
 ) -> None:
     state, events, result, workflow, before_state, before_events = _setup(tmp_path)
     expected = PersistedExecutionOutcome("persisted_success", "w", "two", 2, "b", None)
@@ -250,9 +255,12 @@ def test_valid_outcome_mutation_rollback_failure_attempts_both_targets_without_r
     def write(path: Path, data: bytes) -> int:
         if data == before_state:
             restoration_attempts.append("state")
-            raise OSError("state restore failed")
+            if "state" in failed_targets:
+                raise OSError("state restore failed")
         if data == before_events:
             restoration_attempts.append("events")
+            if "events" in failed_targets:
+                raise OSError("events restore failed")
         return original_write(path, data)
 
     def fake(*_: object) -> object:
