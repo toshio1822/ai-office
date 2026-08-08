@@ -780,6 +780,25 @@ Phase 114 (future explicit caller action)
 
 Phase 114 advances only one exact persisted terminal transition into one explicit persisted-outcome classification through Phase 107. It does not call Phase 100 directly or Phase 108, decide progression, prepare the next step, retry, automatically continue, finalize, schedule, loop, run in parallel, or add paid CLI/GUI behavior.
 
+## Phase 121: persisted-transition outcome classification cycle handoff reentry continuation boundary
+Phase 121 accepts exactly one Phase 120 `WorkflowExecutionPersistenceResult`, `workflow_complete` decision, or persisted failure. The persisted transition is validated against exact workflow, linkage, terminal state/history, target identity, and byte-count contracts, then delegated directly to the public Phase 114 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order, returning its exact matching `PersistedExecutionOutcome`. Workflow completion and persisted failure are strict read-only, zero-call, unchanged stop routes.
+
+Phase 121 performs one explicitly authorized persisted-transition classification handoff through Phase 114. It does not call Phase 107 directly, progress the workflow, prepare the next step, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Focused tests use injected Phase 114 fakes only and make no real provider, network, paid API, or external tool calls.
+
+```text
+Phase 120
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 121 persisted-transition outcome classification cycle handoff reentry continuation boundary
+WorkflowExecutionPersistenceResult
+    → Phase 114 exactly once in canonical four-argument order
+    → exact PersistedExecutionOutcome
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 115 (future explicit caller action)
+```
+
 ## Phase 115: Classified Persisted Outcome Progression Cycle Reentry Continuation Boundary
 
 `route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary()` advances exactly one classified persisted success from Phase 114 into one explicit progression decision by delegating directly to Phase 108 in canonical `(result, workflow, state_path, events_path)` order. It validates exact persisted-success, persisted-failure, and workflow-complete objects, exact workflow/step linkage, exact built-in field values, existing regular state/event `Path` targets, and strict terminal state/history before returning.
