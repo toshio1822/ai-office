@@ -282,6 +282,28 @@ def test_safe_dependency_error_restores_mutations_and_is_not_retried(tmp_path: P
     assert (state.read_bytes(), events.read_bytes()) == before
 
 
+def test_safe_dependency_error_without_mutation_preserves_identity_and_is_not_retried(tmp_path: Path) -> None:
+    result, definition, state, events = setup(tmp_path)
+    before = (state.read_bytes(), events.read_bytes())
+    calls = 0
+    safe_error = ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError(
+        "result_type"
+    )
+
+    def dependency(*args: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise safe_error
+
+    with pytest.raises(ClassifiedPersistedOutcomeProgressionCycleReentryContinuationError) as caught:
+        route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
+            result, definition, state, events, phase115_function=dependency
+        )
+    assert caught.value is safe_error
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
 @pytest.mark.parametrize("kind", ["unexpected", "malformed-return", "valid-return"])
 @pytest.mark.parametrize("mutation", ["state", "events", "both"])
 def test_unexpected_malformed_and_valid_dependency_mutations_restore_and_do_not_retry(tmp_path: Path, kind: str, mutation: str) -> None:
@@ -302,6 +324,26 @@ def test_unexpected_malformed_and_valid_dependency_mutations_restore_and_do_not_
     assert calls == 1
     assert (state.read_bytes(), events.read_bytes()) == before
     assert "secret" not in str(caught.value)
+
+
+def test_unexpected_dependency_error_without_mutation_is_sanitized_and_not_retried(tmp_path: Path) -> None:
+    result, definition, state, events = setup(tmp_path)
+    before = (state.read_bytes(), events.read_bytes())
+    calls = 0
+
+    def dependency(*args: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("secret")
+
+    with pytest.raises(ClassifiedPersistedOutcomeProgressionCycleHandoffReentryContinuationCompatibilityError) as caught:
+        route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
+            result, definition, state, events, phase115_function=dependency
+        )
+    assert classification(caught) == "dependency_error"
+    assert "secret" not in str(caught.value)
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 def test_malformed_dependency_return_without_mutation_is_progression_contract(tmp_path: Path) -> None:
