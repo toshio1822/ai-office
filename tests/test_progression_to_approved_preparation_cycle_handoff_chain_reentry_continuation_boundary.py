@@ -98,7 +98,17 @@ def test_implementation_uses_only_public_phase116_dependency() -> None:
 
 
 def test_public_signature_and_exact_six_argument_identity(tmp_path: Path) -> None:
-    assert tuple(inspect.signature(route_progression_to_approved_preparation_cycle_handoff_chain_reentry_continuation_boundary).parameters)[:6] == ("result", "workflow", "approval", "employee", "state_path", "events_path")
+    parameters = list(inspect.signature(
+        route_progression_to_approved_preparation_cycle_handoff_chain_reentry_continuation_boundary
+    ).parameters.values())
+    assert tuple(parameter.name for parameter in parameters[:6]) == (
+        "result", "workflow", "approval", "employee", "state_path", "events_path",
+    )
+    assert all(parameter.annotation is object for parameter in parameters[:6])
+    assert all(
+        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        for parameter in parameters[:6]
+    )
     state, events = targets(tmp_path)
     supplied = (decision(), wf(), approval(), employee(), state, events); received: list[object] = []
     def fake(*args: object) -> object:
@@ -298,7 +308,9 @@ def test_stop_routes_reject_extra_context_and_terminal_mismatch(tmp_path: Path) 
         call(replace(complete, current_step_id="second"), wf(), None, None, state, events)
 
 
-def test_terminal_prefix_duplicate_missing_reordered_and_unrelated_events(tmp_path: Path) -> None:
+def test_terminal_prefix_duplicate_missing_reordered_unrelated_malformed_and_extra_events(
+    tmp_path: Path,
+) -> None:
     state, events = targets(tmp_path, "succeeded", 3)
     original = events.read_text()
     lines = original.splitlines(keepends=True)
@@ -307,6 +319,8 @@ def test_terminal_prefix_duplicate_missing_reordered_and_unrelated_events(tmp_pa
         lines[:1],
         list(reversed(lines)),
         [lines[0].replace('"first"', '"other"', 1), lines[1]],
+        lines[:1] + ["{malformed}\n"] + lines[1:],
+        lines + [lines[0]],
     )
     complete = WorkflowProgressionDecision(
         "workflow_complete", "workflow", "third", 3, "three", None, None, None,
@@ -363,25 +377,31 @@ def _mutating_error_fake(state: Path, events: Path, target_kind: str, error: Bas
 @pytest.mark.parametrize("target_kind", ["unchanged", "state", "events", "both"])
 def test_safe_error_identity_after_each_mutation(tmp_path: Path, target_kind: str) -> None:
     state, events = targets(tmp_path)
+    before = (state.read_bytes(), events.read_bytes())
     safe = ProgressionToApprovedPreparationCycleHandoffReentryContinuationError("safe")
     with pytest.raises(ProgressionToApprovedPreparationCycleHandoffReentryContinuationError) as caught:
         call(decision(), wf(), approval(), employee(), state, events,
              phase116_function=_mutating_error_fake(state, events, target_kind, safe))
     assert caught.value is safe
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize("target_kind", ["unchanged", "state", "events", "both"])
 def test_unexpected_error_sanitized_after_each_mutation(tmp_path: Path, target_kind: str) -> None:
     state, events = targets(tmp_path)
+    before = (state.read_bytes(), events.read_bytes())
     fake = _mutating_error_fake(state, events, target_kind, RuntimeError("secret"))
     with pytest.raises(ProgressionToApprovedPreparationCycleHandoffChainReentryContinuationCompatibilityError) as caught:
         call(decision(), wf(), approval(), employee(), state, events, phase116_function=fake)
     assert caught.value.detail.classification == "dependency_error"
+    assert "secret" not in str(caught.value)
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize("target_kind", ["unchanged", "state", "events", "both"])
 def test_malformed_return_rejected_after_each_mutation(tmp_path: Path, target_kind: str) -> None:
     state, events = targets(tmp_path)
+    before = (state.read_bytes(), events.read_bytes())
     def fake(*_: object) -> object:
         if target_kind in ("state", "both"):
             state.open("wb").write(b"changed-state")
@@ -390,6 +410,7 @@ def test_malformed_return_rejected_after_each_mutation(tmp_path: Path, target_ki
         return object()
     with pytest.raises(ProgressionToApprovedPreparationCycleHandoffChainReentryContinuationCompatibilityError):
         call(decision(), wf(), approval(), employee(), state, events, phase116_function=fake)
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize("target_kind", ["state", "events", "both"])
