@@ -266,7 +266,7 @@ def _check_running_history(
     state_path: Path,
     events_path: Path,
 ) -> None:
-    if not 1 <= state.current_step_index <= len(workflow.steps):
+    if not 2 <= state.current_step_index <= len(workflow.steps):
         _fail("runtime_contract")
     step = workflow.steps[state.current_step_index - 1]
     prefix = tuple(item.id for item in workflow.steps[: state.current_step_index - 1])

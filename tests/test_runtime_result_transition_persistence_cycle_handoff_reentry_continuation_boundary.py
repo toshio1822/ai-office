@@ -26,6 +26,7 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
+    load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -60,33 +61,45 @@ def workflow() -> WorkflowDefinition:
     )
 
 
-def success() -> StepRuntimeExecutionSuccess:
+def step_one_success() -> StepRuntimeExecutionSuccess:
     return StepRuntimeExecutionSuccess(
-        "w",
-        "step",
-        1,
-        "e",
+        "w", "step", 1, "e",
         ModelInvocationSuccess("openai", "r", "q", "done", ("out",), "out"),
     )
 
 
-def failure() -> StepRuntimeExecutionFailure:
+def success() -> StepRuntimeExecutionSuccess:
+    return continuation_success()
+
+
+def continuation_success() -> StepRuntimeExecutionSuccess:
+    return StepRuntimeExecutionSuccess(
+        "w", "two", 2, "e",
+        ModelInvocationSuccess("openai", "r", "q", "done", ("out",), "out"),
+    )
+
+
+def step_one_failure() -> StepRuntimeExecutionFailure:
     return StepRuntimeExecutionFailure(
-        "w",
-        "step",
-        1,
-        "e",
+        "w", "step", 1, "e",
         ModelInvocationFailure("openai", "api_error", "safe", "q", 500, None, None),
     )
 
 
-def setup(tmp_path: Path, status: str = "running") -> tuple[Path, Path]:
+def failure() -> StepRuntimeExecutionFailure:
+    return continuation_failure()
+
+
+def continuation_failure() -> StepRuntimeExecutionFailure:
+    return StepRuntimeExecutionFailure(
+        "w", "two", 2, "e",
+        ModelInvocationFailure("openai", "api_error", "safe", "q", 500, None, None),
+    )
+
+
+def setup_one_step(tmp_path: Path, status: str = "running") -> tuple[Path, Path]:
     state = WorkflowExecutionState(
-        "w",
-        status,
-        "step",
-        1,
-        "e",
+        "w", status, "step", 1, "e",
         ("step",) if status == "succeeded" else (),
         None if status != "failed" else "api_error",
     )
@@ -97,21 +110,20 @@ def setup(tmp_path: Path, status: str = "running") -> tuple[Path, Path]:
     else:
         event = RuntimeStepEvent(
             "step_succeeded" if status == "succeeded" else "step_failed",
-            "w",
-            "step",
-            1,
-            "e",
-            "running",
-            status,
-            "openai",
+            "w", "step", 1, "e", "running", status, "openai",
             None if status == "succeeded" else "api_error",
-            "r" if status == "succeeded" else None,
-            "q",
+            "r" if status == "succeeded" else None, "q",
             "out" if status == "succeeded" else None,
             None if status == "succeeded" else "safe",
         )
         events_path.write_text(serialize_runtime_step_event_jsonl(event))
     return state_path, events_path
+
+
+def setup(tmp_path: Path, status: str = "running") -> tuple[Path, Path]:
+    if status == "running":
+        return setup_two_step_history(tmp_path, "valid")
+    return setup_one_step(tmp_path, status)
 
 
 def two_step_workflow() -> WorkflowDefinition:
@@ -150,21 +162,22 @@ def persist_fake(
 ) -> WorkflowExecutionPersistenceResult:
     invocation = result.invocation_result  # type: ignore[union-attr]
     ok = type(result) is StepRuntimeExecutionSuccess
+    current_state = load_workflow_execution_state(state)
     next_state = WorkflowExecutionState(
         "w",
         "succeeded" if ok else "failed",
-        "step",
-        1,
-        "e",
-        ("step",) if ok else (),
+        result.step_id,  # type: ignore[union-attr]
+        result.step_index,  # type: ignore[union-attr]
+        result.employee_id,  # type: ignore[union-attr]
+        current_state.completed_step_ids + ((result.step_id,) if ok else ()),  # type: ignore[union-attr]
         None if ok else invocation.category,
     )
     event = RuntimeStepEvent(
         "step_succeeded" if ok else "step_failed",
         "w",
-        "step",
-        1,
-        "e",
+        result.step_id,  # type: ignore[union-attr]
+        result.step_index,  # type: ignore[union-attr]
+        result.employee_id,  # type: ignore[union-attr]
         "running",
         next_state.status,
         "openai",
@@ -208,6 +221,10 @@ def test_public_signature_is_canonical_and_keyword_only_dependency() -> None:
         signature.parameters[name].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
         for name in ("result", "workflow", "state_path", "events_path")
     )
+    assert all(
+        signature.parameters[name].annotation is object
+        for name in ("result", "workflow", "state_path", "events_path")
+    )
     dependency = signature.parameters["phase113_function"]
     assert dependency.kind is inspect.Parameter.KEYWORD_ONLY
     from ai_office.engine.runtime_result_transition_persistence_cycle_reentry_continuation_boundary import (
@@ -217,16 +234,33 @@ def test_public_signature_is_canonical_and_keyword_only_dependency() -> None:
 def test_production_module_references_only_the_public_phase113_dependency() -> None:
     import ai_office.engine.runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary as module
     source = inspect.getsource(module)
-    assert "runtime_result_transition_persistence_cycle_reentry_continuation_boundary" in source
-    assert "executed_result_transition_persistence_dispatch_continuation_boundary" not in source
-    assert "phase99" not in source
-    assert "runtime_result_transition_persistence_cycle_reentry_continuation_boundary._" not in source
-@pytest.mark.parametrize("result", [success(), failure()])
+    assert (
+        "route_runtime_result_transition_persistence_cycle_reentry_continuation_boundary"
+        in source
+    )
+    assert "phase106" not in source.lower()
+    assert "runtime_result_transition_persistence_cycle_continuation_boundary" not in source
+    assert "._validate_" not in source
+    assert "._top" not in source
+    assert "._raise" not in source
+
+
+@pytest.mark.parametrize("result", [step_one_success(), step_one_failure()])
+def test_step_one_runtime_routes_reject_before_dependency(
+    tmp_path: Path, result: object
+) -> None:
+    state, events = setup_one_step(tmp_path)
+    with pytest.raises(
+        RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
+    ) as caught:
+        call(result, two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
+    assert caught.value.detail.classification == "runtime_contract"
+@pytest.mark.parametrize("result", [continuation_success(), continuation_failure()])
 def test_valid_routes_delegate_once_and_return_exact_dependency_object(
     tmp_path: Path, result: object
 ) -> None:
-    state, events = setup(tmp_path)
-    supplied_workflow = workflow()
+    state, events = setup_two_step_history(tmp_path, "valid")
+    supplied_workflow = two_step_workflow()
     calls: list[tuple[object, ...]] = []
     expected: object = None
 
@@ -309,7 +343,7 @@ def test_invalid_result_types_reject_before_dependency(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(value, workflow(), state, events, lambda *_: pytest.fail("called"))
+        call(value, two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == "result_type"
 
 
@@ -324,7 +358,7 @@ def test_runtime_subclasses_reject_before_dependency(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(value, workflow(), state, events, lambda *_: pytest.fail("called"))
+        call(value, two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == "result_type"
 
 
@@ -334,7 +368,6 @@ def test_runtime_subclasses_reject_before_dependency(
         ("workflow_id", "wrong"),
         ("step_id", "wrong"),
         ("step_index", True),
-        ("step_index", 2),
         ("employee_id", "wrong"),
     ],
 )
@@ -347,7 +380,7 @@ def test_runtime_result_fields_are_revalidated(
     ) as caught:
         call(
             replace(success(), **{field: value}),
-            workflow(),
+            two_step_workflow(),
             state,
             events,
             lambda *_: pytest.fail("called"),
@@ -365,7 +398,7 @@ def test_running_state_and_predecessor_history_are_revalidated(tmp_path: Path) -
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, lambda *_: pytest.fail("called"))
+        call(success(), two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == "runtime_contract"
 
 
@@ -405,7 +438,7 @@ def test_persistence_result_paths_and_byte_counts_are_exact(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
 
 
@@ -420,7 +453,7 @@ def test_positive_but_mismatched_byte_count_is_rejected(
         return replace(value, **{field: getattr(value, field) + delta})
 
     with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
 
 
@@ -438,7 +471,7 @@ def test_equal_but_nonidentical_persistence_path_is_rejected(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
 
 
@@ -471,7 +504,7 @@ def test_runtime_payload_fields_and_exact_types_are_revalidated(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(invalid, workflow(), state, events, lambda *_: pytest.fail("called"))
+        call(invalid, two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == "runtime_contract"
 
 
@@ -497,7 +530,7 @@ def test_extra_history_event_is_rejected_and_restored(tmp_path: Path) -> None:
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
     assert (state.read_bytes(), events.read_bytes()) == before
 
@@ -515,7 +548,7 @@ def test_extra_appended_event_bytes_are_rejected_and_restored(
         return value
 
     with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
     assert (state.read_bytes(), events.read_bytes()) == before
 
@@ -577,7 +610,7 @@ def test_top_level_and_target_contracts_reject_before_dependency(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, lambda *_: pytest.fail("called"))
+        call(success(), two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == (
         "state_target" if name == "state_path" else "event_target"
     )
@@ -594,7 +627,7 @@ def test_directory_target_is_rejected_before_dependency(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, lambda *_: pytest.fail("called"))
+        call(success(), two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == (
         "state_target" if target == "state" else "event_target"
     )
@@ -618,7 +651,7 @@ def test_target_oserror_is_classified_independently(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, lambda *_: pytest.fail("called"))
+        call(success(), two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == (
         "state_target" if target == "state" else "event_target"
     )
@@ -642,7 +675,7 @@ def test_malformed_persistence_return_is_rejected_and_restored(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
     assert (state.read_bytes(), events.read_bytes()) == before
 
@@ -658,7 +691,7 @@ def test_dependency_no_write_is_rejected_without_mutating_targets(tmp_path: Path
         return WorkflowExecutionPersistenceResult(state, events, 1, 1)
 
     with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
     assert calls == 1
     assert (state.read_bytes(), events.read_bytes()) == before
@@ -681,7 +714,7 @@ def test_invalid_transition_is_compensated(tmp_path: Path) -> None:
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
     assert (state.read_bytes(), events.read_bytes()) == before
 
@@ -693,7 +726,7 @@ def test_safe_error_identity_and_unexpected_error_sanitization(tmp_path: Path) -
         RuntimeResultTransitionPersistenceCycleReentryContinuationError
     ) as caught:
         call(
-            success(), workflow(), state, events, lambda *_: (_ for _ in ()).throw(safe)
+            success(), two_step_workflow(), state, events, lambda *_: (_ for _ in ()).throw(safe)
         )
     assert caught.value is safe
     with pytest.raises(
@@ -701,7 +734,7 @@ def test_safe_error_identity_and_unexpected_error_sanitization(tmp_path: Path) -
     ) as caught:
         call(
             success(),
-            workflow(),
+            two_step_workflow(),
             state,
             events,
             lambda *_: (_ for _ in ()).throw(RuntimeError("private")),
@@ -729,7 +762,7 @@ def test_safe_error_identity_is_preserved_after_successful_compensation(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleReentryContinuationError
     ) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value is safe
     assert (state.read_bytes(), events.read_bytes()) == before
 
@@ -753,7 +786,7 @@ def test_safe_error_compensates_each_mutation_shape_and_calls_once(
         raise safe
 
     with pytest.raises(RuntimeResultTransitionPersistenceCycleReentryContinuationError) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value is safe
     assert calls == 1
     assert (state.read_bytes(), events.read_bytes()) == before
@@ -770,7 +803,7 @@ def test_persistence_result_fields_require_exact_builtin_types(
         return replace(result, **{field: value})
 
     with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
 
 
@@ -794,7 +827,7 @@ def test_mutations_are_compensated_and_dependency_is_called_once(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ):
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
 
 
@@ -828,6 +861,6 @@ def test_rollback_failures_attempt_both_targets_and_do_not_retry(
     with pytest.raises(
         RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
-        call(success(), workflow(), state, events, dependency)
+        call(success(), two_step_workflow(), state, events, dependency)
     assert caught.value.detail.classification == "dependency_rollback"
     assert attempts.count(state) == 1 and attempts.count(events) == 1 and calls == 1
