@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from ai_office.definitions.employee import EmployeeDefinition
-from ai_office.definitions.workflow import WorkflowDefinition
+from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine import (
     NextStepPreparationApproval,
     PersistedExecutionOutcome,
@@ -42,6 +42,10 @@ class OutcomeChild(PersistedExecutionOutcome):
 
 
 class WorkflowChild(WorkflowDefinition):
+    pass
+
+
+class StepChild(WorkflowStepDefinition):
     pass
 
 
@@ -663,6 +667,38 @@ def test_workflow_step_attribute_substitute_is_rejected_before_phase123(
     )
 
 
+def test_workflow_step_subclass_is_rejected_before_phase123(tmp_path: Path) -> None:
+    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, *_ = setup(
+        tmp_path
+    )
+    original_step = supplied_workflow.steps[0]
+    subclass_step = StepChild.model_validate(original_step.model_dump())
+    supplied = supplied_workflow.model_copy(
+        update={"steps": [subclass_step, *supplied_workflow.steps[1:]]}
+    )
+    assert type(supplied) is WorkflowDefinition
+    assert type(supplied.steps[0]) is StepChild
+    assert supplied.steps[0].model_dump() == original_step.model_dump()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        decision,
+        supplied,
+        supplied_approval,
+        supplied_employee,
+        state,
+        events,
+        "workflow_definition",
+        forbidden,
+    )
+    assert calls == 0
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -1019,6 +1055,40 @@ def test_stop_routes_reject_non_none_approval_or_employee_before_phase123(
         assert calls == 0
 
 
+def test_persisted_failure_stop_rejects_non_none_approval_or_employee_before_phase123(
+    tmp_path: Path,
+) -> None:
+    supplied_workflow = workflow()
+    result = failure(supplied_workflow)
+    _, _, supplied_approval, supplied_employee, state, events, before_state, before_events = setup(
+        tmp_path, status="failed"
+    )
+    for extra_approval, extra_employee in (
+        (supplied_approval, None),
+        (None, supplied_employee),
+        (supplied_approval, supplied_employee),
+    ):
+        calls = 0
+
+        def forbidden(*_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return object()
+
+        assert_rejected(
+            result,
+            supplied_workflow,
+            extra_approval,
+            extra_employee,
+            state,
+            events,
+            "failure_contract",
+            forbidden,
+        )
+        assert calls == 0
+        assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 @pytest.mark.parametrize("bad", [object(), SimpleNamespace(decision="prepare_next_step")])
 def test_unsupported_progression_is_rejected_before_phase123(
     tmp_path: Path, bad: object
@@ -1160,6 +1230,40 @@ def test_unsupported_phase123_return_is_rejected_after_one_call(
 
 
 @pytest.mark.parametrize("mutation", ["state", "events", "both"])
+def test_malformed_dependency_return_target_mutation_is_compensated_without_retry(
+    tmp_path: Path, mutation: str
+) -> None:
+    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, before_state, before_events = setup(
+        tmp_path
+    )
+    exact = prepared(supplied_workflow, decision, supplied_employee)
+    malformed = SimpleNamespace(**exact.__dict__)
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        if mutation in {"state", "both"}:
+            state.write_bytes(b"mutated-state")
+        if mutation in {"events", "both"}:
+            events.write_bytes(b"mutated-events")
+        return malformed
+
+    assert_rejected(
+        decision,
+        supplied_workflow,
+        supplied_approval,
+        supplied_employee,
+        state,
+        events,
+        "prepared_contract",
+        dependency,
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("mutation", ["state", "events", "both"])
 def test_normal_dependency_target_mutation_is_compensated_without_retry(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -1190,6 +1294,43 @@ def test_normal_dependency_target_mutation_is_compensated_without_retry(
     )
     assert calls == 1
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("employee_instructions", "wrong"),
+        ("step_instructions", "wrong"),
+        ("model", "wrong"),
+    ],
+)
+def test_prepared_return_semantic_value_mismatch_is_rejected_after_one_call(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, *_ = setup(
+        tmp_path
+    )
+    bad = replace(
+        prepared(supplied_workflow, decision, supplied_employee), **{field: value}
+    )
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return bad
+
+    assert_rejected(
+        decision,
+        supplied_workflow,
+        supplied_approval,
+        supplied_employee,
+        state,
+        events,
+        "prepared_contract",
+        dependency,
+    )
+    assert calls == 1
 
 
 @pytest.mark.parametrize("mutation", ["unchanged", "state", "events", "both"])
