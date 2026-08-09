@@ -945,3 +945,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 121 (future explicit caller action)
 ```
+
+## Phase 128: Persisted Transition Outcome Classification Cycle Handoff Chain Reentry Continuation Boundary
+
+`route_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary()` accepts one exact Phase 127 `WorkflowExecutionPersistenceResult`, `WorkflowProgressionDecision(workflow_complete)`, or `PersistedExecutionOutcome(persisted_failure)`. The persisted-transition route revalidates exact workflow and step models, regular targets, supplied target identity, positive exact byte counts, terminal state/history, current step index `>= 3`, succeeded predecessor history, and exact terminal event linkage. It then delegates directly to the public Phase 121 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order with supplied-object identity and returns the exact valid `PersistedExecutionOutcome`. Phase 121 is classification-only, so valid execution leaves both targets byte-for-byte unchanged.
+
+Exact workflow completion and persisted failure are strict unchanged zero-call stop routes. Phase 128 is one explicitly authorized persisted-transition outcome-classification handoff through Phase 121. It does not call Phase 114 directly, progress the workflow, prepare the next step, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Safe dependency errors preserve identity after successful compensation; unexpected errors, malformed outcomes, and target mutation are classified detail-safely without retry, and restoration failure is `dependency_rollback`. Focused tests inject Phase 121 fakes only and make no real provider, network, paid API, external tool, or real transport calls.
+
+```text
+Phase 127
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 128 persisted-transition outcome classification cycle handoff chain reentry continuation boundary
+WorkflowExecutionPersistenceResult
+    → Phase 121 exactly once in canonical four-argument order
+    → exact PersistedExecutionOutcome
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 122 (future explicit caller action)
+```

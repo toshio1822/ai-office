@@ -1109,3 +1109,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 121 (future explicit caller action)
 ```
+
+## Persisted Transition Outcome Classification Cycle Handoff Chain Reentry Continuation Boundary（Phase 128）
+
+`route_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary()`は、Phase 127から受け取った正確な`WorkflowExecutionPersistenceResult`、またはstrict stop用の`WorkflowProgressionDecision(workflow_complete)` / `PersistedExecutionOutcome(persisted_failure)`を受けるread-only boundaryです。継続経路では、workflow、regular state/event targets、target identity、positive built-in byte counts、current step index（`>= 3`）、terminal state/history、predecessor history、terminal eventのworkflow/step/employee/provider/request/result/failure linkageを再検証し、既存の公開Phase 121 boundaryへcanonical four-argument order`(result, workflow, state_path, events_path)`と同一object identityで正確に一度だけ委譲します。Phase 121が返す正確な`PersistedExecutionOutcome`を同一objectで返し、正常経路ではstate/eventsをbyte-for-byte不変に保ちます。
+
+`workflow_complete`と`persisted_failure`はstrict terminal state/historyとtarget不変性を検証してPhase 121を呼ばず、同じobjectを返すzero-call stop routeです。Phase 128はPhase 121を通る1回の明示的に許可されたpersisted-transition outcome-classification handoffだけを行い、Phase 114を直接参照・呼び出しせず、workflow progression、next-step preparation、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。依存のsafe errorはidentityを保持し、unexpected error、不正な返却、target mutationはdetail-safeに分類して可能な限り両targetをbyte-for-byteに補償復元します。Focused testsはinjected Phase 121 fakeのみを使用し、real provider、network、有料API、external tool、real transportを呼びません。
+
+```text
+Phase 127
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 128 persisted-transition outcome classification cycle handoff chain reentry continuation boundary
+WorkflowExecutionPersistenceResult
+    → Phase 121 exactly once in canonical four-argument order
+    → exact PersistedExecutionOutcome
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 122 (future explicit caller action)
+```
