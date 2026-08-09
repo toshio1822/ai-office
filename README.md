@@ -1129,3 +1129,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 122 (future explicit caller action)
 ```
+
+## Classified Persisted-Outcome Progression Cycle Handoff Chain Reentry Continuation Boundary（Phase 129）
+
+`route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary()`は、Phase 128から受け取った正確な`PersistedExecutionOutcome(persisted_success)`、またはstrict stop用の`PersistedExecutionOutcome(persisted_failure)` / `WorkflowProgressionDecision(workflow_complete)`を受けるread-only boundaryです。`persisted_success`では、workflow、regular state/event targets、current step index（`>= 3`）、succeeded terminal state/history、predecessor history、terminal event、workflow/current-step/employee linkageを再検証し、公開Phase 122 boundaryへcanonical four-argument order`(result, workflow, state_path, events_path)`と同一object identityで正確に一度だけ委譲します。
+
+中間stepではPhase 122の正確な`prepare_next_step`とnext-step id/index/employee、`reason == "next_step_available"`を検証し、final stepでは正確な`workflow_complete`、next fieldsの`None`、`reason == "last_step_succeeded"`を検証して同一objectを返します。`persisted_failure`と`workflow_complete`はstrict terminal state/historyとtarget不変性を確認してPhase 122を呼ばず、同じobjectを返すzero-call stop routeです。Phase 129はPhase 122を通る1回の明示的に許可されたclassified-persisted-success progression handoffだけを行い、Phase 115を直接参照・呼び出しせず、next-step preparation、prepared-step start、start-state persistence、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。依存のsafe errorはidentityを保持し、unexpected error、不正な返却、target mutationはdetail-safeに分類して可能な限り両targetをbyte-for-byteに補償復元します。Focused testsはinjected Phase 122 fakeのみを使用し、real provider、network、有料API、external tool、real transportを呼びません。
+
+```text
+Phase 128
+persisted_success | persisted_failure | workflow_complete
+    ↓
+Phase 129 classified persisted-outcome progression cycle handoff chain reentry continuation boundary
+persisted_success
+    → Phase 122 exactly once in canonical four-argument order
+    → prepare_next_step | workflow_complete
+persisted_failure | workflow_complete
+    → unchanged zero-call stop
+    ↓
+Phase 123 (future explicit caller action)
+```
