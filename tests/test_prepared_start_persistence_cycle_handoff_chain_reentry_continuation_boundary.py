@@ -215,6 +215,7 @@ def test_prepared_route_calls_phase118_once_in_canonical_order_and_preserves_ide
     tmp_path: Path,
 ) -> None:
     state, events = targets(tmp_path)
+    before_events = events.read_bytes()
     supplied = (start(), workflow(), employee(), state, events)
     received: list[object] = []
     expected_state = serialize_workflow_execution_state_json(supplied[0].running_state).encode()
@@ -231,7 +232,7 @@ def test_prepared_route_calls_phase118_once_in_canonical_order_and_preserves_ide
     assert actual is expected
     assert len(received) == 5
     assert all(actual_arg is supplied_arg for actual_arg, supplied_arg in zip(received, supplied, strict=True))
-    assert events.read_bytes() == targets(tmp_path / "unused")[1].read_bytes() if False else events.read_bytes()
+    assert events.read_bytes() == before_events
 
 
 @pytest.mark.parametrize("index", [1, 2])
@@ -389,6 +390,70 @@ def test_malformed_dependency_returns_are_rejected_and_compensated(
     assert (state.read_bytes(), events.read_bytes()) == before
 
 
+def test_persistence_result_positive_count_mismatch_is_rejected_and_compensated(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    expected_state = serialize_workflow_execution_state_json(start().running_state).encode()
+
+    def fake(*_: object) -> object:
+        state.write_bytes(expected_state)
+        return RunningStatePersistenceResult(len(expected_state) + 1)
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "persistence_contract")
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_mismatched_valid_persisted_state_is_rejected_and_compensated(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    mismatched = WorkflowExecutionState(
+        "workflow", "running", "fourth", 4, "four", ("first", "second", "third"), None
+    )
+    mismatched_bytes = serialize_workflow_execution_state_json(mismatched).encode()
+
+    def fake(*_: object) -> object:
+        state.write_bytes(mismatched_bytes)
+        return RunningStatePersistenceResult(len(mismatched_bytes))
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "persistence_contract")
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_persistence_result_subclass_is_rejected_and_compensated(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    expected_state = serialize_workflow_execution_state_json(start().running_state).encode()
+
+    class ResultChild(RunningStatePersistenceResult):
+        pass
+
+    def fake(*_: object) -> object:
+        state.write_bytes(expected_state)
+        return ResultChild(len(expected_state))
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "persistence_contract")
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_attribute_compatible_persistence_result_is_rejected_and_compensated(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    expected_state = serialize_workflow_execution_state_json(start().running_state).encode()
+
+    def fake(*_: object) -> object:
+        state.write_bytes(expected_state)
+        return SimpleNamespace(state_bytes_written=len(expected_state))
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "persistence_contract")
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
 def test_event_mutation_and_mismatched_state_are_rejected(tmp_path: Path) -> None:
     state, events = targets(tmp_path)
     before = state.read_bytes(), events.read_bytes()
@@ -427,10 +492,13 @@ def test_safe_and_unexpected_phase118_errors_are_compensated_without_retry(
         assert calls == 1
         assert (state.read_bytes(), events.read_bytes()) == before
 
+        calls = 0
         state, events = targets(tmp_path / f"unexpected-{mutation}")
         before = state.read_bytes(), events.read_bytes()
 
         def unexpected(*_: object) -> object:
+            nonlocal calls
+            calls += 1
             if mutation in {"state", "both"}:
                 state.write_bytes(b"changed-state")
             if mutation in {"event", "both"}:
@@ -441,6 +509,7 @@ def test_safe_and_unexpected_phase118_errors_are_compensated_without_retry(
             invoke(start(), employee(), state, events, unexpected)
         assert caught.value.detail.classification == "dependency_error"
         assert "secret detail" not in str(caught.value)
+        assert calls == 1
         assert (state.read_bytes(), events.read_bytes()) == before
 
 
@@ -451,8 +520,11 @@ def test_rollback_failure_attempts_both_targets_and_is_not_retried(
     state, events = targets(tmp_path)
     original = Path.write_bytes
     attempts: list[Path] = []
+    calls = 0
 
     def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
         original(state, b"changed-state")
         original(events, b"changed-event")
         return object()
@@ -470,12 +542,17 @@ def test_rollback_failure_attempts_both_targets_and_is_not_retried(
     with pytest.raises(PreparedStartPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
         invoke(start(), employee(), state, events, fake)
     assert caught.value.detail.classification == "dependency_rollback"
+    assert calls == 1
     assert attempts == [state, events]
 
 
 @pytest.mark.parametrize("target_name", ["state", "events"])
+@pytest.mark.parametrize("operation", ["is_file", "read_bytes"])
 def test_missing_nonregular_and_target_oserror_inputs_are_classified(
-    tmp_path: Path, target_name: str, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    target_name: str,
+    operation: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state, events = targets(tmp_path)
     target = state if target_name == "state" else events
@@ -484,13 +561,58 @@ def test_missing_nonregular_and_target_oserror_inputs_are_classified(
     target.mkdir()
     reject(lambda: invoke(start(), employee(), state, events), "state_target" if target_name == "state" else "event_target")
 
-    state, events = targets(tmp_path / f"oserror-{target_name}")
-    original = Path.is_file
+    state, events = targets(tmp_path / f"oserror-{operation}-{target_name}")
+    original = getattr(Path, operation)
 
-    def failing(path: Path) -> bool:
+    def failing(path: Path, *args: object, **kwargs: object) -> object:
         if path == (state if target_name == "state" else events):
             raise OSError("target")
-        return original(path)
+        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "is_file", failing)
+    monkeypatch.setattr(Path, operation, failing)
     reject(lambda: invoke(start(), employee(), state, events), "state_target" if target_name == "state" else "event_target")
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "missing", "reordered", "unrelated", "malformed", "extra"])
+def test_predecessor_history_variants_are_rejected_before_phase118(
+    tmp_path: Path, mutation: str
+) -> None:
+    state, events = targets(tmp_path)
+    lines = events.read_bytes().splitlines(keepends=True)
+    if mutation == "duplicate":
+        mutated = b"".join([lines[0], lines[0]])
+    elif mutation == "missing":
+        mutated = lines[0]
+    elif mutation == "reordered":
+        mutated = b"".join(reversed(lines))
+    elif mutation == "unrelated":
+        unrelated = RuntimeStepEvent(
+            "step_succeeded",
+            "workflow",
+            "unrelated",
+            99,
+            "unrelated-employee",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response",
+            "request",
+            "output",
+            None,
+        )
+        mutated = lines[0] + serialize_runtime_step_event_jsonl(unrelated).encode()
+    elif mutation == "malformed":
+        mutated = b"not-json\n"
+    else:
+        mutated = b"".join(lines + [lines[0]])
+    events.write_bytes(mutated)
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "terminal_contract")
+    assert calls == 0
