@@ -1067,5 +1067,25 @@ PreparedStepExecutionStart + exact employee
 workflow_complete | persisted_failure
     → unchanged zero-call stop
     ↓
-Phase 119 (future explicit caller action)
+Phase 126 (future explicit caller action)
+```
+
+## Persisted Running Execution Cycle Handoff Chain Reentry Continuation Boundary（Phase 126）
+
+`route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary()`は、正確なPhase 125の`RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるread-only handoff boundaryです。継続経路（`current_step_index >= 3`）では、matchingする`PreparedStepExecutionStart`、workflow、employee、regular state/event targets、resolved tools、credential、approval、transportを再検証し、既存の公開Phase 119 boundaryへcanonical ten-argument order`(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`で正確に一度だけ委譲します。Phase 119の正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を同じobjectで返します。supplied object identityを維持し、retryは行いません。
+
+`workflow_complete`と`persisted_failure`は実行専用入力をすべて`None`にし、strict terminal state/historyとtargetsのbyte-for-byte不変性を確認して、Phase 119を呼ばずに同じobjectを返すzero-call stop routeです。Phase 126は1回の明示的に許可されたpersisted-running execution handoffだけを行い、Phase 112を直接参照・呼び出しせず、runtime resultの永続化、persisted outcomeの分類、workflow progression、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。依存のsafe errorはidentityを保持し、unexpected error、不正な返却、target mutationはdetail-safeに分類して可能な限り両targetをbyte-for-byteに補償復元します。focused testsはinjected Phase 119 fakeのみを使用し、real provider、network、有料API、external tool、real transportを呼びません。
+
+```text
+Phase 125
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 126 persisted-running execution cycle handoff chain reentry continuation boundary
+RunningStatePersistenceResult + exact PreparedStepExecutionStart + exact execution inputs
+    → Phase 119 exactly once in canonical ten-argument order
+    → exact StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 120 (future explicit caller action)
 ```
