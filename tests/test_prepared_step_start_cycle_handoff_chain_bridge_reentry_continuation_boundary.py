@@ -473,6 +473,115 @@ def test_stop_routes_reject_non_none_employee_with_zero_calls(
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
+@pytest.mark.parametrize("route", ["completion", "failure"])
+def test_stop_route_result_subclasses_are_zero_call_result_type_rejections(
+    tmp_path: Path, route: str
+) -> None:
+    supplied_workflow = workflow()
+    if route == "completion":
+        exact = completion(supplied_workflow)
+        result: object = DecisionChild(
+            decision=exact.decision,
+            workflow_id=exact.workflow_id,
+            current_step_id=exact.current_step_id,
+            current_step_index=exact.current_step_index,
+            current_employee_id=exact.current_employee_id,
+            next_step_id=exact.next_step_id,
+            next_step_index=exact.next_step_index,
+            next_employee_id=exact.next_employee_id,
+            reason=exact.reason,
+        )
+        state, events, before_state, before_events = targets(
+            tmp_path, index=len(supplied_workflow.steps)
+        )
+    else:
+        exact = failure(supplied_workflow)
+        result = OutcomeChild(
+            outcome=exact.outcome,
+            workflow_id=exact.workflow_id,
+            current_step_id=exact.current_step_id,
+            current_step_index=exact.current_step_index,
+            current_employee_id=exact.current_employee_id,
+            failure_category=exact.failure_category,
+        )
+        state, events, before_state, before_events = targets(
+            tmp_path, status="failed", index=3
+        )
+    assert type(result) is not type(exact)
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        None,
+        state,
+        events,
+        "result_type",
+        forbidden,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("route", ["completion", "failure"])
+def test_stop_route_attribute_compatible_substitutes_are_zero_call_result_type_rejections(
+    tmp_path: Path, route: str
+) -> None:
+    supplied_workflow = workflow()
+    if route == "completion":
+        exact = completion(supplied_workflow)
+        result: object = SimpleNamespace(
+            decision=exact.decision,
+            workflow_id=exact.workflow_id,
+            current_step_id=exact.current_step_id,
+            current_step_index=exact.current_step_index,
+            current_employee_id=exact.current_employee_id,
+            next_step_id=exact.next_step_id,
+            next_step_index=exact.next_step_index,
+            next_employee_id=exact.next_employee_id,
+            reason=exact.reason,
+        )
+        state, events, before_state, before_events = targets(
+            tmp_path, index=len(supplied_workflow.steps)
+        )
+    else:
+        exact = failure(supplied_workflow)
+        result = SimpleNamespace(
+            outcome=exact.outcome,
+            workflow_id=exact.workflow_id,
+            current_step_id=exact.current_step_id,
+            current_step_index=exact.current_step_index,
+            current_employee_id=exact.current_employee_id,
+            failure_category=exact.failure_category,
+        )
+        state, events, before_state, before_events = targets(
+            tmp_path, status="failed", index=3
+        )
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        None,
+        state,
+        events,
+        "result_type",
+        forbidden,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -617,8 +726,11 @@ def test_workflow_step_subclass_and_attribute_substitute_are_rejected(
         ("step_index", 3),
         ("employee_id", "other"),
         ("employee_instructions", 4),
+        ("employee_instructions", "wrong"),
         ("step_instructions", 4),
+        ("step_instructions", "wrong"),
         ("model", 4),
+        ("model", "wrong"),
         ("allowed_tool_names", ["tool-one", "tool-two"]),
         ("allowed_tool_names", ("tool-one", "other")),
     ],
@@ -675,6 +787,39 @@ def test_employee_linkage_and_exact_field_matrix(
         "employee_contract",
         lambda *_: pytest.fail("Phase 124 was called"),
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("instructions", "wrong"),
+        ("model", "wrong"),
+        ("allowed_tools", ["tool-one", "wrong-tool"]),
+    ],
+)
+def test_employee_semantic_linkage_mismatches_are_rejected_before_phase124(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events, before_state, before_events = targets(tmp_path)
+    bad_employee = employee().model_copy(update={field: value})
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        prepared(),
+        workflow(),
+        bad_employee,
+        state,
+        events,
+        "prepared_step_contract",
+        forbidden,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("provider", ["other", 4])
@@ -996,13 +1141,77 @@ def test_nested_start_subclasses_are_rejected_after_one_call(
     assert calls == 1
 
 
+def test_top_level_start_subclass_is_rejected_after_one_call(
+    tmp_path: Path,
+) -> None:
+    supplied_workflow = workflow()
+    value = prepared()
+    expected = start_for(value, supplied_workflow)
+    bad = StartChild(expected.request, expected.running_state)
+    assert type(bad) is not PreparedStepExecutionStart
+    state, events, before_state, before_events = targets(tmp_path)
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return bad
+
+    assert_rejected(
+        value,
+        supplied_workflow,
+        employee(),
+        state,
+        events,
+        "start_contract",
+        fake,
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_top_level_attribute_compatible_start_substitute_is_rejected_after_one_call(
+    tmp_path: Path,
+) -> None:
+    supplied_workflow = workflow()
+    value = prepared()
+    expected = start_for(value, supplied_workflow)
+    bad = SimpleNamespace(
+        request=expected.request,
+        running_state=expected.running_state,
+    )
+    assert bad.request is expected.request
+    assert bad.running_state is expected.running_state
+    state, events, before_state, before_events = targets(tmp_path)
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return bad
+
+    assert_rejected(
+        value,
+        supplied_workflow,
+        employee(),
+        state,
+        events,
+        "start_contract",
+        fake,
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 @pytest.mark.parametrize(
     ("nested", "field", "value"),
     [
         ("request", "model", 4),
+        ("request", "model", "wrong-model"),
         ("request", "system_instructions", "wrong"),
         ("request", "task_instructions", "wrong"),
         ("request", "allowed_tools", ["tool-one", "tool-two"]),
+        ("request", "allowed_tools", ("tool-one", "wrong-tool")),
         ("request", "allowed_tools", ("tool-one", IntChild(2))),
         ("running", "workflow_id", "other"),
         ("running", "status", "succeeded"),
@@ -1011,6 +1220,7 @@ def test_nested_start_subclasses_are_rejected_after_one_call(
         ("running", "current_step_index", IntChild(4)),
         ("running", "current_employee_id", "other"),
         ("running", "completed_step_ids", ["one", "two", "three"]),
+        ("running", "completed_step_ids", ("one", "two", "wrong")),
         ("running", "last_failure_category", "api_error"),
     ],
 )
