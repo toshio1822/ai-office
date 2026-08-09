@@ -268,7 +268,16 @@ def _check_terminal(
         result.failure_category if type(result) is PersistedExecutionOutcome else None
     )
     if not _valid_terminal_history(
-        state, history, workflow, result, expected_status, expected_failure
+        state,
+        history,
+        workflow,
+        result,
+        expected_status,
+        expected_failure,
+        require_openai_provider=(
+            type(result) is PersistedExecutionOutcome
+            and result.outcome == "persisted_success"
+        ),
     ):
         _fail("terminal_contract")
 
@@ -280,6 +289,7 @@ def _valid_terminal_history(
     result: PersistedExecutionOutcome | WorkflowProgressionDecision,
     expected_status: Literal["succeeded", "failed"],
     expected_failure: object,
+    require_openai_provider: bool,
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
         return False
@@ -313,7 +323,7 @@ def _valid_terminal_history(
         if not _valid_event_shape(event) or not _valid_predecessor(event, step, position, state):
             return False
     return _valid_event_shape(history[-1]) and _valid_terminal_event(
-        history[-1], state, expected_failure
+        history[-1], state, expected_failure, require_openai_provider
     )
 
 
@@ -389,6 +399,7 @@ def _valid_terminal_event(
     event: RuntimeStepEvent,
     state: WorkflowExecutionState,
     expected_failure: object,
+    require_openai_provider: bool,
 ) -> bool:
     base = (
         event.workflow_id == state.workflow_id
@@ -402,6 +413,7 @@ def _valid_terminal_event(
             base
             and event.event_type == "step_succeeded"
             and event.next_status == "succeeded"
+            and (not require_openai_provider or event.provider == "openai")
             and expected_failure is None
             and event.failure_category is None
             and _nonempty_string(event.response_id)

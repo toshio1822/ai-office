@@ -370,6 +370,14 @@ def test_stop_routes_return_exact_identity_and_make_zero_phase122_calls(
     [
         object(),
         SimpleNamespace(outcome="persisted_success"),
+        SimpleNamespace(
+            outcome="persisted_success",
+            workflow_id="w",
+            current_step_id="three",
+            current_step_index=3,
+            current_employee_id="c",
+            failure_category=None,
+        ),
         OutcomeChild("persisted_success", "w", "three", 3, "c", None),
         DecisionChild(
             "workflow_complete", "w", "four", 4, "d", None, None, None, "last_step_succeeded"
@@ -495,7 +503,15 @@ def test_workflow_complete_stop_fields_are_strict_and_zero_call(
     ("supplied", "expected"),
     [
         (WorkflowChild.model_validate(workflow().model_dump()), "workflow_definition"),
-        (SimpleNamespace(id="w", name="W", description="D", steps=[]), "workflow_definition"),
+        (
+            SimpleNamespace(
+                id="w",
+                name="W",
+                description="D",
+                steps=workflow().steps,
+            ),
+            "workflow_definition",
+        ),
     ],
 )
 def test_workflow_subclass_and_attribute_substitute_are_rejected(
@@ -503,6 +519,27 @@ def test_workflow_subclass_and_attribute_substitute_are_rejected(
 ) -> None:
     result, _, state, events, *_ = setup(tmp_path)
     assert_rejected(result, supplied, state, events, expected, lambda *_: object())
+
+
+def test_workflow_step_attribute_substitute_is_rejected_before_phase122(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup(tmp_path)
+    substitute = SimpleNamespace(
+        id="one", name="One", employee="a", instructions="one"
+    )
+    supplied = supplied_workflow.model_copy(
+        update={"steps": [substitute, *supplied_workflow.steps[1:]]}
+    )
+    assert type(supplied) is WorkflowDefinition
+    assert_rejected(
+        result,
+        supplied,
+        state,
+        events,
+        "workflow_definition",
+        lambda *_: pytest.fail("called"),
+    )
 
 
 @pytest.mark.parametrize("target", ["state", "events"])
@@ -615,6 +652,7 @@ def test_predecessor_and_terminal_history_matrix_is_rejected_before_phase122(
         {"step_index": 4},
         {"employee_id": "other"},
         {"provider": 4},
+        {"provider": "other"},
         {"request_id": 4},
         {"request_id": ""},
         {"response_id": None},
@@ -720,6 +758,17 @@ def test_exact_phase122_decisions_are_accepted_by_identity(
     [
         object(),
         SimpleNamespace(decision="prepare_next_step"),
+        SimpleNamespace(
+            decision="prepare_next_step",
+            workflow_id="w",
+            current_step_id="three",
+            current_step_index=3,
+            current_employee_id="c",
+            next_step_id="four",
+            next_step_index=4,
+            next_employee_id="d",
+            reason="next_step_available",
+        ),
         DecisionChild(
             "prepare_next_step", "w", "three", 3, "c", "four", 4, "d", "next_step_available"
         ),
@@ -753,6 +802,8 @@ def test_phase122_return_must_be_exact_supported_progression_decision(
         ("current_employee_id", "other"),
         ("next_step_id", "wrong"),
         ("next_step_index", 5),
+        ("next_step_index", True),
+        ("next_step_index", IntChild(4)),
         ("next_employee_id", "wrong"),
         ("reason", "wrong"),
     ],
