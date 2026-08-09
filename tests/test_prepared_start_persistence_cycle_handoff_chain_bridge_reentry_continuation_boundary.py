@@ -23,8 +23,17 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_reentry_con
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_reentry_continuation_boundary import (
     route_prepared_start_persistence_cycle_handoff_chain_reentry_continuation_boundary as phase125_route,
 )
-from ai_office.invocation import ModelInvocationRequest
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.invocation import (
+    ModelInvocationFailure,
+    ModelInvocationRequest,
+    ModelInvocationSuccess,
+)
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    StepRuntimeExecutionFailure,
+    StepRuntimeExecutionSuccess,
+    WorkflowExecutionState,
+)
 from ai_office.storage import (
     RunningStatePersistenceResult,
     serialize_runtime_step_event_jsonl,
@@ -307,6 +316,68 @@ def test_unsupported_direct_results_are_rejected_before_phase125(
     assert calls == 0
 
 
+def test_prepared_start_fully_attribute_compatible_substitute_is_zero_call_rejected(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    supplied = start()
+    substitute = SimpleNamespace(
+        request=supplied.request,
+        running_state=supplied.running_state,
+    )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(substitute, employee(), state, events, fake), "result_type")
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        StepRuntimeExecutionSuccess(
+            "workflow",
+            "fourth",
+            4,
+            "four",
+            ModelInvocationSuccess(
+                "openai", "response", None, "completed", ("output",), "output"
+            ),
+        ),
+        StepRuntimeExecutionFailure(
+            "workflow",
+            "fourth",
+            4,
+            "four",
+            ModelInvocationFailure(
+                "openai", "api_error", "safe", None, None, None, None
+            ),
+        ),
+    ],
+)
+def test_direct_runtime_results_are_zero_call_rejected(
+    tmp_path: Path, bad: object
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(bad, employee(), state, events, fake), "result_type")
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
 def test_workflow_and_employee_attribute_compatible_substitutes_are_rejected(
     tmp_path: Path,
 ) -> None:
@@ -367,6 +438,125 @@ def test_subclass_models_are_rejected_before_phase125(tmp_path: Path) -> None:
     reject(lambda: invoke(start(), child_employee, state, events, fake), "employee_contract")
     reject(lambda: invoke(start(), employee(), state, events, fake, step_workflow), "workflow_definition")
     assert calls == 0
+
+
+def test_nested_request_subclass_and_fully_compatible_substitute_are_zero_call_rejected(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    supplied = start()
+
+    class RequestChild(ModelInvocationRequest):
+        pass
+
+    request_child = RequestChild(
+        supplied.request.model,
+        supplied.request.system_instructions,
+        supplied.request.task_instructions,
+        supplied.request.allowed_tools,
+    )
+    request_substitute = SimpleNamespace(
+        model=supplied.request.model,
+        system_instructions=supplied.request.system_instructions,
+        task_instructions=supplied.request.task_instructions,
+        allowed_tools=supplied.request.allowed_tools,
+    )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    for request in (request_child, request_substitute):
+        bad_start = PreparedStepExecutionStart(request, supplied.running_state)
+        reject(
+            lambda bad_start=bad_start: invoke(
+                bad_start, employee(), state, events, fake
+            ),
+            "start_contract",
+        )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_nested_running_state_subclass_and_fully_compatible_substitute_are_zero_call_rejected(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    supplied = start()
+
+    class StateChild(WorkflowExecutionState):
+        pass
+
+    valid_state = supplied.running_state
+    state_child = StateChild(
+        valid_state.workflow_id,
+        valid_state.status,
+        valid_state.current_step_id,
+        valid_state.current_step_index,
+        valid_state.current_employee_id,
+        valid_state.completed_step_ids,
+        valid_state.last_failure_category,
+    )
+    state_substitute = SimpleNamespace(
+        workflow_id=valid_state.workflow_id,
+        status=valid_state.status,
+        current_step_id=valid_state.current_step_id,
+        current_step_index=valid_state.current_step_index,
+        current_employee_id=valid_state.current_employee_id,
+        completed_step_ids=valid_state.completed_step_ids,
+        last_failure_category=valid_state.last_failure_category,
+    )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    for running_state in (state_child, state_substitute):
+        bad_start = PreparedStepExecutionStart(supplied.request, running_state)
+        reject(
+            lambda bad_start=bad_start: invoke(
+                bad_start, employee(), state, events, fake
+            ),
+            "start_contract",
+        )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_workflow_step_fully_attribute_compatible_substitute_is_zero_call_rejected(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    definition = workflow()
+    original_step = definition.steps[3]
+    definition.steps[3] = SimpleNamespace(
+        id=original_step.id,
+        name=original_step.name,
+        employee=original_step.employee,
+        instructions=original_step.instructions,
+    )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(
+            start(), employee(), state, events, fake, workflow_value=definition
+        ),
+        "workflow_definition",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize(
@@ -540,6 +730,60 @@ def test_stop_routes_are_identity_preserving_zero_call_stops(
         raise AssertionError("Phase 125 must not be called")
 
     assert invoke(result, None, state, events, fake) is result
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "result, status, index",
+    [(completion(), "succeeded", 4), (failure(), "failed", 2)],
+)
+def test_stop_routes_allow_other_terminal_provider_without_dependency_call(
+    tmp_path: Path, result: object, status: str, index: int
+) -> None:
+    state, events = targets(tmp_path, status, index, provider="other")
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 125 must not be called")
+
+    assert invoke(result, None, state, events, fake) is result
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "result_kind, bad_index",
+    [
+        ("completion", True),
+        ("completion", type("CompletionIndexChild", (int,), {})(4)),
+        ("failure", True),
+        ("failure", type("FailureIndexChild", (int,), {})(2)),
+    ],
+)
+def test_stop_routes_reject_bool_and_int_subclass_step_indices_before_phase125(
+    tmp_path: Path, result_kind: str, bad_index: object
+) -> None:
+    result = completion() if result_kind == "completion" else failure()
+    object.__setattr__(result, "current_step_index", bad_index)
+    status, index, classification = (
+        ("succeeded", 4, "completion_contract")
+        if result_kind == "completion"
+        else ("failed", 2, "failure_contract")
+    )
+    state, events = targets(tmp_path, status, index, provider="other")
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(result, None, state, events, fake), classification)
     assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == before
 
