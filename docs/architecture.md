@@ -965,3 +965,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 122 (future explicit caller action)
 ```
+
+## Phase 129: Classified Persisted-Outcome Progression Cycle Handoff Chain Reentry Continuation Boundary
+
+`route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary()` accepts one exact Phase 128 `PersistedExecutionOutcome(persisted_success)`, or one exact `PersistedExecutionOutcome(persisted_failure)` / `WorkflowProgressionDecision(workflow_complete)` stop value. The persisted-success route revalidates the exact workflow and step models, regular state/event targets, continuation index `>= 3`, succeeded terminal state/history, every succeeded predecessor, terminal event, and workflow/current-step/employee linkage before delegating directly to the public Phase 122 boundary exactly once in canonical `(result, workflow, state_path, events_path)` order with supplied-object identity.
+
+For an intermediate step, Phase 129 accepts only the exact `prepare_next_step` decision with the exact next-step id/index/employee and `reason == "next_step_available"`. For the final step, it accepts only the exact `workflow_complete` decision with all next-step fields `None` and `reason == "last_step_succeeded"`. Persisted failure and workflow completion are strict unchanged zero-call stop routes. Phase 129 is one explicitly authorized classified-persisted-success progression handoff through Phase 122; it does not call Phase 115 directly, prepare or start a step, persist start state, execute a provider/tool, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Safe Phase 122 errors preserve identity after successful compensation; unexpected errors, malformed decisions, and target mutation are classified detail-safely without retry, and restoration failure is `dependency_rollback`. Focused tests inject Phase 122 fakes only and make no real provider, network, paid API, external tool, or real transport calls.
+
+```text
+Phase 128
+persisted_success | persisted_failure | workflow_complete
+    ↓
+Phase 129 classified persisted-outcome progression cycle handoff chain reentry continuation boundary
+persisted_success
+    → Phase 122 exactly once in canonical four-argument order
+    → prepare_next_step | workflow_complete
+persisted_failure | workflow_complete
+    → unchanged zero-call stop
+    ↓
+Phase 123 (future explicit caller action)
+```

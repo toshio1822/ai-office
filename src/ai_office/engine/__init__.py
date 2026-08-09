@@ -90,6 +90,12 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_continuatio
     ClassifiedPersistedOutcomeProgressionCycleContinuationFailureDetail,
     route_classified_persisted_outcome_progression_cycle_continuation_boundary,
 )
+from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary import (  # noqa: E501
+    ClassifiedPersistedOutcomeProgressionCycleHandoffChainReentryContinuationCompatibilityError,
+    ClassifiedPersistedOutcomeProgressionCycleHandoffChainReentryContinuationError,
+    ClassifiedPersistedOutcomeProgressionCycleHandoffChainReentryContinuationFailureDetail,
+    route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary,
+)
 from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary import (  # noqa: E501
     ClassifiedPersistedOutcomeProgressionCycleHandoffReentryContinuationCompatibilityError,
     ClassifiedPersistedOutcomeProgressionCycleHandoffReentryContinuationError,
@@ -667,6 +673,10 @@ __all__ = [
     "ClassifiedPersistedOutcomeProgressionCycleContinuationError",
     "ClassifiedPersistedOutcomeProgressionCycleContinuationFailureDetail",
     "route_classified_persisted_outcome_progression_cycle_continuation_boundary",
+    "ClassifiedPersistedOutcomeProgressionCycleHandoffChainReentryContinuationCompatibilityError",
+    "ClassifiedPersistedOutcomeProgressionCycleHandoffChainReentryContinuationError",
+    "ClassifiedPersistedOutcomeProgressionCycleHandoffChainReentryContinuationFailureDetail",
+    "route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary",
     "ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError",
     "ClassifiedPersistedOutcomeProgressionCycleReentryContinuationError",
     "ClassifiedPersistedOutcomeProgressionCycleReentryContinuationFailureDetail",
