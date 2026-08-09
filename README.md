@@ -1149,3 +1149,23 @@ persisted_failure | workflow_complete
     ↓
 Phase 123 (future explicit caller action)
 ```
+
+## Progression-to-Approved Preparation Cycle Handoff Chain Bridge（Phase 130）
+
+`route_progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary()`は、Phase 129から受け取った正確な`WorkflowProgressionDecision(prepare_next_step)`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を検証するread-only bridgeです。prepare routeでは、workflow、step、approval、employee、regular state/event targets、`current_step_index >= 3`、exact terminal succeeded history、completed-step prefix、terminal eventのruntime linkageとprovider=`"openai"`を再検証し、既存の公開Phase 123 boundaryへ`(result, workflow, approval, employee, state_path, events_path)`のcanonical six-argument orderとobject identityで正確に一度だけ委譲します。Phase 123の正確な`PreparedWorkflowStep`だけを受け入れ、正常経路でもstate/eventsをbyte-for-byte不変に保ちます。
+
+`workflow_complete`と`persisted_failure`はapproval/employeeを`None`に限定し、Phase 129 stop-routeと同じprovider厳格性でterminal state/historyとtarget不変性を検証して、Phase 123を呼ばずに同じobjectを返すzero-call stop routeです。Phase 130はPhase 116を直接呼び出さず、prepared stepのstart、start-state persistence、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。safe dependency errorはidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類して可能な限り両targetをbyte-for-byteに補償復元します。復元失敗は`dependency_rollback`とし、retryは行いません。Focused testsはinjected Phase 123 fakeのみを使い、real provider、network、有料API、external tool、real transportを呼びません。
+
+```text
+Phase 129
+prepare_next_step | workflow_complete | persisted_failure
+    ↓
+Phase 130 progression-to-approved-preparation cycle handoff chain bridge reentry continuation boundary
+prepare_next_step + exact approval + exact employee
+    → Phase 123 exactly once in canonical six-argument order
+    → exact PreparedWorkflowStep
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 124 (future explicit caller action)
+```

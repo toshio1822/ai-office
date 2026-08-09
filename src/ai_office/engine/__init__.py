@@ -556,6 +556,12 @@ from ai_office.engine.progression_preparation_routing_reentry import (
     ProgressionPreparationRoutingFailureDetail,
     route_progression_preparation_reentry,
 )
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary import (  # noqa: E501
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError,
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationError,
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationFailureDetail,
+    route_progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary,
+)
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_reentry_continuation_boundary import (  # noqa: E501
     ProgressionToApprovedPreparationCycleHandoffChainReentryContinuationCompatibilityError,
     ProgressionToApprovedPreparationCycleHandoffChainReentryContinuationError,
@@ -688,6 +694,10 @@ __all__ = [
     "ProgressionToApprovedPreparationCycleHandoffReentryContinuationCompatibilityError",
     "ProgressionToApprovedPreparationCycleHandoffReentryContinuationError",
     "ProgressionToApprovedPreparationCycleHandoffReentryContinuationFailureDetail",
+    "ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError",
+    "ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationError",
+    "ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationFailureDetail",
+    "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary",
     "ProgressionToApprovedPreparationCycleReentryContinuationCompatibilityError",
     "ProgressionToApprovedPreparationCycleReentryContinuationError",
     "ProgressionToApprovedPreparationCycleReentryContinuationFailureDetail",

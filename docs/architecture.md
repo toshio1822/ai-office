@@ -985,3 +985,23 @@ persisted_failure | workflow_complete
     ↓
 Phase 123 (future explicit caller action)
 ```
+
+## Phase 130: Progression-to-Approved Preparation Cycle Handoff Chain Bridge
+
+Phase 130は、Phase 129から受け取った正確な`WorkflowProgressionDecision(prepare_next_step)`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を検証するread-only bridgeである。prepare routeでは、exact workflow/step/approval/employee、regular state/event targets、`current_step_index >= 3`、current/next linkage、approval linkage、strict succeeded terminal state/history、completed-step prefix、terminal eventのruntime linkageを検証し、terminal providerはexact built-in `str == "openai"`を要求する。検証後、既存の公開Phase 123 `route_progression_to_approved_preparation_cycle_handoff_chain_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, approval, employee, state_path, events_path)`のcanonical six-argument orderで正確に一度だけ委譲し、exact valid `PreparedWorkflowStep`を返す。
+
+`workflow_complete`と`persisted_failure`はapproval/employeeが`None`であり、Phase 129 stop routeより不必要に厳格なprovider条件を追加しないことを確認したうえで、Phase 123を呼ばず同一objectを返すzero-call stop routeである。Phase 123はread-only dependencyであり、正常経路のstate/events mutationは契約違反として補償後に拒否する。safe dependency errorはsuccessful compensation後もidentityを維持し、unexpected errorはdetail-safeな`dependency_error`にsanitizeする。malformed returnやtarget mutationはrestoreし、restore failureは`dependency_rollback`とする。Phase 130はPhase 116を直接参照・呼び出しせず、prepared-step start、start-state persistence、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しない。Focused testsはinjected Phase 123 fakesだけを使用し、real provider、network、paid API、external tool、real transportを呼ばない。
+
+```text
+Phase 129
+prepare_next_step | workflow_complete | persisted_failure
+    ↓
+Phase 130 progression-to-approved-preparation cycle handoff chain bridge reentry continuation boundary
+prepare_next_step + exact approval + exact employee
+    → Phase 123 exactly once in canonical six-argument order
+    → exact PreparedWorkflowStep
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 124 (future explicit caller action)
+```
