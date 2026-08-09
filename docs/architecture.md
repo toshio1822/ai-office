@@ -1047,3 +1047,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 126 (future explicit caller action)
 ```
+
+## Persisted-Running Execution Cycle Handoff Chain Bridge Reentry Continuation Boundary（Phase 133）
+
+Phase 133は、Phase 132 continuationからの正確な`RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるouter bridgeである。実行routeでは`current_step_index >= 4`、exact workflow/start/request/running-state/employee/tools/credential/approval、regular targets、Phase 132のpersisted running state bytes、succeeded predecessor history、直前のsucceeded terminal eventのprovider=`"openai"`を再検証する。直前より前のpredecessor providerはPhase 132の契約を超えて制限しない。
+
+検証後、公開Phase 126 `route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary()`へ、`(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`のcanonical ten-argument orderで正確に一度だけ委譲する。supplied object identityを保持し、exact `StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`、nested invocation result、provider=`"openai"`、workflow/step/index/employee linkageを再検証する。Phase 126はread-only dependencyとして扱い、正常returnでstate/eventsを変更させない。
+
+`workflow_complete`と`persisted_failure`はexecution-only inputを`None`に限定し、Phase 132 stop routeより不必要に厳しいprovider条件を追加しないunchanged zero-call stop routeである。Phase 133は明示的なpersisted-running execution handoffを一回だけ行い、runtime-result persistence、classification、progression、retry、automatic continuation、finalization、scheduling、loop、parallel execution、CLI/GUI behaviorを行わない。safe error identityはsuccessful compensation後も保持し、unexpected error、malformed return、target mutationはdetail-safeに分類する。両targetを元bytesへ復元し、restore failureは`dependency_rollback`、retryは行わない。Focused testsはinjected Phase 126 fakesだけを使い、real provider、network、paid API、external tool、credential use、real transportを呼ばない。
+
+```text
+Phase 132
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 133 persisted-running execution cycle handoff chain bridge reentry continuation boundary
+RunningStatePersistenceResult + exact execution inputs
+    → Phase 126 exactly once in canonical ten-argument order
+    → exact StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 127 (future explicit caller action)
+```
