@@ -885,3 +885,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 117 (future explicit caller action)
 ```
+
+## Phase 125: Prepared Start Persistence Cycle Handoff Chain Reentry Continuation Boundary
+
+Phase 125は1回の明示的なprepared-start persistence handoffであり、Phase 124の正確な`PreparedStepExecutionStart`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるread-only boundaryである。継続経路のprepared start（`current_step_index >= 3`）では、正確なworkflow、employee、predecessor terminal history、regular state/event targetsを検証した後、公開Phase 118 boundaryへ`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderで正確に一度だけ委譲する。Phase 118の正確な`RunningStatePersistenceResult`、proposed running-state bytes、positive byte count、persisted running state、およびevent targetのbyte-for-byte不変性を検証して、依存が返した同じresult objectを返す。
+
+`workflow_complete`と`persisted_failure`はemployeeが`None`であること、terminal state/history、targetsの不変性を検証し、Phase 118を呼ばずに同じobjectを返すzero-call stop routeである。Phase 125はPhase 111を直接呼ばず、provider/tool実行、runtime resultの分類、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しない。safe dependency errorはidentityを保持し、unexpected error、不正な返却、target mutationはdetail-safeに分類し、可能な場合はstateとeventを元のbytesへ補償復元する。復元失敗は`dependency_rollback`とし、retryは行わない。focused testsはinjected Phase 118 fakesだけを使用し、real provider、network、paid API、external toolを呼ばない。
+
+```text
+Phase 124
+PreparedStepExecutionStart | workflow_complete | persisted_failure
+    ↓
+Phase 125 prepared-start persistence cycle handoff chain reentry continuation boundary
+PreparedStepExecutionStart + exact employee
+    → Phase 118 exactly once in canonical five-argument order
+    → exact RunningStatePersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 119 (future explicit caller action)
+```
