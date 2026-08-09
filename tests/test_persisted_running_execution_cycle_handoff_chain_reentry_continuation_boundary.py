@@ -483,6 +483,7 @@ def test_safe_phase119_error_identity_matrix_restores_without_retry(tmp_path: Pa
 def test_rollback_failure_attempts_both_targets_once(tmp_path: Path, failed_target: str, monkeypatch: pytest.MonkeyPatch) -> None:
     values = setup(tmp_path); state, events = values["state_path"], values["events_path"]
     calls = {"state": 0, "events": 0}
+    dependency_calls = 0
     original_write = Path.write_bytes
     def failing_write(path: Path, data: bytes) -> int:
         if failed_target in ("state", "both") and path == state:
@@ -495,13 +496,45 @@ def test_rollback_failure_attempts_both_targets_once(tmp_path: Path, failed_targ
         return original_write(path, data)
     monkeypatch.setattr(Path, "write_bytes", failing_write)
     def dependency(*_: object) -> object:
+        nonlocal dependency_calls
+        dependency_calls += 1
         original_write(state, b"mutated")
         original_write(events, b"mutated")
         raise RuntimeError("unexpected")
     with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
         route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    assert type(caught.value) is PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError
     assert caught.value.detail.classification == "dependency_rollback"
     assert calls["state"] == 1 and calls["events"] == 1
+    assert dependency_calls == 1
+
+
+@pytest.mark.parametrize("runtime_result", [runtime(), runtime_failure()])
+@pytest.mark.parametrize("mutation", ["state", "events", "both"])
+def test_runtime_result_target_mutation_is_compensated_without_retry(
+    tmp_path: Path,
+    runtime_result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
+    mutation: str,
+) -> None:
+    values = setup(tmp_path); state, events = values["state_path"], values["events_path"]
+    before = state.read_bytes(), events.read_bytes()
+    dependency_calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal dependency_calls
+        dependency_calls += 1
+        if mutation in ("state", "both"):
+            state.write_bytes(b"state-mutated")
+        if mutation in ("events", "both"):
+            events.write_bytes(b"events-mutated")
+        return runtime_result
+
+    with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    assert type(caught.value) is PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError
+    assert caught.value.detail.classification == "runtime_contract"
+    assert dependency_calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize("decision", ["persisted_success", "stopped_failed", "not_progressable"])
