@@ -41,6 +41,14 @@ class FailureChild(StepRuntimeExecutionFailure):
     pass
 
 
+class SuccessInvocationChild(ModelInvocationSuccess):
+    pass
+
+
+class FailureInvocationChild(ModelInvocationFailure):
+    pass
+
+
 class WorkflowChild(WorkflowDefinition):
     pass
 
@@ -83,6 +91,16 @@ def predecessor_event(step_id: str, step_index: int) -> RuntimeStepEvent:
     return RuntimeStepEvent(
         "step_succeeded", "w", step_id, step_index, "e", "running", "succeeded",
         "openai", None, f"response-{step_id}", f"request-{step_id}", f"output-{step_id}", None,
+    )
+
+
+def success_terminal_event(**changes: object) -> RuntimeStepEvent:
+    return replace(
+        RuntimeStepEvent(
+            "step_succeeded", "w", "three", 3, "e", "running", "succeeded",
+            "openai", None, "response-three", "request-three", "output", None,
+        ),
+        **changes,
     )
 
 
@@ -341,6 +359,33 @@ def test_nested_invocation_result_contract_is_revalidated(tmp_path: Path, result
     assert caught.value.detail.classification == "runtime_contract" and calls == 0
 
 
+@pytest.mark.parametrize(
+    "result,nested",
+    [
+        (success(), SuccessInvocationChild("openai", "response-three", "request-three", "completed", ("output",), "output")),
+        (failure(), FailureInvocationChild("openai", "api_error", "safe failure", "request-three", 500, None, None)),
+        (success(), SimpleNamespace(provider="openai", response_id="response-three", request_id="request-three", status="completed", text_parts=("output",), text="output")),
+        (failure(), SimpleNamespace(provider="openai", category="api_error", message="safe failure", request_id="request-three", status_code=500, provider_error_type=None, provider_error_code=None)),
+    ],
+)
+def test_nested_invocation_result_requires_exact_model_identity(
+    tmp_path: Path, result: object, nested: object
+) -> None:
+    state, events = setup(tmp_path)
+    calls = 0
+    invalid = replace(result, invocation_result=nested)  # type: ignore[union-attr]
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert type(invalid) is type(result)
+    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        call(invalid, workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "runtime_contract" and calls == 0
+
+
 def test_persisted_running_state_mismatch_is_rejected_before_phase120(tmp_path: Path) -> None:
     state, events = setup(tmp_path)
     state.write_text(serialize_workflow_execution_state_json(WorkflowExecutionState("w", "running", "four", 4, "e", ("one", "two", "three"), None)), encoding="utf-8")
@@ -417,6 +462,38 @@ def test_positive_but_mismatched_persistence_byte_counts_are_rejected_and_restor
         call(success(), workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
     assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("state_bytes_written", 0),
+        ("state_bytes_written", -1),
+        ("state_bytes_written", True),
+        ("event_bytes_appended", 0),
+        ("event_bytes_appended", -1),
+        ("event_bytes_appended", True),
+    ],
+)
+def test_persistence_byte_counts_require_positive_exact_int(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events = setup(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*args: object) -> object:
+        nonlocal calls
+        calls += 1
+        persisted = persist_fake(*args)
+        assert type(persisted) is WorkflowExecutionPersistenceResult
+        assert persisted.state_path is state and persisted.events_path is events
+        return replace(persisted, **{field: value})
+
+    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize("dependency_result", [object(), SimpleNamespace(state_path=Path("x"), events_path=Path("y"), state_bytes_written=1, event_bytes_appended=1)])
@@ -507,16 +584,138 @@ def test_valid_persistence_return_with_target_mutation_is_rejected_and_restored(
 def test_invalid_persisted_terminal_state_is_rejected_and_restored(tmp_path: Path) -> None:
     state, events = setup(tmp_path)
     before = state.read_bytes(), events.read_bytes()
+    calls = 0
 
-    def dependency(*_: object) -> object:
-        invalid = WorkflowExecutionState("w", "failed", "three", 3, "e", ("one", "two"), "api_error")
-        state.write_text(serialize_workflow_execution_state_json(invalid), encoding="utf-8")
-        return object()
+    def dependency(*args: object) -> object:
+        nonlocal calls
+        calls += 1
+        persist_fake(*args)
+        event_bytes = events.read_bytes()[len(before[1]):]
+        invalid = WorkflowExecutionState("w", "running", "three", 3, "e", ("one", "two"), None)
+        invalid_bytes = serialize_workflow_execution_state_json(invalid).encode("utf-8")
+        state.write_bytes(invalid_bytes)
+        returned = WorkflowExecutionPersistenceResult(state, events, len(invalid_bytes), len(event_bytes))
+        assert type(returned) is WorkflowExecutionPersistenceResult
+        assert returned.state_path is state and returned.events_path is events
+        assert returned.state_bytes_written == len(state.read_bytes())
+        assert returned.event_bytes_appended == len(event_bytes)
+        return returned
 
     with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
         call(success(), workflow(), state, events, dependency)
     assert caught.value.detail.classification == "persistence_contract"
-    assert (state.read_bytes(), events.read_bytes()) == before
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("workflow_id", "other"),
+        ("step_id", "other"),
+        ("step_index", 4),
+        ("employee_id", "other"),
+        ("provider", "other"),
+        ("request_id", "other-request"),
+    ],
+)
+def test_invalid_persisted_terminal_event_runtime_linkage_is_rejected_and_restored(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events = setup(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*args: object) -> object:
+        nonlocal calls
+        calls += 1
+        persist_fake(*args)
+        appended = serialize_runtime_step_event_jsonl(
+            success_terminal_event(**{field: value})
+        ).encode("utf-8")
+        events.write_bytes(before[1] + appended)
+        returned = WorkflowExecutionPersistenceResult(
+            state, events, len(state.read_bytes()), len(appended)
+        )
+        assert type(returned) is WorkflowExecutionPersistenceResult
+        assert returned.state_path is state and returned.events_path is events
+        assert returned.state_bytes_written == len(state.read_bytes())
+        assert returned.event_bytes_appended == len(appended)
+        return returned
+
+    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_invalid_persisted_terminal_event_kind_and_success_failure_linkage_is_rejected_and_restored(
+    tmp_path: Path,
+) -> None:
+    state, events = setup(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*args: object) -> object:
+        nonlocal calls
+        calls += 1
+        persist_fake(*args)
+        appended = serialize_runtime_step_event_jsonl(
+            replace(
+                success_terminal_event(),
+                event_type="step_failed",
+                next_status="failed",
+                failure_category="api_error",
+                response_id=None,
+                output_text=None,
+                message="wrong failure linkage",
+            )
+        ).encode("utf-8")
+        events.write_bytes(before[1] + appended)
+        returned = WorkflowExecutionPersistenceResult(
+            state, events, len(state.read_bytes()), len(appended)
+        )
+        assert type(returned) is WorkflowExecutionPersistenceResult
+        assert returned.state_path is state and returned.events_path is events
+        assert returned.state_bytes_written == len(state.read_bytes())
+        assert returned.event_bytes_appended == len(appended)
+        return returned
+
+    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_invalid_persisted_predecessor_history_is_rejected_and_restored(
+    tmp_path: Path,
+) -> None:
+    state, events = setup(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*args: object) -> object:
+        nonlocal calls
+        calls += 1
+        persist_fake(*args)
+        appended = events.read_bytes()[len(before[1]):]
+        mutated_prefix = (
+            serialize_runtime_step_event_jsonl(predecessor_event("two", 1)).encode("utf-8")
+            + serialize_runtime_step_event_jsonl(predecessor_event("two", 2)).encode("utf-8")
+        )
+        events.write_bytes(mutated_prefix + appended)
+        returned = WorkflowExecutionPersistenceResult(
+            state, events, len(state.read_bytes()), len(appended)
+        )
+        assert type(returned) is WorkflowExecutionPersistenceResult
+        assert returned.state_path is state and returned.events_path is events
+        assert returned.state_bytes_written == len(state.read_bytes())
+        assert returned.event_bytes_appended == len(appended)
+        return returned
+
+    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize("mutation", [None, "state", "events", "both"])
@@ -648,6 +847,23 @@ def test_direct_persisted_success_is_zero_call_rejected(tmp_path: Path) -> None:
     assert caught.value.detail.classification == "failure_contract" and calls == 0
 
 
+def test_unsupported_progression_decision_is_zero_call_rejected(tmp_path: Path) -> None:
+    state, events = setup(tmp_path)
+    result = WorkflowProgressionDecision(
+        "prepare_next_step", "w", "three", 3, "e", "four", 4, "e", "next_step_available"
+    )
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        call(result, workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "completion_contract" and calls == 0
+
+
 @pytest.mark.parametrize("target", ["state", "events"])
 def test_missing_target_is_rejected_before_phase120(tmp_path: Path, target: str) -> None:
     state, events = setup(tmp_path)
@@ -662,6 +878,27 @@ def test_missing_target_is_rejected_before_phase120(tmp_path: Path, target: str)
     with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
         call(success(), workflow(), state, events, dependency)
     assert caught.value.detail.classification == ("state_target" if target == "state" else "event_target") and calls == 0
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+def test_non_regular_directory_target_is_rejected_before_phase120(
+    tmp_path: Path, target: str
+) -> None:
+    state, events = setup(tmp_path)
+    target_path = state if target == "state" else events
+    target_path.unlink()
+    target_path.mkdir()
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == ("state_target" if target == "state" else "event_target")
+    assert calls == 0
 
 
 @pytest.mark.parametrize("operation", ["is_file", "read_bytes"])
