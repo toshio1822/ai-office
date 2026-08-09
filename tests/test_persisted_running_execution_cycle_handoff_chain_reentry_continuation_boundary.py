@@ -109,9 +109,17 @@ def runtime_failure() -> StepRuntimeExecutionFailure:
 def reject(values: dict[str, object], classification: str, **changes: object) -> None:
     supplied = dict(values)
     supplied.update(changes)
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime()
+
+    supplied.setdefault("phase119_function", dependency)
     with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
         route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**supplied)  # type: ignore[arg-type]
-    assert caught.value.detail.classification == classification
+    assert caught.value.detail.classification == classification and calls == 0
 
 
 def failed_targets(tmp_path: Path) -> tuple[Path, Path]:
@@ -129,7 +137,8 @@ def failed_targets(tmp_path: Path) -> tuple[Path, Path]:
 def test_implementation_uses_only_public_phase119_dependency() -> None:
     source = Path("src/ai_office/engine/persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary.py").read_text()
     assert "route_persisted_running_execution_cycle_handoff_reentry_continuation_boundary" in source
-    assert "phase105" not in source.lower()
+    assert "phase112" not in source.lower()
+    assert "route_persisted_running_execution_cycle_reentry_continuation_boundary" not in source
     assert "persisted_running_execution_cycle_continuation_boundary" not in source
     assert "._validate_" not in source
     assert "._top" not in source
@@ -209,6 +218,34 @@ def test_subclasses_rejected_before_dependency(tmp_path: Path, field: str, value
     reject(values, classification)
 
 
+@pytest.mark.parametrize("nested", ["request", "state", "approval"])
+def test_exact_nested_models_are_rejected_before_phase119(tmp_path: Path, nested: str) -> None:
+    values = setup(tmp_path)
+    start = values["start"]
+    if nested == "request":
+        request = start.request  # type: ignore[union-attr]
+        values["start"] = PreparedStepExecutionStart(RequestChild(request.model, request.system_instructions, request.task_instructions, request.allowed_tools), start.running_state)  # type: ignore[union-attr]
+    elif nested == "state":
+        running = start.running_state  # type: ignore[union-attr]
+        values["start"] = PreparedStepExecutionStart(start.request, StateChild(running.workflow_id, running.status, running.current_step_id, running.current_step_index, running.current_employee_id, running.completed_step_ids, running.last_failure_category))  # type: ignore[union-attr]
+    else:
+        approval = values["approval"]
+        values["approval"] = ApprovalChild(approval.approved, approval.provider, approval.request_fingerprint, approval.approved_by, approval.approval_id)  # type: ignore[union-attr]
+
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime()
+
+    with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    classification = "approval_contract" if nested == "approval" else "start_contract"
+    assert type(caught.value) is PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError
+    assert caught.value.detail.classification == classification and calls == 0
+
+
 @pytest.mark.parametrize("field, value, classification", [
     ("result", SimpleNamespace(state_bytes_written=1), "result_type"),
     ("workflow", SimpleNamespace(id="w", name="W", description="D", steps=workflow().steps), "workflow_definition"),
@@ -228,15 +265,64 @@ def test_persistence_byte_count_must_be_positive_exact_int(tmp_path: Path, repla
     reject(values, "persistence_result_contract")
 
 
-@pytest.mark.parametrize("mutation", ["duplicate", "missing", "reordered", "unrelated"])
+def test_positive_persistence_byte_count_must_match_state_file(tmp_path: Path) -> None:
+    values = setup(tmp_path)
+    state_path = Path(str(values["state_path"]))
+    values["result"] = RunningStatePersistenceResult(len(state_path.read_bytes()) + 1)
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime()
+
+    with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    assert caught.value.detail.classification == "persistence_result_contract" and calls == 0
+
+
+def test_mismatched_persisted_running_state_is_rejected_after_byte_count_match(tmp_path: Path) -> None:
+    values = setup(tmp_path)
+    state_path = Path(str(values["state_path"]))
+    mismatched = WorkflowExecutionState("w", "running", "four", 4, "e", ("one", "two", "three"), None)
+    state_path.write_text(serialize_workflow_execution_state_json(mismatched), encoding="utf-8")
+    values["result"] = RunningStatePersistenceResult(len(state_path.read_bytes()))
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime()
+
+    with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    assert caught.value.detail.classification == "persistence_result_contract" and calls == 0
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "missing", "reordered", "unrelated", "malformed", "extra"])
 def test_predecessor_history_variants_rejected(tmp_path: Path, mutation: str) -> None:
     values = setup(tmp_path); events = values["events_path"]
     original = events.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    unrelated = serialize_runtime_step_event_jsonl(RuntimeStepEvent("unrelated", "other", "x", 9, "z", "ready", "running", "openai", None, "r", "q", "o", None))
+    extra = serialize_runtime_step_event_jsonl(RuntimeStepEvent("step_succeeded", "w", "three", 3, "e", "running", "succeeded", "openai", None, "r3", "q3", "o3", None))
     if mutation == "duplicate": events.write_text(original + original, encoding="utf-8")
-    elif mutation == "missing": events.write_text("", encoding="utf-8")
-    elif mutation == "reordered": events.write_text(original.replace('"step_id":"one"', '"step_id":"other"'), encoding="utf-8")
-    else: events.write_text(serialize_runtime_step_event_jsonl(RuntimeStepEvent("unrelated", "other", "x", 9, "z", "ready", "running", "openai", None, "r", "q", "o", None)), encoding="utf-8")
-    reject(values, "persistence_result_contract")
+    elif mutation == "missing": events.write_text(lines[0], encoding="utf-8")
+    elif mutation == "reordered": events.write_text(lines[1] + lines[0], encoding="utf-8")
+    elif mutation == "unrelated": events.write_text(unrelated + lines[1], encoding="utf-8")
+    elif mutation == "malformed": events.write_text("{malformed}\n", encoding="utf-8")
+    else: events.write_text(original + extra, encoding="utf-8")
+
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime()
+
+    with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    assert caught.value.detail.classification == "persistence_result_contract" and calls == 0
 
 
 def test_exact_state_bytes_and_equal_path_identity_are_preserved(tmp_path: Path) -> None:
@@ -310,16 +396,32 @@ def test_each_execution_only_input_is_rejected_on_stop(tmp_path: Path, field: st
     values = setup(tmp_path); state, events = failed_targets(tmp_path)
     result = PersistedExecutionOutcome("persisted_failure", "w", "three", 3, "e", "api_error")
     replacement = values[field] if field != "transport" else (lambda _: None)
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime()
+
     with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
-        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(result, replacement if field == "start" else None, values["workflow"], replacement if field == "employee" else None, state, events, replacement if field == "resolved_tools" else None, replacement if field == "api_key" else None, replacement if field == "approval" else None, replacement if field == "transport" else None)  # type: ignore[arg-type]
-    assert caught.value.detail.classification == "execution_inputs"
+        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(result, replacement if field == "start" else None, values["workflow"], replacement if field == "employee" else None, state, events, replacement if field == "resolved_tools" else None, replacement if field == "api_key" else None, replacement if field == "approval" else None, replacement if field == "transport" else None, phase119_function=dependency)  # type: ignore[arg-type]
+    assert type(caught.value) is PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError
+    assert caught.value.detail.classification == "execution_inputs" and calls == 0
 
 
 def test_stop_target_mismatch_and_execution_input_combination_are_rejected(tmp_path: Path) -> None:
     values = setup(tmp_path); state, events = failed_targets(tmp_path)
     result = PersistedExecutionOutcome("persisted_failure", "w", "three", 3, "e", "api_error")
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime()
+
     with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError):
-        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(result, values["start"], values["workflow"], values["employee"], state, events, values["resolved_tools"], values["api_key"], values["approval"], values["transport"])  # type: ignore[arg-type]
+        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(result, values["start"], values["workflow"], values["employee"], state, events, values["resolved_tools"], values["api_key"], values["approval"], values["transport"], phase119_function=dependency)  # type: ignore[arg-type]
+    assert calls == 0
 
 
 @pytest.mark.parametrize("target", ["state_path", "events_path"])
@@ -356,14 +458,25 @@ def test_read_bytes_oserror_is_classified_by_target(tmp_path: Path, target: str,
     reject(values, "state_target" if target == "state_path" else "event_target")
 
 
-def test_safe_phase119_error_identity_is_preserved_and_no_retry(tmp_path: Path) -> None:
-    values = setup(tmp_path); calls = 0
-    supplied = PersistedRunningExecutionCycleHandoffReentryContinuationError("safe")
+@pytest.mark.parametrize("mutation", [None, "state", "events", "both"])
+def test_safe_phase119_error_identity_matrix_restores_without_retry(tmp_path: Path, mutation: str | None) -> None:
+    values = setup(tmp_path); state, events = values["state_path"], values["events_path"]
+    before = state.read_bytes(), events.read_bytes()
+    supplied_error = PersistedRunningExecutionCycleHandoffReentryContinuationError("safe")
+    calls = 0
+
     def dependency(*_: object) -> object:
-        nonlocal calls; calls += 1; raise supplied
+        nonlocal calls
+        calls += 1
+        if mutation in ("state", "both"): state.write_bytes(b"state-mutated")
+        if mutation in ("events", "both"): events.write_bytes(b"events-mutated")
+        raise supplied_error
+
     with pytest.raises(PersistedRunningExecutionCycleHandoffReentryContinuationError) as caught:
         route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
-    assert caught.value is supplied and calls == 1
+    assert type(caught.value) is PersistedRunningExecutionCycleHandoffReentryContinuationError
+    assert caught.value is supplied_error and calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize("failed_target", ["state", "events", "both"])
@@ -395,24 +508,17 @@ def test_rollback_failure_attempts_both_targets_once(tmp_path: Path, failed_targ
 def test_unsupported_stop_progression_is_zero_call_rejected(tmp_path: Path, decision: str) -> None:
     values = setup(tmp_path)
     result = WorkflowProgressionDecision(decision, "w", "three", 3, "e", None, None, None, "reason")  # type: ignore[arg-type]
-    reject({**values, "result": result}, "completion_contract")
+    calls = 0
 
-
-@pytest.mark.parametrize("mutation", [None, "state", "events", "both"])
-@pytest.mark.parametrize("error_kind", ["safe", "unexpected", "malformed"])
-def test_dependency_matrix_compensates_without_retry(tmp_path: Path, mutation: str | None, error_kind: str) -> None:
-    values = setup(tmp_path); state, events = values["state_path"], values["events_path"]
-    before = state.read_bytes(), events.read_bytes(); calls = 0
     def dependency(*_: object) -> object:
-        nonlocal calls; calls += 1
-        if mutation in ("state", "both"): state.write_bytes(b"state-mutated")
-        if mutation in ("events", "both"): events.write_bytes(b"events-mutated")
-        if error_kind == "safe":
-            raise PersistedRunningExecutionCycleHandoffReentryContinuationError("safe")
-        if error_kind == "unexpected": raise RuntimeError("secret")
-        return object()
-    with pytest.raises(Exception): route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
-    assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+        nonlocal calls
+        calls += 1
+        return runtime()
+
+    with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**{**values, "result": result}, phase119_function=dependency)  # type: ignore[arg-type]
+    assert type(caught.value) is PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError
+    assert caught.value.detail.classification == "completion_contract" and calls == 0
 
 
 def test_stop_routes_are_unchanged_and_zero_call(tmp_path: Path) -> None:
@@ -432,14 +538,23 @@ def test_stop_routes_are_unchanged_and_zero_call(tmp_path: Path) -> None:
     assert actual is result and calls == 0
 
 
-@pytest.mark.parametrize("mutation", ["state", "events"])
-def test_unexpected_dependency_error_is_sanitized_and_restored(tmp_path: Path, mutation: str) -> None:
+@pytest.mark.parametrize("mutation", [None, "state", "events", "both"])
+def test_unexpected_dependency_error_is_sanitized_and_restored(tmp_path: Path, mutation: str | None) -> None:
     values = setup(tmp_path); state, events = values["state_path"], values["events_path"]
     before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
     def dependency(*_: object) -> object:
-        (state if mutation == "state" else events).write_bytes(b"mutated")
-        raise RuntimeError("secret")
+        nonlocal calls
+        calls += 1
+        if mutation in ("state", "both"): state.write_bytes(b"state-mutated")
+        if mutation in ("events", "both"): events.write_bytes(b"events-mutated")
+        raise RuntimeError("secret detail")
+
     with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
         route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    assert type(caught.value) is PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError
     assert caught.value.detail.classification == "dependency_error"
+    assert "secret detail" not in str(caught.value)
+    assert calls == 1
     assert (state.read_bytes(), events.read_bytes()) == before
