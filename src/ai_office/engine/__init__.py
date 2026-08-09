@@ -250,6 +250,12 @@ from ai_office.engine.persisted_running_execution_cycle_continuation_boundary im
     PersistedRunningExecutionCycleContinuationFailureDetail,
     route_persisted_running_execution_cycle_continuation_boundary,
 )
+from ai_office.engine.persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary import (  # noqa: E501
+    PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError,
+    PersistedRunningExecutionCycleHandoffChainReentryContinuationError,
+    PersistedRunningExecutionCycleHandoffChainReentryContinuationFailureDetail,
+    route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary,
+)
 from ai_office.engine.persisted_running_execution_cycle_handoff_reentry_continuation_boundary import (  # noqa: E501
     PersistedRunningExecutionCycleHandoffReentryContinuationCompatibilityError,
     PersistedRunningExecutionCycleHandoffReentryContinuationError,
@@ -982,6 +988,10 @@ __all__ = [
     "PersistedRunningExecutionCycleHandoffReentryContinuationError",
     "PersistedRunningExecutionCycleHandoffReentryContinuationFailureDetail",
     "route_persisted_running_execution_cycle_handoff_reentry_continuation_boundary",
+    "PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError",
+    "PersistedRunningExecutionCycleHandoffChainReentryContinuationError",
+    "PersistedRunningExecutionCycleHandoffChainReentryContinuationFailureDetail",
+    "route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary",
     "PersistedRunningExecutionCycleContinuationCompatibilityError",
     "PersistedRunningExecutionCycleContinuationError",
     "PersistedRunningExecutionCycleContinuationFailureDetail",

@@ -905,3 +905,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 119 (future explicit caller action)
 ```
+
+## Phase 126: Persisted Running Execution Cycle Handoff Chain Reentry Continuation Boundary
+
+`route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary()` accepts exactly one Phase 125 `RunningStatePersistenceResult`, `WorkflowProgressionDecision(workflow_complete)`, or `PersistedExecutionOutcome(persisted_failure)`. On the continuation route, the exact Phase 125 result is revalidated with its exact `PreparedStepExecutionStart`, workflow, employee, regular state/event targets, resolved tools, credential, approval, and transport. Continuations require `current_step_index >= 3` and the complete succeeded predecessor history. The boundary delegates directly to the public Phase 119 boundary exactly once in canonical `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)` order and returns the identical exact `StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure` object.
+
+Exact `workflow_complete` and `persisted_failure` values require all execution-only inputs to be `None`, validate strict terminal state/history and unchanged targets, call Phase 119 zero times, and return the supplied object unchanged. Phase 126 is one explicitly authorized persisted-running execution handoff through Phase 119. It does not call Phase 112 directly, persist runtime results, classify persisted outcomes, progress workflow state, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Safe dependency errors preserve identity after successful byte-for-byte compensation; unexpected errors, malformed returns, and target mutation are classified detail-safely without retry. Focused tests inject Phase 119 fakes only and make no real provider, network, paid API, external tool, or real transport calls.
+
+```text
+Phase 125
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 126 persisted-running execution cycle handoff chain reentry continuation boundary
+RunningStatePersistenceResult + exact PreparedStepExecutionStart + exact execution inputs
+    → Phase 119 exactly once in canonical ten-argument order
+    → exact StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 120 (future explicit caller action)
+```
