@@ -1025,3 +1025,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 125 (future explicit caller action)
 ```
+
+## Phase 132: Prepared Start Persistence Cycle Handoff Chain Bridge Reentry Continuation Boundary
+
+Phase 132は、Phase 131 continuationからの正確な`PreparedStepExecutionStart`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるbridgeである。prepared-start routeでは`current_step_index >= 4`、exact workflow/step/employee、nested request/running-state、regular state/event targets、succeeded predecessor terminal state/history、completed-step prefix、terminal eventのruntime linkageとprovider=`"openai"`を再検証する。検証後、公開Phase 125 `route_prepared_start_persistence_cycle_handoff_chain_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderで正確に一度だけ委譲する。
+
+Phase 125はこのPhase 132で明示的に許可されたstate persistence boundaryである。Phase 132は、exact `RunningStatePersistenceResult`、positive exact built-in `state_bytes_written`、canonical serialized `PreparedStepExecutionStart.running_state`、reloaded exact running state、event targetのbyte-for-byte不変性を再検証し、依存の同じresult objectを返す。正常経路ではstate targetだけがexact running stateへ置換される。`workflow_complete`と`persisted_failure`はPhase 125を呼ばず、strict terminal state/historyとunchanged targetsを確認して同じobjectを返すzero-call stop routeである。
+
+Phase 132はPhase 118を直接参照・呼び出しせず、1回の明示的なprepared-start persistence handoffだけを行う。provider/tool execution、runtime-result persistence、outcome classification、workflow progression、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorは追加しない。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed persistence result、target mutationはdetail-safeに分類する。両targetは元bytesへ補償復元し、復元失敗は`dependency_rollback`、dependency callはretryしない。Focused testsはinjected Phase 125 fakesのみを使用し、real provider、network、paid API、external tool、real transportを呼ばない。
+
+```text
+Phase 131
+PreparedStepExecutionStart | workflow_complete | persisted_failure
+    ↓
+Phase 132 prepared-start persistence cycle handoff chain bridge reentry continuation boundary
+PreparedStepExecutionStart (current_step_index >= 4) + exact employee
+    → Phase 125 exactly once in canonical five-argument order
+    → exact RunningStatePersistenceResult; state replaced, events unchanged
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 126 (future explicit caller action)
+```

@@ -1189,3 +1189,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 125 (future explicit caller action)
 ```
+
+## Prepared Start Persistence Cycle Handoff Chain Bridge Reentry Continuation Boundary（Phase 132）
+
+`route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary()`は、Phase 131から受け取った正確な`PreparedStepExecutionStart`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を検証するbridgeです。prepared-start routeでは`current_step_index >= 4`、exact workflow/step/employee/request/running-state linkage、succeeded predecessor terminal state/history、completed-step prefix、terminal eventのprovider=`"openai"`、regular state/event targetsを再検証します。その後、既存の公開Phase 125 boundaryへ、supplied object identityを保持した`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderで正確に一度だけ委譲します。
+
+Phase 125は明示的に許可されたstate persistenceを担当します。Phase 132は、正確な`RunningStatePersistenceResult`、canonical running-state bytes、positive exact built-in byte count、reloaded running stateを検証し、state targetだけが supplied running stateへ置換され、events targetはbyte-for-byte不変であることを確認して同じresult objectを返します。`workflow_complete`と`persisted_failure`はPhase 125を呼ばないunchanged zero-call stop routeです。Phase 132はPhase 118を直接参照・呼び出しせず、provider/tool execution、runtime-result persistence、classification、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。safe dependency errorは成功した補償後もidentityを保持し、unexpected error、malformed result、target mutationはdetail-safeに分類し、両targetを可能な限りbyte-for-byteに復元します。復元失敗は`dependency_rollback`です。Focused testsはinjected Phase 125 fakesのみを使い、real provider、network、有料API、external tool、real transportを呼びません。
+
+```text
+Phase 131
+PreparedStepExecutionStart | workflow_complete | persisted_failure
+    ↓
+Phase 132 prepared-start persistence cycle handoff chain bridge reentry continuation boundary
+PreparedStepExecutionStart (current_step_index >= 4) + exact employee
+    → Phase 125 exactly once in canonical five-argument order
+    → exact RunningStatePersistenceResult; state replaced, events unchanged
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 126 (future explicit caller action)
+```
