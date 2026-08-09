@@ -1089,3 +1089,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 120 (future explicit caller action)
 ```
+
+## Runtime Result Transition Persistence Cycle Handoff Chain Reentry Continuation Boundary（Phase 127）
+
+`route_runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary()`は、Phase 126から受け取った正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を検証し、既存の公開Phase 120 boundaryへcanonical four-argument order`(result, workflow, state_path, events_path)`と同一object identityで正確に一度だけ委譲します。Phase 120の正確な`WorkflowExecutionPersistenceResult`と、そのstate/event targetsへのbyte-count、terminal state、追加event、runtime linkageを再検証し、supplied return objectを返します。
+
+正確な`WorkflowProgressionDecision(workflow_complete)`と`PersistedExecutionOutcome(persisted_failure)`はstrict terminal state/historyとtarget不変性を確認してPhase 120を呼ばず、同じobjectを返すzero-call stop routeです。Phase 127はPhase 120を通る1回の明示的に許可されたruntime-result transition persistence handoffだけを行い、Phase 113を直接呼び出さず、persisted outcomeの分類、workflow progression、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。Focused testsはinjected Phase 120 fakeのみを使用し、real provider、network、有料API、external tool、real transportを呼びません。
+
+```text
+Phase 126
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | workflow_complete | persisted_failure
+    ↓
+Phase 127 runtime-result transition persistence cycle handoff chain reentry continuation boundary
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+    → Phase 120 exactly once in canonical four-argument order
+    → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 121 (future explicit caller action)
+```
