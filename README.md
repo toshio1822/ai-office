@@ -1169,3 +1169,23 @@ workflow_complete | persisted_failure
     ↓
 Phase 124 (future explicit caller action)
 ```
+
+## Prepared Step Start Cycle Handoff Chain Bridge Reentry Continuation Boundary（Phase 131）
+
+`route_prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary()`は、Phase 130から受け取った正確な`PreparedWorkflowStep`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を検証するread-only bridgeです。prepared-step routeでは、Phase 130 continuationに対応する`step_index >= 4`、exact workflow/step/employee linkage、succeeded predecessor terminal state/history、terminal eventのruntime linkageとprovider `"openai"`、regular state/event targetsを再検証します。その後、既存の公開Phase 124 `route_prepared_step_start_cycle_handoff_chain_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderで正確に一度だけ委譲し、exact valid `PreparedStepExecutionStart`を返します。
+
+Phase 124の返却については、exact `PreparedStepExecutionStart`、nested `ModelInvocationRequest`、running `WorkflowExecutionState`、request/runtime linkage、completed-step prefix、`last_failure_category`を再検証します。`workflow_complete`と`persisted_failure`はemployeeが`None`であり、Phase 130 stop routeより不必要に厳しいprovider条件を追加せず、Phase 124を呼ばないunchanged zero-call stopです。Phase 131はPhase 117を直接参照・呼び出しせず、prepared-start persistence、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類して両targetをbyte-for-byteに補償復元し、復元失敗を`dependency_rollback`とします。Focused testsはinjected Phase 124 fakesのみを使用し、real provider、network、paid API、external tool、real transportを呼びません。
+
+```text
+Phase 130
+PreparedWorkflowStep | workflow_complete | persisted_failure
+    ↓
+Phase 131 prepared-step start cycle handoff chain bridge reentry continuation boundary
+PreparedWorkflowStep (step_index >= 4) + exact employee
+    → Phase 124 exactly once in canonical five-argument order
+    → exact PreparedStepExecutionStart
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 125 (future explicit caller action)
+```
