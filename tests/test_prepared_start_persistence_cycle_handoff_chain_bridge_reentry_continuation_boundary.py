@@ -3,6 +3,7 @@
 # ruff: noqa: E501
 
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1133,3 +1134,129 @@ def test_same_target_and_non_callable_dependency_are_rejected(tmp_path: Path) ->
     _, events = targets(tmp_path / "events")
     state, _ = targets(tmp_path / "state")
     reject(lambda: invoke(start(), employee(), state, events, object()), "persistence_contract")
+
+
+def _rewrite_event_json(path: Path, index: int, **changes: object) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    payload = json.loads(lines[index])
+    payload.update(changes)
+    lines[index] = json.dumps(payload, separators=(",", ":"))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_empty_success_prepared_fallback_delegates_once_and_preserves_identity(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 2, output_text="")
+    supplied = (start(), workflow(), employee(), state, events)
+    expected_state = serialize_workflow_execution_state_json(
+        supplied[0].running_state
+    ).encode()
+    expected = RunningStatePersistenceResult(len(expected_state))
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
+
+    returned = route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+        *supplied,
+        phase125_function=fake,
+    )
+    assert returned is expected
+    assert calls == [supplied]
+    assert events.read_text(encoding="utf-8").splitlines()[2]
+    assert state.read_bytes() == expected_state
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("provider", "other"),
+        ("provider", ""),
+        ("provider", 4),
+        ("response_id", ""),
+        ("response_id", 4),
+        ("response_id", None),
+        ("request_id", ""),
+        ("request_id", 4),
+        ("output_text", 4),
+    ],
+)
+def test_empty_success_fallback_preserves_terminal_contract(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    state, events = targets(tmp_path)
+    updates = {"output_text": "", field: value}
+    _rewrite_event_json(events, 2, **updates)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(start(), employee(), state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_empty_success_fallback_accepts_optional_none_request_id(tmp_path: Path) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 2, output_text="", request_id=None)
+    expected_state = serialize_workflow_execution_state_json(start().running_state).encode()
+    expected = RunningStatePersistenceResult(len(expected_state))
+    calls = 0
+
+    def fake(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(expected_state)
+        return expected
+
+    assert invoke(start(), employee(), state, events, fake) is expected
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["step_id", "employee_id", "workflow_id"],
+)
+def test_empty_success_fallback_keeps_workflow_linkage(
+    tmp_path: Path, kind: str
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 2, output_text="", **{kind: "wrong"})
+    if kind == "workflow_id":
+        state_payload = json.loads(state.read_text(encoding="utf-8"))
+        state_payload["workflow_id"] = "wrong"
+        state.write_text(json.dumps(state_payload, separators=(",", ":")), encoding="utf-8")
+        lines = events.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            payload = json.loads(line)
+            payload["workflow_id"] = "wrong"
+            lines[index] = json.dumps(payload, separators=(",", ":"))
+        events.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    elif kind == "step_id":
+        state_payload = json.loads(state.read_text(encoding="utf-8"))
+        state_payload["current_step_id"] = "wrong"
+        state.write_text(json.dumps(state_payload, separators=(",", ":")), encoding="utf-8")
+    else:
+        state_payload = json.loads(state.read_text(encoding="utf-8"))
+        state_payload["current_employee_id"] = "wrong"
+        state.write_text(json.dumps(state_payload, separators=(",", ":")), encoding="utf-8")
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "terminal_contract")
+    assert calls == 0
