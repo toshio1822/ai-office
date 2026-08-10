@@ -1375,3 +1375,25 @@ Phase 140は新しいouter bridgeや公開APIを追加せず、Phase 139のprepa
 final succeeded workflow-complete historyでは従来どおりterminal success `output_text`はnon-emptyであり、failure historyの契約も不変です。これにより、Phase 139からPhase 132/125/118/111/104へ続くreal default dependency chainが、empty success outputをsentinelへ変換したり、provider/toolを実行したりせずに、exact `RunningStatePersistenceResult`を返せることをregression testで確認します。Phase 140はretry、自動継続、Phase 139→133 outer bridge、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。
 
 Phase 129のpersisted-success local validationも、shared loaderが正常成功する非final historyでは同じexact built-in `str`のempty/non-empty output rangeを受理します。legacyのfinal persisted-success empty-output fallbackは維持し、workflow-completeのempty success、failed history、provider/request/response、linkage、failure/message semanticsは変更しません。これにより、互換修正はPhase 139 default chain全体で同じ非final契約になる最小範囲に留まります。
+
+## Persisted-Running Execution Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary（Phase 141）
+
+`route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`は、Phase 139から受け取ったexact `RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を、公開Phase 133へcanonical ten-argument order `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`でexactly once委譲するouter boundaryです。実行routeでは`current_step_index >= 5`、exact workflow/start/request/running-state/employee/tools/credential/approval/transport、regular targets、Phase 139のcanonical running-state bytes、succeeded predecessor history、immediate predecessor provider=`"openai"`を再検証します。exact built-in empty success `output_text`はPhase 140の非final契約どおり許容します。
+
+検証後、公開Phase 133 `route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へsupplied object identityを保持したまま正確に一度だけ委譲し、exact `StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`、nested invocation result、provider=`"openai"`、runtime linkage、target byte-for-byte不変性を再検証して同じresult objectを返します。`workflow_complete`と`persisted_failure`はexecution-only inputを`None`に限定し、Phase 133を呼ばず同じobjectを返すunchanged zero-call stop routeです。
+
+Phase 133には、実行routeの非final predecessor historyだけでexact built-in empty success `output_text`を受理する狭い互換修正を追加しました。workflow_complete final-historyのnon-empty契約、failed history、provider/response/request、failure semantics、stop behavior、public APIは緩和していません。Phase 141はPhase 126を直接呼ばず、runtime-result persistence、outcome classification、workflow progression、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類します。両targetを可能な限り元bytesへ補償復元し、復元失敗は`dependency_rollback`、dependency callはretryしません。Focused testsはinjected Phase 133 fakesのみを使い、real provider、network、paid API、external tool、credential use、real transportを呼びません。
+
+```text
+Phase 139
+RunningStatePersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 141 persisted-running execution cycle handoff chain bridge outer reentry continuation boundary
+RunningStatePersistenceResult (current_step_index >= 5) + exact execution inputs
+    → Phase 133 exactly once in canonical ten-argument order
+    → exact StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 134 (future explicit caller action)
+```
