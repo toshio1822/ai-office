@@ -547,6 +547,7 @@ def test_workflow_step_subclass_and_attribute_substitute_are_zero_call_rejection
         ("allowed_tool_names", ["tool-one", "tool-two"]),
         ("allowed_tool_names", TupleChild(("tool-one", "tool-two"))),
         ("allowed_tool_names", ("tool-one", "wrong-tool")),
+        ("allowed_tool_names", ("tool-one", 4)),
     ],
 )
 def test_prepared_step_exact_contract_is_checked_before_phase131(
@@ -629,6 +630,112 @@ def test_earlier_non_openai_predecessor_remains_valid(tmp_path: Path) -> None:
 
     assert invoke(value, workflow(), employee(), state, events, fake) is returned
     assert calls == 1
+
+
+def test_immediate_predecessor_openai_is_accepted_exactly(tmp_path: Path) -> None:
+    value = prepared()
+    state, events, before_state, before_events = targets(tmp_path)
+    rewrite_event(events, 2, provider="openai")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    returned = start_for(value)
+    calls = 0
+
+    def fake(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    assert invoke(value, workflow(), employee(), state, events, fake) is returned
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("workflow_id", "other"),
+        ("step_id", "other"),
+        ("step_index", 5),
+        ("step_index", True),
+        ("employee_id", "other"),
+        ("event_type", "step_failed"),
+        ("previous_status", "ready"),
+        ("next_status", "failed"),
+    ],
+)
+def test_earlier_predecessor_linkage_and_status_are_zero_call_rejections(
+    tmp_path: Path, field: str, bad: object
+) -> None:
+    value = prepared()
+    state, events, before_state, before_events = targets(tmp_path)
+    rewrite_event(events, 0, **{field: bad})
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("provider", ["", 4])
+def test_earlier_predecessor_provider_must_be_nonempty_string(
+    tmp_path: Path, provider: object
+) -> None:
+    value = prepared()
+    state, events, before_state, before_events = targets(tmp_path)
+    rewrite_event(events, 0, provider=provider)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("request_id", ""),
+        ("request_id", 4),
+        ("response_id", ""),
+        ("response_id", 4),
+        ("output_text", ""),
+        ("output_text", 4),
+    ],
+)
+def test_earlier_predecessor_request_response_output_are_zero_call_rejections(
+    tmp_path: Path, field: str, bad: object
+) -> None:
+    value = prepared()
+    state, events, before_state, before_events = targets(tmp_path)
+    rewrite_event(events, 0, **{field: bad})
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize(
@@ -741,6 +848,64 @@ def test_terminal_event_contract_matrix_is_zero_call(
         value, workflow(), employee(), state, events, "terminal_contract", fake
     )
     assert calls == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("provider", "other"),
+        ("provider", ""),
+        ("provider", 4),
+        ("request_id", ""),
+        ("request_id", 4),
+        ("response_id", ""),
+        ("response_id", 4),
+        ("response_id", None),
+        ("output_text", 4),
+        ("output_text", None),
+        ("failure_category", "api_error"),
+        ("message", "bad"),
+    ],
+)
+def test_terminal_provider_identifiers_output_and_forbidden_fields_are_zero_call(
+    tmp_path: Path, field: str, bad: object
+) -> None:
+    value = prepared()
+    state, events, before_state, before_events = targets(tmp_path)
+    rewrite_event(events, 3, **{field: bad})
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_terminal_request_id_none_is_valid_and_identity_preserving(
+    tmp_path: Path,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 3, request_id=None)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    returned = start_for(value)
+    calls = 0
+
+    def fake(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    assert invoke(value, workflow(), employee(), state, events, fake) is returned
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize(
@@ -1111,6 +1276,53 @@ def test_phase131_nested_fully_compatible_substitutes_are_rejected(
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
+@pytest.mark.parametrize(
+    ("nested", "field", "bad"),
+    [
+        ("request", "model", "wrong-model"),
+        ("request", "system_instructions", "wrong-system"),
+        ("request", "task_instructions", "wrong-task"),
+        ("request", "allowed_tools", ["tool-one", "tool-two"]),
+        ("request", "allowed_tools", TupleChild(("tool-one", "tool-two"))),
+        ("request", "allowed_tools", ("tool-one", 4)),
+        ("request", "allowed_tools", ("tool-one", "wrong-tool")),
+        ("running", "workflow_id", "other"),
+        ("running", "current_step_id", "other"),
+        ("running", "current_step_index", True),
+        ("running", "current_step_index", IntChild(5)),
+        ("running", "current_employee_id", "other"),
+        ("running", "status", "succeeded"),
+        ("running", "completed_step_ids", ("one", "two", "three", "wrong")),
+        ("running", "completed_step_ids", ["one", "two", "three", "four"]),
+        ("running", "last_failure_category", "api_error"),
+    ],
+)
+def test_phase131_return_semantic_linkage_and_exact_fields_are_rejected(
+    tmp_path: Path, nested: str, field: str, bad: object
+) -> None:
+    value = prepared()
+    state, events, before_state, before_events = targets(tmp_path)
+    exact = start_for(value)
+    if nested == "request":
+        returned = replace(exact, request=replace(exact.request, **{field: bad}))
+    else:
+        returned = replace(
+            exact, running_state=replace(exact.running_state, **{field: bad})
+        )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "start_contract", fake
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 @pytest.mark.parametrize("kind", ["workflow", "failure"])
 @pytest.mark.parametrize("field_value", [True, IntChild(5)])
 def test_stop_current_step_index_requires_exact_builtin_int(
@@ -1189,3 +1401,71 @@ def test_path_and_dependency_contracts_are_rejected_before_phase131(tmp_path: Pa
         "dependency_error",
         None,
     )
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+def test_missing_and_non_regular_targets_are_zero_call_rejections(
+    tmp_path: Path, target: str, kind: str
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    selected = state if target == "state" else events
+    selected.unlink()
+    if kind == "directory":
+        selected.mkdir()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value,
+        workflow(),
+        employee(),
+        state,
+        events,
+        "state_target" if target == "state" else "event_target",
+        fake,
+    )
+    assert calls == 0
+
+
+@pytest.mark.parametrize("target", ["state", "events"])
+@pytest.mark.parametrize("operation", ["is_file", "read_bytes"])
+def test_state_and_event_target_oserrors_are_zero_call_rejections(
+    tmp_path: Path,
+    target: str,
+    operation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    selected = state if target == "state" else events
+    original = getattr(_TestPath, operation)
+
+    def fail(path: Path, *args: object, **kwargs: object):
+        if path == selected:
+            raise OSError("target detail")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(_TestPath, operation, fail)
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value,
+        workflow(),
+        employee(),
+        state,
+        events,
+        "state_target" if target == "state" else "event_target",
+        fake,
+    )
+    assert calls == 0
