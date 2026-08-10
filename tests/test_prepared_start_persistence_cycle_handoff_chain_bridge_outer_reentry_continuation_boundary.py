@@ -28,8 +28,17 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_reen
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
     route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary as phase132_route,
 )
-from ai_office.invocation import ModelInvocationRequest
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.invocation import (
+    ModelInvocationFailure,
+    ModelInvocationRequest,
+    ModelInvocationSuccess,
+)
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    StepRuntimeExecutionFailure,
+    StepRuntimeExecutionSuccess,
+    WorkflowExecutionState,
+)
 from ai_office.storage import (
     RunningStatePersistenceResult,
     serialize_runtime_step_event_jsonl,
@@ -681,6 +690,30 @@ def test_malformed_persistence_and_mutations_are_compensated_without_retry(
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
+def test_valid_persistence_result_with_event_mutation_is_rejected_and_compensated(
+    tmp_path: Path,
+) -> None:
+    state, events, before_state, before_events = predecessor_targets(tmp_path)
+    value = start()
+    expected_state = serialize_workflow_execution_state_json(value.running_state).encode()
+    expected = RunningStatePersistenceResult(len(expected_state))
+    calls = 0
+
+    def fake(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(expected_state)
+        events.write_bytes(before_events + b"unexpected-event")
+        return expected
+
+    reject(
+        lambda: invoke(value, workflow(), employee(), state, events, fake),
+        "persistence_contract",
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 def test_valid_persistence_result_preserves_exact_identity(tmp_path: Path) -> None:
     state, events, _, before_events = predecessor_targets(tmp_path)
     value = start()
@@ -693,6 +726,29 @@ def test_valid_persistence_result_preserves_exact_identity(tmp_path: Path) -> No
 
     assert invoke(value, workflow(), employee(), state, events, fake) is result
     assert events.read_bytes() == before_events
+
+
+def test_state_bytes_wrong_positive_count_is_rejected_and_compensated(
+    tmp_path: Path,
+) -> None:
+    state, events, before_state, before_events = predecessor_targets(tmp_path)
+    value = start()
+    expected_state = serialize_workflow_execution_state_json(value.running_state).encode()
+    returned = RunningStatePersistenceResult(len(expected_state) + 1)
+    calls = 0
+
+    def fake(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(expected_state)
+        return returned
+
+    reject(
+        lambda: invoke(value, workflow(), employee(), state, events, fake),
+        "persistence_contract",
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("mutation", ["unchanged", "state", "events", "both"])
@@ -786,6 +842,86 @@ def test_stop_routes_are_identity_preserving_zero_call_stops(tmp_path: Path, res
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
+@pytest.mark.parametrize("result_kind", ["completion", "failure"])
+def test_stop_result_subclasses_and_substitutes_are_zero_call_rejected(
+    tmp_path: Path, result_kind: str
+) -> None:
+    if result_kind == "completion":
+        exact = WorkflowProgressionDecision(
+            "workflow_complete", "workflow", "five", 5, "e", None, None, None,
+            "last_step_succeeded",
+        )
+        state, events, before_state, before_events = stop_targets(
+            tmp_path, status="succeeded", index=5
+        )
+        bad_values = [
+            DecisionChild(*tuple(exact.__dict__.values())),
+            SimpleNamespace(**exact.__dict__),
+        ]
+    else:
+        exact = PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "four", 4, "d", "api_error"
+        )
+        state, events, before_state, before_events = stop_targets(
+            tmp_path, status="failed", index=4
+        )
+        bad_values = [
+            OutcomeChild(*tuple(exact.__dict__.values())),
+            SimpleNamespace(**exact.__dict__),
+        ]
+
+    for bad in bad_values:
+        calls = 0
+
+        def fake(*_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return object()
+
+        reject(
+            lambda bad=bad: invoke(bad, workflow(), None, state, events, fake),
+            "result_type",
+        )
+        assert calls == 0
+        assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("result_kind", ["completion", "failure"])
+def test_stop_routes_reject_non_none_employee_with_zero_calls(
+    tmp_path: Path, result_kind: str
+) -> None:
+    if result_kind == "completion":
+        result = WorkflowProgressionDecision(
+            "workflow_complete", "workflow", "five", 5, "e", None, None, None,
+            "last_step_succeeded",
+        )
+        state, events, before_state, before_events = stop_targets(
+            tmp_path, status="succeeded", index=5
+        )
+        classification = "completion_contract"
+    else:
+        result = PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "four", 4, "d", "api_error"
+        )
+        state, events, before_state, before_events = stop_targets(
+            tmp_path, status="failed", index=4
+        )
+        classification = "failure_contract"
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(result, workflow(), employee(), state, events, fake),
+        classification,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 def test_workflow_complete_empty_success_output_is_rejected_zero_call(tmp_path: Path) -> None:
     result = WorkflowProgressionDecision("workflow_complete", "workflow", "five", 5, "e", None, None, None, "last_step_succeeded")
     state, events, before_state, before_events = stop_targets(tmp_path, status="succeeded", index=5, output_text="")
@@ -801,11 +937,36 @@ def test_workflow_complete_empty_success_output_is_rejected_zero_call(tmp_path: 
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
-@pytest.mark.parametrize("value", [True, IntChild(5)])
-def test_stop_index_requires_exact_builtin_int(tmp_path: Path, value: object) -> None:
-    result = WorkflowProgressionDecision("workflow_complete", "workflow", "five", 5, "e", None, None, None, "last_step_succeeded")
+@pytest.mark.parametrize(
+    ("result_kind", "value"),
+    [
+        ("completion", True),
+        ("completion", IntChild(5)),
+        ("failure", True),
+        ("failure", IntChild(4)),
+    ],
+)
+def test_stop_index_requires_exact_builtin_int(
+    tmp_path: Path, result_kind: str, value: object
+) -> None:
+    if result_kind == "completion":
+        result = WorkflowProgressionDecision(
+            "workflow_complete", "workflow", "five", 5, "e", None, None, None,
+            "last_step_succeeded",
+        )
+        state, events, before_state, before_events = stop_targets(
+            tmp_path, status="succeeded", index=5
+        )
+        classification = "completion_contract"
+    else:
+        result = PersistedExecutionOutcome(
+            "persisted_failure", "workflow", "four", 4, "d", "api_error"
+        )
+        state, events, before_state, before_events = stop_targets(
+            tmp_path, status="failed", index=4
+        )
+        classification = "failure_contract"
     object.__setattr__(result, "current_step_index", value)
-    state, events, before_state, before_events = stop_targets(tmp_path, status="succeeded", index=5)
     calls = 0
 
     def fake(*_: object) -> object:
@@ -813,24 +974,54 @@ def test_stop_index_requires_exact_builtin_int(tmp_path: Path, value: object) ->
         calls += 1
         return object()
 
-    reject(lambda: invoke(result, workflow(), None, state, events, fake), "completion_contract")
+    reject(lambda: invoke(result, workflow(), None, state, events, fake), classification)
     assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
-@pytest.mark.parametrize("bad", [RunningStatePersistenceResult(1), PreparedWorkflowStep("workflow", "five", 5, "e", "employee instructions", "five", "model", ("tool-one", "tool-two"))])
-def test_direct_unsupported_inputs_are_zero_call(tmp_path: Path, bad: object) -> None:
+def test_direct_unsupported_inputs_are_zero_call(tmp_path: Path) -> None:
     state, events, before_state, before_events = predecessor_targets(tmp_path)
-    calls = 0
+    runtime_results = [
+        StepRuntimeExecutionSuccess(
+            "workflow",
+            "five",
+            5,
+            "e",
+            ModelInvocationSuccess(
+                "openai", "response", None, "completed", ("output",), "output"
+            ),
+        ),
+        StepRuntimeExecutionFailure(
+            "workflow",
+            "five",
+            5,
+            "e",
+            ModelInvocationFailure(
+                "openai", "api_error", "safe", None, None, None, None
+            ),
+        ),
+    ]
+    for bad in [
+        RunningStatePersistenceResult(1),
+        PreparedWorkflowStep(
+            "workflow", "five", 5, "e", "employee instructions", "five", "model",
+            ("tool-one", "tool-two"),
+        ),
+        *runtime_results,
+    ]:
+        calls = 0
 
-    def fake(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
+        def fake(*_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return object()
 
-    reject(lambda: invoke(bad, workflow(), employee(), state, events, fake), "result_type")
-    assert calls == 0
-    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+        reject(
+            lambda bad=bad: invoke(bad, workflow(), employee(), state, events, fake),
+            "result_type",
+        )
+        assert calls == 0
+        assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 def test_non_callable_dependency_and_targets_are_classified(tmp_path: Path) -> None:
@@ -1066,6 +1257,36 @@ def test_persistence_state_transition_is_exact(tmp_path: Path, mutation: str) ->
 
     reject(
         lambda: invoke(value, workflow(), employee(), state, events, fake),
+        "persistence_contract",
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_semantically_wrong_running_state_is_rejected_and_compensated(
+    tmp_path: Path,
+) -> None:
+    state, events, before_state, before_events = predecessor_targets(tmp_path)
+    wrong_state = WorkflowExecutionState(
+        "wrong-workflow",
+        "running",
+        "five",
+        5,
+        "e",
+        ("one", "two", "three", "four"),
+        None,
+    )
+    wrong_state_bytes = serialize_workflow_execution_state_json(wrong_state).encode()
+    calls = 0
+
+    def fake(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(wrong_state_bytes)
+        return RunningStatePersistenceResult(len(wrong_state_bytes))
+
+    reject(
+        lambda: invoke(start(), workflow(), employee(), state, events, fake),
         "persistence_contract",
     )
     assert calls == 1

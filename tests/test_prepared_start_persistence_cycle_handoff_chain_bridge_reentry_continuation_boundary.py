@@ -1149,6 +1149,8 @@ def test_empty_success_prepared_fallback_delegates_once_and_preserves_identity(
 ) -> None:
     state, events = targets(tmp_path)
     _rewrite_event_json(events, 2, output_text="")
+    before_state = state.read_bytes()
+    before_events = events.read_bytes()
     supplied = (start(), workflow(), employee(), state, events)
     expected_state = serialize_workflow_execution_state_json(
         supplied[0].running_state
@@ -1166,9 +1168,67 @@ def test_empty_success_prepared_fallback_delegates_once_and_preserves_identity(
         phase125_function=fake,
     )
     assert returned is expected
-    assert calls == [supplied]
-    assert events.read_text(encoding="utf-8").splitlines()[2]
+    assert len(calls) == 1
+    assert all(
+        received is expected_argument
+        for received, expected_argument in zip(calls[0], supplied, strict=True)
+    )
     assert state.read_bytes() == expected_state
+    assert state.read_bytes() != before_state
+    assert events.read_bytes() == before_events
+
+
+def test_empty_success_fallback_preserves_existing_predecessor_semantics(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 2, output_text="")
+    _rewrite_event_json(events, 0, provider="other", request_id=None)
+    before_events = events.read_bytes()
+    supplied = (start(), workflow(), employee(), state, events)
+    expected_state = serialize_workflow_execution_state_json(
+        supplied[0].running_state
+    ).encode()
+    expected = RunningStatePersistenceResult(len(expected_state))
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
+
+    returned = route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+        *supplied,
+        phase125_function=fake,
+    )
+    assert returned is expected
+    assert len(calls) == 1
+    assert all(
+        received is expected_argument
+        for received, expected_argument in zip(calls[0], supplied, strict=True)
+    )
+    assert events.read_bytes() == before_events
+
+
+def test_empty_success_workflow_complete_stop_remains_zero_call_rejection(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path, status="succeeded", index=4)
+    _rewrite_event_json(events, 3, output_text="")
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(completion(), None, state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 @pytest.mark.parametrize(
