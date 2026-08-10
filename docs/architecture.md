@@ -1091,3 +1091,27 @@ workflow_complete | persisted_failure
     ↓
 Phase 128 (future explicit caller action)
 ```
+
+## Phase 135: Persisted-Transition Outcome Classification Cycle Handoff Chain Bridge
+
+Phase 135は、Phase 134の正確な`WorkflowExecutionPersistenceResult`を受け、公開Phase 128 `route_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary()`へ、`(result, workflow, state_path, events_path)`のcanonical four-argument orderとsupplied-object identityを保って正確に一度だけ委譲する。Phase 128から返るexact `PersistedExecutionOutcome`のterminal state/linkage/index/failure categoryを再検証して同一objectを返す。`workflow_complete`と`persisted_failure`は、Phase 134 stop-routeのprovider/index許容範囲を維持したstrict terminal state/historyとtarget不変性を確認し、Phase 128 call count zeroで同じobjectを返す。
+
+classification routeではcurrent step index `>= 4`、exact workflow/step/state/event models、regular target identity、positive exact built-in byte counts、canonical persisted state bytes、complete predecessor history、直前predecessor provider=`"openai"`、terminal provider=`"openai"`を再検証する。Phase 128はread-only dependencyとして扱い、正常経路のstate/events mutationは許可しない。safe dependency errorは補償成功後もidentityを保持し、unexpected error、malformed outcome、target mutationはdetail-safeに分類して両targetを元bytesへ復元する。restore failureは`dependency_rollback`、retryはない。
+
+Phase 135はPhase 121を迂回せず、workflow progression、next-step preparation、prepared-step start、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しない。Focused testsはinjected Phase 128 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを実行しない。
+
+Phase 128については、Phase 127/134 success persistenceが生成しうるexact built-in `str output_text == ""`を受理する狭い互換修正を行った。response_id、provider、predecessor、failure semantics、public APIその他の契約は変更していない。
+
+```text
+Phase 134
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 135 persisted-transition outcome classification cycle handoff chain bridge reentry continuation boundary
+WorkflowExecutionPersistenceResult
+    → Phase 128 exactly once in canonical four-argument order
+    → exact persisted_success | persisted_failure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 136 (future explicit caller action)
+```

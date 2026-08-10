@@ -828,3 +828,63 @@ def test_target_read_bytes_oserrors_are_safely_classified(
 
     monkeypatch.setattr(_TestPath, "read_bytes", raising_read_bytes)
     assert_rejected(result, supplied_workflow, state, events, f"{target[:-1] if target == 'events' else target}_target", lambda *_: pytest.fail("called"))
+
+
+def test_empty_success_terminal_output_delegates_to_injected_phase121_once(tmp_path: Path) -> None:
+    state, events, result, supplied_workflow, before_state, _ = setup(tmp_path, "succeeded")
+    empty_terminal = replace(terminal_event("succeeded"), output_text="")
+    event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+        for event in (
+            predecessor_event("one", 1, "a"),
+            predecessor_event("two", 2, "b"),
+            empty_terminal,
+        )
+    )
+    events.write_bytes(event_bytes)
+    result = replace(
+        result,
+        event_bytes_appended=len(serialize_runtime_step_event_jsonl(empty_terminal).encode("utf-8")),
+    )
+    expected = expected_outcome("succeeded")
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    returned = call(result, supplied_workflow, state, events, dependency)
+    assert returned is expected
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert state.read_bytes() == before_state
+    assert events.read_bytes() == event_bytes
+
+
+@pytest.mark.parametrize("field", ["current_step_id", "current_employee_id"])
+def test_empty_success_fallback_preserves_workflow_current_step_linkage(
+    tmp_path: Path, field: str
+) -> None:
+    state, events, result, supplied_workflow, before_state, before_events = setup(
+        tmp_path, "succeeded"
+    )
+    state_payload = json.loads(state.read_text(encoding="utf-8"))
+    state_payload[field] = "wrong"
+    state.write_text(json.dumps(state_payload, separators=(",", ":")) + "\n", encoding="utf-8")
+    rewrite_event(events, 2, **{"step_id" if field == "current_step_id" else "employee_id": "wrong", "output_text": ""})
+    result = replace(
+        result,
+        state_bytes_written=len(state.read_bytes()),
+        event_bytes_appended=len(events.read_bytes().splitlines(keepends=True)[-1]),
+    )
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return expected_outcome("succeeded")
+
+    assert_rejected(result, supplied_workflow, state, events, "terminal_contract", dependency)
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+    assert (before_state, before_events) != before
