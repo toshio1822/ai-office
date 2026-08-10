@@ -1,4 +1,4 @@
-"""Phase 134 runtime-result transition persistence bridge boundary."""
+"""Phase 142 runtime-result transition persistence cycle handoff chain bridge outer boundary."""
 
 # ruff: noqa: E501,E701,I001
 
@@ -11,9 +11,9 @@ from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefin
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationError as Phase127Error,
-    route_runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary,
+from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
+    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeReentryContinuationError as Phase134Error,
+    route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary,
 )
 from ai_office.engine.terminal_history_contract import (
     TerminalHistoryContractError,
@@ -56,7 +56,7 @@ Classification = Literal[
     "dependency_error",
     "dependency_rollback",
 ]
-Phase127Function = Callable[
+Phase134Function = Callable[
     [object, object, object, object],
     WorkflowExecutionPersistenceResult
     | WorkflowProgressionDecision
@@ -67,50 +67,50 @@ _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 
 
 @dataclass(frozen=True)
-class RuntimeResultTransitionPersistenceCycleHandoffChainBridgeReentryContinuationFailureDetail:
-    """Safe classification for one Phase 134 compatibility failure."""
+class RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationFailureDetail:
+    """Safe classification for one Phase 142 compatibility failure."""
 
     classification: Classification
 
 
-class RuntimeResultTransitionPersistenceCycleHandoffChainBridgeReentryContinuationError(
+class RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError(
     ValueError
 ):
-    """Base error for the Phase 134 boundary."""
+    """Base error for the Phase 142 boundary."""
 
 
-class RuntimeResultTransitionPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError(
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeReentryContinuationError
+class RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
+    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError
 ):
-    """Raised when one runtime result cannot safely cross Phase 134."""
+    """Raised when one runtime result cannot safely cross Phase 142."""
 
     def __init__(self, classification: Classification) -> None:
         super().__init__(
-            "runtime-result transition persistence cycle handoff chain bridge inputs are incompatible"
+            "runtime-result transition persistence cycle handoff chain bridge outer inputs are incompatible"
         )
         self.detail = (
-            RuntimeResultTransitionPersistenceCycleHandoffChainBridgeReentryContinuationFailureDetail(
+            RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationFailureDetail(
                 classification
             )
         )
 
 
-def route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+def route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
     result: object,
     workflow: object,
     state_path: object,
     events_path: object,
     *,
-    phase127_function: Phase127Function = (
-        route_runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary
+    phase134_function: Phase134Function = (
+        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary
     ),
 ) -> (
     WorkflowExecutionPersistenceResult
     | WorkflowProgressionDecision
     | PersistedExecutionOutcome
 ):
-    """Route one exact Phase 133 result through public Phase 127 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase127_function)
+    """Route one exact Phase 141 result through public Phase 134 once."""
+    _check_inputs(result, workflow, state_path, events_path, phase134_function)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -137,13 +137,11 @@ def route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reent
     _check_predecessor_history(workflow, state, history.events)
 
     try:
-        value = phase127_function(result, workflow, state_path, events_path)
-    except Phase127Error as error:
-        _restore_if_changed(state_path, events_path, original)
-        raise error
+        value = phase134_function(result, workflow, state_path, events_path)
+    except Phase134Error as error:
+        _compensate_dependency_error(state_path, events_path, original, error)
     except Exception:
-        _restore_if_changed(state_path, events_path, original)
-        _fail("dependency_error")
+        _compensate_dependency_error(state_path, events_path, original, None)
 
     try:
         _check_persistence(
@@ -156,7 +154,7 @@ def route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reent
             events_path,
             original,
         )
-    except RuntimeResultTransitionPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError as error:
+    except RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as error:
         if error.detail.classification != "dependency_rollback":
             _restore_if_changed(state_path, events_path, original)
         raise
@@ -297,7 +295,7 @@ def _load_running_context(
         type(state) is WorkflowExecutionState
         and _exact_string(state.status, "running")
         and type(state.current_step_index) is int
-        and 4 <= state.current_step_index <= len(workflow.steps)
+        and 5 <= state.current_step_index <= len(workflow.steps)
         and _exact_string(state.workflow_id, workflow.id)
         and _exact_string(
             state.current_step_id,
@@ -409,9 +407,12 @@ def _valid_predecessor_event(
     step: WorkflowStepDefinition,
     position: int,
     state: WorkflowExecutionState,
-    require_openai: bool,
+    require_openai: bool = False,
     allow_empty_output: bool = False,
 ) -> bool:
+    provider_valid = _nonempty_string(event.provider) and (
+        not require_openai or event.provider == "openai"
+    )
     return (
         type(event) is RuntimeStepEvent
         and _exact_string(event.event_type, "step_succeeded")
@@ -422,8 +423,7 @@ def _valid_predecessor_event(
         and _exact_string(event.employee_id, step.employee)
         and _exact_string(event.previous_status, "running")
         and _exact_string(event.next_status, "succeeded")
-        and _nonempty_string(event.provider)
-        and (not require_openai or event.provider == "openai")
+        and provider_valid
         and event.failure_category is None
         and _nonempty_string(event.response_id)
         and _nonempty_string(event.request_id)
@@ -476,7 +476,7 @@ def _valid_terminal_history(
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple:
         return False
-    if not _valid_terminal_state(state, workflow):
+    if not history or not _valid_terminal_state(state, workflow):
         return False
     if state.status != expected_status or state.last_failure_category != expected_failure:
         return False
@@ -490,8 +490,10 @@ def _valid_terminal_history(
         return False
     if len(history) != len(prior_steps) + 1:
         return False
+    if any(type(event) is not RuntimeStepEvent for event in history):
+        return False
     for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
-        if not _valid_predecessor_event(event, step, position, state, False):
+        if not _valid_predecessor_event(event, step, position, state):
             return False
     terminal = history[-1]
     if not _valid_event_shape(terminal):
@@ -509,8 +511,8 @@ def _valid_terminal_history(
             and terminal.event_type == "step_succeeded"
             and terminal.next_status == "succeeded"
             and terminal.failure_category is None
-            and terminal.response_id is not None
-            and terminal.output_text is not None
+            and _nonempty_string(terminal.response_id)
+            and _nonempty_string(terminal.output_text)
             and terminal.message is None
         )
     return (
@@ -707,6 +709,18 @@ def _changed(path: Path, before: bytes) -> bool:
         return True
 
 
+def _compensate_dependency_error(
+    state: Path,
+    events: Path,
+    original: tuple[bytes, bytes],
+    safe_error: Phase134Error | None,
+) -> None:
+    _restore_if_changed(state, events, original)
+    if safe_error is not None:
+        raise safe_error
+    _fail("dependency_error")
+
+
 def _optional_text(value: object) -> bool:
     return value is None or type(value) is str
 
@@ -728,6 +742,6 @@ def _exact_string(value: object, expected: str) -> bool:
 
 
 def _fail(classification: Classification) -> None:
-    raise RuntimeResultTransitionPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError(
+    raise RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
         classification
     ) from None

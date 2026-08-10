@@ -1257,3 +1257,27 @@ workflow_complete | persisted_failure
     ↓
 Phase 134 (future explicit caller action)
 ```
+
+## Phase 142: Runtime-Result Transition Persistence Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary
+
+Phase 142は、Phase 141のexact `StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるouter boundaryである。実行routeでは`current_step_index >= 5`、exact workflow/running-state/runtime-result linkage、regular targets、succeeded predecessor history、immediate predecessor provider=`"openai"`を再検証する。exact built-in empty success `output_text`は実行routeのpredecessor検証で許容する。
+
+検証後、公開Phase 134 `route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, state_path, events_path)`のcanonical four-argument orderで正確に一度だけ委譲する。exact `WorkflowExecutionPersistenceResult`、target identity、byte counts、reloadしたterminal state/history、terminal eventのlinkage・semantics、provider=`"openai"`、request/response provenanceを再検証し、同じpersistence result objectを返す。Phase 134はread-only dependencyとして扱い、正常returnでstate/eventsを変更させない。
+
+`workflow_complete`と`persisted_failure`はterminal historyを先に検証し、Phase 134を呼ばないunchanged zero-call stop routeである。Phase 142は明示的なruntime-result transition persistence handoffを一回だけ行い、outcome classification、workflow progression、next-step preparation、prepared-step start、retry、automatic continuation、finalization、scheduling、loop、parallel execution、CLI/GUI behaviorを行わない。safe error identityはsuccessful compensation後も保持し、unexpected error、malformed return、target mutationはdetail-safeに分類する。両targetを元bytesへ復元し、restore failureは`dependency_rollback`、retryは行わない。Focused testsはinjected Phase 134 fakesだけを使い、real provider、network、paid API、external tool、credential use、real transportを呼ばない。
+
+Phase 134には、実行routeの非final predecessor historyだけを対象に、exact built-in empty success `output_text`を受理する狭い互換修正を追加した。`_valid_predecessor_event`の`allow_empty_output`スイッチを実行routeの`_check_predecessor_history`からのみ有効にし、workflow-complete stop routeのterminal `output_text` non-empty契約、failed history、provider/response/request、failure semantics、stop behavior、public API、共有terminal history contractは緩和していない。Phase 142はPhase 127を直接参照・呼び出しせず、Phase 141、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しない。
+
+```text
+Phase 141
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | workflow_complete | persisted_failure
+    ↓
+Phase 142 runtime-result transition persistence cycle handoff chain bridge outer reentry continuation boundary
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure (current_step_index >= 5) + exact runtime inputs
+    → Phase 134 exactly once in canonical four-argument order
+    → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 135 (existing explicit caller action)
+```

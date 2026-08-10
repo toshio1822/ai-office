@@ -1397,3 +1397,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 134 (future explicit caller action)
 ```
+
+## Runtime-Result Transition Persistence Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary（Phase 142）
+
+`route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`は、Phase 141から受け取ったexact `StepRuntimeExecutionSuccess`/`StepRuntimeExecutionFailure`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を、公開Phase 134へcanonical four-argument order `(result, workflow, state_path, events_path)`でexactly once委譲するouter boundaryです。実行routeでは`current_step_index >= 5`、exact workflow/running-state/runtime-result linkage、regular targets、succeeded predecessor history、immediate predecessor provider=`"openai"`を再検証します。exact built-in empty success `output_text`は実行routeのpredecessor検証で許容します。
+
+検証後、公開Phase 134 `route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へsupplied object identityを保持したまま正確に一度だけ委譲し、exact `WorkflowExecutionPersistenceResult`、target identity、byte counts、reloadしたterminal state/history、terminal eventのlinkage・semantics、provider=`"openai"`、request/response provenanceを再検証して同じpersistence result objectを返します。`workflow_complete`と`persisted_failure`はterminal historyを先に検証し、Phase 134を呼ばず同じobjectを返すunchanged zero-call stop routeです。
+
+Phase 134には、実行routeの非final predecessor historyだけでexact built-in empty success `output_text`を受理する狭い互換修正を追加しました。workflow_complete stop routeのterminal `output_text` non-empty契約、failed history、provider/response/request、failure semantics、stop behavior、public APIは緩和していません。Phase 142はPhase 127を直接呼ばず、runtime-result persistence、outcome classification、workflow progression、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類します。両targetを可能な限り元bytesへ補償復元し、復元失敗は`dependency_rollback`、dependency callはretryしません。Focused testsはinjected Phase 134 fakesのみを使い、real provider、network、paid API、external tool、credential use、real transportを呼びません。
+
+```text
+Phase 141
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | workflow_complete | persisted_failure
+    ↓
+Phase 142 runtime-result transition persistence cycle handoff chain bridge outer reentry continuation boundary
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure (current_step_index >= 5) + exact runtime inputs
+    → Phase 134 exactly once in canonical four-argument order
+    → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 135 (existing explicit caller action)
+```
