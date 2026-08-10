@@ -1,4 +1,4 @@
-"""Phase 133 persisted-running execution cycle handoff bridge boundary."""
+"""Phase 141 persisted-running execution cycle handoff chain bridge outer boundary."""
 
 # ruff: noqa: E501,E701,I001
 
@@ -11,10 +11,14 @@ from pydantic import SecretStr
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
-from ai_office.engine.persisted_execution_outcome_reentry import PersistedExecutionOutcome
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainReentryContinuationError as Phase126Error,
-    route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary,
+from ai_office.engine.persisted_execution_outcome_reentry import (
+    PersistedExecutionOutcome,
+)
+from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
+    PersistedRunningExecutionCycleHandoffChainBridgeReentryContinuationError as Phase133Error,
+)
+from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
+    route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.terminal_history_contract import (
@@ -67,7 +71,7 @@ Classification = Literal[
     "dependency_error",
     "dependency_rollback",
 ]
-Phase126Function = Callable[
+Phase133Function = Callable[
     [object, object, object, object, object, object, object, object, object, object],
     StepRuntimeExecutionSuccess
     | StepRuntimeExecutionFailure
@@ -79,33 +83,33 @@ _PATH_TYPE = type(Path())
 
 
 @dataclass(frozen=True)
-class PersistedRunningExecutionCycleHandoffChainBridgeReentryContinuationFailureDetail:
-    """Safe classification for one Phase 133 compatibility failure."""
+class PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationFailureDetail:
+    """Safe classification for one Phase 141 compatibility failure."""
 
     classification: Classification
 
 
-class PersistedRunningExecutionCycleHandoffChainBridgeReentryContinuationError(
+class PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError(
     ValueError
 ):
-    """Raised when one Phase 133 handoff cannot continue safely."""
+    """Raised when one Phase 141 handoff cannot continue safely."""
 
 
-class PersistedRunningExecutionCycleHandoffChainBridgeReentryContinuationCompatibilityError(
-    PersistedRunningExecutionCycleHandoffChainBridgeReentryContinuationError
+class PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
+    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError
 ):
-    """Raised for a detail-safe Phase 133 compatibility rejection."""
+    """Raised for a detail-safe Phase 141 compatibility rejection."""
 
     def __init__(self, classification: Classification) -> None:
         super().__init__(
-            "persisted-running execution cycle handoff chain bridge inputs are incompatible"
+            "persisted-running execution cycle handoff chain bridge outer inputs are incompatible"
         )
-        self.detail = PersistedRunningExecutionCycleHandoffChainBridgeReentryContinuationFailureDetail(
+        self.detail = PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationFailureDetail(
             classification
         )
 
 
-def route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+def route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
     result: object,
     start: object,
     workflow: object,
@@ -117,8 +121,8 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continu
     approval: object,
     transport: object,
     *,
-    phase126_function: Phase126Function = (
-        route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary
+    phase133_function: Phase133Function = (
+        route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary
     ),
 ) -> (
     StepRuntimeExecutionSuccess
@@ -126,8 +130,8 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continu
     | WorkflowProgressionDecision
     | PersistedExecutionOutcome
 ):
-    """Route one exact Phase 132 result through public Phase 126 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase126_function)
+    """Route one exact Phase 139 result through public Phase 133 once."""
+    _check_inputs(result, workflow, state_path, events_path, phase133_function)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -167,7 +171,7 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continu
     _check_predecessor(start, workflow, state_path, events_path)
 
     try:
-        value = phase126_function(
+        value = phase133_function(
             result,
             start,
             workflow,
@@ -179,7 +183,7 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continu
             approval,
             transport,
         )
-    except Phase126Error as error:
+    except Phase133Error as error:
         _compensate_dependency_error(state_path, events_path, original, error)
     except Exception:
         _compensate_dependency_error(state_path, events_path, original, None)
@@ -187,18 +191,21 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continu
     try:
         _require_unchanged(state_path, events_path, original, "runtime_contract")
         try:
-            valid = is_valid_step_runtime_execution_result(
-                value,
-                workflow_id=start.running_state.workflow_id,
-                step_id=start.running_state.current_step_id,
-                step_index=start.running_state.current_step_index,
-                employee_id=start.running_state.current_employee_id,
+            valid = (
+                start.running_state.current_step_index >= 5
+                and is_valid_step_runtime_execution_result(
+                    value,
+                    workflow_id=start.running_state.workflow_id,
+                    step_id=start.running_state.current_step_id,
+                    step_index=start.running_state.current_step_index,
+                    employee_id=start.running_state.current_employee_id,
+                )
             )
         except Exception:
             valid = False
         if not valid:
             _fail("runtime_contract")
-    except PersistedRunningExecutionCycleHandoffChainBridgeReentryContinuationCompatibilityError as error:
+    except PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as error:
         if error.detail.classification != "dependency_rollback":
             _restore_if_changed(state_path, events_path, original)
         raise
@@ -329,7 +336,7 @@ def _check_execution_inputs(
         _fail("start_contract")
     if (
         type(running.current_step_index) is not int
-        or not 4 <= running.current_step_index <= len(workflow.steps)
+        or not 5 <= running.current_step_index <= len(workflow.steps)
     ):
         _fail("start_contract")
     step = workflow.steps[running.current_step_index - 1]
@@ -694,7 +701,7 @@ def _compensate_dependency_error(
     state: Path,
     events: Path,
     original: tuple[bytes, bytes],
-    safe_error: Phase126Error | None,
+    safe_error: Phase133Error | None,
 ) -> None:
     _restore_if_changed(state, events, original)
     if safe_error is not None:
@@ -719,6 +726,6 @@ def _exact_string(value: object, expected: str) -> bool:
 
 
 def _fail(classification: Classification) -> None:
-    raise PersistedRunningExecutionCycleHandoffChainBridgeReentryContinuationCompatibilityError(
+    raise PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
         classification
     ) from None
