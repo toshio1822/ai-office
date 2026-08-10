@@ -1321,3 +1321,27 @@ workflow_complete | persisted_failure
     ↓
 Phase 131 (future explicit caller action)
 ```
+
+## Prepared-step Start Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary（Phase 138）
+
+`route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`は、Phase 137から受け取ったexact `PreparedWorkflowStep`とexact `EmployeeDefinition`を検証するouter bridgeです。prepared routeでは`step_index >= 5`、workflow/step/employee linkage、prepared predecessorのstate/history、completed prefix、直前predecessor provider=`"openai"`、terminal response/request/outputのexact contractを再検証し、empty success `output_text`もexact built-in `str`として許容します。
+
+検証後、公開Phase 131 `route_prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へ、`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderとsupplied-object identityを保持して正確に一度だけ委譲します。Phase 131のexact `PreparedStepExecutionStart`とnested request/running stateを再検証し、正常経路のstate/eventsをbyte-for-byte不変に保ちます。safe error identity、両target補償、unexpected errorのsanitize、`dependency_rollback`、no retryを維持します。
+
+`workflow_complete`と`persisted_failure`はemployeeが`None`であり、Phase 137 stop contractより不必要に厳しいprovider/index条件を追加せず、Phase 131を呼ばず同じobjectを返すunchanged zero-call stop routeです。workflow-complete success terminal outputはstop contractどおりnon-emptyとします。Phase 138はPhase 124やPhase 132を直接呼び出さず、prepared-start persistence、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。Focused testsはinjected Phase 131 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを呼びません。
+
+Phase 131には、prepared-step routeだけでPhase 137のvalid exact empty success `output_text`を受理する狭い互換修正を追加しました。workflow linkage、completed prefix、predecessor、terminal provider/response/request、failure semantics、stop behavior、public API、および共有terminal history contractは緩和していません。
+
+```text
+Phase 137
+PreparedWorkflowStep | workflow_complete | persisted_failure
+    ↓
+Phase 138 prepared-step start cycle handoff chain bridge outer reentry continuation boundary
+PreparedWorkflowStep (step_index >= 5) + exact employee
+    → Phase 131 exactly once in canonical five-argument order
+    → exact PreparedStepExecutionStart
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 132 (future explicit caller action)
+```

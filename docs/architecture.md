@@ -1161,3 +1161,27 @@ workflow_complete | persisted_failure
     ↓
 Phase 131 (future explicit caller action)
 ```
+
+## Phase 138: Prepared-step Start Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary
+
+Phase 138は、Phase 137のexact `PreparedWorkflowStep`と`EmployeeDefinition`を受けるprepared-start outer bridgeである。`step_index >= 5`、workflow/step/employee linkage、prepared predecessor state/history、completed prefix、直前predecessor provider=`"openai"`、terminal response/request/outputのexact contractを検証し、exact built-in empty success `output_text`も許容する。
+
+valid routeでは公開Phase 131 `route_prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へ、`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderとsupplied-object identityを保持してexactly once委譲する。返却されたexact `PreparedStepExecutionStart`とnested request/running stateを再検証し、state/eventsはbyte-for-byte不変に保つ。safe error identity、両target compensation、unexpected errorのsanitize、`dependency_rollback`、no retryを継承する。
+
+`workflow_complete`と`persisted_failure`はemployee=`None`のunchanged zero-call stopであり、Phase 137より厳しいprovider/index条件を追加しない。workflow-complete success terminal outputはnon-emptyを維持する。Phase 138はPhase 124/132、persistence、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加せず、Focused testsはinjected Phase 131 fakesのみを用いる。
+
+Phase 131の互換修正はprepared-step routeのexact empty success `output_text`だけを受理する狭い変更であり、workflow linkage、completed prefix、predecessor、terminal provider/response/request、failure semantics、stop behavior、public API、`terminal_history_contract.py`は変更しない。
+
+```text
+Phase 137
+PreparedWorkflowStep | workflow_complete | persisted_failure
+    ↓
+Phase 138 prepared-step start cycle handoff chain bridge outer reentry continuation boundary
+PreparedWorkflowStep (step_index >= 5) + exact employee
+    → Phase 131 exactly once in canonical five-argument order
+    → exact PreparedStepExecutionStart
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 132 (future explicit caller action)
+```
