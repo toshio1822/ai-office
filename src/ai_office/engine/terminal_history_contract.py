@@ -72,6 +72,9 @@ def validate_strict_terminal_history(
     prior_ids = expected_ids[:-1] if state.status == "succeeded" else expected_ids
     if len(events) != len(prior_ids) + 1:
         _invalid()
+    allow_empty_success_output = (
+        state.status == "succeeded" and state.current_step_index < len(workflow.steps)
+    )
     for event, step_id in zip(events[:-1], prior_ids, strict=True):
         step_index = next(
             (
@@ -93,15 +96,22 @@ def validate_strict_terminal_history(
             and type(event.response_id) is str
             and event.response_id != ""
             and type(event.output_text) is str
-            and event.output_text != ""
+            and (allow_empty_success_output or event.output_text != "")
             and event.message is None
         ):
             _invalid()
-    _validate_terminal_event(state, events[-1])
+    _validate_terminal_event(
+        state,
+        events[-1],
+        allow_empty_success_output=allow_empty_success_output,
+    )
 
 
 def _validate_terminal_event(
-    state: WorkflowExecutionState, event: RuntimeStepEvent
+    state: WorkflowExecutionState,
+    event: RuntimeStepEvent,
+    *,
+    allow_empty_success_output: bool,
 ) -> None:
     base = (
         event.workflow_id == state.workflow_id
@@ -120,7 +130,7 @@ def _validate_terminal_event(
             and type(event.response_id) is str
             and event.response_id != ""
             and type(event.output_text) is str
-            and event.output_text != ""
+            and (allow_empty_success_output or event.output_text != "")
             and event.message is None
         )
     else:

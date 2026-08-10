@@ -1367,3 +1367,11 @@ workflow_complete | persisted_failure
     ↓
 Phase 133 (future explicit caller action)
 ```
+
+## Non-final Empty-success Terminal-history Compatibility（Phase 140）
+
+Phase 140は新しいouter bridgeや公開APIを追加せず、Phase 139のprepared-start persistence default chainが、既にPhase 138/139で受理している非final succeeded historyをそのまま処理できるようにする共有契約の互換修正です。`state.status == "succeeded"`かつ`state.current_step_index < len(workflow.steps)`のhistoryでは、terminalおよびそれ以前の succeeded eventの`output_text`にexact built-in `str`の空文字を許容します。workflow、step、index、employee、response、failure、message、history order、completed prefix、file-loadingの契約は変更しません。
+
+final succeeded workflow-complete historyでは従来どおりterminal success `output_text`はnon-emptyであり、failure historyの契約も不変です。これにより、Phase 139からPhase 132/125/118/111/104へ続くreal default dependency chainが、empty success outputをsentinelへ変換したり、provider/toolを実行したりせずに、exact `RunningStatePersistenceResult`を返せることをregression testで確認します。Phase 140はretry、自動継続、Phase 139→133 outer bridge、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。
+
+Phase 129のpersisted-success local validationも、shared loaderが正常成功する非final historyでは同じexact built-in `str`のempty/non-empty output rangeを受理します。legacyのfinal persisted-success empty-output fallbackは維持し、workflow-completeのempty success、failed history、provider/request/response、linkage、failure/message semanticsは変更しません。これにより、互換修正はPhase 139 default chain全体で同じ非final契約になる最小範囲に留まります。

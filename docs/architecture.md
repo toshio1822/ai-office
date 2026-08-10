@@ -1209,3 +1209,27 @@ workflow_complete | persisted_failure
     ↓
 Phase 133 (future explicit caller action)
 ```
+
+## Phase 140: Non-final Empty-success Terminal-history Compatibility Repair
+
+Phase 140は新しいorchestration boundaryではなく、共有`terminal_history_contract.py`の狭い互換・正確性修正である。Phase 139のprepared-start persistence default chainが、Phase 138/139で既に有効な非final succeeded historyを、Phase 132のfallbackだけでなくPhase 125、118、111、104へ実際に通せるようにする。
+
+`state.status == "succeeded"`かつ`state.current_step_index < len(workflow.steps)`の場合に限り、terminal succeeded eventとそのhistory内のearlier succeeded eventについて、`output_text`をexact built-in `str`として空文字またはnon-emptyで受理する。`response_id`のnon-empty contract、workflow/current-step/index/employee linkage、`running -> succeeded`、failure-category/message、completed-step prefix、history order、file-loading、および既存のprovider/request意味論は緩和しない。
+
+final succeeded history（`state.current_step_index == len(workflow.steps)`）のterminal empty outputは従来どおり拒否し、workflow-complete stop behaviorを変更しない。failed historyも変更しない。Phase 140はPhase 139→133 outer bridge、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behavior、公開APIを追加しない。
+
+```text
+non-final succeeded terminal history
+    → exact success output_text may be empty
+    → valid through the Phase 139 default persistence chain
+
+final succeeded workflow-complete history
+    → existing strict non-empty success-output contract remains
+```
+
+Phase 129のpersisted-success local validatorも、shared loaderが正常に返る非final
+historyでは同じexact built-in `str`のempty/non-empty outputを受理する。final
+persisted-successのlegacy fallbackは維持し、workflow-completeのempty success、
+failed history、provider/request/response、workflow linkage、failure/message semanticsは
+緩和しない。これはPhase 129の新機能ではなく、shared contractとの互換整合だけを
+追加する最小修正である。
