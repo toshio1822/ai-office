@@ -1345,3 +1345,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 132 (future explicit caller action)
 ```
+
+## Prepared-start Persistence Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary（Phase 139）
+
+`route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`は、Phase 138から受け取ったexact `PreparedStepExecutionStart`と`EmployeeDefinition`を、公開Phase 132へcanonical five-argument order `(result, workflow, employee, state_path, events_path)`でexactly once委譲するouter persistence bridgeです。prepared routeでは`running_state.current_step_index >= 5`、exact nested request/running state、workflow/step/employee linkage、Phase 138 predecessor terminal state/history、immediate predecessor provider=`"openai"`、terminal response/request/output contractを再検証します。exact built-in empty success `output_text`は許容します。
+
+正常なPhase 132 persistenceではstate targetだけをsupplied running stateのbytesへ更新し、events targetをbyte-for-byte不変に保ち、exact `RunningStatePersistenceResult` identityを返します。malformed result、wrong persistence、target mutation、safe/unexpected errorは既存のcompensation、detail-safe classification、`dependency_rollback`、no-retry契約を維持します。`workflow_complete`と`persisted_failure`はemployee=`None`でPhase 132を呼ばず、同じobjectを返すunchanged zero-call stopです。workflow-completeのempty success outputは拒否します。Phase 139はPhase 125を直接呼ばず、Phase 133、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。Focused testsはinjected Phase 132 fakesのみを使用します。
+
+Phase 132には、prepared-start routeだけでexact built-in empty success `output_text`を受理する狭い互換fallbackを追加しました。workflow linkage、completed prefix、predecessor、terminal provider/response/request、failure semantics、stop behavior、public API、`terminal_history_contract.py`は緩和していません。
+
+```text
+Phase 138
+PreparedStepExecutionStart | workflow_complete | persisted_failure
+    ↓
+Phase 139 prepared-start persistence cycle handoff chain bridge outer reentry continuation boundary
+PreparedStepExecutionStart (running index >= 5) + exact employee
+    → Phase 132 exactly once in canonical five-argument order
+    → exact RunningStatePersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 133 (future explicit caller action)
+```
