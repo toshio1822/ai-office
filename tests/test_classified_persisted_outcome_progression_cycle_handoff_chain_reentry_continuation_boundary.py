@@ -332,7 +332,7 @@ def test_success_routes_delegate_once_in_canonical_order_and_return_identity(
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
-def test_empty_success_terminal_output_is_accepted_by_phase129_fallback(
+def test_nonfinal_empty_success_terminal_output_is_accepted_after_shared_loader_success(
     tmp_path: Path,
 ) -> None:
     result, supplied_workflow, state, events, *_ = setup(tmp_path)
@@ -347,6 +347,79 @@ def test_empty_success_terminal_output_is_accepted_by_phase129_fallback(
 
     assert call(result, supplied_workflow, state, events, dependency) is decision
     assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_nonfinal_empty_success_preserves_existing_predecessor_provider_request_semantics(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup(tmp_path)
+    rewrite_event(
+        events,
+        0,
+        output_text="",
+        provider="other",
+        request_id=None,
+    )
+    rewrite_event(events, 2, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    decision = expected_decision(supplied_workflow, 3)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert call(result, supplied_workflow, state, events, dependency) is decision
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_final_persisted_success_empty_output_legacy_fallback_remains_valid(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup(tmp_path, index=4)
+    rewrite_event(events, 3, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    decision = expected_decision(supplied_workflow, 4)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert call(result, supplied_workflow, state, events, dependency) is decision
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
+    ("event_index", "value"),
+    [(2, 4), (0, 4)],
+    ids=["terminal-output-nonstring", "predecessor-output-nonstring"],
+)
+def test_nonfinal_success_output_must_remain_exact_builtin_string(
+    tmp_path: Path, event_index: int, value: object
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup(tmp_path)
+    rewrite_event(events, event_index, output_text=value)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        state,
+        events,
+        "terminal_contract",
+        forbidden,
+    )
+    assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 

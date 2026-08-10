@@ -288,6 +288,16 @@ def _check_terminal(
         ):
             _fail("terminal_contract")
         allow_empty_success_output = True
+    if (
+        not allow_empty_success_output
+        and type(result) is PersistedExecutionOutcome
+        and result.outcome == "persisted_success"
+        and type(state) is WorkflowExecutionState
+        and state.status == "succeeded"
+        and type(state.current_step_index) is int
+        and 1 <= state.current_step_index < len(workflow.steps)
+    ):
+        allow_empty_success_output = True
     expected_failure = (
         result.failure_category if type(result) is PersistedExecutionOutcome else None
     )
@@ -356,8 +366,19 @@ def _valid_terminal_history(
         return False
     if any(type(event) is not RuntimeStepEvent for event in history):
         return False
+    allow_empty_predecessor_output = (
+        allow_empty_success_output
+        and state.status == "succeeded"
+        and state.current_step_index < len(workflow.steps)
+    )
     for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
-        if not _valid_event_shape(event) or not _valid_predecessor(event, step, position, state):
+        if not _valid_event_shape(event) or not _valid_predecessor(
+            event,
+            step,
+            position,
+            state,
+            allow_empty_output=allow_empty_predecessor_output,
+        ):
             return False
     return _valid_event_shape(history[-1]) and _valid_terminal_event(
         history[-1],
@@ -420,6 +441,8 @@ def _valid_predecessor(
     step: WorkflowStepDefinition,
     position: int,
     state: WorkflowExecutionState,
+    *,
+    allow_empty_output: bool,
 ) -> bool:
     return (
         event.event_type == "step_succeeded"
@@ -431,7 +454,8 @@ def _valid_predecessor(
         and event.next_status == "succeeded"
         and event.failure_category is None
         and _nonempty_string(event.response_id)
-        and _nonempty_string(event.output_text)
+        and type(event.output_text) is str
+        and (allow_empty_output or bool(event.output_text))
         and event.message is None
     )
 
