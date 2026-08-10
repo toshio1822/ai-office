@@ -347,6 +347,15 @@ def replace_state(data_set: dict[str, object], state: WorkflowExecutionState) ->
     )
 
 
+def rewrite_state_json(data_set: dict[str, object], **changes: object) -> None:
+    state_path = data_set["state_path"]
+    payload = json.loads(state_path.read_text(encoding="utf-8"))  # type: ignore[union-attr]
+    payload.update(changes)
+    state_path.write_text(  # type: ignore[union-attr]
+        json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+
+
 def test_public_signature_default_identity_and_source_audit() -> None:
     signature = inspect.signature(public_phase136)
     parameters = list(signature.parameters.values())
@@ -418,6 +427,70 @@ def test_empty_success_terminal_output_is_valid_on_phase136_route(tmp_path: Path
     assert invoke(data_set, dependency) is decision
     assert calls == 1
     unchanged(data_set)
+
+
+def test_persisted_success_input_subclass_and_compatible_substitute_are_zero_call(
+    tmp_path: Path,
+) -> None:
+    data_set = data(tmp_path)
+    exact = data_set["result"]
+    assert type(exact) is PersistedExecutionOutcome
+    child = OutcomeChild(
+        "persisted_success", "w", "four", 4, "d", None
+    )
+    substitute = SimpleNamespace(
+        outcome="persisted_success",
+        workflow_id="w",
+        current_step_id="four",
+        current_step_index=4,
+        current_employee_id="d",
+        failure_category=None,
+    )
+    reject(data_set, "result_type", result=child)
+    reject(data_set, "result_type", result=substitute)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["status", "completed_prefix", "failure_category", "bool_index", "index_mismatch"],
+)
+def test_persisted_success_terminal_state_fields_are_exact(
+    tmp_path: Path, mutation: str
+) -> None:
+    data_set = data(tmp_path)
+    exact_state = WorkflowExecutionState(
+        "w", "succeeded", "four", 4, "d", ("one", "two", "three", "four"), None
+    )
+    if mutation == "status":
+        replace_state(data_set, replace(exact_state, status="failed"))
+    elif mutation == "completed_prefix":
+        replace_state(
+            data_set,
+            replace(exact_state, completed_step_ids=("one", "two", "wrong", "four")),
+        )
+    elif mutation == "failure_category":
+        replace_state(data_set, replace(exact_state, last_failure_category="api_error"))
+    elif mutation == "bool_index":
+        rewrite_state_json(data_set, current_step_index=True)
+    else:
+        rewrite_state_json(data_set, current_step_index=5)
+    reject(data_set, "terminal_contract")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("output_text", 4), ("failure_category", "api_error"), ("message", "bad")],
+)
+def test_persisted_success_terminal_event_fields_are_exact(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    data_set = data(tmp_path)
+    event = replace(
+        terminal_event(data_set["workflow"].steps[3], 4, "succeeded"),
+        **{field: value},
+    )
+    replace_terminal(data_set, event)
+    reject(data_set, "terminal_contract")
 
 
 @pytest.mark.parametrize("index", [1, 2, 3])

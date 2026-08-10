@@ -351,6 +351,41 @@ def test_empty_success_terminal_output_is_accepted_by_phase129_fallback(
 
 
 @pytest.mark.parametrize(
+    "changes",
+    [
+        {"provider": "other"},
+        {"provider": 4},
+        {"response_id": ""},
+        {"response_id": 4},
+        {"response_id": None},
+    ],
+)
+def test_empty_success_fallback_preserves_provider_and_response_contract(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup(tmp_path)
+    rewrite_event(events, 2, output_text="", **changes)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        state,
+        events,
+        "terminal_contract",
+        forbidden,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
     ("state_field", "event_field"),
     [("current_step_id", "step_id"), ("current_employee_id", "employee_id")],
 )
