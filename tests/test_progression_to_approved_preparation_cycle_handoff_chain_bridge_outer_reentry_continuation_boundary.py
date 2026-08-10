@@ -36,8 +36,11 @@ from ai_office.runtime import (
     WorkflowExecutionState,
 )
 from ai_office.storage import (
+    LoadedWorkflowExecutionHistory,
     RunningStatePersistenceResult,
+    WorkflowExecutionPersistenceTargets,
     WorkflowExecutionPersistenceResult,
+    load_workflow_execution_history,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -76,6 +79,10 @@ class StartChild(PreparedStepExecutionStart):
 
 
 class IntChild(int):
+    pass
+
+
+class TupleChild(tuple):
     pass
 
 
@@ -375,6 +382,23 @@ def assert_rejected(value: dict[str, object], expected: str, dependency: object)
     assert target_snapshot(value) == expected_targets
 
 
+def patch_loaded_event(
+    value: dict[str, object], monkeypatch: pytest.MonkeyPatch, index: int, **changes: object
+) -> None:
+    loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(value["state_path"], value["events_path"])
+    )
+    events = list(loaded.events)
+    events[index] = replace(events[index], **changes)
+
+    def fake_loader(_targets: object) -> LoadedWorkflowExecutionHistory:
+        return LoadedWorkflowExecutionHistory(loaded.state, tuple(events))
+
+    import ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary as phase137_module
+
+    monkeypatch.setattr(phase137_module, "load_workflow_execution_history", fake_loader)
+
+
 def test_public_signature_default_and_source_audit() -> None:
     function = route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
     parameters = list(inspect.signature(function).parameters.values())
@@ -441,9 +465,17 @@ def test_stop_routes_are_identity_preserving_zero_call_and_allow_nonopenai(
 
 
 @pytest.mark.parametrize("route", ["completion", "failure"])
-def test_stop_routes_reject_non_none_context_before_dependency(tmp_path: Path, route: str) -> None:
+@pytest.mark.parametrize("context", ["approval", "employee"])
+def test_stop_routes_reject_non_none_context_before_dependency(
+    tmp_path: Path, route: str, context: str
+) -> None:
     value = completion_data(tmp_path) if route == "completion" else failure_data(tmp_path)
-    value["approval"] = NextStepPreparationApproval(True, "w", "four", 4, "five", 5, "e")
+    context_result = progression(value["workflow"])
+    value[context] = (
+        approval(context_result)
+        if context == "approval"
+        else employee(context_result)
+    )
     assert_rejected(value, "completion_contract" if route == "completion" else "failure_contract", lambda *_: pytest.fail("called"))
 
 
@@ -998,3 +1030,107 @@ def test_direct_phase130_safe_error_type_is_not_exposed_in_public_message() -> N
     error = ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError("dependency_error")
     assert str(error) == "progression to approved preparation cycle handoff chain bridge outer inputs are incompatible"
     assert error.detail.classification == "dependency_error"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workflow_id", "wrong"),
+        ("step_id", "wrong"),
+        ("step_index", 4),
+        ("employee_id", "wrong"),
+        ("event_type", "step_failed"),
+        ("previous_status", "succeeded"),
+        ("next_status", "failed"),
+        ("failure_category", "api_error"),
+        ("message", "bad"),
+    ],
+)
+def test_predecessor_provenance_contract_matrix_is_zero_call(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    data_set = data(tmp_path)
+    rewrite_event(data_set["events_path"], 2, **{field: value})
+    assert_rejected(data_set, "terminal_contract", lambda *_: pytest.fail("called"))
+
+
+@pytest.mark.parametrize("replacement", [True, IntChild(3)])
+def test_predecessor_step_index_requires_exact_builtin_int_zero_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: object,
+) -> None:
+    data_set = data(tmp_path)
+    if type(replacement) is bool:
+        rewrite_event(data_set["events_path"], 2, step_index=replacement)
+    else:
+        patch_loaded_event(data_set, monkeypatch, 2, step_index=replacement)
+    assert_rejected(data_set, "terminal_contract", lambda *_: pytest.fail("called"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workflow_id", "wrong"),
+        ("step_id", "wrong"),
+        ("step_index", 5),
+        ("employee_id", "wrong"),
+        ("event_type", "step_failed"),
+        ("previous_status", "succeeded"),
+        ("next_status", "failed"),
+    ],
+)
+def test_current_terminal_event_contract_matrix_is_zero_call(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    data_set = data(tmp_path)
+    rewrite_event(data_set["events_path"], 3, **{field: value})
+    assert_rejected(data_set, "terminal_contract", lambda *_: pytest.fail("called"))
+
+
+@pytest.mark.parametrize("replacement", [True, IntChild(4)])
+def test_current_terminal_step_index_requires_exact_builtin_int_zero_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: object,
+) -> None:
+    data_set = data(tmp_path)
+    if type(replacement) is bool:
+        rewrite_event(data_set["events_path"], 3, step_index=replacement)
+    else:
+        patch_loaded_event(data_set, monkeypatch, 3, step_index=replacement)
+    assert_rejected(data_set, "terminal_contract", lambda *_: pytest.fail("called"))
+
+
+def test_prepare_employee_exact_string_value_mismatch_is_zero_call(tmp_path: Path) -> None:
+    data_set = data(tmp_path)
+    supplied_employee = data_set["employee"]
+    data_set["employee"] = supplied_employee.model_copy(update={"id": "wrong"})
+    assert type(data_set["employee"].id) is str
+    assert data_set["employee"].id != data_set["result"].next_employee_id
+    assert_rejected(data_set, "employee_contract", lambda *_: pytest.fail("called"))
+
+
+@pytest.mark.parametrize(
+    "allowed_tool_names",
+    [TupleChild(("tool-one", "tool-two")), ("tool-one", "wrong-tool")],
+)
+def test_prepared_return_allowed_tool_names_requires_exact_tuple_and_values(
+    tmp_path: Path, allowed_tool_names: object
+) -> None:
+    data_set = data(tmp_path)
+    expected = prepared(data_set["workflow"], data_set["result"], data_set["employee"])
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return replace(expected, allowed_tool_names=allowed_tool_names)
+
+    with pytest.raises(
+        ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError
+    ) as caught:
+        invoke(data_set, fake)
+    assert caught.value.detail.classification == "prepared_contract"
+    assert calls == 1
+    unchanged(data_set)

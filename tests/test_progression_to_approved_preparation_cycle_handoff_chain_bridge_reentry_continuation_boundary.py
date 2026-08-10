@@ -1674,3 +1674,69 @@ def test_empty_success_fallback_preserves_terminal_response_and_request_contract
     assert caught.value.detail.classification == "terminal_contract"
     assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_workflow_complete_empty_success_output_is_rejected_zero_call(
+    tmp_path: Path,
+) -> None:
+    supplied_workflow = workflow()
+    _, _, _, _, state, events, *_ = setup(
+        tmp_path, index=len(supplied_workflow.steps)
+    )
+    result = completion(supplied_workflow)
+    rewrite_event(events, len(supplied_workflow.steps) - 1, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(
+        ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError
+    ) as caught:
+        invoke(
+            result,
+            supplied_workflow,
+            None,
+            None,
+            state,
+            events,
+            forbidden,
+        )
+    assert classification(caught) == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_empty_success_fallback_accepts_optional_none_request_id(
+    tmp_path: Path,
+) -> None:
+    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, *_ = setup(
+        tmp_path
+    )
+    rewrite_event(events, 2, output_text="", request_id=None)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    expected = prepared(supplied_workflow, decision, supplied_employee)
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert (
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        )
+        is expected
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
