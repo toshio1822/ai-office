@@ -1275,3 +1275,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 136 (future explicit caller action)
 ```
+
+## Classified Persisted-Outcome Progression Cycle Handoff Chain Bridge Reentry Continuation Boundary（Phase 136）
+
+`route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary()`は、Phase 135から受け取った正確な`PersistedExecutionOutcome(persisted_success)`、またはstrict stop用の`PersistedExecutionOutcome(persisted_failure)` / `WorkflowProgressionDecision(workflow_complete)`を検証するouter bridgeです。persisted-success routeでは、Phase 135 provenanceを含むexact workflow、step、state、history、regular targets、current step index `>= 4`、workflow/current-step/index/employee linkage、直前predecessor provider=`"openai"`、predecessorのprovider/request/response/output contract、terminal provider=`"openai"`、terminal response/request/output/failure semanticsを再検証します。直前より前のvalid non-openai predecessor providerは許容します。
+
+検証後、公開Phase 129 `route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, state_path, events_path)`のcanonical four-argument orderで正確に一度だけ委譲します。Phase 129から返るexact `WorkflowProgressionDecision`について、intermediateの`prepare_next_step` current/next linkageと`reason == "next_step_available"`、finalの`workflow_complete`と`reason == "last_step_succeeded"`を再検証し、同じdecision objectを返します。正常経路ではstate/eventsをbyte-for-byte不変に保ちます。persisted-successのterminal succeeded eventだけは、Phase 129の狭い互換契約に従いexact built-in `str`の空`output_text`を許容します。
+
+`persisted_failure`と`workflow_complete`はPhase 129 stop contractを継承したstrict terminal validation後にPhase 129を呼ばず、同じobjectを返すzero-call stop routeです。workflow_completeのsucceeded terminal eventはempty `output_text`を許容しません。Phase 136はPhase 122を直接参照・呼び出しせず、progression、preparation、start、persistence、runtime execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed decision、target mutationはdetail-safeに分類して可能な限り両targetを元bytesへ補償復元します。復元失敗は`dependency_rollback`、retryはありません。Focused testsはinjected Phase 129 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを呼びません。
+
+```text
+Phase 135
+persisted_success | persisted_failure | workflow_complete
+    ↓
+Phase 136 classified persisted-outcome progression cycle handoff chain bridge reentry continuation boundary
+persisted_success (current_step_index >= 4)
+    → Phase 129 exactly once in canonical four-argument order
+    → exact prepare_next_step | workflow_complete decision
+persisted_failure | workflow_complete
+    → unchanged zero-call stop
+    ↓
+Phase 137 (future explicit caller action)
+```

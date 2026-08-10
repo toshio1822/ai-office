@@ -1115,3 +1115,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 136 (future explicit caller action)
 ```
+
+## Phase 136: Classified Persisted-Outcome Progression Cycle Handoff Chain Bridge Reentry Continuation Boundary
+
+Phase 136 is the outer bridge from Phase 135's exact `PersistedExecutionOutcome(persisted_success)` to the public Phase 129 classified progression boundary. It revalidates the Phase 135 provenance: exact workflow, step/state/history models, regular target identity, continuation index `>= 4`, workflow/current-step/index/employee linkage, the immediate predecessor's exact `openai` provider, strict predecessor provider/request/response/output fields, terminal provider `openai`, terminal response/request fields, and success/failure terminal semantics. Earlier valid predecessor providers remain nonempty exact strings and are not unnecessarily restricted.
+
+The bridge delegates exactly once to public Phase 129 in canonical `(result, workflow, state_path, events_path)` order with supplied-object identity. It accepts only the exact `WorkflowProgressionDecision` returned by Phase 129, then revalidates intermediate `prepare_next_step` current/next linkage and `next_step_available` reason or final `workflow_complete` linkage and `last_step_succeeded` reason. Valid classification is read-only: state and events remain byte-for-byte unchanged. The persisted-success route permits only the narrow Phase 129 compatibility case of an exact built-in empty success `output_text`; all other terminal, predecessor, history, and linkage contracts remain strict.
+
+`persisted_failure` and `workflow_complete` inherit the Phase 135 stop contract, return the supplied object unchanged, and make zero Phase 129 calls. In particular, a workflow-complete success terminal with empty output remains rejected. Phase 136 does not call Phase 122 directly and adds no progression, preparation, start, persistence, execution, retry, automatic continuation, finalization, scheduling, looping, parallel execution, or CLI/GUI behavior. Safe dependency errors preserve identity after successful compensation; unexpected errors, malformed decisions, and target mutation are detail-safe, both targets are restored when possible, restore failure is `dependency_rollback`, and no retry occurs. Focused tests inject Phase 129 fakes only and make no real provider, network, paid API, external tool, credential, or transport calls.
+
+```text
+Phase 135
+persisted_success | persisted_failure | workflow_complete
+    ↓
+Phase 136 classified persisted-outcome progression cycle handoff chain bridge reentry continuation boundary
+persisted_success (current_step_index >= 4)
+    → Phase 129 exactly once in canonical four-argument order
+    → exact prepare_next_step | workflow_complete decision
+persisted_failure | workflow_complete
+    → unchanged zero-call stop
+    ↓
+Phase 137 (future explicit caller action)
+```
