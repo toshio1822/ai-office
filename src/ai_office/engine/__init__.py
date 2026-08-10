@@ -538,6 +538,12 @@ from ai_office.engine.prepared_step_start_cycle_continuation_boundary import (
     PreparedStepStartCycleContinuationFailureDetail,
     route_prepared_step_start_cycle_continuation_boundary,
 )
+from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (  # noqa: E501
+    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError,
+    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError,
+    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationFailureDetail,
+    route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
+)
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary import (  # noqa: E501
     PreparedStepStartCycleHandoffChainBridgeReentryContinuationCompatibilityError,
     PreparedStepStartCycleHandoffChainBridgeReentryContinuationError,
@@ -957,6 +963,10 @@ __all__ = [
     "PreparedStepStartCycleHandoffChainBridgeReentryContinuationError",
     "PreparedStepStartCycleHandoffChainBridgeReentryContinuationFailureDetail",
     "route_prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary",
+    "PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError",
+    "PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError",
+    "PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationFailureDetail",
+    "route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
     "PreparedStepStartCycleReentryContinuationCompatibilityError",
     "PreparedStepStartCycleReentryContinuationError",
     "PreparedStepStartCycleReentryContinuationFailureDetail",

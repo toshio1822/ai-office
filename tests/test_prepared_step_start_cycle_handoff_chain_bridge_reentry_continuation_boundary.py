@@ -1498,3 +1498,257 @@ def test_path_subclasses_conflict_and_noncallable_dependency_are_rejected(
         "start_contract",
         None,
     )
+
+
+def test_prepared_route_accepts_exact_empty_success_output_with_fallback(
+    tmp_path: Path,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 2, output_text="")
+    before_state = state.read_bytes()
+    before_events = events.read_bytes()
+    returned = start_for(value)
+    calls = 0
+
+    def fake(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    assert invoke(value, workflow(), employee(), state, events, fake) is returned
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("current_step_id", "wrong"), ("current_employee_id", "wrong")],
+)
+def test_empty_success_fallback_preserves_workflow_linkage(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    prepared_value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 2, output_text="", **{field: value})
+    state_payload = json.loads(state.read_text(encoding="utf-8"))
+    state_payload[field] = value
+    state.write_text(json.dumps(state_payload, separators=(",", ":")), encoding="utf-8")
+    before_state = state.read_bytes()
+    before_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        return start_for(prepared_value)
+
+    assert_rejected(
+        prepared_value,
+        workflow(),
+        employee(),
+        state,
+        events,
+        "terminal_contract",
+        fake,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase131_workflow_complete_empty_success_stays_zero_call_rejection(
+    tmp_path: Path,
+) -> None:
+    state, events, *_ = targets(tmp_path, index=5)
+    rewrite_event(events, 4, output_text="")
+    before_state = state.read_bytes()
+    before_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        completion(workflow()),
+        workflow(),
+        None,
+        state,
+        events,
+        "terminal_contract",
+        fake,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase131_fallback_preserves_preexisting_non_openai_earlier_provider(
+    tmp_path: Path,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 0, provider="other")
+    rewrite_event(events, 2, output_text="")
+    before_state = state.read_bytes()
+    before_events = events.read_bytes()
+    returned = start_for(value)
+    calls = 0
+
+    def fake(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    assert invoke(value, workflow(), employee(), state, events, fake) is returned
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("provider", ["other", "", 4])
+def test_phase131_empty_success_fallback_rejects_terminal_provider(
+    tmp_path: Path, provider: object
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 2, output_text="", provider=provider)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return start_for(value)
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("response_id", ["", 4, None])
+def test_phase131_empty_success_fallback_rejects_terminal_response_id(
+    tmp_path: Path, response_id: object
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 2, output_text="", response_id=response_id)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return start_for(value)
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("request_id", ["", 4])
+def test_phase131_empty_success_fallback_rejects_terminal_request_id(
+    tmp_path: Path, request_id: object
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 2, output_text="", request_id=request_id)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return start_for(value)
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase131_empty_success_fallback_accepts_terminal_request_id_none(
+    tmp_path: Path,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 2, output_text="", request_id=None)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    returned = start_for(value)
+    calls = 0
+
+    def fake(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    assert invoke(value, workflow(), employee(), state, events, fake) is returned
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("output_text", [4, None])
+def test_phase131_empty_success_fallback_rejects_non_string_output(
+    tmp_path: Path, output_text: object
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 2, output_text=output_text)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return start_for(value)
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase131_prepared_nonempty_success_remains_valid(
+    tmp_path: Path,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 2, output_text="non-empty")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    returned = start_for(value)
+    calls = 0
+
+    def fake(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    assert invoke(value, workflow(), employee(), state, events, fake) is returned
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase131_fallback_preserves_preexisting_provider_request_combination(
+    tmp_path: Path,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(events, 0, provider="other", request_id=None)
+    rewrite_event(events, 2, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    returned = start_for(value)
+    calls = 0
+
+    def fake(*_: object) -> PreparedStepExecutionStart:
+        nonlocal calls
+        calls += 1
+        return returned
+
+    assert invoke(value, workflow(), employee(), state, events, fake) is returned
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
