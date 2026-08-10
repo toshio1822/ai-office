@@ -1069,3 +1069,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 127 (future explicit caller action)
 ```
+
+## Phase 134: Runtime Result Transition Persistence Cycle Handoff Chain Bridge Reentry Continuation Boundary
+
+Phase 134は、Phase 133から受け取った正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を、既存の公開Phase 127へ接続するruntime-result persistence bridgeである。実行routeでは、exact workflow/step/state/event models、regular targets、persisted running state、`current_step_index >= 4`、workflow/current-step/index/employee linkage、Phase 133が保証したpredecessor historyとrequest IDs、直前predecessor provider=`"openai"`、およびnested invocation resultのexact OpenAI契約を再検証する。直前より前のvalid predecessor providerは不必要に厳格化しない。
+
+Phase 127への委譲は`(result, workflow, state_path, events_path)`のcanonical four-argument orderとobject identityを保って正確に一度だけ行う。返却されるexact `WorkflowExecutionPersistenceResult`について、target identity、positive exact built-in byte counts、canonical terminal state、元event bytesの完全prefix、exactly one terminal event、success/failure linkage、terminal provider=`"openai"`を再検証し、validなら同一return objectを返す。正常routeはruntime resultをexact terminal stateへ遷移させ、eventsは元bytesをprefixとして一件だけappendする。
+
+`workflow_complete`と`persisted_failure`はPhase 127を呼ばず、Phase 133 stop-routeのprovider許容範囲を維持したstrict terminal state/historyとtarget不変性のzero-call stopで同じobjectを返す。Phase 134はPhase 120を直接参照・呼び出しせず、classification、progression、next-step preparation、start、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しない。safe error identityを補償成功後も保持し、unexpected error、malformed return、invalid persistence、mutationをdetail-safeに分類する。両targetを補償復元し、復元失敗は`dependency_rollback`、retryは行わない。Focused testsはinjected Phase 127 fakesのみを使い、real provider、network、paid API、external tool、credential、real transportを呼ばない。
+
+```text
+Phase 133
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | workflow_complete | persisted_failure
+    ↓
+Phase 134 runtime-result transition persistence cycle handoff chain bridge reentry continuation boundary
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure (current_step_index >= 4)
+    → Phase 127 exactly once in canonical four-argument order
+    → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 128 (future explicit caller action)
+```

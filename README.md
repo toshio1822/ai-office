@@ -1231,3 +1231,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 127 (future explicit caller action)
 ```
+
+## Runtime Result Transition Persistence Cycle Handoff Chain Bridge Reentry Continuation Boundary（Phase 134）
+
+`route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary()`は、Phase 133 continuationからの正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`、またはstrict stop用の`WorkflowProgressionDecision(workflow_complete)` / `PersistedExecutionOutcome(persisted_failure)`を受けるruntime-result persistence bridgeです。実行routeでは`current_step_index >= 4`、exact workflow、persisted running state、Phase 133 provenanceを持つsucceeded predecessor history、直前predecessor provider=`"openai"`、runtime resultとnested invocation resultのOpenAI linkageを再検証します。直前より前のvalid predecessor providerはPhase 133契約どおり不必要に制限しません。
+
+検証後、既存の公開Phase 127 `route_runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, state_path, events_path)`のcanonical four-argument orderで正確に一度だけ委譲します。Phase 127のexact `WorkflowExecutionPersistenceResult`について、target identity、positive exact built-in byte counts、exact terminal state/event、元event bytesの完全prefix、terminal linkage、provider=`"openai"`、append countを再検証して同じresult objectを返します。`workflow_complete`と`persisted_failure`はPhase 127を呼ばず、Phase 133 stop-routeより厳しいprovider条件を追加しないunchanged zero-call stop routeです。
+
+Phase 134はPhase 120を直接参照・呼び出しせず、1回の明示的なruntime-result transition persistence handoffだけを行います。outcome classification、workflow progression、next-step preparation、prepared-step start、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorは追加しません。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed return、invalid persistence、target mutationはdetail-safeに分類します。両targetを元bytesへ補償復元し、復元失敗は`dependency_rollback`、dependency callはretryしません。Focused testsはinjected Phase 127 fakesのみを使用し、real provider、network、paid API、external tool、credential、real transportを呼びません。
+
+```text
+Phase 133
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure | workflow_complete | persisted_failure
+    ↓
+Phase 134 runtime-result transition persistence cycle handoff chain bridge reentry continuation boundary
+StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure (current_step_index >= 4)
+    → Phase 127 exactly once in canonical four-argument order
+    → exact WorkflowExecutionPersistenceResult
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 128 (future explicit caller action)
+```
