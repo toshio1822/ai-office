@@ -119,6 +119,18 @@ class IntChild(int):
     pass
 
 
+class SecretChild(SecretStr):
+    pass
+
+
+class SecretCompatible:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def get_secret_value(self) -> str:
+        return self._value
+
+
 def workflow() -> WorkflowDefinition:
     return WorkflowDefinition.model_validate(
         {
@@ -260,6 +272,16 @@ def reject(values: dict[str, object], classification: str, **changes: object) ->
         )
     assert caught.value.detail.classification == classification
     assert calls == 0
+
+
+def reject_unchanged(
+    values: dict[str, object], classification: str, **changes: object
+) -> None:
+    state = values["state_path"]
+    events = values["events_path"]
+    before = state.read_bytes(), events.read_bytes()  # type: ignore[union-attr]
+    reject(values, classification, **changes)
+    assert (state.read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
 
 
 def succeeded_targets(tmp_path: Path, provider: object = "other") -> tuple[Path, Path]:
@@ -453,6 +475,43 @@ def test_start_request_and_running_state_subclasses_are_rejected(tmp_path: Path)
         reject(values, classification, start=start)
 
 
+def test_nested_request_fully_attribute_compatible_substitute_is_rejected(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    request = values["start"].request  # type: ignore[union-attr]
+    substitute = SimpleNamespace(
+        model=request.model,
+        system_instructions=request.system_instructions,
+        task_instructions=request.task_instructions,
+        allowed_tools=request.allowed_tools,
+    )
+    values["start"] = PreparedStepExecutionStart(
+        substitute, values["start"].running_state  # type: ignore[union-attr]
+    )
+    reject_unchanged(values, "start_contract")
+
+
+def test_nested_running_state_fully_attribute_compatible_substitute_is_rejected(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    running = values["start"].running_state  # type: ignore[union-attr]
+    substitute = SimpleNamespace(
+        workflow_id=running.workflow_id,
+        status=running.status,
+        current_step_id=running.current_step_id,
+        current_step_index=running.current_step_index,
+        current_employee_id=running.current_employee_id,
+        completed_step_ids=running.completed_step_ids,
+        last_failure_category=running.last_failure_category,
+    )
+    values["start"] = PreparedStepExecutionStart(
+        values["start"].request, substitute  # type: ignore[union-attr]
+    )
+    reject_unchanged(values, "start_contract")
+
+
 def test_workflow_step_subclass_is_rejected_inside_exact_workflow(tmp_path: Path) -> None:
     values = setup(tmp_path)
     exact_step = values["workflow"].steps[3]  # type: ignore[union-attr]
@@ -466,6 +525,27 @@ def test_workflow_step_subclass_is_rejected_inside_exact_workflow(tmp_path: Path
     reject(values, "workflow_definition")
 
 
+def test_workflow_step_fully_attribute_compatible_substitute_is_rejected(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    exact_workflow = values["workflow"]
+    exact_step = exact_workflow.steps[3]  # type: ignore[union-attr]
+    substitute = SimpleNamespace(
+        id=exact_step.id,
+        name=exact_step.name,
+        employee=exact_step.employee,
+        instructions=exact_step.instructions,
+    )
+    values["workflow"] = WorkflowDefinition.model_construct(
+        id=exact_workflow.id,  # type: ignore[union-attr]
+        name=exact_workflow.name,  # type: ignore[union-attr]
+        description=exact_workflow.description,  # type: ignore[union-attr]
+        steps=[*exact_workflow.steps[:3], substitute],  # type: ignore[union-attr]
+    )
+    reject_unchanged(values, "workflow_definition")
+
+
 def test_approval_subclass_is_rejected_before_phase126(tmp_path: Path) -> None:
     values = setup(tmp_path)
     approval = values["approval"]
@@ -477,6 +557,21 @@ def test_approval_subclass_is_rejected_before_phase126(tmp_path: Path) -> None:
         approval.approval_id,
     )
     reject(values, "approval_contract")
+
+
+def test_approval_fully_attribute_compatible_substitute_is_rejected(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    approval = values["approval"]
+    values["approval"] = SimpleNamespace(
+        approved=approval.approved,
+        provider=approval.provider,
+        request_fingerprint=approval.request_fingerprint,
+        approved_by=approval.approved_by,
+        approval_id=approval.approval_id,
+    )
+    reject_unchanged(values, "approval_contract")
 
 
 def test_start_fully_attribute_compatible_substitute_is_rejected(tmp_path: Path) -> None:
@@ -523,6 +618,44 @@ def test_tool_parameters_are_exact_models(tmp_path: Path) -> None:
     values = setup(tmp_path)
     values["resolved_tools"] = (ToolDefinition("tool", "Tool", (ParameterChild("p", "", "string", True),)),)
     reject(values, "tools_contract")
+
+
+def test_tool_fully_attribute_compatible_substitute_is_rejected(tmp_path: Path) -> None:
+    values = setup(tmp_path)
+    exact_tool = values["resolved_tools"][0]
+    substitute = SimpleNamespace(
+        name=exact_tool.name,
+        description=exact_tool.description,
+        parameters=exact_tool.parameters,
+    )
+    values["resolved_tools"] = (substitute,)
+    reject_unchanged(values, "tools_contract")
+
+
+def test_tool_parameter_fully_attribute_compatible_substitute_is_rejected(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    request = values["start"].request  # type: ignore[union-attr]
+    parameter = ToolParameterDefinition("parameter", "description", "string", True)
+    exact_tool = ToolDefinition("tool", "Tool", (parameter,))
+    values["approval"] = approve_model_invocation_execution(
+        request,
+        (exact_tool,),
+        provider="openai",
+        approved_by="test",
+        approval_id="approval-id",
+    )
+    substitute = SimpleNamespace(
+        name=parameter.name,
+        description=parameter.description,
+        type=parameter.type,
+        required=parameter.required,
+    )
+    values["resolved_tools"] = (
+        ToolDefinition("tool", "Tool", (substitute,)),
+    )
+    reject_unchanged(values, "tools_contract")
 
 
 @pytest.mark.parametrize("tool_names", [("tool", "tool"), (), ("tool", "extra")])
@@ -579,6 +712,31 @@ def test_persistence_byte_count_requires_positive_exact_actual_length(
         count = len(values["state_path"].read_bytes()) + 1  # type: ignore[union-attr]
     values["result"] = RunningStatePersistenceResult(count)  # type: ignore[arg-type]
     reject(values, "persistence_result_contract")
+
+
+def test_persistence_byte_count_int_subclass_is_rejected(tmp_path: Path) -> None:
+    values = setup(tmp_path)
+    actual_length = len(values["state_path"].read_bytes())  # type: ignore[union-attr]
+    values["result"] = RunningStatePersistenceResult(IntChild(actual_length))
+    reject_unchanged(values, "persistence_result_contract")
+
+
+@pytest.mark.parametrize("nested", ["subclass", "substitute"])
+def test_nested_secretstr_exact_type_is_rejected(
+    tmp_path: Path, nested: str
+) -> None:
+    values = setup(tmp_path)
+    nested_value = (
+        SecretChild("synthetic")
+        if nested == "subclass"
+        else SecretCompatible("synthetic")
+    )
+    values["api_key"] = OpenAIApiKey.model_construct(value=nested_value)
+    reject_unchanged(values, "credential_contract")
+
+
+def test_non_callable_transport_is_rejected_before_phase126(tmp_path: Path) -> None:
+    reject_unchanged(setup(tmp_path), "execution_inputs", transport=object())
 
 
 def test_mismatched_persisted_running_state_is_rejected_before_phase126(tmp_path: Path) -> None:
