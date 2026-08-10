@@ -332,6 +332,94 @@ def test_success_routes_delegate_once_in_canonical_order_and_return_identity(
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
+def test_empty_success_terminal_output_is_accepted_by_phase129_fallback(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup(tmp_path)
+    rewrite_event(events, 2, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    decision = expected_decision(supplied_workflow, 3)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert call(result, supplied_workflow, state, events, dependency) is decision
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"provider": "other"},
+        {"provider": 4},
+        {"response_id": ""},
+        {"response_id": 4},
+        {"response_id": None},
+    ],
+)
+def test_empty_success_fallback_preserves_provider_and_response_contract(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup(tmp_path)
+    rewrite_event(events, 2, output_text="", **changes)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        state,
+        events,
+        "terminal_contract",
+        forbidden,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
+    ("state_field", "event_field"),
+    [("current_step_id", "step_id"), ("current_employee_id", "employee_id")],
+)
+def test_empty_success_fallback_keeps_workflow_current_step_linkage(
+    tmp_path: Path, state_field: str, event_field: str
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup(tmp_path, index=4)
+    rewrite_event(events, 3, output_text="", **{event_field: "wrong"})
+    exact_state = WorkflowExecutionState(
+        "w", "succeeded", "four", 4, "d", ("one", "two", "three", "four"), None
+    )
+    state.write_bytes(
+        serialize_workflow_execution_state_json(
+            replace(exact_state, **{state_field: "wrong"})
+        ).encode("utf-8")
+    )
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        state,
+        events,
+        "terminal_contract",
+        forbidden,
+    )
+    assert calls == 0
+
+
 @pytest.mark.parametrize("route", ["persisted_failure", "workflow_complete"])
 def test_stop_routes_return_exact_identity_and_make_zero_phase122_calls(
     tmp_path: Path, route: str
@@ -363,6 +451,30 @@ def test_stop_routes_return_exact_identity_and_make_zero_phase122_calls(
     assert returned is result
     assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_workflow_complete_stop_rejects_empty_success_output_in_phase129(
+    tmp_path: Path,
+) -> None:
+    result = completion()
+    _, supplied_workflow, state, events, *_ = setup(tmp_path, index=4)
+    rewrite_event(events, 3, output_text="")
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        state,
+        events,
+        "terminal_contract",
+        forbidden,
+    )
+    assert calls == 0
 
 
 @pytest.mark.parametrize(
