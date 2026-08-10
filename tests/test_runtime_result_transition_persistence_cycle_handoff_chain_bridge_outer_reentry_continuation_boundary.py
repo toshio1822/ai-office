@@ -14,6 +14,7 @@ from ai_office.engine import (
     PersistedExecutionOutcome,
     WorkflowProgressionDecision,
 )
+from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError,
     route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
@@ -23,6 +24,7 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_
 )
 from ai_office.invocation import (
     ModelInvocationFailure,
+    ModelInvocationRequest,
     ModelInvocationSuccess,
 )
 from ai_office.runtime import (
@@ -32,6 +34,7 @@ from ai_office.runtime import (
     WorkflowExecutionState,
 )
 from ai_office.storage import (
+    RunningStatePersistenceResult,
     WorkflowExecutionPersistenceResult,
     load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
@@ -452,7 +455,7 @@ def test_public_signature_and_source_audit() -> None:
     assert "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary" in source
     assert "phase127" not in source.lower()
     assert "route_runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary" not in source
-    assert "route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary" not in source
+    assert "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary" not in source
     assert "._validate_" not in source
     assert "._top" not in source
     assert "._raise" not in source
@@ -1333,6 +1336,24 @@ def test_stop_route_empty_predecessor_output_text_remains_rejected(
     "value",
     [
         WorkflowExecutionPersistenceResult(Path("s"), Path("e"), 1, 1),
+        RunningStatePersistenceResult(state_bytes_written=1),
+        PreparedStepExecutionStart(
+            request=ModelInvocationRequest(
+                model="m",
+                system_instructions="s",
+                task_instructions="t",
+                allowed_tools=(),
+            ),
+            running_state=WorkflowExecutionState(
+                workflow_id="w",
+                status="running",
+                current_step_id="five",
+                current_step_index=5,
+                current_employee_id="e",
+                completed_step_ids=(),
+                last_failure_category=None,
+            ),
+        ),
         SimpleNamespace(request="request", running_state="state"),
     ],
 )
