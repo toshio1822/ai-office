@@ -364,6 +364,12 @@ from ai_office.engine.persisted_transition_outcome_classification_cycle_continua
     PersistedTransitionOutcomeClassificationCycleContinuationFailureDetail,
     route_persisted_transition_outcome_classification_cycle_continuation_boundary,
 )
+from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary import (  # noqa: E501
+    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError,
+    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationError,
+    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationFailureDetail,
+    route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary,
+)
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary import (  # noqa: E501
     PersistedTransitionOutcomeClassificationCycleHandoffChainReentryContinuationCompatibilityError,
     PersistedTransitionOutcomeClassificationCycleHandoffChainReentryContinuationError,
@@ -1009,6 +1015,10 @@ __all__ = [
     "PersistedTransitionOutcomeClassificationCycleHandoffChainReentryContinuationError",
     "PersistedTransitionOutcomeClassificationCycleHandoffChainReentryContinuationFailureDetail",
     "route_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary",
+    "PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError",
+    "PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationError",
+    "PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationFailureDetail",
+    "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary",
     "PersistedTerminalOutcomeClassificationRoutingCompatibilityError",
     "PersistedTerminalOutcomeClassificationRoutingError",
     "PersistedTerminalOutcomeClassificationRoutingFailureDetail",

@@ -1253,3 +1253,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 128 (future explicit caller action)
 ```
+
+## Phase 135: Persisted-Transition Outcome Classification Cycle Handoff Chain Bridge
+
+Phase 135は、Phase 134から受け取った正確な`WorkflowExecutionPersistenceResult`を、既存の公開Phase 128へ`(result, workflow, state_path, events_path)`のcanonical four-argument orderとobject identityを保持して正確に一度だけ委譲するouter bridgeです。Phase 128のexact `PersistedExecutionOutcome`を再検証して同じobjectを返し、`workflow_complete`と`persisted_failure`はPhase 128を呼ばないunchanged zero-call stop routeです。classification routeではcurrent step index `>= 4`、exact terminal state/history、Phase 134 predecessor provenance、直前predecessorとterminalのprovider=`"openai"`、byte counts、target identityを再検証し、正常経路でstate/eventsを変更させません。
+
+Phase 135はPhase 121を直接参照・呼び出しせず、persisted-transition outcome classification handoffを一回だけ行います。progression、next-step preparation、prepared start、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorは追加しません。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed outcome、target mutationはdetail-safeに分類して両targetを補償復元します。復元失敗は`dependency_rollback`で、retryはありません。Focused testsはinjected Phase 128 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを呼びません。
+
+このPhaseでは、既存Phase 128の成功terminal `output_text`契約を、exact built-in `str`（空文字を含む）へ狭く互換修正しました。Phase 127/134の有効なempty success outputを受理するための変更であり、response/provider、predecessor、failure semantics、Phase 128 public APIおよび他の契約は緩和していません。
+
+```text
+Phase 134
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 135 persisted-transition outcome classification cycle handoff chain bridge reentry continuation boundary
+WorkflowExecutionPersistenceResult
+    → Phase 128 exactly once in canonical four-argument order
+    → exact persisted_success | persisted_failure
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 136 (future explicit caller action)
+```

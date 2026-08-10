@@ -25,7 +25,10 @@ from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
+    WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceResult,
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -292,10 +295,9 @@ def _check_persistence(
         or result.event_bytes_appended <= 0
     ):
         _fail("persistence_contract")
-    try:
-        state, history = load_strict_terminal_history(workflow, state_path, events_path)
-    except (OSError, TerminalHistoryContractError):
-        _fail("terminal_contract")
+    state, history = _load_compatible_terminal_history(
+        workflow, state_path, events_path
+    )
     if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
         _fail("terminal_contract")
     if type(state.current_step_index) is not int or not 3 <= state.current_step_index <= len(workflow.steps):
@@ -332,7 +334,7 @@ def _valid_terminal_event(event: RuntimeStepEvent, state: WorkflowExecutionState
             and event.next_status == "succeeded"
             and event.failure_category is None
             and _nonempty_string(event.response_id)
-            and _nonempty_string(event.output_text)
+            and type(event.output_text) is str
             and event.message is None
         )
     return (
@@ -342,6 +344,92 @@ def _valid_terminal_event(event: RuntimeStepEvent, state: WorkflowExecutionState
         and event.response_id is None
         and event.output_text is None
         and _nonempty_string(event.message)
+    )
+
+
+def _load_compatible_terminal_history(
+    workflow: WorkflowDefinition,
+    state_path: Path,
+    events_path: Path,
+) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
+    """Load the one valid empty-success-output case without weakening others."""
+    try:
+        return load_strict_terminal_history(workflow, state_path, events_path)
+    except (OSError, TerminalHistoryContractError):
+        pass
+    try:
+        loaded = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state_path, events_path)
+        )
+    except (OSError, WorkflowExecutionLoadError):
+        _fail("terminal_contract")
+    state = loaded.state
+    history = loaded.events
+    if not _valid_empty_success_history(workflow, state, history):
+        _fail("terminal_contract")
+    return state, history
+
+
+def _valid_empty_success_history(
+    workflow: WorkflowDefinition,
+    state: WorkflowExecutionState,
+    history: tuple[RuntimeStepEvent, ...],
+) -> bool:
+    if type(state) is not WorkflowExecutionState or type(history) is not tuple:
+        return False
+    if not (
+        _nonempty_string(state.workflow_id)
+        and state.workflow_id == workflow.id
+        and _exact_string(state.status, "succeeded")
+        and _nonempty_string(state.current_step_id)
+        and type(state.current_step_index) is int
+        and 1 <= state.current_step_index <= len(workflow.steps)
+        and _nonempty_string(state.current_employee_id)
+        and type(state.completed_step_ids) is tuple
+        and all(_nonempty_string(item) for item in state.completed_step_ids)
+        and state.completed_step_ids
+        == tuple(step.id for step in workflow.steps[: state.current_step_index])
+        and state.last_failure_category is None
+    ):
+        return False
+    prior_steps = workflow.steps[: state.current_step_index - 1]
+    if len(history) != len(prior_steps) + 1:
+        return False
+    for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
+        if not (
+            type(event) is RuntimeStepEvent
+            and _exact_string(event.event_type, "step_succeeded")
+            and _exact_string(event.workflow_id, state.workflow_id)
+            and _exact_string(event.step_id, step.id)
+            and type(event.step_index) is int
+            and event.step_index == position
+            and _exact_string(event.employee_id, step.employee)
+            and _exact_string(event.previous_status, "running")
+            and _exact_string(event.next_status, "succeeded")
+            and event.failure_category is None
+            and _nonempty_string(event.response_id)
+            and _nonempty_string(event.output_text)
+            and event.message is None
+        ):
+            return False
+    terminal = history[-1]
+    return (
+        type(terminal) is RuntimeStepEvent
+        and _exact_string(terminal.event_type, "step_succeeded")
+        and _exact_string(terminal.workflow_id, state.workflow_id)
+        and _exact_string(terminal.step_id, state.current_step_id)
+        and type(terminal.step_index) is int
+        and terminal.step_index == state.current_step_index
+        and _exact_string(terminal.employee_id, state.current_employee_id)
+        and _exact_string(terminal.previous_status, "running")
+        and _exact_string(terminal.next_status, "succeeded")
+        and _exact_string(terminal.provider, "openai")
+        and terminal.failure_category is None
+        and _nonempty_string(terminal.response_id)
+        and (terminal.request_id is None or _nonempty_string(terminal.request_id))
+        and type(terminal.output_text) is str
+        and terminal.output_text == ""
+        and terminal.message is None
     )
 
 

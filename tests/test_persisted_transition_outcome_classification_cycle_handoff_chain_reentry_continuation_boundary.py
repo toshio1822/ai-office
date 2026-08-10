@@ -828,3 +828,33 @@ def test_target_read_bytes_oserrors_are_safely_classified(
 
     monkeypatch.setattr(_TestPath, "read_bytes", raising_read_bytes)
     assert_rejected(result, supplied_workflow, state, events, f"{target[:-1] if target == 'events' else target}_target", lambda *_: pytest.fail("called"))
+
+
+def test_empty_success_terminal_output_delegates_to_injected_phase121_once(tmp_path: Path) -> None:
+    state, events, result, supplied_workflow, before_state, _ = setup(tmp_path, "succeeded")
+    empty_terminal = replace(terminal_event("succeeded"), output_text="")
+    event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+        for event in (
+            predecessor_event("one", 1, "a"),
+            predecessor_event("two", 2, "b"),
+            empty_terminal,
+        )
+    )
+    events.write_bytes(event_bytes)
+    result = replace(
+        result,
+        event_bytes_appended=len(serialize_runtime_step_event_jsonl(empty_terminal).encode("utf-8")),
+    )
+    expected = expected_outcome("succeeded")
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    returned = call(result, supplied_workflow, state, events, dependency)
+    assert returned is expected
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert state.read_bytes() == before_state
+    assert events.read_bytes() == event_bytes
