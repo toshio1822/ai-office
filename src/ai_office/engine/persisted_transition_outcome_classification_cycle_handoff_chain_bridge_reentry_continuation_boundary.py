@@ -108,6 +108,7 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
             classification="terminal_contract",
             minimum_index=1,
             require_immediate_openai=False,
+            allow_empty_success_output=False,
         )
         _require_unchanged(state_path, events_path, original, "terminal_contract")
         return result
@@ -121,6 +122,7 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
             classification="terminal_contract",
             minimum_index=1,
             require_immediate_openai=False,
+            allow_empty_success_output=False,
         )
         _require_unchanged(state_path, events_path, original, "terminal_contract")
         return result
@@ -268,6 +270,7 @@ def _check_terminal_history(
     classification: Classification,
     minimum_index: int,
     require_immediate_openai: bool,
+    allow_empty_success_output: bool,
 ) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
     state, history = _load_history(workflow, state_path, events_path, classification)
     expected_failure = (
@@ -282,6 +285,7 @@ def _check_terminal_history(
         expected_failure,
         minimum_index,
         require_immediate_openai,
+        allow_empty_success_output,
     ):
         _fail(classification)
     return state, history
@@ -316,6 +320,7 @@ def _valid_history(
     expected_failure: object,
     minimum_index: int,
     require_immediate_openai: bool,
+    allow_empty_success_output: bool,
 ) -> bool:
     index = state.current_step_index
     result_identity_valid = result is None or (
@@ -356,20 +361,27 @@ def _valid_history(
         ):
             return False
     return _valid_terminal_event(
-        history[-1], state, expected_failure, require_openai=require_immediate_openai
+        history[-1],
+        state,
+        expected_failure,
+        require_openai=require_immediate_openai,
+        allow_empty_success_output=allow_empty_success_output,
     )
 
 
 def _valid_state(state: WorkflowExecutionState, workflow: WorkflowDefinition) -> bool:
+    if type(state.current_step_index) is not int or not 1 <= state.current_step_index <= len(workflow.steps):
+        return False
+    current = workflow.steps[state.current_step_index - 1]
     return (
         _nonempty_string(state.workflow_id)
         and state.workflow_id == workflow.id
         and type(state.status) is str
         and state.status in {"succeeded", "failed"}
         and _nonempty_string(state.current_step_id)
-        and type(state.current_step_index) is int
-        and 1 <= state.current_step_index <= len(workflow.steps)
+        and state.current_step_id == current.id
         and _nonempty_string(state.current_employee_id)
+        and state.current_employee_id == current.employee
         and type(state.completed_step_ids) is tuple
         and all(_nonempty_string(item) for item in state.completed_step_ids)
         and (
@@ -416,6 +428,7 @@ def _valid_terminal_event(
     expected_failure: object,
     *,
     require_openai: bool,
+    allow_empty_success_output: bool,
 ) -> bool:
     base = (
         type(event) is RuntimeStepEvent
@@ -438,6 +451,7 @@ def _valid_terminal_event(
             and event.failure_category is None
             and _nonempty_string(event.response_id)
             and type(event.output_text) is str
+            and (allow_empty_success_output or bool(event.output_text))
             and event.message is None
         )
     return (
@@ -479,7 +493,8 @@ def _check_persistence(
         None,
         state.last_failure_category,
         4,
-        True,
+        require_immediate_openai=True,
+        allow_empty_success_output=True,
     ):
         _fail("persistence_contract")
     try:

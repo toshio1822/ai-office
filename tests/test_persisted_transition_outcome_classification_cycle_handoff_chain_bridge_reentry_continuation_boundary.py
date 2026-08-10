@@ -479,6 +479,69 @@ def test_empty_success_terminal_output_is_valid_on_phase135_route(tmp_path: Path
     assert_unchanged(data)
 
 
+@pytest.mark.parametrize(
+    ("state_field", "event_field"),
+    [("current_step_id", "step_id"), ("current_employee_id", "employee_id")],
+)
+def test_terminal_state_and_event_must_link_to_workflow_current_step(
+    tmp_path: Path, state_field: str, event_field: str
+) -> None:
+    data = values(tmp_path)
+    state_payload = json.loads(data["state_path"].read_text())  # type: ignore[union-attr]
+    state_payload[state_field] = "wrong"
+    data["state_path"].write_text(  # type: ignore[union-attr]
+        json.dumps(state_payload, separators=(",", ":")) + "\n"
+    )
+    lines = data["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    terminal_payload = json.loads(lines[-1])
+    terminal_payload[event_field] = "wrong"
+    lines[-1] = (json.dumps(terminal_payload, separators=(",", ":")) + "\n").encode()
+    data["events_path"].write_bytes(b"".join(lines))  # type: ignore[union-attr]
+    data["result"] = replace(
+        data["result"],
+        state_bytes_written=len(data["state_path"].read_bytes()),  # type: ignore[union-attr]
+        event_bytes_appended=len(lines[-1]),
+    )
+    before = data["state_path"].read_bytes(), data["events_path"].read_bytes()  # type: ignore[union-attr]
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return expected_outcome()
+
+    with pytest.raises(PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError) as caught:
+        call(data, dependency)
+    assert caught.value.detail.classification == "persistence_contract"
+    assert calls == 0
+    assert (data["state_path"].read_bytes(), data["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_workflow_complete_stop_rejects_empty_success_output_without_phase128_call(
+    tmp_path: Path,
+) -> None:
+    data, result = stop_values(tmp_path, "complete", provider="other")
+    lines = data["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    empty_terminal = serialize_runtime_step_event_jsonl(
+        terminal_event("succeeded", provider="other", output_text="")
+    ).encode()
+    lines[-1] = empty_terminal
+    data["events_path"].write_bytes(b"".join(lines))  # type: ignore[union-attr]
+    before = data["state_path"].read_bytes(), data["events_path"].read_bytes()  # type: ignore[union-attr]
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError) as caught:
+        call(data, dependency)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    assert (data["state_path"].read_bytes(), data["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+
+
 @pytest.mark.parametrize("field,value", [("provider", "other"), ("provider", 4), ("request_id", ""), ("request_id", 4), ("response_id", ""), ("response_id", None), ("output_text", None), ("message", "bad")])
 def test_success_terminal_contract_is_strict(tmp_path: Path, field: str, value: object) -> None:
     data = values(tmp_path)

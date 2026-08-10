@@ -384,7 +384,9 @@ def _valid_empty_success_history(
         and _nonempty_string(state.current_step_id)
         and type(state.current_step_index) is int
         and 1 <= state.current_step_index <= len(workflow.steps)
+        and state.current_step_id == workflow.steps[state.current_step_index - 1].id
         and _nonempty_string(state.current_employee_id)
+        and state.current_employee_id == workflow.steps[state.current_step_index - 1].employee
         and type(state.completed_step_ids) is tuple
         and all(_nonempty_string(item) for item in state.completed_step_ids)
         and state.completed_step_ids

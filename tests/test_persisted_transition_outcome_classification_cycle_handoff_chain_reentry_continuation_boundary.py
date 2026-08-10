@@ -858,3 +858,33 @@ def test_empty_success_terminal_output_delegates_to_injected_phase121_once(tmp_p
     assert calls == [(result, supplied_workflow, state, events)]
     assert state.read_bytes() == before_state
     assert events.read_bytes() == event_bytes
+
+
+@pytest.mark.parametrize("field", ["current_step_id", "current_employee_id"])
+def test_empty_success_fallback_preserves_workflow_current_step_linkage(
+    tmp_path: Path, field: str
+) -> None:
+    state, events, result, supplied_workflow, before_state, before_events = setup(
+        tmp_path, "succeeded"
+    )
+    state_payload = json.loads(state.read_text(encoding="utf-8"))
+    state_payload[field] = "wrong"
+    state.write_text(json.dumps(state_payload, separators=(",", ":")) + "\n", encoding="utf-8")
+    rewrite_event(events, 2, **{"step_id" if field == "current_step_id" else "employee_id": "wrong", "output_text": ""})
+    result = replace(
+        result,
+        state_bytes_written=len(state.read_bytes()),
+        event_bytes_appended=len(events.read_bytes().splitlines(keepends=True)[-1]),
+    )
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return expected_outcome("succeeded")
+
+    assert_rejected(result, supplied_workflow, state, events, "terminal_contract", dependency)
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+    assert (before_state, before_events) != before
