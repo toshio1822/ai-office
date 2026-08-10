@@ -1537,3 +1537,140 @@ def test_target_conflict_and_noncallable_dependency_are_zero_call(
         "dependency_error",
         None,
     )
+
+
+def test_prepare_route_accepts_exact_empty_success_output_without_mutation(
+    tmp_path: Path,
+) -> None:
+    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, *_ = setup(
+        tmp_path
+    )
+    rewrite_event(events, 2, output_text="")
+    rewrite_event(events, 0, provider="legacy-provider", request_id="legacy-request")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    expected = prepared(supplied_workflow, decision, supplied_employee)
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert (
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        )
+        is expected
+    )
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("field", ["current_step_id", "current_employee_id"])
+def test_empty_success_fallback_preserves_workflow_current_linkage(
+    tmp_path: Path, field: str
+) -> None:
+    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, *_ = setup(
+        tmp_path
+    )
+    rewrite_event(events, 2, output_text="", **{field: "wrong"})
+    state_payload = json.loads(state.read_text(encoding="utf-8"))
+    state_payload[field] = "wrong"
+    if field == "current_step_id":
+        state_payload["completed_step_ids"][-1] = "wrong"
+    state.write_text(json.dumps(state_payload, separators=(",", ":")) + "\n", encoding="utf-8")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(
+        ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError
+    ) as caught:
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("provider", ["other", 4])
+def test_empty_success_fallback_still_rejects_terminal_provider(
+    tmp_path: Path, provider: object
+) -> None:
+    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, *_ = setup(
+        tmp_path
+    )
+    rewrite_event(events, 2, output_text="", provider=provider)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(
+        ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError
+    ) as caught:
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("field,value", [("response_id", ""), ("response_id", None), ("response_id", 4), ("request_id", ""), ("request_id", 4)])
+def test_empty_success_fallback_preserves_terminal_response_and_request_contract(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, *_ = setup(
+        tmp_path
+    )
+    rewrite_event(events, 2, output_text="", **{field: value})
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(
+        ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError
+    ) as caught:
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)

@@ -1297,3 +1297,27 @@ persisted_failure | workflow_complete
     ↓
 Phase 137 (future explicit caller action)
 ```
+
+## Progression-to-Approved Preparation Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary（Phase 137）
+
+`route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`は、Phase 136から受け取った正確な`WorkflowProgressionDecision(prepare_next_step)`、またはstrict stop用の`WorkflowProgressionDecision(workflow_complete)` / `PersistedExecutionOutcome(persisted_failure)`を検証するouter bridgeです。prepare routeではPhase 136 provenanceを維持し、exact workflow/step/approval/employee、regular state/event targets、`current_step_index >= 4`、current/next/reason linkage、completed-step prefix、直前predecessor provider=`"openai"`、terminal provider=`"openai"`、terminal response/request/outputのexact contractを再検証します。Phase 136の有効な空success outputも、exact built-in `str`として許容します。
+
+検証後、公開Phase 130 `route_progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, approval, employee, state_path, events_path)`のcanonical six-argument orderで正確に一度だけ委譲します。Phase 130のexact `PreparedWorkflowStep`について、workflow/step/index/employee、instructions、model、allowed-tool tupleを再検証し、同じobjectを返します。正常経路ではstate/eventsをbyte-for-byte不変に保ち、safe error identity、両target補償、unexpected errorのsanitize、`dependency_rollback`、no retryを維持します。
+
+`workflow_complete`と`persisted_failure`はapproval/employeeが`None`であり、Phase 136 stop contractより不必要に厳しいprovider/index条件を追加せず、Phase 130を呼ばず同じobjectを返すunchanged zero-call stop routeです。workflow_completeのsuccess terminal outputはPhase 136 stop contractどおりnon-emptyです。Phase 137はPhase 123やPhase 131を直接呼び出さず、prepared-step start、start-state persistence、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。Focused testsはinjected Phase 130 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを呼びません。
+
+Phase 130については、prepare-next-step routeだけで、Phase 136が正当に生成しうるexact built-in empty success `output_text`を受理する狭い互換修正を行いました。workflow current-step linkage、completed prefix、predecessor、terminal provider/response/request、failure semantics、stop behavior、public API、および共有terminal history contractは緩和していません。
+
+```text
+Phase 136
+prepare_next_step | workflow_complete | persisted_failure
+    ↓
+Phase 137 progression-to-approved-preparation cycle handoff chain bridge outer reentry continuation boundary
+prepare_next_step (current_step_index >= 4) + exact approval/employee
+    → Phase 130 exactly once in canonical six-argument order
+    → exact PreparedWorkflowStep
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 131 (future explicit caller action)
+```
