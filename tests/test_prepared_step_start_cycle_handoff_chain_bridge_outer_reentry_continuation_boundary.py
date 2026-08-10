@@ -596,6 +596,33 @@ def test_predecessor_state_and_event_same_wrong_linkage_still_rejected(
     assert (state.read_bytes(), events.read_bytes()) != (before_state, before_events)
 
 
+def test_predecessor_state_and_all_history_events_same_wrong_workflow_are_rejected(
+    tmp_path: Path,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_state(state, workflow_id="wrong-workflow")
+    lines = events.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        payload = json.loads(line)
+        payload["workflow_id"] = "wrong-workflow"
+        lines[index] = json.dumps(payload, separators=(",", ":"))
+    events.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 @pytest.mark.parametrize("provider", ["other", 4, ""])
 def test_immediate_predecessor_provider_is_openai_exact(
     tmp_path: Path, provider: object
@@ -723,6 +750,35 @@ def test_earlier_predecessor_request_response_output_are_zero_call_rejections(
     value = prepared()
     state, events, before_state, before_events = targets(tmp_path)
     rewrite_event(events, 0, **{field: bad})
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value, workflow(), employee(), state, events, "terminal_contract", fake
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["failure_category", "message"],
+)
+def test_earlier_predecessor_failure_and_message_are_zero_call_rejections(
+    tmp_path: Path, field: str
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    rewrite_event(
+        events,
+        0,
+        **{field: "api_error" if field == "failure_category" else "bad"},
+    )
     before_state, before_events = state.read_bytes(), events.read_bytes()
     calls = 0
 
