@@ -571,6 +571,43 @@ def test_workflow_step_subclass_and_attribute_substitute_are_zero_call_rejection
         assert calls == 0
 
 
+def test_workflow_step_attribute_substitute_inside_exact_definition_is_zero_call_rejection(
+    tmp_path: Path,
+) -> None:
+    value = prepared()
+    state, events, *_ = targets(tmp_path)
+    definition = workflow()
+    steps = list(definition.steps)
+    steps[0] = SimpleNamespace(**steps[0].__dict__)
+    supplied_workflow = WorkflowDefinition.model_construct(
+        id=definition.id,
+        name=definition.name,
+        description=definition.description,
+        steps=steps,
+    )
+    assert type(supplied_workflow) is WorkflowDefinition
+    assert type(supplied_workflow.steps[0]) is not WorkflowStepDefinition
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        value,
+        supplied_workflow,
+        employee(),
+        state,
+        events,
+        "workflow_definition",
+        fake,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 @pytest.mark.parametrize(
     ("field", "bad"),
     [
