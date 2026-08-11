@@ -1259,6 +1259,10 @@ def test_direct_unsupported_inputs_are_zero_call(tmp_path: Path) -> None:
             "workflow", "six", 6, "f", "employee instructions", "six", "model",
             ("tool-one", "tool-two"),
         ),
+        WorkflowExecutionState(
+            "workflow", "running", "six", 6, "f",
+            ("one", "two", "three", "four", "five"), None,
+        ),
         *runtime_results,
     ]:
         calls = 0
@@ -1271,6 +1275,51 @@ def test_direct_unsupported_inputs_are_zero_call(tmp_path: Path) -> None:
         assert_rejected(bad, workflow(), employee(), state, events, "result_type", fake)
         assert calls == 0
         assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("decision", ["prepare_next_step", "not_progressable"])
+def test_unsupported_progression_decision_is_zero_call_rejected(
+    tmp_path: Path, decision: str
+) -> None:
+    state, events, before_state, before_events = stop_targets(
+        tmp_path, status="succeeded", index=6
+    )
+    result = WorkflowProgressionDecision(
+        decision, "workflow", "six", 6, "f", None, None, None,
+        "last_step_succeeded",
+    )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(result, workflow(), None, state, events, "completion_contract", fake)
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("outcome", ["persisted_success", "stopped_failed"])
+def test_unsupported_outcome_is_zero_call_rejected(
+    tmp_path: Path, outcome: str
+) -> None:
+    state, events, before_state, before_events = stop_targets(
+        tmp_path, status="failed", index=4
+    )
+    result = PersistedExecutionOutcome(
+        outcome, "workflow", "four", 4, "d", "api_error"
+    )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(result, workflow(), None, state, events, "failure_contract", fake)
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 def test_non_callable_dependency_and_targets_are_classified(tmp_path: Path) -> None:
@@ -1676,8 +1725,8 @@ def test_non_regular_target_is_rejected_before_phase139(
         assert state.read_bytes() == before_state
 
 
-def test_public_error_detail_contains_only_safe_classification() -> None:
-    state, events, *_ = predecessor_targets(Path("."))
+def test_public_error_detail_contains_only_safe_classification(tmp_path: Path) -> None:
+    state, events, *_ = predecessor_targets(tmp_path)
 
     def fake(*_: object) -> object:
         raise AssertionError("Phase 139 must not be called")
