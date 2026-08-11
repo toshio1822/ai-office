@@ -971,6 +971,25 @@ def test_prepared_return_contract_is_strict_after_one_call(
     unchanged(data_set)
 
 
+def test_prepared_allowed_tool_names_tuple_subclass_is_rejected_after_one_call(
+    tmp_path: Path,
+) -> None:
+    value = data(tmp_path)
+    expected = prepared(value["workflow"], value["result"], value["employee"])
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return replace(expected, allowed_tool_names=TupleChild(("tool-one", "tool-two")))
+
+    with pytest.raises(Phase145CompatibilityError) as caught:
+        invoke(value, fake)
+    assert caught.value.detail.classification == "prepared_contract"
+    assert calls == 1
+    unchanged(value)
+
+
 @pytest.mark.parametrize("bad", [
     WorkflowProgressionDecision("workflow_complete", "w", "six", 6, "f", None, None, None, "last_step_succeeded"),
     PersistedExecutionOutcome("persisted_failure", "w", "four", 4, "d", "api_error"),
@@ -985,6 +1004,25 @@ def test_dependency_return_must_be_exact_prepared_step(tmp_path: Path, bad: obje
     with pytest.raises(Phase145CompatibilityError) as caught:
         invoke(value, fake)
     assert caught.value.detail.classification == "prepared_contract"
+
+
+def test_dependency_return_prepared_subclass_is_rejected_after_one_call(
+    tmp_path: Path,
+) -> None:
+    value = data(tmp_path)
+    expected = prepared(value["workflow"], value["result"], value["employee"])
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return PreparedChild(*expected.__dict__.values())
+
+    with pytest.raises(Phase145CompatibilityError) as caught:
+        invoke(value, fake)
+    assert caught.value.detail.classification == "prepared_contract"
+    assert calls == 1
+    unchanged(value)
 
 
 @pytest.mark.parametrize("bad", [
@@ -1034,6 +1072,30 @@ def test_prepare_model_subclasses_are_zero_call(tmp_path: Path, kind: str) -> No
     else:
         value["employee"] = EmployeeChild.model_validate(value["employee"].model_dump())
     assert_rejected(value, "workflow_definition" if kind in {"workflow", "step"} else ("approval_contract" if kind == "approval" else "employee_contract"), lambda *_: pytest.fail("called"))
+
+
+@pytest.mark.parametrize("kind", ["workflow", "step", "approval", "employee"])
+def test_prepare_input_fully_attribute_compatible_substitutes_are_zero_call(
+    tmp_path: Path, kind: str
+) -> None:
+    value = data(tmp_path)
+    if kind == "workflow":
+        value["workflow"] = SimpleNamespace(**value["workflow"].__dict__)
+    elif kind == "step":
+        original = value["workflow"]
+        value["workflow"] = original.model_copy(
+            update={"steps": [SimpleNamespace(**item.__dict__) for item in original.steps]}
+        )
+    elif kind == "approval":
+        value["approval"] = SimpleNamespace(**value["approval"].__dict__)
+    else:
+        value["employee"] = SimpleNamespace(**value["employee"].__dict__)
+    expected = (
+        "workflow_definition"
+        if kind in {"workflow", "step"}
+        else "approval_contract" if kind == "approval" else "employee_contract"
+    )
+    assert_rejected(value, expected, lambda *_: pytest.fail("called"))
 
 
 @pytest.mark.parametrize("route", ["completion", "failure"])
