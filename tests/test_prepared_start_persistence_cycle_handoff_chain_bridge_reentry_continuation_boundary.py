@@ -1320,3 +1320,258 @@ def test_empty_success_fallback_keeps_workflow_linkage(
 
     reject(lambda: invoke(start(), employee(), state, events, fake), "terminal_contract")
     assert calls == 0
+
+
+def _delegate_once(
+    state: Path,
+    events: Path,
+    supplied: tuple[object, ...],
+) -> tuple[object, list[tuple[object, ...]], RunningStatePersistenceResult]:
+    expected_state = serialize_workflow_execution_state_json(
+        supplied[0].running_state  # type: ignore[attr-defined]
+    ).encode()
+    expected = RunningStatePersistenceResult(len(expected_state))
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
+
+    returned = route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+        *supplied,
+        phase125_function=fake,
+    )
+    return returned, calls, expected
+
+
+def _assert_single_canonical_delegation(
+    returned: object,
+    calls: list[tuple[object, ...]],
+    supplied: tuple[object, ...],
+    state: Path,
+    events: Path,
+    before_events: bytes,
+    expected: RunningStatePersistenceResult,
+) -> None:
+    expected_state = serialize_workflow_execution_state_json(
+        supplied[0].running_state  # type: ignore[attr-defined]
+    ).encode()
+    assert returned is expected
+    assert len(calls) == 1
+    assert len(calls[0]) == 5
+    assert all(
+        received is supplied_argument
+        for received, supplied_argument in zip(calls[0], supplied, strict=True)
+    )
+    assert state.read_bytes() == expected_state
+    assert events.read_bytes() == before_events
+
+
+def test_empty_immediate_predecessor_output_delegates_once_in_canonical_order(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 1, output_text="")
+    before_events = events.read_bytes()
+    supplied = (start(), workflow(), employee(), state, events)
+    returned, calls, expected = _delegate_once(state, events, supplied)
+    _assert_single_canonical_delegation(
+        returned, calls, supplied, state, events, before_events, expected
+    )
+
+
+def test_older_empty_predecessor_output_with_later_nonempty_successes_is_accepted(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 0, output_text="")
+    before_events = events.read_bytes()
+    supplied = (start(), workflow(), employee(), state, events)
+    returned, calls, expected = _delegate_once(state, events, supplied)
+    _assert_single_canonical_delegation(
+        returned, calls, supplied, state, events, before_events, expected
+    )
+
+
+def test_multiple_earlier_empty_predecessor_outputs_remain_accepted(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 0, output_text="")
+    _rewrite_event_json(events, 1, output_text="")
+    before_events = events.read_bytes()
+    supplied = (start(), workflow(), employee(), state, events)
+    returned, calls, expected = _delegate_once(state, events, supplied)
+    _assert_single_canonical_delegation(
+        returned, calls, supplied, state, events, before_events, expected
+    )
+
+
+def test_nonempty_predecessor_outputs_remain_accepted_unchanged(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    before_events = events.read_bytes()
+    supplied = (start(), workflow(), employee(), state, events)
+    returned, calls, expected = _delegate_once(state, events, supplied)
+    _assert_single_canonical_delegation(
+        returned, calls, supplied, state, events, before_events, expected
+    )
+
+
+@pytest.mark.parametrize("bad", [4, None])
+def test_predecessor_non_string_output_text_remains_rejected(
+    tmp_path: Path, bad: object
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 0, output_text=bad)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "terminal_contract")
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("bad", [None, "", 4])
+def test_predecessor_empty_or_non_string_response_id_remains_rejected(
+    tmp_path: Path, bad: object
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 0, response_id=bad)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "terminal_contract")
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_predecessor_request_id_none_remains_valid_with_empty_output(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 0, output_text="", request_id=None)
+    before_events = events.read_bytes()
+    supplied = (start(), workflow(), employee(), state, events)
+    returned, calls, expected = _delegate_once(state, events, supplied)
+    _assert_single_canonical_delegation(
+        returned, calls, supplied, state, events, before_events, expected
+    )
+
+
+@pytest.mark.parametrize("bad", ["", 4])
+def test_predecessor_empty_or_non_string_request_id_remains_rejected(
+    tmp_path: Path, bad: object
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 0, request_id=bad)
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "terminal_contract")
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+@pytest.mark.parametrize("provider", ["other", "claude"])
+def test_earlier_non_openai_predecessor_provider_remains_valid_with_empty_output(
+    tmp_path: Path, provider: str
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 0, output_text="", provider=provider)
+    before_events = events.read_bytes()
+    supplied = (start(), workflow(), employee(), state, events)
+    returned, calls, expected = _delegate_once(state, events, supplied)
+    _assert_single_canonical_delegation(
+        returned, calls, supplied, state, events, before_events, expected
+    )
+
+
+@pytest.mark.parametrize("field", ["step_id", "employee_id", "step_index"])
+def test_predecessor_linkage_mismatches_remain_rejected_with_empty_output(
+    tmp_path: Path, field: str
+) -> None:
+    state, events = targets(tmp_path)
+    wrong = "wrong" if field != "step_index" else 5
+    _rewrite_event_json(events, 0, output_text="", **{field: wrong})
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(start(), employee(), state, events, fake), "terminal_contract")
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_workflow_complete_stop_route_keeps_empty_predecessor_output_strictness(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path, status="succeeded", index=4)
+    _rewrite_event_json(events, 0, output_text="")
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(completion(), None, state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_persisted_failure_stop_route_keeps_empty_predecessor_output_strictness(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path, status="failed", index=2)
+    _rewrite_event_json(events, 0, output_text="")
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(lambda: invoke(failure(), None, state, events, fake), "terminal_contract")
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_prepared_route_accepts_empty_terminal_and_empty_predecessor_combined(
+    tmp_path: Path,
+) -> None:
+    state, events = targets(tmp_path)
+    _rewrite_event_json(events, 0, output_text="")
+    _rewrite_event_json(events, 2, output_text="")
+    before_events = events.read_bytes()
+    supplied = (start(), workflow(), employee(), state, events)
+    returned, calls, expected = _delegate_once(state, events, supplied)
+    _assert_single_canonical_delegation(
+        returned, calls, supplied, state, events, before_events, expected
+    )
