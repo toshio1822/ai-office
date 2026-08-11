@@ -1529,3 +1529,41 @@ workflow_complete | persisted_failure
     ↓
 Phase 141 (future explicit caller action; not called by Phase 147)
 ```
+
+## Phase 148: Phase 147 Default Persistence Chain Multi-Continuation Empty-Success Compatibility Repair
+
+Phase 148は新しいorchestration boundaryではなく、Phase 147マージ後に判明した1つの互換性ギャップを修復するcompatibility/correctness repairです。Phase 140は非final succeeded continuation history全体でexact built-in `str output_text == ""`を有効と定め、Phase 147とその直接依存のPhase 139は、それ以前のsucceeded predecessor eventのempty `output_text`を含めてその範囲を維持するよう修正済みです。しかし実default dependency chainではPhase 132が全てのearlier predecessorをlocal `_valid_predecessor()`で再検証し、`_nonempty_string(event.output_text)`を要求していました。このため、Phase 140/146/147で有効なmulti-continuation historyがPhase 147とPhase 139の検証は通過しても、実defaultのPhase 132依存が公開継続契約より厳しいために失敗していました。
+
+Phase 148はPhase 132 prepared-start persistence routeだけに1つの狭い修正を加えます。prepared routeのpredecessor検証に`allow_empty_predecessor_output`許容を追加し、earlier predecessorのsucceeded event `output_text`がexact built-in `str`のまま、emptyでもnon-emptyでも有効にします。この緩和は全てのearlier predecessorに適用されるため、1回の継続だけでなく複数回の継続をまたいだhistoryでも互換性が維持されます。
+
+修復後の経路:
+
+```text
+Phase 147
+  → Phase 139
+    → Phase 132
+      → Phase 125 default persistence chain
+
+non-final succeeded predecessor history
+  → every success output_text remains exact built-in str
+  → empty or non-empty is preserved through the real default persistence chain
+```
+
+predecessor `response_id`は既存のexact non-empty built-in `str`契約を維持し、`request_id`は既存のPhase 132契約（valid `None`を含む）を維持し、providerは既存のPhase 132契約を維持してearlier predecessorに新しい`"openai"`要求を追加しません。exact workflow/step/index/employee linkage、`running -> succeeded`、failure/message semantics、history ordering/length、completed prefix、start/request/employee linkage、target semantics、persistence result、compensation、classification、retry behavior、Phase 132 continuation lower bound、`workflow_complete`/`persisted_failure` stop routes、final workflow-complete success outputのstrict non-empty契約、failed historyは全て変更しません。
+
+Phase 148は以下を行いません:
+
+- 新しいpublic boundaryの追加
+- Phase 141の呼び出し
+- provider/toolの実行
+- runtime resultのpersistence
+- outcomeのclassification
+- workflowのprogression
+- retry
+- 他のstepの自動継続
+- final workflow-complete semanticsの変更
+- `src/ai_office/engine/terminal_history_contract.py`の変更（Phase 140が共有契約を所有）
+- finalize/schedule/loop/parallel behaviorの追加
+- CLI/GUI behaviorの追加
+
+Phase 141 execution-chainの互換性監査/修復は、このPhaseのレビューとマージ後に明示的な作業として残ります。
