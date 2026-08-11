@@ -109,6 +109,7 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
             minimum_index=1,
             require_immediate_openai=False,
             allow_empty_success_output=False,
+            allow_empty_predecessor_output=True,
         )
         _require_unchanged(state_path, events_path, original, "terminal_contract")
         return result
@@ -123,6 +124,7 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
             minimum_index=1,
             require_immediate_openai=False,
             allow_empty_success_output=False,
+            allow_empty_predecessor_output=True,
         )
         _require_unchanged(state_path, events_path, original, "terminal_contract")
         return result
@@ -271,6 +273,7 @@ def _check_terminal_history(
     minimum_index: int,
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
+    allow_empty_predecessor_output: bool,
 ) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
     state, history = _load_history(workflow, state_path, events_path, classification)
     expected_failure = (
@@ -286,7 +289,7 @@ def _check_terminal_history(
         minimum_index,
         require_immediate_openai,
         allow_empty_success_output,
-        False,
+        allow_empty_predecessor_output,
     ):
         _fail(classification)
     return state, history

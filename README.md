@@ -1419,3 +1419,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 135 (existing explicit caller action)
 ```
+
+## Persisted-Transition Outcome Classification Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary（Phase 143）
+
+`route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`は、Phase 142から受け取ったexact `WorkflowExecutionPersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を処理するouter boundaryです。persistence/classification routeでは、exact workflow/step models、regular targets、target identity、positive exact byte counts、terminal state/history、current step index `>= 5`、succeeded predecessor history、immediate predecessor provider=`"openai"`、terminal event linkageを再検証し、公開Phase 135 `route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へcanonical four-argument order `(result, workflow, state_path, events_path)`とsupplied-object identityでexactly once委譲します。exact `PersistedExecutionOutcome`を再検証して同一objectで返し、正常経路でstate/eventsをbyte-for-byte不変に保ちます。
+
+`workflow_complete`と`persisted_failure`はPhase 135を呼ばず、terminal state/historyを検証して同じobjectを返すunchanged zero-call stop routeです。stop routeでは非終端succeeded predecessorのexact built-in `str output_text == ""`を許容しますが、workflow_completeの最終terminal succeeded eventの`output_text` non-empty契約とpersisted-failure terminal semanticsは維持します。
+
+Phase 143はPhase 128を直接参照・呼び出しせず、Phase 136へ進みません。progression、next-step preparation、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorは追加しません。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類して両targetを補償復元します。復元失敗は`dependency_rollback`、retryはありません。Focused testsはinjected Phase 135 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを呼びません。
+
+```text
+Phase 142
+WorkflowExecutionPersistenceResult | workflow_complete | persisted_failure
+    ↓
+Phase 143 persisted-transition outcome-classification cycle handoff chain bridge outer reentry continuation boundary
+WorkflowExecutionPersistenceResult (current_step_index >= 5)
+    → Phase 135 exactly once in canonical four-argument order
+    → exact PersistedExecutionOutcome
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 136 (future explicit caller action)
+```

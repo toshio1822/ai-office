@@ -20,8 +20,13 @@ from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_
     route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary as public_phase135,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
-from ai_office.invocation import ModelInvocationRequest
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.invocation import ModelInvocationFailure, ModelInvocationRequest, ModelInvocationSuccess
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    StepRuntimeExecutionFailure,
+    StepRuntimeExecutionSuccess,
+    WorkflowExecutionState,
+)
 from ai_office.storage import (
     RunningStatePersistenceResult,
     WorkflowExecutionPersistenceResult,
@@ -315,7 +320,10 @@ def test_public_signature_and_source_audit() -> None:
     assert "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary" in source
     assert "phase128" not in source.lower()
     assert "route_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary" not in source
+    assert "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary" not in source
+    assert "route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary" not in source
     assert "route_runtime_result_transition_persistence" not in source
+    assert "route_classified_persisted_outcome_reentry" not in source
     assert "._validate_" not in source
     assert "._top" not in source
     assert "._raise" not in source
@@ -1005,10 +1013,11 @@ def test_workflow_complete_stop_empty_terminal_output_is_rejected(
     assert (state_path.read_bytes(), events_path.read_bytes()) == before  # type: ignore[union-attr]
 
 
-def test_stop_route_empty_predecessor_output_text_remains_rejected(
-    tmp_path: Path,
+@pytest.mark.parametrize("kind", ["complete", "failure"])
+def test_stop_routes_allow_empty_predecessor_output_text_zero_call_unchanged(
+    tmp_path: Path, kind: str
 ) -> None:
-    data, _result = stop_values(tmp_path, "complete")
+    data, result = stop_values(tmp_path, kind)
     state_path, events_path = data["state_path"], data["events_path"]
     lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(
@@ -1023,9 +1032,10 @@ def test_stop_route_empty_predecessor_output_text_remains_rejected(
         calls += 1
         return object()
 
-    with pytest.raises(OuterCompatibilityError) as caught:
+    assert (
         public_phase143(**_arguments(data), phase135_function=dependency)  # type: ignore[arg-type]
-    assert caught.value.detail.classification == "terminal_contract"
+        is result
+    )
     assert calls == 0
     assert (state_path.read_bytes(), events_path.read_bytes()) == before  # type: ignore[union-attr]
 
@@ -1034,6 +1044,20 @@ def test_stop_route_empty_predecessor_output_text_remains_rejected(
     "value",
     [
         RunningStatePersistenceResult(state_bytes_written=1),
+        StepRuntimeExecutionSuccess(
+            workflow_id="w",
+            step_id="one",
+            step_index=1,
+            employee_id="e",
+            invocation_result=ModelInvocationSuccess("openai", "r", "q", "done", ("out",), "out"),
+        ),
+        StepRuntimeExecutionFailure(
+            workflow_id="w",
+            step_id="one",
+            step_index=1,
+            employee_id="e",
+            invocation_result=ModelInvocationFailure("openai", "api_error", "safe", "q", 500, None, None),
+        ),
         PreparedStepExecutionStart(
             request=ModelInvocationRequest(
                 model="m",
