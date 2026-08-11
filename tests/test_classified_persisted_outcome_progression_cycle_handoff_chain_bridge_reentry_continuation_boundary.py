@@ -1095,3 +1095,132 @@ def test_public_error_detail_has_only_safe_classification() -> None:
         "result_type"
     )
     assert detail.classification == "result_type"
+
+
+def test_success_route_accepts_exact_empty_predecessor_output(tmp_path: Path) -> None:
+    data_set = data(tmp_path)
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event(workflow().steps[2], 3, provider="openai", output_text="")
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:2]) + replacement + lines[3]
+    )
+    set_before(data_set)
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert invoke(data_set, dependency) is decision
+    assert calls == [
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        )
+    ]
+    unchanged(data_set)
+
+
+def test_success_route_earlier_empty_output_survives_later_succeeded_predecessor(
+    tmp_path: Path,
+) -> None:
+    data_set = data(tmp_path)
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event(workflow().steps[1], 2, provider="other", output_text="")
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:1]) + replacement + b"".join(lines[2:])
+    )
+    set_before(data_set)
+    decision = expected_decision(data_set)
+    calls = 0
+
+    def dependency(*_: object) -> WorkflowProgressionDecision:
+        nonlocal calls
+        calls += 1
+        return decision
+
+    assert invoke(data_set, dependency) is decision
+    assert calls == 1
+    unchanged(data_set)
+
+
+@pytest.mark.parametrize("response_id", ["", None])
+def test_success_route_empty_predecessor_output_still_requires_response_id(
+    tmp_path: Path, response_id: object
+) -> None:
+    data_set = data(tmp_path)
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            workflow().steps[2],
+            3,
+            provider="openai",
+            output_text="",
+            response_id=response_id,
+        )
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:2]) + replacement + lines[3]
+    )
+    reject(data_set, "terminal_contract")
+
+
+@pytest.mark.parametrize("request_id", ["", None])
+def test_success_route_empty_predecessor_output_still_requires_request_id(
+    tmp_path: Path, request_id: object
+) -> None:
+    data_set = data(tmp_path)
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            workflow().steps[2],
+            3,
+            provider="openai",
+            output_text="",
+            request_id=request_id,
+        )
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:2]) + replacement + lines[3]
+    )
+    reject(data_set, "terminal_contract")
+
+
+def test_success_route_empty_predecessor_output_still_requires_openai_immediate_provider(
+    tmp_path: Path,
+) -> None:
+    data_set = data(tmp_path)
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event(workflow().steps[2], 3, provider="other", output_text="")
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:2]) + replacement + lines[3]
+    )
+    reject(data_set, "terminal_contract")
+
+
+@pytest.mark.parametrize("kind", ["completion", "failure"])
+def test_stop_routes_still_reject_empty_predecessor_output(
+    tmp_path: Path, kind: str
+) -> None:
+    data_set = (
+        completion_data(tmp_path)
+        if kind == "completion"
+        else data(tmp_path, status="failed", terminal_provider="other")
+    )
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event(workflow().steps[1], 2, provider="other", output_text="")
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:1]) + replacement + b"".join(lines[2:])
+    )
+    reject(data_set, "terminal_contract")
