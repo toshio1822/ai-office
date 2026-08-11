@@ -1,6 +1,6 @@
-"""Phase 138 outer prepared-step start bridge."""
+"""Phase 146 prepared-step start cycle handoff chain bridge outer-chain boundary."""
 
-# ruff: noqa: E501
+# ruff: noqa: E501,E701
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,11 +14,11 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeReentryContinuationError as Phase131Error,
+from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase138Error,
 )
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    route_prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary,
+from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory, ModelInvocationRequest
@@ -43,7 +43,7 @@ Classification = Literal[
     "dependency_error",
     "dependency_rollback",
 ]
-Phase131Function = Callable[
+Phase138Function = Callable[
     [object, object, object, object, object],
     PreparedStepExecutionStart | WorkflowProgressionDecision | PersistedExecutionOutcome,
 ]
@@ -52,43 +52,45 @@ _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 
 
 @dataclass(frozen=True)
-class PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationFailureDetail:
-    """Safe classification for one Phase 138 compatibility failure."""
+class PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail:
+    """Safe classification for one Phase 146 compatibility failure."""
 
     classification: Classification
 
 
-class PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError(ValueError):
-    """Raised when one Phase 137 result cannot cross the outer bridge."""
-
-
-class PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
-    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError
+class PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError(
+    ValueError
 ):
-    """Raised for a detail-safe Phase 138 compatibility rejection."""
+    """Raised when one Phase 145 result cannot cross the Phase 146 outer-chain bridge."""
+
+
+class PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError(
+    PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError
+):
+    """Raised for a detail-safe Phase 146 compatibility rejection."""
 
     def __init__(self, classification: Classification) -> None:
         super().__init__(
-            "prepared-step start cycle handoff chain bridge outer inputs are incompatible"
+            "prepared-step start cycle handoff chain bridge outer-chain inputs are incompatible"
         )
-        self.detail = PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationFailureDetail(
+        self.detail = PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail(
             classification
         )
 
 
-def route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+def route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
     result: object,
     workflow: object,
     employee: object,
     state_path: object,
     events_path: object,
     *,
-    phase131_function: Phase131Function = (
-        route_prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary
+    phase138_function: Phase138Function = (
+        route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
     ),
 ) -> PreparedStepExecutionStart | WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Route one exact Phase 137 result through public Phase 131 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase131_function)
+    """Route one exact Phase 145 continuation result through public Phase 138 once."""
+    _check_inputs(result, workflow, state_path, events_path, phase138_function)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -126,7 +128,7 @@ def route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuat
             expected_failure,
             require_immediate_openai=False,
             allow_empty_success_output=False,
-            allow_empty_predecessor_output=False,
+            allow_empty_predecessor_output=True,
         )
         _require_unchanged(state_path, events_path, original, "terminal_contract")
         return result
@@ -135,8 +137,8 @@ def route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuat
     assert type(employee) is EmployeeDefinition
     predecessor = _check_predecessor(result, workflow, state_path, events_path)
     try:
-        value = phase131_function(result, workflow, employee, state_path, events_path)
-    except Phase131Error as error:
+        value = phase138_function(result, workflow, employee, state_path, events_path)
+    except Phase138Error as error:
         _compensate_dependency_error(state_path, events_path, original, error)
     except Exception:
         _compensate_dependency_error(state_path, events_path, original, None)
@@ -196,7 +198,7 @@ def _valid_workflow(workflow: WorkflowDefinition) -> bool:
 def _check_prepared_index(value: PreparedWorkflowStep, workflow: WorkflowDefinition) -> None:
     if (
         type(value.step_index) is not int
-        or value.step_index < 5
+        or value.step_index < 6
         or value.step_index > len(workflow.steps)
     ):
         _fail("prepared_step_contract")
@@ -567,7 +569,7 @@ def _check_start(
         and _exact_string(running.status, "running")
         and _exact_string(running.current_step_id, prepared.step_id)
         and type(running.current_step_index) is int
-        and running.current_step_index >= 5
+        and running.current_step_index >= 6
         and running.current_step_index == prepared.step_index
         and _exact_string(running.current_employee_id, prepared.employee_id)
         and type(running.completed_step_ids) is tuple
@@ -618,7 +620,7 @@ def _compensate_dependency_error(
     state_path: Path,
     events_path: Path,
     original: tuple[bytes, bytes],
-    safe_error: Phase131Error | None,
+    safe_error: Phase138Error | None,
 ) -> None:
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
@@ -636,6 +638,6 @@ def _exact_string(value: object, expected: str) -> bool:
 
 
 def _fail(classification: Classification) -> None:
-    raise PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
+    raise PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError(
         classification
     ) from None
