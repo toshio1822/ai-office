@@ -1335,6 +1335,81 @@ def test_predecessor_request_id_empty_and_non_string_is_rejected_before_phase126
     reject_unchanged(values, "persistence_result_contract")
 
 
+def test_immediate_predecessor_none_request_id_delegates_once_in_canonical_order(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    _events_with_overrides(values, three={"request_id": None})
+    state, events = values["state_path"], values["events_path"]
+    before = state.read_bytes(), events.read_bytes()  # type: ignore[union-attr]
+    seen: list[tuple[object, ...]] = []
+    expected = runtime_success()
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+        **values, phase126_function=dependency  # type: ignore[arg-type]
+    )
+    assert actual is expected and len(seen) == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            seen[0],
+            tuple(values[name] for name in (
+                "result", "start", "workflow", "employee", "state_path", "events_path",
+                "resolved_tools", "api_key", "approval", "transport",
+            )),
+            strict=True,
+        )
+    )
+    assert (state.read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_immediate_predecessor_none_request_id_returns_exact_runtime_result(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    _events_with_overrides(values, three={"request_id": None})
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime_failure()
+
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+        **values, phase126_function=dependency  # type: ignore[arg-type]
+    )
+    assert isinstance(actual, StepRuntimeExecutionFailure)
+    assert calls == 1
+
+
+def test_earlier_predecessor_none_request_id_is_rejected_before_phase126(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    _events_with_overrides(values, one={"request_id": None})
+    reject_unchanged(values, "persistence_result_contract")
+
+
+def test_earlier_predecessor_exact_non_empty_request_ids_remain_accepted(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    _events_with_overrides(
+        values,
+        one={"request_id": "req-1"},
+        two={"request_id": "req-2"},
+        three={"request_id": "req-3"},
+    )
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+        **values, phase126_function=lambda *_: runtime_success()  # type: ignore[arg-type]
+    )
+    assert isinstance(actual, StepRuntimeExecutionSuccess)
+
+
 def test_immediate_predecessor_provider_must_remain_exact_openai_even_with_empty_output(
     tmp_path: Path,
 ) -> None:

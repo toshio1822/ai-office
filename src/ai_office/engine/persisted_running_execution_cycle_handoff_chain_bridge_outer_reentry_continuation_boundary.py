@@ -602,6 +602,7 @@ def _check_predecessor(
             running,
             require_openai=position == len(expected_steps),
             allow_empty_output=True,
+            allow_none_request_id=position == len(expected_steps),
         ):
             _fail("persistence_result_contract")
 
@@ -613,9 +614,13 @@ def _valid_predecessor_event(
     state: WorkflowExecutionState,
     require_openai: bool = False,
     allow_empty_output: bool = False,
+    allow_none_request_id: bool = False,
 ) -> bool:
     provider_valid = _nonempty_string(event.provider) and (
         not require_openai or event.provider == "openai"
+    )
+    request_id_valid = (event.request_id is None and allow_none_request_id) or (
+        _nonempty_string(event.request_id)
     )
     return (
         _exact_string(event.event_type, "step_succeeded")
@@ -629,7 +634,7 @@ def _valid_predecessor_event(
         and provider_valid
         and event.failure_category is None
         and _nonempty_string(event.response_id)
-        and _nonempty_string(event.request_id)
+        and request_id_valid
         and type(event.output_text) is str
         and (allow_empty_output or bool(event.output_text))
         and event.message is None

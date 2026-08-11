@@ -553,6 +553,104 @@ def test_predecessor_request_id_empty_and_non_string_is_rejected(
     reject_unchanged(values, "persistence_result_contract")
 
 
+def test_immediate_predecessor_none_request_id_delegates_once_in_canonical_order(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        _event("step_succeeded", "four", 4, "openai", request_id=None)
+    )
+    events.write_text("".join(lines[:3]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
+    state, events_path = values["state_path"], values["events_path"]
+    before = state.read_bytes(), events_path.read_bytes()  # type: ignore[union-attr]
+    seen: list[tuple[object, ...]] = []
+    expected = runtime_success()
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+        **values, phase133_function=dependency  # type: ignore[arg-type]
+    )
+    assert actual is expected and len(seen) == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            seen[0],
+            tuple(values[name] for name in (
+                "result", "start", "workflow", "employee", "state_path", "events_path",
+                "resolved_tools", "api_key", "approval", "transport",
+            )),
+            strict=True,
+        )
+    )
+    assert (state.read_bytes(), events_path.read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_immediate_predecessor_none_request_id_returns_exact_runtime_result_unchanged(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        _event("step_succeeded", "four", 4, "openai", request_id=None)
+    )
+    events.write_text("".join(lines[:3]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return runtime_failure()
+
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+        **values, phase133_function=dependency  # type: ignore[arg-type]
+    )
+    assert isinstance(actual, StepRuntimeExecutionFailure)
+    assert calls == 1
+
+
+def test_earlier_predecessor_none_request_id_is_rejected_before_phase133(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        _event("step_succeeded", "two", 2, "other", request_id=None)
+    )
+    events.write_text(lines[0] + replacement + lines[2] + lines[3], encoding="utf-8")  # type: ignore[union-attr]
+    reject_unchanged(values, "persistence_result_contract")
+
+
+def test_earlier_predecessor_exact_non_empty_request_ids_remain_accepted(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    events = values["events_path"]
+    replacements = {
+        "one": _event("step_succeeded", "one", 1, "other", request_id="req-1"),
+        "two": _event("step_succeeded", "two", 2, "other", request_id="req-2"),
+        "three": _event("step_succeeded", "three", 3, "other", request_id="req-3"),
+        "four": _event("step_succeeded", "four", 4, "openai", request_id="req-4"),
+    }
+    events.write_text(
+        "".join(
+            serialize_runtime_step_event_jsonl(replacements[step_id])
+            for step_id in ("one", "two", "three", "four")
+        ),
+        encoding="utf-8",
+    )  # type: ignore[union-attr]
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+        **values, phase133_function=lambda *_: runtime_success()  # type: ignore[arg-type]
+    )
+    assert isinstance(actual, StepRuntimeExecutionSuccess)
+
+
 @pytest.mark.parametrize("provider", ["other", "", 4])
 def test_immediate_predecessor_provider_must_be_exact_openai(
     tmp_path: Path, provider: object

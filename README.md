@@ -1567,3 +1567,39 @@ Phase 148は以下を行いません:
 - CLI/GUI behaviorの追加
 
 Phase 141 execution-chainの互換性監査/修復は、このPhaseのレビューとマージ後に明示的な作業として残ります。
+
+## Phase 149: Phase 141 Default Execution Chain Optional Immediate-Predecessor Request-ID Compatibility Repair
+
+Phase 149は新しいorchestration boundaryではなく、Phase 148レビュー後の明示的な作業として残されたPhase 141 execution-chainの互換性ギャップを修復するcompatibility/correctness repairです。Phase 141の実default dependency chainでは、Phase 141とその直接依存のPhase 133がlocal `_valid_predecessor_event()`でpredecessorを再検証し、succeeded predecessor eventの`request_id`にexact non-empty built-in `str`を要求していました。しかし実default chainが最終transport境界まで到達する経路では、直前のpredecessor（immediate predecessor）のsucceeded event `request_id`が`None`になることがあります。これはPhase 147/148のprepared-start persistence chainのterminal successが`request_id=None`を保持する契約と整合します。このため、実default chainでimmediate predecessorの`request_id=None`がPhase 141とPhase 133の検証を通過できず、Phase 126以下へ委譲されないという互換性ギャップがありました。
+
+Phase 149はPhase 141とPhase 133のexecution routeだけに1つの狭い修正を加えます。predecessor検証に`allow_none_request_id`許容を追加し、`position == len(expected_steps)`のimmediate predecessorに限り、succeeded event `request_id`を`None`またはexact non-empty built-in `str`のどちらでも有効にします（immediate predecessor: `request_id` is `None` OR `request_id` is an exact non-empty built-in `str`）。stop route（`WorkflowProgressionDecision`/`PersistedExecutionOutcome`）とそれより前のpredecessorは従来どおりexact non-empty built-in `str`の`request_id`を要求し（earlier predecessor: `request_id` is an exact non-empty built-in `str`）、`request_id`の`None`許可はimmediate predecessorだけに限定されます。
+
+修復後の経路:
+
+```text
+Phase 141
+  → Phase 133
+    → Phase 126 default execution chain
+
+running state at the final step
+  → immediate predecessor succeeded request_id is None or exact non-empty str
+  → None or exact non-empty str is preserved through the real default execution chain
+  → earlier predecessor request_id stays exact non-empty str
+```
+
+predecessor `output_text`は既存のPhase 141/133契約を維持します（Phase 149はempty-outputを変更せず、実default-chain回帰では全てnon-emptyにしてPhase 126以下の既知のempty-output問題と分離します）。`response_id`は既存のexact non-empty built-in `str`契約を維持し、providerは既存のPhase 141/133契約（immediate predecessorのみ`"openai"`要求）を維持し、earlier predecessorに新しい`"openai"`要求を追加しません。exact workflow/step/index/employee linkage、`running -> succeeded`、failure/message semantics、history ordering/length、completed prefix、start/request/employee linkage、target semantics、persistence result、compensation、classification、retry behavior、Phase 126 continuation lower bound、`workflow_complete`/`persisted_failure` stop routes、final workflow-complete success outputのstrict non-empty契約、failed history、transport非実行時の契約は全て変更しません。
+
+Phase 149は以下を行いません:
+
+- 新しいpublic boundaryの追加
+- Phase 126以下の変更（empty `output_text`問題や`request_id`検証を含む）
+- provider/toolの実行
+- runtime resultのpersistence
+- outcomeのclassification
+- workflowのprogression
+- retry
+- 他のstepの自動継続
+- final workflow-complete semanticsの変更
+- `src/ai_office/engine/terminal_history_contract.py`の変更（Phase 140が共有契約を所有）
+- finalize/schedule/loop/parallel behaviorの追加
+- CLI/GUI behaviorの追加
