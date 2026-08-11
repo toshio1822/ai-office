@@ -49,6 +49,7 @@ def workflow() -> WorkflowDefinition:
                 {"id": "three", "name": "Three", "employee": "e", "instructions": "c"},
                 {"id": "four", "name": "Four", "employee": "e", "instructions": "d"},
                 {"id": "five", "name": "Five", "employee": "e", "instructions": "e"},
+                {"id": "six", "name": "Six", "employee": "e", "instructions": "f"},
             ],
         }
     )
@@ -97,15 +98,22 @@ def make_inputs(
     immediate_request_id: object = None,
     earlier_request_id: object = "request",
 ) -> dict[str, object]:
-    """Running state at step five with succeeded history for steps one through four.
+    """Running state at step six with succeeded history for steps one through five.
 
     Every predecessor keeps an exact non-empty built-in ``str`` ``output_text`` so the
     known Phase 126-and-below empty-output contract gap stays isolated from this repair.
-    Earlier predecessors use a non-openai provider; the immediate predecessor (position
-    equal to the expected length) uses the exact ``"openai"`` provider provenance.
+    Earlier predecessors use a non-openai provider with exact non-empty request IDs;
+    the immediately preceding step-5 event uses exact provider ``"openai"``, exact
+    non-empty response ID, exact non-empty output text, and the supplied ``request_id``.
     """
     state_value = WorkflowExecutionState(
-        "w", "running", "five", 5, "e", ("one", "two", "three", "four"), None
+        "w",
+        "running",
+        "six",
+        6,
+        "e",
+        ("one", "two", "three", "four", "five"),
+        None,
     )
     state_path, events_path = tmp_path / "state", tmp_path / "events"
     state_path.write_text(
@@ -115,13 +123,14 @@ def make_inputs(
         _event("one", 1, "other", earlier_request_id),
         _event("two", 2, "other", earlier_request_id),
         _event("three", 3, "other", earlier_request_id),
-        _event("four", 4, "openai", immediate_request_id),
+        _event("four", 4, "other", earlier_request_id),
+        _event("five", 5, "openai", immediate_request_id),
     ]
     events_path.write_text(
         "".join(serialize_runtime_step_event_jsonl(event) for event in events),
         encoding="utf-8",
     )
-    request = ModelInvocationRequest("model", "system", "e", ("tool",))
+    request = ModelInvocationRequest("model", "system", "f", ("tool",))
     tools = (ToolDefinition("tool", "Tool", ()),)
     return {
         "result": RunningStatePersistenceResult(len(state_path.read_bytes())),
@@ -172,33 +181,62 @@ def success_transport(
     return transport
 
 
+def _assert_exact_success(
+    result: object,
+    state: object,
+    events: object,
+    state_before: bytes,
+    events_before: bytes,
+    calls: list[OpenAIResponsesAuthenticatedHttpRequest],
+) -> None:
+    assert isinstance(result, StepRuntimeExecutionSuccess)
+    assert (
+        result.workflow_id,
+        result.step_id,
+        result.step_index,
+        result.employee_id,
+    ) == ("w", "six", 6, "e")
+    invocation = result.invocation_result
+    assert invocation.provider == "openai"
+    assert invocation.response_id == "resp_123"
+    assert invocation.request_id == "request_123"
+    assert invocation.status == "completed"
+    assert invocation.text == "ok"
+    assert len(calls) == 1
+    assert state.read_bytes() == state_before  # type: ignore[union-attr]
+    assert events.read_bytes() == events_before  # type: ignore[union-attr]
+
+
 def test_immediate_none_request_id_delegates_through_real_default_chain(
     tmp_path: Path,
 ) -> None:
     values = make_inputs(tmp_path)
+    state = values["state_path"]
+    events = values["events_path"]
+    state_before = state.read_bytes()  # type: ignore[union-attr]
+    events_before = events.read_bytes()  # type: ignore[union-attr]
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
     result = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
         **values,  # type: ignore[arg-type]
         transport=success_transport(calls),
     )
-    assert isinstance(result, StepRuntimeExecutionSuccess)
-    assert result.invocation_result.provider == "openai"
-    assert result.invocation_result.response_id == "resp_123"
-    assert result.invocation_result.request_id == "request_123"
-    assert len(calls) == 1
+    _assert_exact_success(result, state, events, state_before, events_before, calls)
 
 
 def test_immediate_nonempty_request_id_still_delegates_through_real_default_chain(
     tmp_path: Path,
 ) -> None:
-    values = make_inputs(tmp_path, immediate_request_id="request-4")
+    values = make_inputs(tmp_path, immediate_request_id="request-5")
+    state = values["state_path"]
+    events = values["events_path"]
+    state_before = state.read_bytes()  # type: ignore[union-attr]
+    events_before = events.read_bytes()  # type: ignore[union-attr]
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
     result = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
         **values,  # type: ignore[arg-type]
         transport=success_transport(calls),
     )
-    assert isinstance(result, StepRuntimeExecutionSuccess)
-    assert len(calls) == 1
+    _assert_exact_success(result, state, events, state_before, events_before, calls)
 
 
 def test_earlier_none_request_id_is_rejected_before_transport(
