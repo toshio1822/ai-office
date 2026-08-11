@@ -515,7 +515,6 @@ def _validate_predecessor(
             and type(event.response_id) is str
             and bool(event.response_id)
             and type(event.output_text) is str
-            and bool(event.output_text)
             and event.message is None
         ):
             _compatibility_error("persistence_result_contract")

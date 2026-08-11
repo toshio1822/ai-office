@@ -208,6 +208,23 @@ def test_predecessor_history_variants_rejected(tmp_path: Path, mutation: str) ->
     reject(values, "persistence_result_contract")
 
 
+@pytest.mark.parametrize("output", ["", None, 123, 1.5])
+def test_succeeded_predecessor_empty_output_is_accepted_and_non_string_rejected(tmp_path: Path, output: object) -> None:
+    values = setup(tmp_path); events = values["events_path"]
+    events.write_text(serialize_runtime_step_event_jsonl(RuntimeStepEvent("step_succeeded", "w", "one", 1, "e", "running", "succeeded", "openai", None, "r", "q", output, None)), encoding="utf-8")
+    calls = 0; expected = runtime()
+
+    def dependency(*_: object) -> object:
+        nonlocal calls; calls += 1; return expected
+
+    if output == "":
+        actual = route_persisted_running_execution_cycle_handoff_reentry_continuation_boundary(**values, phase112_function=dependency)  # type: ignore[arg-type]
+        assert actual is expected and calls == 1
+    else:
+        reject(values, "persistence_result_contract", phase112_function=dependency)
+        assert calls == 0
+
+
 def test_exact_state_bytes_and_equal_path_identity_are_preserved(tmp_path: Path) -> None:
     values = setup(tmp_path)
     state = Path(str(values["state_path"]))

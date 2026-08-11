@@ -325,6 +325,26 @@ def test_predecessor_history_variants_rejected(tmp_path: Path, mutation: str) ->
     assert caught.value.detail.classification == "persistence_result_contract" and calls == 0
 
 
+@pytest.mark.parametrize("output", ["", None, 123, 1.5])
+def test_succeeded_predecessor_empty_output_is_accepted_and_non_string_rejected(tmp_path: Path, output: object) -> None:
+    values = setup(tmp_path); events = values["events_path"]
+    first = serialize_runtime_step_event_jsonl(RuntimeStepEvent("step_succeeded", "w", "one", 1, "e", "running", "succeeded", "openai", None, "r", "q", "o", None))
+    second = serialize_runtime_step_event_jsonl(RuntimeStepEvent("step_succeeded", "w", "two", 2, "e", "running", "succeeded", "openai", None, "r2", "q2", output, None))
+    events.write_text(first + second, encoding="utf-8")
+    calls = 0; expected = runtime()
+
+    def dependency(*_: object) -> object:
+        nonlocal calls; calls += 1; return expected
+
+    if output == "":
+        actual = route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+        assert actual is expected and calls == 1
+    else:
+        with pytest.raises(PersistedRunningExecutionCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+            route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+        assert caught.value.detail.classification == "persistence_result_contract" and calls == 0
+
+
 def test_exact_state_bytes_and_equal_path_identity_are_preserved(tmp_path: Path) -> None:
     values = setup(tmp_path)
     state = Path(str(values["state_path"]))
