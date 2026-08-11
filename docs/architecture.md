@@ -1434,7 +1434,7 @@ Phase 141 execution-chainの互換性監査/修復は、このPhaseのレビュ�
 
 Phase 149は新しいorchestration boundaryではなく、Phase 148レビュー後の明示的な作業として残されたPhase 141 execution-chainの互換性ギャップを修復するcompatibility/correctness repairである。Phase 141の実default dependency chainでは、Phase 141とその直接依存のPhase 133がlocal `_valid_predecessor_event()`でpredecessorを再検証し、succeeded predecessor eventの`request_id`にexact non-empty built-in `str`を要求していた。しかし実default chainが最終transport境界まで到達する経路では、直前のpredecessor（immediate predecessor）のsucceeded event `request_id`が`None`になることがある。これはPhase 147/148のprepared-start persistence chainのterminal successが`request_id=None`を保持する契約と整合する。このため、実default chainでimmediate predecessorの`request_id=None`がPhase 141とPhase 133の検証を通過できず、Phase 126以下へ委譲されないという互換性ギャップがあった。
 
-Phase 149はPhase 141とPhase 133のexecution routeだけに1つの狭い修正を加える。predecessor検証に`allow_none_request_id`許容を追加し、`position == len(expected_steps)`のimmediate predecessorに限り、succeeded event `request_id`がexact built-in `str`のまま`None`でも有効にする。stop route（`WorkflowProgressionDecision`/`PersistedExecutionOutcome`）とそれより前のpredecessorは従来どおりexact non-empty built-in `str`の`request_id`を要求し、`request_id`の`None`許可はimmediate predecessorだけに限定される。
+Phase 149はPhase 141とPhase 133のexecution routeだけに1つの狭い修正を加える。predecessor検証に`allow_none_request_id`許容を追加し、`position == len(expected_steps)`のimmediate predecessorに限り、succeeded event `request_id`を`None`またはexact non-empty built-in `str`のどちらでも有効にする（immediate predecessor: `request_id` is `None` OR `request_id` is an exact non-empty built-in `str`）。stop route（`WorkflowProgressionDecision`/`PersistedExecutionOutcome`）とそれより前のpredecessorは従来どおりexact non-empty built-in `str`の`request_id`を要求し（earlier predecessor: `request_id` is an exact non-empty built-in `str`）、`request_id`の`None`許可はimmediate predecessorだけに限定される。
 
 修復後の経路:
 
@@ -1444,8 +1444,8 @@ Phase 141
     → Phase 126 default execution chain
 
 running state at the final step
-  → immediate predecessor succeeded request_id is exact str
-  → None or non-empty is preserved through the real default execution chain
+  → immediate predecessor succeeded request_id is None or exact non-empty str
+  → None or exact non-empty str is preserved through the real default execution chain
   → earlier predecessor request_id stays exact non-empty str
 ```
 
