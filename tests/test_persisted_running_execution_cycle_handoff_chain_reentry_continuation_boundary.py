@@ -345,6 +345,68 @@ def test_succeeded_predecessor_empty_output_is_accepted_and_non_string_rejected(
         assert caught.value.detail.classification == "persistence_result_contract" and calls == 0
 
 
+def test_earlier_succeeded_predecessor_empty_output_delegates_exactly_once_in_canonical_identity_order(tmp_path: Path) -> None:
+    values = setup(tmp_path)
+    events = values["events_path"]
+    first = serialize_runtime_step_event_jsonl(RuntimeStepEvent("step_succeeded", "w", "one", 1, "e", "running", "succeeded", "openai", None, "r", "q", "", None))
+    second = serialize_runtime_step_event_jsonl(RuntimeStepEvent("step_succeeded", "w", "two", 2, "e", "running", "succeeded", "openai", None, "r2", "q2", "o2", None))
+    events.write_text(first + second, encoding="utf-8")
+    state_before = values["state_path"].read_bytes()
+    events_before = events.read_bytes()
+    transport_calls = 0
+
+    def transport(_: object) -> object:
+        nonlocal transport_calls
+        transport_calls += 1
+        raise AssertionError("transport must not be called")
+
+    values["transport"] = transport
+    calls: list[tuple[object, ...]] = []
+    expected = runtime()
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    actual = route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    assert actual is expected and len(calls) == 1
+    assert all(left is right for left, right in zip(calls[0], (values["result"], values["start"], values["workflow"], values["employee"], values["state_path"], values["events_path"], values["resolved_tools"], values["api_key"], values["approval"], values["transport"]), strict=True))
+    assert values["state_path"].read_bytes() == state_before
+    assert events.read_bytes() == events_before
+    assert transport_calls == 0
+
+
+def test_immediate_succeeded_predecessor_empty_output_delegates_exactly_once_in_canonical_identity_order(tmp_path: Path) -> None:
+    values = setup(tmp_path)
+    events = values["events_path"]
+    first = serialize_runtime_step_event_jsonl(RuntimeStepEvent("step_succeeded", "w", "one", 1, "e", "running", "succeeded", "openai", None, "r", "q", "o", None))
+    second = serialize_runtime_step_event_jsonl(RuntimeStepEvent("step_succeeded", "w", "two", 2, "e", "running", "succeeded", "openai", None, "r2", "q2", "", None))
+    events.write_text(first + second, encoding="utf-8")
+    state_before = values["state_path"].read_bytes()
+    events_before = events.read_bytes()
+    transport_calls = 0
+
+    def transport(_: object) -> object:
+        nonlocal transport_calls
+        transport_calls += 1
+        raise AssertionError("transport must not be called")
+
+    values["transport"] = transport
+    calls: list[tuple[object, ...]] = []
+    expected = runtime()
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    actual = route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary(**values, phase119_function=dependency)  # type: ignore[arg-type]
+    assert actual is expected and len(calls) == 1
+    assert all(left is right for left, right in zip(calls[0], (values["result"], values["start"], values["workflow"], values["employee"], values["state_path"], values["events_path"], values["resolved_tools"], values["api_key"], values["approval"], values["transport"]), strict=True))
+    assert values["state_path"].read_bytes() == state_before
+    assert events.read_bytes() == events_before
+    assert transport_calls == 0
+
+
 def test_exact_state_bytes_and_equal_path_identity_are_preserved(tmp_path: Path) -> None:
     values = setup(tmp_path)
     state = Path(str(values["state_path"]))
