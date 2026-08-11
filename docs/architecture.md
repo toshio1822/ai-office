@@ -1310,7 +1310,7 @@ Phase 144は、Phase 143のexact `PersistedExecutionOutcome(persisted_success)`�
 
 `workflow_complete`と`persisted_failure`はPhase 136を呼ばず、terminal state/historyを検証して同じobjectを返すunchanged zero-call stop routeである。stop routeは`minimum_index=1`を受理し、non-openai terminal providerと非終端succeeded predecessorのexact built-in `str output_text == ""`を許容する。workflow_completeの最終terminal succeeded eventの`output_text` non-empty契約とpersisted-failure terminal semanticsは維持する。Phase 136のpersisted-success routeは空predecessor `output_text`を許容するが、stop routeはnon-empty契約を維持する。
 
-Phase 144はPhase 129を直接参照・呼び出しせず、Phase 129/137/143のpublic route、`._validate_`、`._top`、`._raise`を使用しない。progression、next-step preparation、persistence、provider/tool execution、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorは追加しない。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類して両targetを補償復元する。復元失敗は`dependency_rollback`、dependency callはretryしない。Focused testsはinjected Phase 136 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを実行しない。
+Phase 144自身はprogression logicを重複実装しない。public Phase 136をexactly once呼ぶことで、明示的に認可された1回のprogression handoffを実行する。Phase 129は直接呼ばず、Phase 137へ自動継続しない。next-step preparation、step start、start-state persistence、runtime execution、runtime-result persistence、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorは追加しない。Phase 129/137/143のpublic route identifier、`._validate_`、`._top`、`._raise`は使用しない。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類して両targetを補償復元する。復元失敗は`dependency_rollback`、dependency callはretryしない。Focused testsはinjected Phase 136 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを実行しない。
 
 ```text
 Phase 143
@@ -1322,4 +1322,6 @@ PersistedExecutionOutcome(persisted_success) (current_step_index >= 5)
     → exact WorkflowProgressionDecision
 workflow_complete | persisted_failure
     → unchanged zero-call stop
+    ↓
+Phase 137 (future explicit caller action; not called by Phase 144)
 ```
