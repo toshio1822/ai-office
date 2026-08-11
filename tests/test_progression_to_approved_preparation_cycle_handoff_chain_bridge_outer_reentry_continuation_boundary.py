@@ -673,10 +673,83 @@ def test_earlier_nonopenai_predecessor_remains_valid(tmp_path: Path) -> None:
     assert calls == 1
 
 
-@pytest.mark.parametrize("field,value_field", [("request_id", ""), ("request_id", 4), ("response_id", ""), ("response_id", 4), ("output_text", ""), ("output_text", 4)])
+@pytest.mark.parametrize("field,value_field", [("request_id", ""), ("request_id", 4), ("response_id", ""), ("response_id", 4), ("output_text", 4)])
 def test_predecessor_runtime_fields_are_strict(tmp_path: Path, field: str, value_field: object) -> None:
     value = data(tmp_path)
     rewrite_event(value["events_path"], 2, **{field: value_field})
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+
+def test_immediate_predecessor_empty_output_text_delegates_once_canonical_order(
+    tmp_path: Path,
+) -> None:
+    value = data(tmp_path)
+    rewrite_event(value["events_path"], 2, output_text="")
+    value["before_events"] = value["events_path"].read_bytes()
+    expected = prepared(value["workflow"], value["result"], value["employee"])
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*args: object) -> PreparedWorkflowStep:
+        calls.append(args)
+        return expected
+
+    assert invoke(value, fake) is expected
+    assert calls == [
+        (
+            value["result"], value["workflow"], value["approval"], value["employee"],
+            value["state_path"], value["events_path"],
+        )
+    ]
+    unchanged(value)
+
+
+def test_earlier_empty_output_text_survives_later_succeeded_predecessors(
+    tmp_path: Path,
+) -> None:
+    value = data(tmp_path)
+    rewrite_event(value["events_path"], 0, output_text="")
+    value["before_events"] = value["events_path"].read_bytes()
+    expected = prepared(value["workflow"], value["result"], value["employee"])
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert invoke(value, fake) is expected
+    assert calls == 1
+    unchanged(value)
+
+
+def test_predecessor_nonempty_output_text_remains_accepted(tmp_path: Path) -> None:
+    value = data(tmp_path)
+    expected = prepared(value["workflow"], value["result"], value["employee"])
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert invoke(value, fake) is expected
+    assert calls == 1
+    unchanged(value)
+
+
+def test_completion_stop_route_rejects_empty_predecessor_output_zero_call(
+    tmp_path: Path,
+) -> None:
+    value = completion_data(tmp_path)
+    rewrite_event(value["events_path"], 3, output_text="")
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+
+def test_failure_stop_route_rejects_empty_predecessor_output_zero_call(
+    tmp_path: Path,
+) -> None:
+    value = data(tmp_path, index=4, status="failed")
+    rewrite_event(value["events_path"], 2, output_text="")
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
 
 
