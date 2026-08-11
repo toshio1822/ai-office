@@ -1,4 +1,4 @@
-"""Phase 135 persisted-transition outcome-classification outer bridge."""
+"""Phase 143 persisted-transition outcome-classification cycle handoff chain bridge outer boundary."""
 
 # ruff: noqa: E501,E701,I001
 
@@ -11,9 +11,9 @@ from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefin
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
-from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary import (
-    PersistedTransitionOutcomeClassificationCycleHandoffChainReentryContinuationError as Phase128Error,
-    route_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary,
+from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
+    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationError as Phase135Error,
+    route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
@@ -41,7 +41,7 @@ Classification = Literal[
     "dependency_error",
     "dependency_rollback",
 ]
-Phase128Function = Callable[
+Phase135Function = Callable[
     [object, object, object, object], PersistedExecutionOutcome | WorkflowProgressionDecision
 ]
 _PATH_TYPE = type(Path())
@@ -49,44 +49,44 @@ _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 
 
 @dataclass(frozen=True)
-class PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationFailureDetail:
-    """Safe classification for one Phase 135 compatibility failure."""
+class PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationFailureDetail:
+    """Safe classification for one Phase 143 compatibility failure."""
 
     classification: Classification
 
 
-class PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationError(
+class PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError(
     ValueError
 ):
-    """Base error for the Phase 135 boundary."""
+    """Base error for the Phase 143 boundary."""
 
 
-class PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError(
-    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationError
+class PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
+    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError
 ):
-    """Raised when one Phase 134 result cannot safely cross Phase 135."""
+    """Raised when one Phase 142 result cannot safely cross Phase 143."""
 
     def __init__(self, classification: Classification) -> None:
         super().__init__(
-            "persisted-transition outcome classification cycle handoff chain bridge inputs are incompatible"
+            "persisted-transition outcome classification cycle handoff chain bridge outer inputs are incompatible"
         )
-        self.detail = PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationFailureDetail(
+        self.detail = PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationFailureDetail(
             classification
         )
 
 
-def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
     result: object,
     workflow: object,
     state_path: object,
     events_path: object,
     *,
-    phase128_function: Phase128Function = (
-        route_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary
+    phase135_function: Phase135Function = (
+        route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary
     ),
 ) -> PersistedExecutionOutcome | WorkflowProgressionDecision:
-    """Route one exact Phase 134 result through public Phase 128 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase128_function)
+    """Route one exact Phase 142 result through public Phase 135 once."""
+    _check_inputs(result, workflow, state_path, events_path, phase135_function)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -109,6 +109,7 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
             minimum_index=1,
             require_immediate_openai=False,
             allow_empty_success_output=False,
+            allow_empty_predecessor_output=True,
         )
         _require_unchanged(state_path, events_path, original, "terminal_contract")
         return result
@@ -123,6 +124,7 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
             minimum_index=1,
             require_immediate_openai=False,
             allow_empty_success_output=False,
+            allow_empty_predecessor_output=True,
         )
         _require_unchanged(state_path, events_path, original, "terminal_contract")
         return result
@@ -130,8 +132,8 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
     assert type(result) is WorkflowExecutionPersistenceResult
     state = _check_persistence(result, workflow, state_path, events_path)
     try:
-        value = phase128_function(result, workflow, state_path, events_path)
-    except Phase128Error as error:
+        value = phase135_function(result, workflow, state_path, events_path)
+    except Phase135Error as error:
         _restore_if_changed(state_path, events_path, original)
         raise error
     except Exception:
@@ -140,7 +142,7 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
 
     try:
         _check_outcome(value, state)
-    except PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError:
+    except PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError:
         _restore_if_changed(state_path, events_path, original)
         raise
     except Exception:
@@ -271,6 +273,7 @@ def _check_terminal_history(
     minimum_index: int,
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
+    allow_empty_predecessor_output: bool,
 ) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
     state, history = _load_history(workflow, state_path, events_path, classification)
     expected_failure = (
@@ -286,6 +289,7 @@ def _check_terminal_history(
         minimum_index,
         require_immediate_openai,
         allow_empty_success_output,
+        allow_empty_predecessor_output,
     ):
         _fail(classification)
     return state, history
@@ -321,7 +325,7 @@ def _valid_history(
     minimum_index: int,
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
-    allow_empty_predecessor_output: bool = False,
+    allow_empty_predecessor_output: bool,
 ) -> bool:
     index = state.current_step_index
     result_identity_valid = result is None or (
@@ -496,7 +500,7 @@ def _check_persistence(
         state.status if state.status in {"succeeded", "failed"} else "succeeded",
         None,
         state.last_failure_category,
-        4,
+        5,
         require_immediate_openai=True,
         allow_empty_success_output=True,
         allow_empty_predecessor_output=True,
@@ -538,7 +542,7 @@ def _check_outcome(value: object, state: WorkflowExecutionState) -> None:
         and _exact_string(value.workflow_id, state.workflow_id)
         and _exact_string(value.current_step_id, state.current_step_id)
         and type(value.current_step_index) is int
-        and value.current_step_index >= 4
+        and value.current_step_index >= 5
         and value.current_step_index == state.current_step_index
         and _exact_string(value.current_employee_id, state.current_employee_id)
         and valid_failure
@@ -586,6 +590,6 @@ def _exact_string(value: object, expected: str) -> bool:
 
 
 def _fail(classification: Classification) -> None:
-    raise PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError(
+    raise PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
         classification
     ) from None

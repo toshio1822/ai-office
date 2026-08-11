@@ -953,3 +953,121 @@ def test_target_oserrors_are_classified_before_phase128(tmp_path: Path, operatio
 
     monkeypatch.setattr(Path, operation, raising)
     reject(data, "state_target" if target == "state_path" else "event_target")
+
+
+def _replace_predecessor(data: dict[str, object], position: int, event: RuntimeStepEvent) -> None:
+    events = data["events_path"]
+    lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    lines[position - 1] = serialize_runtime_step_event_jsonl(event).encode()
+    events.write_bytes(b"".join(lines))  # type: ignore[union-attr]
+    data["before_events"] = events.read_bytes()  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_immediate_predecessor_empty_output_text_delegates_once_canonical_order(tmp_path: Path, status: str) -> None:
+    data = values(tmp_path, status)
+    _replace_predecessor(data, 3, predecessor_event("three", 3, "c", "openai", output_text=""))
+    expected = expected_outcome(status)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    assert call(data, dependency) is expected
+    assert calls == [(data["result"], data["workflow"], data["state_path"], data["events_path"])]
+    assert_unchanged(data)
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_earlier_empty_output_text_survives_later_succeeded_predecessor(tmp_path: Path, status: str) -> None:
+    data = values(tmp_path, status)
+    _replace_predecessor(data, 1, predecessor_event("one", 1, "a", "other", output_text=""))
+    expected = expected_outcome(status)
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert call(data, dependency) is expected
+    assert calls == 1
+    assert_unchanged(data)
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_predecessor_nonempty_output_text_remains_accepted(tmp_path: Path, status: str) -> None:
+    data = values(tmp_path, status)
+    expected = expected_outcome(status)
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert call(data, dependency) is expected
+    assert calls == 1
+    assert_unchanged(data)
+
+
+@pytest.mark.parametrize("output_text", [4, None, ["output"]])
+def test_predecessor_output_text_non_string_is_rejected_before_phase128(tmp_path: Path, output_text: object) -> None:
+    data = values(tmp_path)
+    _replace_predecessor(data, 3, predecessor_event("three", 3, "c", "openai", output_text=output_text))
+    reject(data, "persistence_contract")
+
+
+@pytest.mark.parametrize("response_id", ["", None])
+def test_predecessor_empty_output_text_still_requires_response_id(tmp_path: Path, response_id: object) -> None:
+    data = values(tmp_path)
+    _replace_predecessor(data, 3, predecessor_event("three", 3, "c", "openai", output_text="", response_id=response_id))
+    reject(data, "persistence_contract")
+
+
+@pytest.mark.parametrize("request_id", ["", None])
+def test_predecessor_empty_output_text_still_requires_request_id(tmp_path: Path, request_id: object) -> None:
+    data = values(tmp_path)
+    _replace_predecessor(data, 3, predecessor_event("three", 3, "c", "openai", output_text="", request_id=request_id))
+    reject(data, "persistence_contract")
+
+
+@pytest.mark.parametrize("provider", ["other", 4])
+def test_immediate_predecessor_empty_output_text_still_requires_openai_provider(tmp_path: Path, provider: object) -> None:
+    data = values(tmp_path)
+    _replace_predecessor(data, 3, predecessor_event("three", 3, "c", provider, output_text=""))
+    reject(data, "persistence_contract")
+
+
+def test_earlier_empty_output_text_keeps_non_openai_provider_allowed(tmp_path: Path) -> None:
+    data = values(tmp_path)
+    _replace_predecessor(data, 1, predecessor_event("one", 1, "a", "other", output_text=""))
+    expected = expected_outcome()
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert call(data, dependency) is expected
+    assert calls == 1
+
+
+def test_stop_route_empty_predecessor_output_text_remains_rejected(tmp_path: Path) -> None:
+    data, result = stop_values(tmp_path, "complete", provider="other")
+    _replace_predecessor(data, 3, predecessor_event("three", 3, "c", "openai", output_text=""))
+    before = data["state_path"].read_bytes(), data["events_path"].read_bytes()  # type: ignore[union-attr]
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError) as caught:
+        call(data, dependency)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    assert (data["state_path"].read_bytes(), data["events_path"].read_bytes()) == before  # type: ignore[union-attr]
