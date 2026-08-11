@@ -1463,3 +1463,25 @@ workflow_complete | persisted_failure
     ↓
 Phase 137 (future explicit caller action; not called by Phase 144)
 ```
+
+## Progression-to-Approved Preparation Cycle Handoff Chain Bridge Outer-Chain Reentry Continuation Boundary（Phase 145）
+
+`route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary()`は、Phase 144から受け取ったexact `WorkflowProgressionDecision(prepare_next_step)`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を処理するouter-chain boundaryです。prepare routeでは、exact workflow/step models、regular targets、current step index `>= 5`（Phase 137の`>= 4`より強いprovenance）、current/next/reason linkage、completed-step prefix、Phase 144 provenanceのsucceeded predecessor history、immediate predecessor provider=`"openai"`、terminal event linkage（terminal provider=`"openai"`、response_id non-empty、request_id `None`またはnon-empty、success `output_text`はexact built-in `str`でemptyも許容）を再検証し、公開Phase 137 `route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`へcanonical six-argument order `(result, workflow, approval, employee, state_path, events_path)`でexactly once委譲します。返却された`PreparedWorkflowStep`を再検証し、正常経路でstate/eventsをbyte-for-byte不変に保ちます。
+
+`workflow_complete`と`persisted_failure`はPhase 137を呼ばず、terminal state/historyを検証して同じobjectを返すunchanged zero-call stop routeです。stop routeは`minimum_index=1`を受理し、非openai terminal providerとsucceeded predecessorのexact built-in `str output_text == ""`を許容しますが、workflow_completeの最終terminal succeeded eventの`output_text` non-empty契約とpersisted-failure terminal semanticsは維持します。
+
+Phase 145自身はprogression logicを重複実装しません。public Phase 137をexactly once呼ぶことで、明示的に認可された1回のprogression-to-preparation handoffを実行します。Phase 130/138/144のpublic route identifier、`._validate_`、`._top`、`._raise`は使用しません。Phase 145はPhase 138や他の後続phaseを直接呼ばず、provider、network、paid API、external tool、credential、transport、start-state persistence、retry、自動継続を実行しません。safe dependency error（Phase 137 error）はsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類して両targetを補償復元します。復元失敗は`dependency_rollback`、retryはありません。Focused testsはinjected Phase 137 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを呼びません。
+
+```text
+Phase 144
+WorkflowProgressionDecision(prepare_next_step) | workflow_complete | persisted_failure
+    ↓
+Phase 145 progression-to-approved-preparation cycle handoff chain bridge outer-chain reentry continuation boundary
+prepare_next_step (current_step_index >= 5, Phase 144 provenance)
+    → Phase 137 exactly once in canonical six-argument order
+    → exact PreparedWorkflowStep
+workflow_complete | persisted_failure
+    → unchanged zero-call stop
+    ↓
+Phase 138 (future explicit caller action; not called by Phase 145)
+```

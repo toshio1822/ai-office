@@ -1,6 +1,6 @@
-"""Phase 137 outer progression-to-preparation bridge."""
+"""Phase 145 progression-to-approved-preparation cycle handoff chain bridge outer-chain boundary."""
 
-# ruff: noqa: E501
+# ruff: noqa: E501,E701
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,11 +16,11 @@ from ai_office.engine.next_step_preparation import (
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationError as Phase130Error,
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    route_progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary,
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
@@ -47,7 +47,7 @@ Classification = Literal[
     "dependency_error",
     "dependency_rollback",
 ]
-Phase130Function = Callable[
+Phase137Function = Callable[
     [object, object, object, object, object, object],
     PreparedWorkflowStep | WorkflowProgressionDecision | PersistedExecutionOutcome,
 ]
@@ -56,33 +56,33 @@ _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 
 
 @dataclass(frozen=True)
-class ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationFailureDetail:
-    """Safe classification for one Phase 137 compatibility failure."""
+class ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail:
+    """Safe classification for one Phase 145 compatibility failure."""
 
     classification: Classification
 
 
-class ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError(
+class ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError(
     ValueError
 ):
-    """Raised when one Phase 136 result cannot cross the outer bridge."""
+    """Raised when one Phase 144 result cannot cross the Phase 145 outer-chain bridge."""
 
 
-class ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError
+class ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError(
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError
 ):
-    """Raised for a detail-safe Phase 137 compatibility rejection."""
+    """Raised for a detail-safe Phase 145 compatibility rejection."""
 
     def __init__(self, classification: Classification) -> None:
         super().__init__(
-            "progression to approved preparation cycle handoff chain bridge outer inputs are incompatible"
+            "progression to approved preparation cycle handoff chain bridge outer-chain inputs are incompatible"
         )
-        self.detail = ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationFailureDetail(
+        self.detail = ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail(
             classification
         )
 
 
-def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
     result: object,
     workflow: object,
     approval: object,
@@ -90,12 +90,12 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_r
     state_path: object,
     events_path: object,
     *,
-    phase130_function: Phase130Function = (
-        route_progression_to_approved_preparation_cycle_handoff_chain_bridge_reentry_continuation_boundary
+    phase137_function: Phase137Function = (
+        route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
     ),
 ) -> PreparedWorkflowStep | WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Route one exact Phase 136 result through the public Phase 130 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase130_function)
+    """Route one exact Phase 144 continuation result through public Phase 137 once."""
+    _check_inputs(result, workflow, state_path, events_path, phase137_function)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -105,14 +105,14 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_r
             expected_status: Literal["succeeded", "failed"] = "succeeded"
             require_immediate_openai = True
             allow_empty_success_output = True
-            allow_empty_predecessor_output = True
+            minimum_index = 5
             stop = False
         elif result.decision == "workflow_complete":
             _check_completion(result, workflow, approval, employee)
             expected_status = "succeeded"
             require_immediate_openai = False
             allow_empty_success_output = False
-            allow_empty_predecessor_output = False
+            minimum_index = 1
             stop = True
         else:
             _fail("decision_contract")
@@ -124,7 +124,7 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_r
         expected_status = "failed"
         require_immediate_openai = False
         allow_empty_success_output = False
-        allow_empty_predecessor_output = False
+        minimum_index = 1
         stop = True
 
     _check_targets(state_path, events_path)
@@ -135,9 +135,10 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_r
         state_path,
         events_path,
         expected_status,
+        minimum_index=minimum_index,
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
-        allow_empty_predecessor_output=allow_empty_predecessor_output,
+        allow_empty_predecessor_output=True,
     )
     _require_unchanged(state_path, events_path, original, "terminal_contract")
 
@@ -148,10 +149,10 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_r
     assert type(approval) is NextStepPreparationApproval
     assert type(employee) is EmployeeDefinition
     try:
-        prepared = phase130_function(
+        prepared = phase137_function(
             result, workflow, approval, employee, state_path, events_path
         )
-    except Phase130Error as error:
+    except Phase137Error as error:
         _compensate_dependency_error(state_path, events_path, original, error)
     except Exception:
         _compensate_dependency_error(state_path, events_path, original, None)
@@ -221,7 +222,7 @@ def _check_prepare(
     next_index = result.next_step_index
     if (
         type(current_index) is not int
-        or current_index < 4
+        or current_index < 5
         or current_index >= len(workflow.steps)
         or type(next_index) is not int
         or next_index != current_index + 1
@@ -345,6 +346,7 @@ def _check_terminal(
     events_path: Path,
     expected_status: Literal["succeeded", "failed"],
     *,
+    minimum_index: int,
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
@@ -366,6 +368,7 @@ def _check_terminal(
         expected_status,
         result,
         expected_failure,
+        minimum_index=minimum_index,
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=allow_empty_predecessor_output,
@@ -381,6 +384,7 @@ def _valid_history(
     result: object,
     expected_failure: object,
     *,
+    minimum_index: int,
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
@@ -392,6 +396,7 @@ def _valid_history(
         _valid_state(state, workflow)
         and state.status == expected_status
         and type(index) is int
+        and minimum_index <= index <= len(workflow.steps)
         and _exact_string(result.workflow_id, state.workflow_id)
         and _exact_string(result.current_step_id, state.current_step_id)
         and type(result.current_step_index) is int
@@ -607,7 +612,7 @@ def _compensate_dependency_error(
     state_path: Path,
     events_path: Path,
     original: tuple[bytes, bytes],
-    safe_error: Phase130Error | None,
+    safe_error: Phase137Error | None,
 ) -> None:
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
@@ -625,6 +630,6 @@ def _exact_string(value: object, expected: str) -> bool:
 
 
 def _fail(classification: Classification) -> None:
-    raise ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError(
+    raise ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError(
         classification
     ) from None
