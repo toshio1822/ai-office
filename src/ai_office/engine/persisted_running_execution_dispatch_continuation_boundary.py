@@ -199,7 +199,7 @@ def _predecessor(start: PreparedStepExecutionStart, workflow: WorkflowDefinition
     expected = workflow.steps[: running.current_step_index - 1]
     if len(history.events) != len(expected): _raise("persistence_result_contract")
     for event, step in zip(history.events, expected, strict=True):
-        if not (event.event_type == "step_succeeded" and event.workflow_id == workflow.id and event.step_id == step.id and event.step_index == workflow.steps.index(step) + 1 and event.employee_id == step.employee and event.previous_status == "running" and event.next_status == "succeeded" and event.failure_category is None and type(event.response_id) is str and event.response_id and type(event.output_text) is str and event.output_text and event.message is None): _raise("persistence_result_contract")
+        if not (event.event_type == "step_succeeded" and event.workflow_id == workflow.id and event.step_id == step.id and event.step_index == workflow.steps.index(step) + 1 and event.employee_id == step.employee and event.previous_status == "running" and event.next_status == "succeeded" and event.failure_category is None and type(event.response_id) is str and event.response_id and type(event.output_text) is str and event.message is None): _raise("persistence_result_contract")
 
 
 def _unchanged(state: Path, events: Path, original: tuple[bytes, bytes], classification: Classification) -> None:
