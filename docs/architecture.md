@@ -1559,3 +1559,35 @@ Phase 152は以下を行わない:
 - retry・自動継続
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
+
+## Phase 153: Phase 63 → 56 → 49 Execution Segment Empty-Success Compatibility Repair
+
+Phase 153は新しいorchestration boundaryではなく、persisted-running execution-chainの最後に残っていたlocally-strict predecessor-history segmentを修復するstaged compatibility/correctness repairである。Phase 140は非final succeeded continuation history eventの`output_text`がexact built-in `str`である限りemptyでもnon-emptyでも有効と定め、Phase 150はPhase 126 → Phase 119 → Phase 112、Phase 151はPhase 105 → Phase 98 → Phase 91、Phase 152はPhase 84 → Phase 77 → Phase 70の3境界でempty exact-string predecessor outputを受理済みである。しかし実default lower execution chainでは、Phase 63より下流のsucceeded predecessor eventを非empty `output_text`要求で再検証していた。
+
+Phase 153はその最後の下流セグメントPhase 63 → Phase 56 → Phase 49の3つの実boundaryだけを修復する。Phase 63はexact built-in `str`検査を維持したままtruthiness/non-empty要求のみを除去し、Phase 56/49はローカル`isinstance(..., str)`方針を意図的に維持したまま`bool(event.output_text)`/truthiness要求のみを除去する。`output_text == ""`は有効、non-empty stringは有効、`None`・非string値は無効のままである。provenance/linkage、provider規則、request-ID/response-ID規則、workflow/step/index/employee/status/history-order/history-length linkage、state/result byte-count、runtime-result validation、compensation、dependency-error、rollback、stop-route semantics、final `workflow_complete` terminal success outputのstrict non-empty契約は全て変更しない。共有Phase 140 terminal-history契約は変更せず、final/failed terminal semanticsを引き続き所有する。
+
+### 修正範囲
+
+- `persisted_running_execution_routing_phase_bridge_reentry.py` — Phase 63 empty-success output互換のみ（exact `type(...) is str`維持・truthiness要求のみ除去）
+- `persisted_running_execution_phase_bridge_reentry.py` — Phase 56 `_prior_success_contract()`のみ（`isinstance`維持・`bool(event.output_text)`のみ除去）
+- `persisted_running_execution_bridge_reentry.py` — Phase 49 running-route predecessor validationのみ（`isinstance`維持・`bool(event.output_text)`のみ除去）
+
+`src/ai_office/engine/__init__.py`は変更せず、新しいpublic APIは追加しない。Phase 42/36はpredecessor eventの`output_text`を再検証しないため変更しない。`Phase 42 → Phase 36`の実default chain全体（Phase 141からexecution pathまで）のreal-default regressionは将来の明示的Phaseに委ねる。
+
+Phase 153は以下を行わない:
+
+- 新しいorchestration boundaryの追加
+- Phase 84/77/70以上のproduction behavior変更
+- Phase 42/36/29・provider/transport実装の変更
+- `src/ai_office/engine/terminal_history_contract.py`の変更
+- Phase 56/49の`isinstance`からexact型への引き締め
+- request-ID/provider/response-ID semanticsの拡張・強化
+- final workflow-complete terminal success outputのempty化
+- failed terminal history semanticsの変更
+- provider/network/paid API/external toolの実行
+- runtime resultのpersistence
+- outcomeのclassification
+- workflowのprogression
+- retry・自動継続
+- finalize/schedule/loop/parallel behaviorの追加
+- CLI/GUI behaviorの追加
