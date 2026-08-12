@@ -1855,3 +1855,44 @@ Phase 154は以下を行いません:
 - final workflow-complete terminal success outputのempty化
 - failed terminal history semanticsの変更
 - CLI/GUI behaviorの追加
+
+## Phase 155: Persisted-Running Execution Cycle Handoff Chain Bridge Outer-Chain Reentry Continuation Boundary
+
+Phase 155はPhase 147のpersisted-running execution結果を公開Phase 141へ明示的にhandoffする**新しいouter-chain orchestration boundary**です。Phase 147が生成したexact `RunningStatePersistenceResult`と対応するexact `PreparedStepExecutionStart`（step index `>= 6`、Phase 147 continuation provenance）を、公開Phase 141 `route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(...)`へcanonical ten-argument order `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`でexactly once委譲します。
+
+```text
+Phase 147 persisted-running execution result
+  → Phase 155 outer-chain boundary（新規）
+    → public Phase 141（exactly once）
+      → real default lower chain
+        → synthetic final transport only
+```
+
+`phase141_function`はkeyword-onlyで、公開Phase 141関数を既定値とします。依存呼び出し前にexact model/type（`RunningStatePersistenceResult`、`PreparedStepExecutionStart`、nested `ModelInvocationRequest`/`WorkflowExecutionState`、`WorkflowDefinition`/`WorkflowStepDefinition`、`EmployeeDefinition`、`ToolDefinition`/`ToolParameterDefinition`、`OpenAIApiKey`/`SecretStr`、`ModelInvocationExecutionApproval`）、workflow/step/index/employee linkage、approval contract、state bytesがserialized running stateと一致すること、`RunningStatePersistenceResult` byte count、predecessor history（immediate predecessorはempty `output_text`・`request_id is None`またはexact non-empty `str`・provider=`"openai"`、earlier predecessorはexact non-empty built-in `str` request ID・既存Phase 141のprovider許容範囲維持）を検証します。
+
+`WorkflowProgressionDecision(workflow_complete)`と`PersistedExecutionOutcome(persisted_failure)`のstop routeはPhase 141を呼ばず、Phase 155内でstop-domain（terminal history、final succeeded non-empty output、failed terminal semantics）を自前検証して同一オブジェクトをidentityで返します。stop routeのpredecessorはempty `output_text`とterminalのnon-`"openai"` providerを許容しますが、workflow-completeの最終succeeded outputは非空exact built-in `str`を要求します。
+
+dependencyは一度だけ呼びます。正常なexact runtime result（`StepRuntimeExecutionSuccess`/`StepRuntimeExecutionFailure`）はidentityのまま返し、malformed returnまたはtarget mutationは両targetをcompensationします。safe Phase 141 errorはcompensation後もidentityを保持し、unexpected errorはdetail-safeにsanitize（`dependency_error`）、rollback failureは`dependency_rollback`、retryはありません。分類は`persistence_result_contract` / `terminal_contract` / `start_contract` / `execution_inputs` / `runtime_contract` / `result_type` / `workflow_definition` / `employee_contract` / `tools_contract` / `credential_contract` / `approval_contract` / `completion_contract` / `failure_contract` / `state_target` / `event_target` / `target_conflict` / `dependency_error` / `dependency_rollback`です。
+
+### 変更範囲
+
+- `src/ai_office/engine/persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — 新規（production semantic changeはこのmoduleのみ）
+- `src/ai_office/engine/__init__.py` — 公開exportのみ
+- `tests/test_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — 新規（134 focused cases + 1 real-default smoke）
+- `README.md` — 本ドキュメント
+- `docs/architecture.md` — Phase 155 section
+
+Phase 141以下、Phase 133、Phase 142、Phase 147、`src/ai_office/engine/terminal_history_contract.py`は変更しません。Phase 133の直接呼び出し、Phase 142の呼び出し、Phase 147の再呼び出し、Phase 141のbypass/duplicate、runtime resultのpersist、outcomeのclassify、progression、retry、自動継続は行いません。
+
+Phase 155は以下を行いません:
+
+- Phase 141以下・Phase 133・Phase 142・Phase 147のproduction behavior変更
+- `src/ai_office/engine/terminal_history_contract.py`の変更
+- Phase 133直接呼び出し・Phase 142呼び出し・Phase 147再呼び出し・Phase 141 bypass/duplicate
+- runtime resultのpersistence
+- outcomeのclassification
+- workflowのprogression
+- retry・自動継続
+- real network/provider/paid API/tool call（real-default smokeのsynthetic seamは最終`transport`のみ）
+- finalize/schedule/loop/parallel behaviorの追加
+- CLI/GUI behaviorの追加
