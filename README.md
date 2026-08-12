@@ -1745,3 +1745,53 @@ Phase 152は以下を行いません:
 - retry・自動継続
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
+
+## Phase 153: Phase 63 → 56 → 49 Execution Segment Empty-Success Compatibility Repair
+
+Phase 153は新しいorchestration boundaryではなく、persisted-running execution-chainの最後に残っていたlocally-strict predecessor-history segmentを修復するstaged compatibility/correctness repairです。Phase 140は非final succeeded continuation history eventの`output_text`がexact built-in `str`である限りemptyでもnon-emptyでも有効と定め、Phase 150はPhase 126 → Phase 119 → Phase 112、Phase 151はPhase 105 → Phase 98 → Phase 91、Phase 152はPhase 84 → Phase 77 → Phase 70の3境界でempty exact-string predecessor outputを受理済みです。しかし実default lower execution chainでは、Phase 63より下流のsucceeded predecessor eventを非empty `output_text`要求で再検証していました。
+
+Phase 153はその最後の下流セグメントのうち、次の3つの実boundaryだけを修復します:
+
+```text
+Phase 84 / Phase 77 / Phase 70（変更なし: empty exact-string predecessor outputを受理）
+  ↓
+Phase 63（修正: exact built-in strのままtruthiness要求のみ除去）
+  ↓
+Phase 56（修正: isinstance(str)方針を維持したままtruthiness要求のみ除去）
+  ↓
+Phase 49（修正: isinstance(str)方針を維持したままtruthiness要求のみ除去）
+  ↓
+Phase 42（変更なし: predecessor event historyを再検証しない）
+  ↓
+Phase 36（変更なし: state/execution boundary、predecessor event history検証なし）
+```
+
+### 契約
+
+persisted-running execution routeの各succeeded predecessor history eventについて、`output_text`はPhase 63ではexact built-in `str`のまま、Phase 56/49では`isinstance(..., str)`方針のまま、`output_text == ""`は有効、non-empty stringは有効、`None`・非string値は無効のままです。Phase 153はempty-output修復を理由にローカルtype semanticsを変更しません。provenance/linkage、provider規則、request-ID/response-ID規則、workflow/step/index/employee/status/history-order/history-length linkage、state/result byte-count、runtime-result validation、compensation、dependency-error、rollback、stop-route semantics、final `workflow_complete` terminal success outputのstrict non-empty契約は全て変更しません。共有Phase 140 terminal-history契約は変更せず、final/failed terminal semanticsを引き続き所有します。
+
+### 修正範囲
+
+- `persisted_running_execution_routing_phase_bridge_reentry.py` — Phase 63 empty-success output互換のみ（exact `type(...) is str`維持・truthiness要求のみ除去）
+- `persisted_running_execution_phase_bridge_reentry.py` — Phase 56 `_prior_success_contract()`のみ（`isinstance`維持・`bool(event.output_text)`のみ除去）
+- `persisted_running_execution_bridge_reentry.py` — Phase 49 running-route predecessor validationのみ（`isinstance`維持・`bool(event.output_text)`のみ除去）
+
+`src/ai_office/engine/__init__.py`は変更せず、新しいpublic APIは追加しません。Phase 42/36はpredecessor eventの`output_text`を再検証しないため変更しません。`Phase 42 → Phase 36`の実default chain全体（Phase 141からexecution pathまで）のreal-default regressionは将来の明示的Phaseに委ねます。
+
+Phase 153は以下を行いません:
+
+- 新しいorchestration boundaryの追加
+- Phase 84/77/70以上のproduction behavior変更
+- Phase 42/36/29・provider/transport実装の変更
+- `src/ai_office/engine/terminal_history_contract.py`の変更
+- Phase 56/49の`isinstance`からexact型への引き締め
+- request-ID/provider/response-ID semanticsの拡張・強化
+- final workflow-complete terminal success outputのempty化
+- failed terminal history semanticsの変更
+- provider/network/paid API/external toolの実行
+- runtime resultのpersistence
+- outcomeのclassification
+- workflowのprogression
+- retry・自動継続
+- finalize/schedule/loop/parallel behaviorの追加
+- CLI/GUI behaviorの追加
