@@ -360,7 +360,7 @@ def _check_predecessor_history(
             and _nonempty_string(event.provider)
             and event.failure_category is None
             and _nonempty_string(event.response_id)
-            and _nonempty_string(event.output_text)
+            and type(event.output_text) is str
             and event.message is None
         ):
             _fail("runtime_contract")

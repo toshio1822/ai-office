@@ -609,8 +609,106 @@ def test_predecessor_history_matrix_is_rejected_before_phase134(
     reject(values, "runtime_contract")
 
 
-@pytest.mark.parametrize("request_id", [None, ""])
+@pytest.mark.parametrize(
+    "step_id,position,provider,request_id",
+    [
+        ("two", 2, "other", None),
+        ("four", 4, "openai", ""),
+    ],
+)
 def test_predecessor_request_id_provenance_is_required(
+    tmp_path: Path,
+    step_id: str,
+    position: int,
+    provider: object,
+    request_id: object,
+) -> None:
+    values = setup(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event(step_id, position, provider, request_id=request_id)
+    )
+    events.write_text(
+        "".join(lines[: position - 1]) + replacement + "".join(lines[position:]),
+        encoding="utf-8",
+    )  # type: ignore[union-attr]
+    reject(values, "runtime_contract")
+
+
+def test_immediate_predecessor_none_request_id_nonempty_output_delegates_once(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    values["result"] = runtime_success()
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("four", 4, "openai", request_id=None)
+    )
+    events.write_text("".join(lines[:3]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
+    seen: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        nonlocal expected
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(values, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                values[key]
+                for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+
+
+def test_immediate_predecessor_none_request_id_empty_output_delegates_once(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    values["result"] = runtime_success()
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("four", 4, "openai", request_id=None, output_text="")
+    )
+    events.write_text("".join(lines[:3]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(values, dependency) is expected
+
+
+def test_earlier_predecessor_none_request_id_is_rejected_before_phase134(
+    tmp_path: Path,
+) -> None:
+    values = setup(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("two", 2, "other", request_id=None)
+    )
+    events.write_text(
+        lines[0] + replacement + "".join(lines[2:]), encoding="utf-8"
+    )  # type: ignore[union-attr]
+    reject_unchanged(values, "runtime_contract")
+
+
+@pytest.mark.parametrize("request_id", ["", 123, True])
+def test_immediate_predecessor_invalid_request_ids_are_rejected_before_phase134(
     tmp_path: Path, request_id: object
 ) -> None:
     values = setup(tmp_path)
@@ -620,7 +718,7 @@ def test_predecessor_request_id_provenance_is_required(
         predecessor_event("four", 4, "openai", request_id=request_id)
     )
     events.write_text("".join(lines[:3]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    reject(values, "runtime_contract")
+    reject_unchanged(values, "runtime_contract")
 
 
 @pytest.mark.parametrize("provider", ["other", 4])
