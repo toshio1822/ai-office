@@ -2028,3 +2028,132 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 - CLI / GUI behavior
 - 新しいrequest-ID/provider semantics
 - real network / provider / paid API / tool call
+
+## Phase 159: Phase 78 → 71 → 64 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair
+
+Phase 159は、Phase 158で修復したセグメント（Phase 99 → 92 → 85）の次にあるセグメント（Phase 78 → Phase 71 → Phase 64）が、Phase-155 provenance runtime resultを正しく受け渡せるようにする**staged compatibility/correctness repair**である。新しいorchestration boundaryは追加しない。
+
+```text
+Phase 155 runtime result
+    ↓ explicit caller action
+Phase 142 → 134 → 127   (Phase 156 repaired)
+    ↓
+Phase 120 → 113 → 106   (Phase 157 repaired)
+    ↓
+Phase 99 → 92 → 85      (Phase 158 repaired)
+    ↓
+Phase 78 → 71 → 64
+    repaired to preserve Phase-155 empty-output provenance
+    ↓
+Phase 57
+    remains the next explicit strict seam; unchanged
+```
+
+Phase 155 / 156 / 157 / 158は現在、以下を同時に満たすrunning continuation provenanceを正しく生成・受理する。
+
+- `current_step_index >= 6`
+- succeeded predecessor `output_text`はexact built-in `str`（empty/non-empty）
+- earlier predecessor `request_id`はexact non-empty built-in `str`
+- immediate predecessor `request_id`は`None`またはexact non-empty built-in `str`
+- immediate predecessor providerはexact `"openai"`
+
+Phase 159は、この全ドメインを次のtransition-persistenceセグメントが保持できるよう、以下の3つのproduction boundaryだけを狭く修正する。
+
+### Production correction A — Phase 78 runtime route
+
+`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_continuation.py`
+
+`_validate_running_history`内のsucceeded predecessor `output_text`に対するtruthiness/non-empty要件だけを除去する。
+
+- `type(event.output_text) is str`を維持し、`""`と非空を許容
+- `None`・non-stringは引き続きinvalid
+- `response_id`のexact non-empty built-in `str`要件を維持
+- 新しいrequest-ID/provider要件は導入せず、Phase 78の現在のrequest-ID/provider挙動を正確に維持
+- running-state/workflow/linkage validation・stop routes・Phase 71呼び出し方・persistence/compensation/safe-error挙動は変更なし
+
+### Production correction B — Phase 71 runtime route
+
+`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_continuation.py`
+
+`_validate_running_history`内に同じ狭いempty-output修正を適用する。
+
+- exact built-in `str`型要件を維持し、empty/non-emptyを許容
+- `None`・non-stringは引き続きinvalid
+- Phase 71の現在のrequest-ID/provider挙動を正確に維持
+- runtime-result linkage・stop routes・Phase 64呼び出し方・persistence/compensation/error挙動は変更なし
+
+### Production correction C — Phase 64 runtime route
+
+`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_reentry.py`
+
+`_validate_running_history`内に同じ狭いempty-output修正を適用する。
+
+- exact built-in `str`型要件を維持し、empty/non-emptyを許容
+- `None`・non-stringは引き続きinvalid
+- Phase 64の現在のrequest-ID/provider挙動を正確に維持
+- runtime-result linkage・stop routes・Phase 57呼び出し方・persistence/compensation/error挙動は変更なし
+
+Phase 57は変更せず、本Phase後も次のexplicit strict empty-output seamとして残る。
+
+### Focused regression additions
+
+各focusedファイルにexactly 6 collected casesを追加した（既存テストの削除・弱体化なし）。
+
+- Phase 78 focused（`..._routing_phase_bridge_cycle_continuation.py`）: earlier/immediate/combined exact empty `output_text`がPhase 71へexactly once委譲、`None`/`123`/`True`はPhase 71より前にreject
+- Phase 71 focused（`..._routing_phase_bridge_continuation.py`）: 同じ6ケースをPhase 71→64境界で検証
+- Phase 64 focused（`..._routing_phase_bridge_reentry.py`）: 同じ6ケースをPhase 64→57境界で検証
+
+### Real-segment regression
+
+`tests/test_executed_result_transition_persistence_phase78_64_phase155_provenance_compatibility.py`（新規）で、**実Phase 78 → 実Phase 71 → 実Phase 64 → synthetic Phase 57 seam**の6ケースを追加した。
+
+- exact `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`、earlier-empty（step 2）+ immediate-empty（step 5）+ immediate-`request_id=None`の組み合わせがseamへexactly once到達
+- 複数earlier-empty + immediate-empty/`None`もseamへexactly once到達
+- earlier `output_text=None`、immediate `output_text=None`はPhase 78でPhase 71/64/seamより前にreject（目的のprovenanceはreloadで明示的に検証）
+- 各handoffでcanonical four-argument identity/order保持、seam結果object identityを全実境界がそのまま返すことを検証
+- pre-seam historyにearlier-empty・immediate-empty・immediate-`request_id=None`が実際に含まれることをexplicit reloadで検証
+
+synthetic seamは実境界のpersistence再検証を満たすため、最小のdeterministic persistence seamとしてexact expected terminal stateを書き、terminal eventを正確に1件appendし、exact `WorkflowExecutionPersistenceResult`を返す（production moduleのmonkeypatchなし）。
+
+### Collect invariant
+
+```text
+11,292 + 24 = 11,316
+```
+
+- Phase 78 focused: +6
+- Phase 71 focused: +6
+- Phase 64 focused: +6
+- real-segment regression: +6
+
+### 変更範囲（9ファイル）
+
+1. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_continuation.py` — Phase 78 narrow empty-output compatibility
+2. `tests/test_executed_result_transition_persistence_routing_phase_bridge_cycle_continuation.py` — +6 focused collected
+3. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_continuation.py` — Phase 71 narrow empty-output compatibility
+4. `tests/test_executed_result_transition_persistence_routing_phase_bridge_continuation.py` — +6 focused collected
+5. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_reentry.py` — Phase 64 narrow empty-output compatibility
+6. `tests/test_executed_result_transition_persistence_routing_phase_bridge_reentry.py` — +6 focused collected
+7. `tests/test_executed_result_transition_persistence_phase78_64_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
+8. `README.md` — Phase 159 section
+9. `docs/architecture.md` — 本section
+
+### 変更しないもの
+
+- `src/ai_office/engine/__init__.py`（新しいpublic APIなし）
+- Phase 155 / 156 / 157 / 158 productionまたはそのregression
+- Phase 57およびそれ以下のtransition-persistence boundary
+- Phase 143以降のclassification/progression boundary
+- `src/ai_office/engine/terminal_history_contract.py`
+- provider/runtime/storage generic modules
+
+### Phase 159は以下を行わない
+
+- 新しいpublic boundaryの追加
+- Phase 155 → 142の自動継続
+- Phase 143の呼び出し
+- outcome classification / workflow progression
+- retry / loop / schedule / parallel / finalize behavior
+- CLI / GUI behavior
+- 新しいrequest-ID/provider semantics
+- real network / provider / paid API / tool call
