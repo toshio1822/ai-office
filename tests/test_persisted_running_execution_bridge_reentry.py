@@ -1,4 +1,5 @@
 """Exhaustive Phase 49 routing tests using injected Phase 42 fakes only."""
+# ruff: noqa: E501
 
 from dataclasses import replace
 from pathlib import Path
@@ -743,17 +744,20 @@ def test_phase42_rejects_exact_type_and_malformed_return_contracts(
     ) == before  # type: ignore[union-attr]
 
 
-@pytest.mark.parametrize("field, value", [("response_id", ""), ("output_text", "")])
+@pytest.mark.parametrize("field", ["response_id", "output_text"])
 @pytest.mark.parametrize("route", ["running", "terminal"])
-def test_event_success_response_and_output_must_be_nonempty(
-    tmp_path: Path, field: str, value: object, route: str
+def test_event_success_response_and_output_contract(
+    tmp_path: Path, field: str, route: str
 ) -> None:
+    """Empty response_id stays rejected; empty output_text is accepted on the
+    running route (empty-success compatibility) but stays rejected on the
+    terminal route (shared terminal-history contract)."""
     status = "running" if route == "running" else "succeeded"
     state, events = _write_targets(tmp_path, status)
     events.write_text(
         "".join(
             serialize_runtime_step_event_jsonl(
-                replace(_event("succeeded", index), **{field: value})
+                replace(_event("succeeded", index), **{field: ""})
                 if index == 1
                 else _event("succeeded", index)
             )
@@ -763,7 +767,7 @@ def test_event_success_response_and_output_must_be_nonempty(
         if route == "running"
         else "".join(
             serialize_runtime_step_event_jsonl(
-                replace(_event("succeeded", index), **{field: value})
+                replace(_event("succeeded", index), **{field: ""})
                 if index == 1
                 else _event("succeeded", index)
             )
@@ -775,8 +779,24 @@ def test_event_success_response_and_output_must_be_nonempty(
         inputs_path.mkdir()
         values = _running_inputs(inputs_path)
         values.update(state_path=state, events_path=events)
-        result: object = values["result"]
-        expected = "persistence_contract"
+        before = state.read_bytes(), events.read_bytes()
+        if field == "output_text":
+            calls: list[tuple[object, ...]] = []
+            expected = _success()
+
+            def phase42(*args: object) -> object:
+                calls.append(args)
+                return expected
+
+            returned = _call(values, phase42)
+            assert returned is expected and len(calls) == 1
+            assert (state.read_bytes(), events.read_bytes()) == before
+        else:
+            with pytest.raises(
+                PersistedRunningExecutionBridgeCompatibilityError
+            ) as caught:
+                _call(values, lambda *_: pytest.fail("Phase 42 must not run"))
+            assert caught.value.detail.classification == "persistence_contract"
     else:
         result = WorkflowProgressionDecision(
             "workflow_complete",
@@ -801,7 +821,293 @@ def test_event_success_response_and_output_must_be_nonempty(
             approval=None,
             transport=None,
         )
-        expected = "terminal_contract"
-    with pytest.raises(PersistedRunningExecutionBridgeCompatibilityError) as caught:
-        _call(values, lambda *_: pytest.fail("Phase 42 must not run"))
-    assert caught.value.detail.classification == expected
+        with pytest.raises(
+            PersistedRunningExecutionBridgeCompatibilityError
+        ) as caught:
+            _call(values, lambda *_: pytest.fail("Phase 42 must not run"))
+        assert caught.value.detail.classification == "terminal_contract"
+
+
+@pytest.mark.parametrize("output", ["", None, 123, 1.5])
+def test_succeeded_predecessor_empty_output_is_accepted_and_non_string_rejected(
+    tmp_path: Path, output: object
+) -> None:
+    supplied = _running_inputs(tmp_path)
+    events = supplied["events_path"]
+    events.write_text(
+        serialize_runtime_step_event_jsonl(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "w",
+                "one",
+                1,
+                "e",
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                "response",
+                "request",
+                output,  # type: ignore[arg-type]
+                None,
+            )
+        )
+    )
+    calls = 0
+    expected = _success()
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    if output == "":
+        returned = _call(supplied, dependency)
+        assert returned is expected and calls == 1
+    else:
+        with pytest.raises(PersistedRunningExecutionBridgeCompatibilityError) as caught:
+            _call(supplied, dependency)
+        assert caught.value.detail.classification == "persistence_contract"
+        assert calls == 0
+
+
+def _continuation(tmp_path: Path) -> dict[str, object]:
+    """Running at step three with succeeded steps one and two (two predecessors)."""
+    wf = WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "e", "instructions": "a"},
+                {"id": "two", "name": "Two", "employee": "e", "instructions": "b"},
+                {"id": "three", "name": "Three", "employee": "e", "instructions": "c"},
+            ],
+        }
+    )
+    state = WorkflowExecutionState(
+        "w", "running", "three", 3, "e", ("one", "two"), None
+    )
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_text(serialize_workflow_execution_state_json(state))
+    events_path.write_text(
+        serialize_runtime_step_event_jsonl(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "w",
+                "one",
+                1,
+                "e",
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                "response",
+                "request",
+                "o",
+                None,
+            )
+        )
+        + serialize_runtime_step_event_jsonl(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "w",
+                "two",
+                2,
+                "e",
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                "response2",
+                "request2",
+                "o2",
+                None,
+            )
+        )
+    )
+    request = ModelInvocationRequest("model", "system", "c", ("tool",))
+    tools = (ToolDefinition("tool", "Tool", ()),)
+    return {
+        "result": RunningStatePersistenceResult(len(state_path.read_bytes())),
+        "start": PreparedStepExecutionStart(request, state),
+        "workflow": wf,
+        "employee": _employee(),
+        "state_path": state_path,
+        "events_path": events_path,
+        "resolved_tools": tools,
+        "api_key": OpenAIApiKey(value=SecretStr("synthetic")),
+        "approval": approve_model_invocation_execution(
+            request,
+            tools,
+            provider="openai",
+            approved_by="test",
+            approval_id="id",
+        ),
+        "transport": lambda _: None,
+    }
+
+
+def _runtime_three() -> StepRuntimeExecutionSuccess:
+    return StepRuntimeExecutionSuccess(
+        "w",
+        "three",
+        3,
+        "e",
+        ModelInvocationSuccess("openai", "response", None, "completed", ("ok",), "ok"),
+    )
+
+
+def _assert_canonical_identity_order(
+    calls: list[tuple[object, ...]], supplied: dict[str, object]
+) -> None:
+    assert len(calls) == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            calls[0],
+            (
+                supplied["result"],
+                supplied["start"],
+                supplied["workflow"],
+                supplied["employee"],
+                supplied["state_path"],
+                supplied["events_path"],
+                supplied["resolved_tools"],
+                supplied["api_key"],
+                supplied["approval"],
+                supplied["transport"],
+            ),
+            strict=True,
+        )
+    )
+
+
+def test_earlier_succeeded_predecessor_empty_output_delegates_exactly_once_in_canonical_identity_order(
+    tmp_path: Path,
+) -> None:
+    supplied = _continuation(tmp_path)
+    events = supplied["events_path"]
+    first = serialize_runtime_step_event_jsonl(
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "one",
+            1,
+            "e",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response",
+            "request",
+            "",
+            None,
+        )
+    )
+    second = serialize_runtime_step_event_jsonl(
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "two",
+            2,
+            "e",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response2",
+            "request2",
+            "o2",
+            None,
+        )
+    )
+    events.write_text(first + second)
+    state_before = supplied["state_path"].read_bytes()
+    events_before = events.read_bytes()
+    transport_calls = 0
+
+    def transport(_: object) -> object:
+        nonlocal transport_calls
+        transport_calls += 1
+        raise AssertionError("transport must not be called")
+
+    supplied["transport"] = transport
+    calls: list[tuple[object, ...]] = []
+    expected = _runtime_three()
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    returned = _call(supplied, dependency)
+    assert returned is expected
+    _assert_canonical_identity_order(calls, supplied)
+    assert supplied["state_path"].read_bytes() == state_before
+    assert events.read_bytes() == events_before
+    assert transport_calls == 0
+
+
+def test_immediate_succeeded_predecessor_empty_output_delegates_exactly_once_in_canonical_identity_order(
+    tmp_path: Path,
+) -> None:
+    supplied = _continuation(tmp_path)
+    events = supplied["events_path"]
+    first = serialize_runtime_step_event_jsonl(
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "one",
+            1,
+            "e",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response",
+            "request",
+            "o",
+            None,
+        )
+    )
+    second = serialize_runtime_step_event_jsonl(
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "two",
+            2,
+            "e",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response2",
+            "request2",
+            "",
+            None,
+        )
+    )
+    events.write_text(first + second)
+    state_before = supplied["state_path"].read_bytes()
+    events_before = events.read_bytes()
+    transport_calls = 0
+
+    def transport(_: object) -> object:
+        nonlocal transport_calls
+        transport_calls += 1
+        raise AssertionError("transport must not be called")
+
+    supplied["transport"] = transport
+    calls: list[tuple[object, ...]] = []
+    expected = _runtime_three()
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    returned = _call(supplied, dependency)
+    assert returned is expected
+    _assert_canonical_identity_order(calls, supplied)
+    assert supplied["state_path"].read_bytes() == state_before
+    assert events.read_bytes() == events_before
+    assert transport_calls == 0
