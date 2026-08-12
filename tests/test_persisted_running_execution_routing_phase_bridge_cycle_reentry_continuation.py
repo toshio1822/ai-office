@@ -807,3 +807,302 @@ def test_missing_and_non_regular_targets_are_rejected_before_dependency(
     assert caught.value.detail.classification == (
         "state_target" if name == "state_path" else "event_target"
     )
+@pytest.mark.parametrize("output", ["", None, 123, 1.5])
+def test_succeeded_predecessor_empty_output_is_accepted_and_non_string_rejected(
+    tmp_path: Path, output: object
+) -> None:
+    supplied = values(tmp_path)
+    events = supplied["events_path"]
+    events.write_text(
+        serialize_runtime_step_event_jsonl(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "w",
+                "one",
+                1,
+                "e",
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                "response",
+                "request",
+                output,  # type: ignore[arg-type]
+                None,
+            )
+        )
+    )
+    calls = 0
+    expected = runtime_result()
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    if output == "":
+        returned = call(supplied, dependency)
+        assert returned is expected and calls == 1
+    else:
+        with pytest.raises(
+            PersistedRunningExecutionRoutingPhaseBridgeCycleReentryContinuationCompatibilityError
+        ) as caught:
+            call(supplied, dependency)
+        assert caught.value.detail.classification == "persistence_result_contract"
+        assert calls == 0
+
+
+def continuation(tmp_path: Path) -> dict[str, object]:
+    """Running at step three with succeeded steps one and two (two predecessors)."""
+    wf = WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "e", "instructions": "a"},
+                {"id": "two", "name": "Two", "employee": "e", "instructions": "b"},
+                {"id": "three", "name": "Three", "employee": "e", "instructions": "c"},
+            ],
+        }
+    )
+    state = WorkflowExecutionState(
+        "w", "running", "three", 3, "e", ("one", "two"), None
+    )
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_text(serialize_workflow_execution_state_json(state))
+    events_path.write_text(
+        serialize_runtime_step_event_jsonl(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "w",
+                "one",
+                1,
+                "e",
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                "response",
+                "request",
+                "o",
+                None,
+            )
+        )
+        + serialize_runtime_step_event_jsonl(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "w",
+                "two",
+                2,
+                "e",
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                "response2",
+                "request2",
+                "o2",
+                None,
+            )
+        )
+    )
+    request = ModelInvocationRequest("model", "system", "c", ("tool", "other"))
+    tools = (
+        ToolDefinition("tool", "Tool", ()),
+        ToolDefinition("other", "Other", ()),
+    )
+    return {
+        "result": RunningStatePersistenceResult(len(state_path.read_bytes())),
+        "start": PreparedStepExecutionStart(request, state),
+        "workflow": wf,
+        "employee": employee(),
+        "state_path": state_path,
+        "events_path": events_path,
+        "resolved_tools": tools,
+        "api_key": OpenAIApiKey(value=SecretStr("synthetic")),
+        "approval": approve_model_invocation_execution(
+            request,
+            tools,
+            provider="openai",
+            approved_by="test",
+            approval_id="id",
+        ),
+        "transport": lambda _: None,
+    }
+
+
+def runtime_three() -> StepRuntimeExecutionSuccess:
+    return StepRuntimeExecutionSuccess(
+        "w",
+        "three",
+        3,
+        "e",
+        ModelInvocationSuccess("openai", "response", None, "completed", ("ok",), "ok"),
+    )
+
+
+def test_earlier_succeeded_predecessor_empty_output_delegates_exactly_once_in_canonical_identity_order(
+    tmp_path: Path,
+) -> None:
+    supplied = continuation(tmp_path)
+    events = supplied["events_path"]
+    first = serialize_runtime_step_event_jsonl(
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "one",
+            1,
+            "e",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response",
+            "request",
+            "",
+            None,
+        )
+    )
+    second = serialize_runtime_step_event_jsonl(
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "two",
+            2,
+            "e",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response2",
+            "request2",
+            "o2",
+            None,
+        )
+    )
+    events.write_text(first + second)
+    state_before = supplied["state_path"].read_bytes()
+    events_before = events.read_bytes()
+    transport_calls = 0
+
+    def transport(_: object) -> object:
+        nonlocal transport_calls
+        transport_calls += 1
+        raise AssertionError("transport must not be called")
+
+    supplied["transport"] = transport
+    calls: list[tuple[object, ...]] = []
+    expected = runtime_three()
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    returned = call(supplied, dependency)
+    assert returned is expected and len(calls) == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            calls[0],
+            (
+                supplied["result"],
+                supplied["start"],
+                supplied["workflow"],
+                supplied["employee"],
+                supplied["state_path"],
+                supplied["events_path"],
+                supplied["resolved_tools"],
+                supplied["api_key"],
+                supplied["approval"],
+                supplied["transport"],
+            ),
+            strict=True,
+        )
+    )
+    assert supplied["state_path"].read_bytes() == state_before
+    assert events.read_bytes() == events_before
+    assert transport_calls == 0
+
+
+def test_immediate_succeeded_predecessor_empty_output_delegates_exactly_once_in_canonical_identity_order(
+    tmp_path: Path,
+) -> None:
+    supplied = continuation(tmp_path)
+    events = supplied["events_path"]
+    first = serialize_runtime_step_event_jsonl(
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "one",
+            1,
+            "e",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response",
+            "request",
+            "o",
+            None,
+        )
+    )
+    second = serialize_runtime_step_event_jsonl(
+        RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "two",
+            2,
+            "e",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response2",
+            "request2",
+            "",
+            None,
+        )
+    )
+    events.write_text(first + second)
+    state_before = supplied["state_path"].read_bytes()
+    events_before = events.read_bytes()
+    transport_calls = 0
+
+    def transport(_: object) -> object:
+        nonlocal transport_calls
+        transport_calls += 1
+        raise AssertionError("transport must not be called")
+
+    supplied["transport"] = transport
+    calls: list[tuple[object, ...]] = []
+    expected = runtime_three()
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    returned = call(supplied, dependency)
+    assert returned is expected and len(calls) == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            calls[0],
+            (
+                supplied["result"],
+                supplied["start"],
+                supplied["workflow"],
+                supplied["employee"],
+                supplied["state_path"],
+                supplied["events_path"],
+                supplied["resolved_tools"],
+                supplied["api_key"],
+                supplied["approval"],
+                supplied["transport"],
+            ),
+            strict=True,
+        )
+    )
+    assert supplied["state_path"].read_bytes() == state_before
+    assert events.read_bytes() == events_before
+    assert transport_calls == 0
