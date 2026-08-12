@@ -2001,3 +2001,128 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 - retry / loop / schedule / parallel / finalize behavior
 - CLI / GUI behavior
 - real network / provider / paid API / tool call
+
+## Phase 157: Phase 120 → 113 → 106 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair
+
+Phase 157は、Phase 156で修復した最初のtransition-persistenceセグメント（Phase 142 → 134 → 127）の次にあるセグメント（Phase 120 → Phase 113 → Phase 106）が、Phase-155 provenance runtime resultを正しく受け渡せるようにする**staged compatibility/correctness repair**です。新しいorchestration boundaryは追加しません。
+
+```text
+Phase 155 runtime result
+    ↓ explicit caller action
+Phase 142 → 134 → 127   (Phase 156 repaired)
+    ↓
+Phase 120 → 113 → 106
+    repaired to preserve Phase-155 empty-output provenance
+    ↓
+Phase 99
+    remains the next explicit strict seam; unchanged
+```
+
+Phase 155 / 156は現在、以下を同時に満たすrunning continuation provenanceを正しく生成・受理します。
+
+- `current_step_index >= 6`
+- succeeded predecessor `output_text`はexact built-in `str`（empty/non-empty）
+- earlier predecessor `request_id`はexact non-empty built-in `str`
+- immediate predecessor `request_id`は`None`またはexact non-empty built-in `str`
+- immediate predecessor providerはexact `"openai"`
+
+Phase 157は、この全ドメインを次のtransition-persistenceセグメントが保持できるよう、以下の3つのproduction boundaryだけを狭く修正します。
+
+### Production correction A — Phase 120 runtime route
+
+`src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary.py`
+
+`_check_running_history`内のsucceeded predecessor `output_text`に対するtruthiness/non-empty要件だけを除去します。
+
+- `type(event.output_text) is str`を維持し、`""`と非空を許容
+- `None`・non-stringは引き続きinvalid
+- `response_id`のexact non-empty built-in `str`要件を維持
+- 新しいrequest-ID/provider要件は導入せず、Phase 120の現在のrequest-ID/provider挙動を正確に維持
+- continuation lower bound（`current_step_index >= 2`）・stop routes・Phase 113呼び出し方・persistence/compensation/safe-error挙動は変更なし
+
+### Production correction B — Phase 113 runtime route
+
+`src/ai_office/engine/runtime_result_transition_persistence_cycle_reentry_continuation_boundary.py`
+
+`_validate_running_history`内に同じ狭いempty-output修正を適用します。
+
+- exact built-in `str`型要件を維持し、empty/non-emptyを許容
+- `None`・non-stringは引き続きinvalid
+- Phase 113の現在のrequest-ID/provider挙動を正確に維持
+- runtime-result linkage・stop routes・Phase 106呼び出し方・persistence/compensation/error挙動は変更なし
+
+### Production correction C — Phase 106 runtime route
+
+`src/ai_office/engine/runtime_result_transition_persistence_cycle_continuation_boundary.py`
+
+`_validate_running_history`内に同じ狭いempty-output修正を適用します。
+
+- exact built-in `str`型要件を維持し、empty/non-emptyを許容
+- `None`・non-stringは引き続きinvalid
+- Phase 106の現在のrequest-ID/provider挙動を正確に維持
+- runtime-result linkage・stop routes・Phase 99呼び出し方・persistence/compensation/error挙動は変更なし
+
+Phase 99は変更せず、本Phase後も次のexplicit strict empty-output seamとして残ります。
+
+### Focused regression additions
+
+各focusedファイルにexactly 6 collected casesを追加しました（既存テストの削除・弱体化なし）。
+
+- Phase 120 focused（`..._cycle_handoff_reentry_continuation_boundary.py`）: earlier/immediate/combined exact empty `output_text`がPhase 113へexactly once委譲、`None`/`123`/`True`はPhase 113より前にreject
+- Phase 113 focused（`..._cycle_reentry_continuation_boundary.py`）: 同じ6ケースをPhase 113→106境界で検証
+- Phase 106 focused（`..._cycle_continuation_boundary.py`）: 同じ6ケースをPhase 106→99境界で検証
+
+### Real-segment regression
+
+`tests/test_runtime_result_transition_persistence_phase120_106_phase155_provenance_compatibility.py`（新規）で、**実Phase 120 → 実Phase 113 → 実Phase 106 → synthetic Phase 99 seam**の6ケースを追加しました。
+
+- exact `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`、earlier-empty（step 2）+ immediate-empty（step 5）+ immediate-`request_id=None`の組み合わせがseamへexactly once到達
+- 複数earlier-empty + immediate-empty/`None`もseamへexactly once到達
+- earlier `output_text=None`、immediate `output_text=None`はPhase 120でPhase 113/106/seamより前にreject（目的のprovenanceはreloadで明示的に検証）
+- 各handoffでcanonical four-argument identity/order保持、seam結果object identityを全実境界がそのまま返すことを検証
+- pre-seam historyにearlier-empty・immediate-empty・immediate-`request_id=None`が実際に含まれることをexplicit reloadで検証
+
+synthetic seamは実境界のpersistence再検証を満たすため、最小のdeterministic persistence seamとしてexact expected terminal stateを書き、terminal eventを正確に1件appendし、exact `WorkflowExecutionPersistenceResult`を返します（production moduleのmonkeypatchなし）。
+
+### Collect invariant
+
+```text
+11,244 + 24 = 11,268
+```
+
+- Phase 120 focused: +6
+- Phase 113 focused: +6
+- Phase 106 focused: +6
+- real-segment regression: +6
+
+### 変更範囲（9ファイル）
+
+1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary.py` — Phase 120 narrow empty-output compatibility
+2. `tests/test_runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary.py` — +6 focused collected
+3. `src/ai_office/engine/runtime_result_transition_persistence_cycle_reentry_continuation_boundary.py` — Phase 113 narrow empty-output compatibility
+4. `tests/test_runtime_result_transition_persistence_cycle_reentry_continuation_boundary.py` — +6 focused collected
+5. `src/ai_office/engine/runtime_result_transition_persistence_cycle_continuation_boundary.py` — Phase 106 narrow empty-output compatibility
+6. `tests/test_runtime_result_transition_persistence_cycle_continuation_boundary.py` — +6 focused collected
+7. `tests/test_runtime_result_transition_persistence_phase120_106_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
+8. `README.md` — 本ドキュメント
+9. `docs/architecture.md` — Phase 157 section
+
+### 変更しないもの
+
+- `src/ai_office/engine/__init__.py`（新しいpublic APIなし）
+- Phase 155 / 156 productionまたはそのregression
+- Phase 99およびそれ以下のtransition-persistence boundary
+- Phase 143以降のclassification/progression boundary
+- `src/ai_office/engine/terminal_history_contract.py`
+- provider/runtime/storage generic modules
+
+### Phase 157は以下を行いません
+
+- 新しいpublic boundaryの追加
+- Phase 155 → 142の自動継続
+- Phase 143の呼び出し
+- outcome classification / workflow progression
+- retry / loop / schedule / parallel / finalize behavior
+- CLI / GUI behavior
+- 新しいrequest-ID/provider semantics
+- real network / provider / paid API / tool call

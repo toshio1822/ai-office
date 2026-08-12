@@ -26,6 +26,7 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
+    load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -835,3 +836,222 @@ def test_rollback_failures_attempt_both_targets_and_do_not_retry(
         call(success(), workflow(), state, events, dependency)
     assert caught.value.detail.classification == "dependency_rollback"
     assert attempts.count(state) == 1 and attempts.count(events) == 1 and calls == 1
+
+
+def multi_step_workflow(count: int) -> WorkflowDefinition:
+    step_ids = tuple(f"s{index}" for index in range(1, count + 1))
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": step_id,
+                    "name": step_id.capitalize(),
+                    "employee": "e",
+                    "instructions": step_id,
+                }
+                for step_id in step_ids
+            ],
+        }
+    )
+
+
+def running_success(step_id: str, step_index: int) -> StepRuntimeExecutionSuccess:
+    return StepRuntimeExecutionSuccess(
+        "w",
+        step_id,
+        step_index,
+        "e",
+        ModelInvocationSuccess("openai", "r", "q", "done", ("out",), "out"),
+    )
+
+
+def running_failure(step_id: str, step_index: int) -> StepRuntimeExecutionFailure:
+    return StepRuntimeExecutionFailure(
+        "w",
+        step_id,
+        step_index,
+        "e",
+        ModelInvocationFailure("openai", "api_error", "safe", "q", 500, None, None),
+    )
+
+
+def predecessor_event_custom(
+    step_id: str, step_index: int, output_text: object
+) -> RuntimeStepEvent:
+    return RuntimeStepEvent(
+        "step_succeeded",
+        "w",
+        step_id,
+        step_index,
+        "e",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        f"response-{step_id}",
+        f"request-{step_id}",
+        output_text,  # type: ignore[arg-type]
+        None,
+    )
+
+
+def setup_multi_history(
+    tmp_path: Path, outputs: tuple[object, ...]
+) -> tuple[Path, Path]:
+    state = WorkflowExecutionState(
+        "w",
+        "running",
+        f"s{len(outputs) + 1}",
+        len(outputs) + 1,
+        "e",
+        tuple(f"s{index}" for index in range(1, len(outputs) + 1)),
+        None,
+    )
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_text(serialize_workflow_execution_state_json(state))
+    events_path.write_text(
+        "".join(
+            serialize_runtime_step_event_jsonl(
+                predecessor_event_custom(f"s{index}", index, output)
+            )
+            for index, output in enumerate(outputs, 1)
+        )
+    )
+    return state_path, events_path
+
+
+def persist_fake_running(
+    result: object, _workflow: object, state: Path, events: Path
+) -> WorkflowExecutionPersistenceResult:
+    invocation = result.invocation_result  # type: ignore[union-attr]
+    ok = type(result) is StepRuntimeExecutionSuccess
+    current_state = load_workflow_execution_state(state)
+    next_state = WorkflowExecutionState(
+        "w",
+        "succeeded" if ok else "failed",
+        result.step_id,  # type: ignore[union-attr]
+        result.step_index,  # type: ignore[union-attr]
+        result.employee_id,  # type: ignore[union-attr]
+        current_state.completed_step_ids + ((result.step_id,) if ok else ()),  # type: ignore[union-attr]
+        None if ok else invocation.category,
+    )
+    event = RuntimeStepEvent(
+        "step_succeeded" if ok else "step_failed",
+        "w",
+        result.step_id,  # type: ignore[union-attr]
+        result.step_index,  # type: ignore[union-attr]
+        result.employee_id,  # type: ignore[union-attr]
+        "running",
+        next_state.status,
+        "openai",
+        None if ok else invocation.category,
+        invocation.response_id if ok else None,
+        invocation.request_id,
+        invocation.text if ok else None,
+        None if ok else invocation.message,
+    )
+    state_bytes = serialize_workflow_execution_state_json(next_state).encode()
+    event_bytes = serialize_runtime_step_event_jsonl(event).encode()
+    state.write_bytes(state_bytes)
+    events.write_bytes(events.read_bytes() + event_bytes)
+    return WorkflowExecutionPersistenceResult(
+        state, events, len(state_bytes), len(event_bytes)
+    )
+
+
+def test_earlier_predecessor_empty_output_delegates_once_to_phase99(
+    tmp_path: Path,
+) -> None:
+    state, events = setup_multi_history(tmp_path, ("", "output"))
+    result = running_success("s3", 3)
+    supplied_workflow = multi_step_workflow(3)
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def phase99(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                args, (result, supplied_workflow, state, events), strict=True
+            )
+        )
+        expected = persist_fake_running(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(result, supplied_workflow, state, events, phase99) is expected
+    assert len(calls) == 1
+
+
+def test_immediate_predecessor_empty_output_delegates_once_to_phase99(
+    tmp_path: Path,
+) -> None:
+    state, events = setup_multi_history(tmp_path, ("output", ""))
+    result = running_failure("s3", 3)
+    supplied_workflow = multi_step_workflow(3)
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def phase99(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                args, (result, supplied_workflow, state, events), strict=True
+            )
+        )
+        expected = persist_fake_running(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(result, supplied_workflow, state, events, phase99) is expected
+    assert len(calls) == 1
+
+
+def test_multiple_earlier_and_immediate_empty_outputs_delegate_once_to_phase99(
+    tmp_path: Path,
+) -> None:
+    state, events = setup_multi_history(tmp_path, ("", "", ""))
+    result = running_success("s4", 4)
+    supplied_workflow = multi_step_workflow(4)
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def phase99(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                args, (result, supplied_workflow, state, events), strict=True
+            )
+        )
+        expected = persist_fake_running(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(result, supplied_workflow, state, events, phase99) is expected
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("value", [None, 123, True])
+def test_predecessor_output_text_non_string_is_rejected_before_phase99(
+    tmp_path: Path, value: object
+) -> None:
+    state, events = setup_multi_history(tmp_path, ("output", value))
+    before = state.read_bytes(), events.read_bytes()
+    with pytest.raises(
+        RuntimeResultTransitionPersistenceCycleContinuationCompatibilityError
+    ) as caught:
+        call(
+            running_success("s3", 3),
+            multi_step_workflow(3),
+            state,
+            events,
+            lambda *_: pytest.fail("called"),
+        )
+    assert caught.value.detail.classification == "runtime_contract"
+    assert (state.read_bytes(), events.read_bytes()) == before
