@@ -42,6 +42,8 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     RunningStatePersistenceResult,
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -110,17 +112,17 @@ def make_inputs(
     *,
     empty_indexes: tuple[int, ...] = (),
     immediate_request_id: object = None,
-    immediate_output: object = "output-5",
     replacement: tuple[int, object] | None = None,
 ) -> dict[str, object]:
     """Running state at step six with succeeded history for steps one through five.
 
     ``empty_indexes`` (1-based, steps 1..5) marks predecessors whose
-    ``output_text`` is the exact empty built-in ``str``; every other output is
-    an exact non-empty string. ``replacement`` optionally overrides one
-    predecessor's output for the rejection cases. Earlier request IDs stay
-    exact non-empty built-in strings; the immediate step-5 request ID uses the
-    supplied Phase 149-valid provenance (``None`` or an exact non-empty str).
+    ``output_text`` is the exact empty built-in ``str``, including step 5 when
+    listed; every other output is an exact non-empty string. ``replacement``
+    optionally overrides one predecessor's output for the rejection cases.
+    Earlier request IDs stay exact non-empty built-in strings; the immediate
+    step-5 request ID uses the supplied Phase 149-valid provenance (``None`` or
+    an exact non-empty str).
     """
     state_value = WorkflowExecutionState(
         "w",
@@ -139,8 +141,6 @@ def make_inputs(
     for index, step_id in enumerate(_STEP_IDS[:5], start=1):
         if replacement is not None and replacement[0] == index:
             output = replacement[1]
-        elif index == 5:
-            output = immediate_output
         else:
             output = "" if index in empty_indexes else f"output-{index}"
         events.append(
@@ -248,6 +248,22 @@ def _assert_exact_success(
     assert events.read_bytes() == events_before  # type: ignore[union-attr]
 
 
+def _assert_immediate_predecessor_empty_output(values: dict[str, object]) -> None:
+    """Assert the reloaded persisted step-5 event really carries ``output_text == ""``.
+
+    Reloads the events target through the real storage loader so the assertion
+    proves what the whole chain actually observes, not just the fixture intent.
+    """
+    history = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"], values["events_path"]
+        )
+    )
+    immediate = history.events[-1]
+    assert immediate.step_index == 5
+    assert immediate.output_text == ""
+
+
 def test_earlier_empty_predecessor_reaches_real_transport_once(
     tmp_path: Path,
 ) -> None:
@@ -269,6 +285,7 @@ def test_immediate_empty_predecessor_with_none_request_id_reaches_real_transport
     and the Phase 150-153 empty-output repairs compose correctly.
     """
     values = make_inputs(tmp_path, empty_indexes=(5,), immediate_request_id=None)
+    _assert_immediate_predecessor_empty_output(values)
     state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
@@ -293,6 +310,7 @@ def test_earlier_and_immediate_empty_predecessors_reach_real_transport_once(
 ) -> None:
     """Case 4: step-2 and step-5 output empty together; immediate request_id None."""
     values = make_inputs(tmp_path, empty_indexes=(2, 5), immediate_request_id=None)
+    _assert_immediate_predecessor_empty_output(values)
     state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
