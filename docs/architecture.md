@@ -1591,3 +1591,47 @@ Phase 153は以下を行わない:
 - retry・自動継続
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
+
+## Phase 154: Phase 141 → Execution Whole-Chain Real-Default Empty-Success Regression
+
+Phase 154はPhase 140–153のempty-success compatibility lineの**final integration/closure proof**であり、production behaviorを一切変更しないcoverage-only Phaseである。公開Phase 141 `route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(...)`の実default dependency chainだけを呼び、persisted-running execution boundaryから実際のexecution pathまでを1つの単位として通す。
+
+```text
+real Phase 141 → real Phase 133 → real Phase 126 → real Phase 119 → real Phase 112
+  → real Phase 105 → real Phase 98 → real Phase 91 → real Phase 84 → real Phase 77
+  → real Phase 70 → real Phase 63 → real Phase 56 → real Phase 49 → real Phase 42
+  → real Phase 36 → actual execution path → synthetic final transport only
+```
+
+Phase dependencyのoverride、fake boundary、monkeypatch、wrapperは一切使わない。合成できるのは最終`transport` callableだけであり、synthetic transportは実認証済みOpenAI request typeをexactly once受けて決定的なsynthetic HTTP responseを返す。戻り値は実`StepRuntimeExecutionSuccess`で、workflow/step/index/employee linkage、provider=`"openai"`、response ID、request ID、status=`"completed"`、output text、state/events byte-for-byte不変を検証する。
+
+### 検証済みシナリオ（6 collected cases）
+
+- earlier empty predecessor（step 2 empty、immediate `request_id`はexact non-empty `str`）
+- immediate empty predecessor + Phase 149 provenance（step 5 empty、`request_id is None`、earlier request IDsはexact non-empty string）— Phase 149 request-ID repairとPhase 150–153 empty-output repairの合成証明
+- multiple earlier empty predecessors（steps 2/4 empty、immediate output non-empty、`request_id is None`）
+- earlier + immediate empty outputs together（step 2とstep 5の両方がempty、`request_id is None`）
+- invalid output rejected before transport（`output_text is None` / `output_text == 123`のparametrized 2 cases）— Phase 141 entryが`persistence_result_contract`で拒否、transport call 0回、state/events byte-for-byte不変
+
+### 契約保持
+
+Phase 154はproduction contractを変更しない。Phase 141/133のimmediate predecessor `request_id=None` allowance、earlier predecessor request-IDのexact non-empty built-in string、predecessor response-ID/provider/linkage規則、Phase 63 exact built-in `str` policy、Phase 56/49 local `isinstance(..., str)` policy、final `workflow_complete` succeeded terminal outputのstrict non-empty、failed terminal semantics、persistence/compensation/rollback、runtime-result validation、provider/tool/credential behaviorは全て不変。`src/ai_office/engine/terminal_history_contract.py`は変更しない。
+
+### 変更範囲
+
+- `tests/test_persisted_running_execution_default_chain_empty_success_compatibility.py` — 新規（6 collected cases）
+- `README.md` — Phase 154 section
+- `docs/architecture.md` — 本section
+
+`src/`配下、`src/ai_office/engine/__init__.py`、`src/ai_office/engine/terminal_history_contract.py`、Phase 149 request-ID regression、Phase 150–153 segment regressionsは変更しない。
+
+Phase 154は以下を行わない:
+
+- production codeの変更
+- 新しいorchestration boundaryの追加
+- orchestration、retry、自動継続、schedule、parallelism、GUI、provider behaviorの追加
+- Phase dependencyのfake/inject/monkeypatch
+- real network/provider/paid API/tool call
+- final workflow-complete terminal success outputのempty化
+- failed terminal history semanticsの変更
+- CLI/GUI behaviorの追加
