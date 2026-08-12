@@ -27,6 +27,8 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
@@ -243,9 +245,18 @@ def test_earlier_predecessor_none_request_id_is_rejected_at_phase142(
     events = values["events_path"]
     lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("two", 2, "other", request_id=None)
+        predecessor_event("two", 2, "other", request_id=None, output_text="")
     )
     events.write_text(lines[0] + replacement + "".join(lines[2:]), encoding="utf-8")  # type: ignore[union-attr]
+    reloaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"],  # type: ignore[arg-type]
+            events,  # type: ignore[arg-type]
+        )
+    )
+    assert [event.output_text for event in reloaded.events] == ["output", "", "output", "output", ""]
+    assert [event.request_id for event in reloaded.events] == ["request-one", None, "request-three", "request-four", None]
+    assert [event.step_id for event in reloaded.events] == ["one", "two", "three", "four", "five"]
     before = values["state_path"].read_bytes(), events.read_bytes()  # type: ignore[union-attr]
     calls = {"phase142": 0, "phase134": 0, "phase127": 0, "seam": 0}
 
@@ -273,9 +284,18 @@ def test_immediate_predecessor_empty_request_id_is_rejected_at_phase142(
     events = values["events_path"]
     lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, "openai", request_id="")
+        predecessor_event("five", 5, "openai", request_id="", output_text="")
     )
     events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
+    reloaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"],  # type: ignore[arg-type]
+            events,  # type: ignore[arg-type]
+        )
+    )
+    assert [event.output_text for event in reloaded.events] == ["output", "", "output", "output", ""]
+    assert [event.request_id for event in reloaded.events] == ["request-one", "request-two", "request-three", "request-four", ""]
+    assert [event.step_id for event in reloaded.events] == ["one", "two", "three", "four", "five"]
     before = values["state_path"].read_bytes(), events.read_bytes()  # type: ignore[union-attr]
     calls = {"phase142": 0, "phase134": 0, "phase127": 0, "seam": 0}
 
