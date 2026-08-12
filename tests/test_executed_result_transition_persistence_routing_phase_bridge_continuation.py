@@ -144,6 +144,112 @@ def setup_two_step_history(tmp_path: Path, mode: str) -> tuple[Path, Path]:
     return state_path, events_path
 
 
+def three_step_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "e", "instructions": "one"},
+                {"id": "two", "name": "Two", "employee": "e", "instructions": "two"},
+                {
+                    "id": "three",
+                    "name": "Three",
+                    "employee": "e",
+                    "instructions": "three",
+                },
+            ],
+        }
+    )
+
+
+def three_step_success() -> StepRuntimeExecutionSuccess:
+    return StepRuntimeExecutionSuccess(
+        "w",
+        "three",
+        3,
+        "e",
+        ModelInvocationSuccess("openai", "r3", "q3", "done", ("out",), "out"),
+    )
+
+
+def predecessor_event_with_output(
+    step_id: str, step_index: int, output_text: object
+) -> RuntimeStepEvent:
+    return RuntimeStepEvent(
+        "step_succeeded",
+        "w",
+        step_id,
+        step_index,
+        "e",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        f"response-{step_id}",
+        f"request-{step_id}",
+        output_text,  # type: ignore[arg-type]
+        None,
+    )
+
+
+def setup_three_step_history(
+    tmp_path: Path, outputs: tuple[object, object]
+) -> tuple[Path, Path]:
+    state = WorkflowExecutionState(
+        "w", "running", "three", 3, "e", ("one", "two"), None
+    )
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_text(serialize_workflow_execution_state_json(state))
+    first = serialize_runtime_step_event_jsonl(
+        predecessor_event_with_output("one", 1, outputs[0])
+    )
+    second = serialize_runtime_step_event_jsonl(
+        predecessor_event_with_output("two", 2, outputs[1])
+    )
+    events_path.write_text(first + second)
+    return state_path, events_path
+
+
+def persist_three_step(
+    result: object, _workflow: object, state: Path, events: Path
+) -> WorkflowExecutionPersistenceResult:
+    invocation = result.invocation_result  # type: ignore[union-attr]
+    ok = type(result) is StepRuntimeExecutionSuccess
+    next_state = WorkflowExecutionState(
+        "w",
+        "succeeded" if ok else "failed",
+        result.step_id,  # type: ignore[union-attr]
+        result.step_index,  # type: ignore[union-attr]
+        result.employee_id,  # type: ignore[union-attr]
+        ("one", "two", "three") if ok else ("one", "two"),
+        None if ok else invocation.category,
+    )
+    event = RuntimeStepEvent(
+        "step_succeeded" if ok else "step_failed",
+        "w",
+        result.step_id,  # type: ignore[union-attr]
+        result.step_index,  # type: ignore[union-attr]
+        result.employee_id,  # type: ignore[union-attr]
+        "running",
+        next_state.status,
+        "openai",
+        None if ok else invocation.category,
+        invocation.response_id if ok else None,
+        invocation.request_id,
+        invocation.text if ok else None,
+        None if ok else invocation.message,
+    )
+    state_bytes = serialize_workflow_execution_state_json(next_state).encode()
+    event_bytes = serialize_runtime_step_event_jsonl(event).encode()
+    state.write_bytes(state_bytes)
+    events.write_bytes(events.read_bytes() + event_bytes)
+    return WorkflowExecutionPersistenceResult(
+        state, events, len(state_bytes), len(event_bytes)
+    )
+
+
 def persist_fake(
     result: object, _workflow: object, state: Path, events: Path
 ) -> WorkflowExecutionPersistenceResult:
@@ -642,3 +748,103 @@ def test_rollback_failures_attempt_both_targets_and_do_not_retry(
         call(success(), workflow(), state, events, dependency)
     assert caught.value.detail.classification == "dependency_rollback"
     assert attempts.count(state) == 1 and attempts.count(events) == 1 and calls == 1
+
+
+@pytest.mark.parametrize("outputs", [("", "output")])
+def test_earlier_predecessor_exact_empty_output_delegates_once(
+    tmp_path: Path, outputs: tuple[object, object]
+) -> None:
+    state, events = setup_three_step_history(tmp_path, outputs)
+    supplied_workflow = three_step_workflow()
+    supplied_result = three_step_success()
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                args, (supplied_result, supplied_workflow, state, events), strict=True
+            )
+        )
+        expected = persist_three_step(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(supplied_result, supplied_workflow, state, events, dependency) is expected
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("outputs", [("output", "")])
+def test_immediate_predecessor_exact_empty_output_delegates_once(
+    tmp_path: Path, outputs: tuple[object, object]
+) -> None:
+    state, events = setup_three_step_history(tmp_path, outputs)
+    supplied_workflow = three_step_workflow()
+    supplied_result = three_step_success()
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                args, (supplied_result, supplied_workflow, state, events), strict=True
+            )
+        )
+        expected = persist_three_step(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(supplied_result, supplied_workflow, state, events, dependency) is expected
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("outputs", [("", "")])
+def test_combined_earlier_and_immediate_empty_outputs_delegate_once(
+    tmp_path: Path, outputs: tuple[object, object]
+) -> None:
+    state, events = setup_three_step_history(tmp_path, outputs)
+    supplied_workflow = three_step_workflow()
+    supplied_result = three_step_success()
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                args, (supplied_result, supplied_workflow, state, events), strict=True
+            )
+        )
+        expected = persist_three_step(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(supplied_result, supplied_workflow, state, events, dependency) is expected
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("bad_output", [None, 123, True])
+def test_invalid_predecessor_output_is_rejected_before_phase64(
+    tmp_path: Path, bad_output: object
+) -> None:
+    state, events = setup_three_step_history(tmp_path, (bad_output, "output"))
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        pytest.fail("Phase 64 must not be called")
+
+    with pytest.raises(
+        ExecutedResultTransitionPersistenceRoutingPhaseBridgeContinuationCompatibilityError
+    ) as caught:
+        call(three_step_success(), three_step_workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "runtime_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
