@@ -1297,11 +1297,12 @@ def test_stop_routes_with_provider_openai_terminal_are_zero_call(tmp_path: Path)
 
 
 def _real_default_values(tmp_path: Path) -> dict[str, object]:
-    """Phase 147-provenance running step-6 inputs with empty immediate output.
+    """Phase 147-provenance running step-6 inputs with earlier+immediate empty output.
 
-    The immediate (step-5) predecessor carries the Phase 149-valid ``request_id
-    is None`` provenance and the exact empty built-in ``output_text``, exactly
-    as the Phase 154 whole-chain regression proves Phase 141 accepts. The only
+    Step 2 (earlier predecessor) carries the exact empty built-in ``output_text``
+    and the immediate (step-5) predecessor carries the Phase 149-valid ``request_id
+    is None`` provenance and the exact empty built-in ``output_text``, exactly as
+    the Phase 154 whole-chain regression proves Phase 141 accepts. The only
     synthetic seam is the final ``transport`` callable.
     """
     state_value = WorkflowExecutionState(
@@ -1314,7 +1315,7 @@ def _real_default_values(tmp_path: Path) -> dict[str, object]:
         for index, (step_id, output) in enumerate(
             (
                 ("one", "output-1"),
-                ("two", "output-2"),
+                ("two", ""),
                 ("three", "output-3"),
                 ("four", "output-4"),
                 ("five", ""),
@@ -1386,7 +1387,9 @@ def test_real_default_smoke_reaches_real_phase141_through_synthetic_transport(
 
     No ``phase141_function`` override and no monkeypatching: the only synthetic
     seam is the final ``transport`` callable. Proves Phase 155 inherits the
-    Phase 154-proven Phase-141-to-execution empty-success compatibility closure.
+    Phase 154-proven Phase-141-to-execution empty-success compatibility closure
+    for the combined earlier-empty + immediate-empty + immediate-request_id-None
+    provenance.
     """
     values = _real_default_values(tmp_path)
     state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
@@ -1396,6 +1399,8 @@ def test_real_default_smoke_reaches_real_phase141_through_synthetic_transport(
             values["state_path"], values["events_path"]  # type: ignore[arg-type]
         )
     )
+    assert history.events[1].step_index == 2
+    assert history.events[1].output_text == ""
     assert history.events[-1].step_index == 5
     assert history.events[-1].output_text == ""
     assert history.events[-1].request_id is None
@@ -1404,7 +1409,7 @@ def test_real_default_smoke_reaches_real_phase141_through_synthetic_transport(
         **values,  # type: ignore[arg-type]
         transport=_success_transport(calls),
     )
-    assert isinstance(result, StepRuntimeExecutionSuccess)
+    assert type(result) is StepRuntimeExecutionSuccess
     assert (
         result.workflow_id,
         result.step_id,
@@ -1418,7 +1423,7 @@ def test_real_default_smoke_reaches_real_phase141_through_synthetic_transport(
     assert invocation.status == "completed"
     assert invocation.text == "ok"
     assert len(calls) == 1
-    assert isinstance(calls[0], OpenAIResponsesAuthenticatedHttpRequest)
+    assert type(calls[0]) is OpenAIResponsesAuthenticatedHttpRequest
     state = values["state_path"]
     events = values["events_path"]
     assert state.read_bytes() == state_before  # type: ignore[union-attr]
