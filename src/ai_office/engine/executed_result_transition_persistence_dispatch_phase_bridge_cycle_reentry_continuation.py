@@ -285,7 +285,6 @@ def _validate_running_history(
             and type(event.response_id) is str
             and event.response_id
             and type(event.output_text) is str
-            and event.output_text
             and event.message is None
         ):
             _raise("runtime_contract")
