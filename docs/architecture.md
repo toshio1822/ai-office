@@ -1635,3 +1635,51 @@ Phase 154は以下を行わない:
 - final workflow-complete terminal success outputのempty化
 - failed terminal history semanticsの変更
 - CLI/GUI behaviorの追加
+
+## Phase 155: Persisted-Running Execution Cycle Handoff Chain Bridge Outer-Chain Reentry Continuation Boundary
+
+Phase 155はPhase 147のpersisted-running execution結果を公開Phase 141へ明示的にhandoffする**新しいouter-chain orchestration boundary**である。Phase 147が生成したexact `RunningStatePersistenceResult`と対応するexact `PreparedStepExecutionStart`（step index `>= 6`、Phase 147 continuation provenance）を、公開Phase 141 `route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(...)`へcanonical ten-argument order `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`でexactly once委譲する。
+
+```text
+Phase 147 persisted-running execution result
+  → Phase 155 outer-chain boundary（新規）
+    → public Phase 141（exactly once）
+      → real default lower chain
+        → synthetic final transport only
+```
+
+`phase141_function`はkeyword-onlyで、公開Phase 141関数を既定値とする。dependency呼び出し前に以下を検証する:
+
+- exact model/type: `RunningStatePersistenceResult`、`PreparedStepExecutionStart`、nested `ModelInvocationRequest`/`WorkflowExecutionState`、`WorkflowDefinition`/`WorkflowStepDefinition`、`EmployeeDefinition`、`ToolDefinition`/`ToolParameterDefinition`、`OpenAIApiKey`（nested exact `SecretStr`）、`ModelInvocationExecutionApproval`
+- workflow/step/index/employee linkage、request model/system/task instructions/allowed-tools linkage、exact built-in tuple `allowed_tools`
+- approval semantic contract（`approved is True`、provider=`"openai"`、非空string fingerprint/approved_by/approval_id）
+- state bytesがserialized running stateと一致、`RunningStatePersistenceResult.state_bytes_written`がexact正の実byte数
+- predecessor history: immediate predecessorはempty `output_text`・`request_id is None`またはexact non-empty `str`・provider=`"openai"`、earlier predecessorはexact non-empty built-in `str` request ID・既存Phase 141のprovider許容範囲（non-`"openai"` valid）維持、response_id/出力規則はPhase 141契約のまま
+- transportはcallable、`phase141_function`はcallable
+
+`WorkflowProgressionDecision(workflow_complete)`と`PersistedExecutionOutcome(persisted_failure)`のstop routeはPhase 141を呼ばず、Phase 155内でstop-domain（terminal history、workflow-completeの最終succeeded non-empty output、failed terminal semantics、linkage）を自前検証して同一オブジェクトをidentityで返す。stop routeのpredecessorはempty `output_text`とterminalのnon-`"openai"` providerを許容するが、workflow-completeの最終succeeded outputは非空exact built-in `str`を要求する。stop routeのexecution inputs（start/employee/resolved_tools/api_key/approval/transport）は全て`None`を要求する。
+
+dependencyは一度だけ呼ぶ。正常なexact runtime result（`StepRuntimeExecutionSuccess`/`StepRuntimeExecutionFailure`）はidentityのまま返し、malformed returnまたはtarget mutationは両targetをbyte-for-byte補償復元する。safe Phase 141 errorはsuccessful compensation後もidentityを保持し、unexpected errorはdetail-safeにsanitize（`dependency_error`）、rollback failureは`dependency_rollback`、retryはない。分類は`persistence_result_contract` / `terminal_contract` / `start_contract` / `execution_inputs` / `runtime_contract` / `result_type` / `workflow_definition` / `employee_contract` / `tools_contract` / `credential_contract` / `approval_contract` / `completion_contract` / `failure_contract` / `state_target` / `event_target` / `target_conflict` / `dependency_error` / `dependency_rollback`。
+
+### 変更範囲
+
+- `src/ai_office/engine/persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — 新規（production semantic changeはこのmoduleのみ）
+- `src/ai_office/engine/__init__.py` — 公開exportのみ
+- `tests/test_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — 新規（134 focused cases + 1 real-default smoke）
+- `README.md` — Phase 155 section
+- `docs/architecture.md` — 本section
+
+Phase 141以下、Phase 133、Phase 142、Phase 147、`src/ai_office/engine/terminal_history_contract.py`は変更しない。Phase 133の直接呼び出し、Phase 142の呼び出し、Phase 147の再呼び出し、Phase 141のbypass/duplicate、runtime resultのpersist、outcomeのclassify、progression、retry、自動継続は行わない。
+
+Phase 155は以下を行わない:
+
+- Phase 141以下・Phase 133・Phase 142・Phase 147のproduction behavior変更
+- `src/ai_office/engine/terminal_history_contract.py`の変更
+- Phase 133直接呼び出し・Phase 142呼び出し・Phase 147再呼び出し・Phase 141 bypass/duplicate
+- runtime resultのpersistence
+- outcomeのclassification
+- workflowのprogression
+- retry・自動継続
+- real network/provider/paid API/tool call（real-default smokeのsynthetic seamは最終`transport`のみ）
+- finalize/schedule/loop/parallel behaviorの追加
+- CLI/GUI behaviorの追加

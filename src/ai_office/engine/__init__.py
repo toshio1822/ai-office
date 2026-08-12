@@ -268,6 +268,12 @@ from ai_office.engine.persisted_running_execution_cycle_continuation_boundary im
     PersistedRunningExecutionCycleContinuationFailureDetail,
     route_persisted_running_execution_cycle_continuation_boundary,
 )
+from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (  # noqa: E501
+    PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError,
+    PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError,
+    PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail,
+    route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
+)
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (  # noqa: E501
     PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError,
     PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError,
@@ -1172,6 +1178,10 @@ __all__ = [
     "PersistedRunningExecutionCycleHandoffChainReentryContinuationError",
     "PersistedRunningExecutionCycleHandoffChainReentryContinuationFailureDetail",
     "route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary",
+    "PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError",
+    "PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError",
+    "PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail",
+    "route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
     "PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError",
     "PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError",
     "PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationFailureDetail",
