@@ -280,7 +280,6 @@ def _running(
             and isinstance(event.response_id, str)
             and bool(event.response_id)
             and isinstance(event.output_text, str)
-            and bool(event.output_text)
             and event.message is None
         ):
             _raise("persistence_contract")
