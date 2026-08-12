@@ -1896,3 +1896,108 @@ Phase 155は以下を行いません:
 - real network/provider/paid API/tool call（real-default smokeのsynthetic seamは最終`transport`のみ）
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
+
+## Phase 156: Phase 142 → 134 → 127 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair
+
+Phase 156は、Phase 155以降で有効になったrunning continuation provenanceを、最初のtransition-persistence互換セグメント（Phase 142 → Phase 134 → Phase 127）が正しく受け渡せるようにする**staged compatibility/correctness repair**です。新しいorchestration boundaryは追加しません。
+
+```text
+Phase 155 runtime result
+    ↓ explicit caller action
+Phase 142 → Phase 134 → Phase 127
+    repaired to preserve Phase-155 empty-output / immediate-request_id-None provenance
+    ↓
+Phase 120
+    remains the next explicit strict seam; unchanged
+```
+
+Phase 155は現在、以下を同時に満たすrunning continuation provenanceを正しく生成・受理します。
+
+- `current_step_index >= 6`
+- succeeded predecessor `output_text`はexact built-in `str`（empty/non-empty）
+- earlier predecessor `request_id`はexact non-empty built-in `str`
+- immediate predecessor `request_id`は`None`またはexact non-empty built-in `str`
+- immediate predecessor providerはexact `"openai"`
+
+Phase 156は、この全ドメインを最初のtransition-persistenceセグメントが保持できるよう、以下の3つのproduction boundaryだけを狭く修正します。
+
+### Production correction A — Phase 142 runtime route
+
+`src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py`
+
+- 既存のruntime-route empty-output許容を維持
+- earlier predecessorは引き続きexact non-empty built-in `str request_id`を要求
+- immediate succeeded predecessorは`request_id is None`またはexact non-empty built-in `str`を許容
+- empty string・non-string・non-`None`は引き続きinvalid
+- immediate providerはexact `"openai"`、`response_id`はexact non-empty built-in `str`、`output_text`はexact built-in `str`（empty/non-empty valid）を維持
+- stop routesは変更なし
+
+`allow_none_request_id`フラグは`_valid_predecessor_event`のローカル引数として追加し、非runtime利用は厳格なまま維持します。
+
+### Production correction B — Phase 134 runtime route
+
+`src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py`
+
+Phase 142と同じ狭いimmediate-predecessor request-ID互換規則を適用します。provider/response/output/linkage規則とstop routesは変更なし、Phase 127の呼び出し方・persistence semanticsは変更しません。
+
+### Production correction C — Phase 127 runtime route
+
+`src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary.py`
+
+- succeeded predecessor `output_text`のtruthiness/non-empty要件だけを除去
+- `output_text`はexact built-in `str`を維持し、`""`と非空を許容
+- `None`・non-stringは引き続きinvalid
+- 新しいrequest-ID要件は導入せず、既存のPhase 127 request-ID挙動を正確に維持
+- provider規則の強化なし、stop routes変更なし、persistence/compensation/runtime-result契約は変更なし
+
+### Real-segment regression
+
+`tests/test_runtime_result_transition_persistence_phase142_127_phase155_provenance_compatibility.py`（新規）で、**実Phase 142 → 実Phase 134 → 実Phase 127 → synthetic Phase 120 seam**の6ケースを追加しました。
+
+- exact `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`、earlier-empty + immediate-empty + immediate-`request_id=None`の組み合わせがseamへexactly once到達
+- 複数earlier-empty + immediate-empty/`None`もseamへexactly once到達
+- earlier `request_id=None`、immediate `request_id==""`はPhase 142でPhase 134/127/seamより前にreject
+- 各handoffでcanonical four-argument identity/order保持、seam結果object identityを全実境界がそのまま返すことを検証
+
+synthetic seamは実境界のpersistence再検証を満たすため、最小のdeterministic persistence seamとしてexact expected terminal stateを書き、terminal eventを正確に1件appendし、exact `WorkflowExecutionPersistenceResult`を返します（production moduleのmonkeypatchなし）。
+
+### Collect invariant
+
+```text
+11,220 + 24 = 11,244
+```
+
+- Phase 142 focused: +6
+- Phase 134 focused: +6
+- Phase 127 focused: +6
+- real-segment regression: +6
+
+### 変更範囲（9ファイル）
+
+1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 142 narrow request-ID compatibility
+2. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — +6 focused collected
+3. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 134 narrow request-ID compatibility
+4. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — +6 focused collected
+5. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary.py` — Phase 127 narrow empty-output compatibility
+6. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary.py` — +6 focused collected
+7. `tests/test_runtime_result_transition_persistence_phase142_127_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
+8. `README.md` — 本ドキュメント
+9. `docs/architecture.md` — Phase 156 section
+
+### 変更しないもの
+
+- `src/ai_office/engine/__init__.py`（新しいpublic APIなし）
+- Phase 155 production/tests、Phase 120およびそれ以下のtransition-persistence boundary
+- Phase 143以降のclassification/progression boundary
+- `src/ai_office/engine/terminal_history_contract.py`
+- provider/runtime/storage generic modules
+
+### Phase 156は以下を行いません
+
+- 新しいpublic boundaryの追加
+- Phase 155 → 142の自動継続
+- Phase 143の呼び出し
+- outcome classification / workflow progression
+- retry / loop / schedule / parallel / finalize behavior
+- CLI / GUI behavior
+- real network / provider / paid API / tool call

@@ -420,6 +420,98 @@ def test_predecessor_history_matrix_is_rejected_before_phase120(tmp_path: Path, 
     assert caught.value.detail.classification == "runtime_contract" and calls == 0
 
 
+def test_earlier_predecessor_exact_empty_output_delegates_once(tmp_path: Path) -> None:
+    state, events = setup(tmp_path)
+    events.write_text(
+        serialize_runtime_step_event_jsonl(
+            replace(predecessor_event("one", 1), output_text="")
+        )
+        + serialize_runtime_step_event_jsonl(predecessor_event("two", 2)),
+        encoding="utf-8",
+    )
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(success(), workflow(), state, events, dependency) is expected
+    assert len(calls) == 1
+
+
+def test_immediate_predecessor_exact_empty_output_delegates_once(tmp_path: Path) -> None:
+    state, events = setup(tmp_path)
+    events.write_text(
+        serialize_runtime_step_event_jsonl(predecessor_event("one", 1))
+        + serialize_runtime_step_event_jsonl(
+            replace(predecessor_event("two", 2), output_text="")
+        ),
+        encoding="utf-8",
+    )
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(success(), workflow(), state, events, dependency) is expected
+    assert len(calls) == 1
+
+
+def test_combined_earlier_and_immediate_empty_outputs_are_accepted(tmp_path: Path) -> None:
+    state, events = setup(tmp_path)
+    events.write_text(
+        serialize_runtime_step_event_jsonl(
+            replace(predecessor_event("one", 1), output_text="")
+        )
+        + serialize_runtime_step_event_jsonl(
+            replace(predecessor_event("two", 2), output_text="")
+        ),
+        encoding="utf-8",
+    )
+    calls: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(success(), workflow(), state, events, dependency) is expected
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("output_text", [None, 123, True])
+def test_predecessor_non_string_output_text_is_rejected_before_phase120(
+    tmp_path: Path, output_text: object
+) -> None:
+    state, events = setup(tmp_path)
+    events.write_text(
+        serialize_runtime_step_event_jsonl(predecessor_event("one", 1))
+        + serialize_runtime_step_event_jsonl(
+            replace(predecessor_event("two", 2), output_text=output_text)  # type: ignore[arg-type]
+        ),
+        encoding="utf-8",
+    )
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
+        call(success(), workflow(), state, events, dependency)
+    assert caught.value.detail.classification == "runtime_contract" and calls == 0
+
+
 @pytest.mark.parametrize("field,value", [("state_path", object()), ("events_path", object()), ("state_bytes_written", 1.5), ("event_bytes_appended", "1")])
 def test_persistence_result_fields_require_exact_types_and_compensate(tmp_path: Path, field: str, value: object) -> None:
     state, events = setup(tmp_path)
