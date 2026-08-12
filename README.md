@@ -1651,3 +1651,50 @@ Phase 150は以下を行いません:
 - retry・自動継続
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
+
+## Phase 151: Phase 105 → 98 → 91 Execution Segment Empty-Success Compatibility Repair
+
+Phase 151は新しいorchestration boundaryではなく、Phase 150レビュー後に明示的な作業として残されたpersisted-running execution-chainの互換性ギャップのうち、次の境界セグメントを修復するstaged compatibility/correctness repairです。Phase 140は非final succeeded continuation history eventの`output_text`がexact built-in `str`である限りemptyでもnon-emptyでも有効と定め、Phase 150はPhase 126 → Phase 119 → Phase 112の3境界でempty exact-string predecessor outputを受理済みです。しかし実default lower execution chainでは、Phase 105より下流のsucceeded predecessor eventを非empty `output_text`要求で再検証していました。
+
+Phase 151はその下流セグメントのうち、次の3つの実boundaryだけを修復します:
+
+```text
+Phase 126 / Phase 119 / Phase 112（変更なし: empty exact-string predecessor outputを受理）
+  ↓
+Phase 105（修正: empty exact built-in str output_textのsucceeded predecessorを受理）
+  ↓
+Phase 98（修正: 同上）
+  ↓
+Phase 91（修正: 同上）
+  ↓
+Phase 84（変更なし: empty output_textを拒否したまま = 次の明示的シーム、対象外）
+```
+
+### 契約
+
+persisted-running execution routeの各succeeded predecessor history eventについて、`output_text`はexact built-in `str`のまま、`output_text == ""`は有効、non-empty exact built-in `str`は有効、`None`は無効、非string値は無効のままです。provenance/linkage、provider規則、request-ID/response-ID規則、workflow/step/index/employee/status/history-order/history-length linkage、state/result byte-count、runtime-result validation、compensation、dependency-error、rollback、stop-route semantics、final `workflow_complete` terminal success outputのstrict non-empty契約は全て変更しません。共有Phase 140 terminal-history契約は変更せず、final/failed terminal semanticsを引き続き所有します。
+
+### 修正範囲
+
+- `persisted_running_execution_cycle_continuation_boundary.py` — Phase 105 empty-success output互換のみ
+- `persisted_running_execution_dispatch_continuation_boundary.py` — Phase 98 empty-success output互換のみ
+- `persisted_running_execution_dispatch_phase_bridge_cycle_reentry_continuation.py` — Phase 91 empty-success output互換のみ
+
+`src/ai_office/engine/__init__.py`は変更せず、新しいpublic APIは追加しません。Phase 84以下は変更せず、`Phase 84 → Phase 77 → Phase 70 → Phase 63 → Phase 56 → Phase 49 → Phase 42 / Phase 36`のlower chain修復は将来の明示的Phaseに委ねます。
+
+Phase 151は以下を行いません:
+
+- 新しいorchestration boundaryの追加
+- Phase 126/119/112以上のproduction behavior変更
+- Phase 84以下の変更
+- `src/ai_office/engine/terminal_history_contract.py`の変更
+- request-ID/provider/response-ID semanticsの拡張・強化
+- final workflow-complete terminal success outputのempty化
+- failed terminal history semanticsの変更
+- provider/network/paid API/external toolの実行
+- runtime resultのpersistence
+- outcomeのclassification
+- workflowのprogression
+- retry・自動継続
+- finalize/schedule/loop/parallel behaviorの追加
+- CLI/GUI behaviorの追加
