@@ -71,6 +71,7 @@ def _setup_phase155(
     *,
     step_index: int = 6,
     terminal_output: str = "output-six",
+    earlier_empty: tuple[int, ...] = (2,),
     bad_predecessor_output: object = _BAD_SENTINEL,
 ):
     workflow = WorkflowDefinition.model_validate(
@@ -87,9 +88,16 @@ def _setup_phase155(
     )
     events = [
         RuntimeStepEvent("step_succeeded", "w", step_id, position, step_id[0], "running", "succeeded",
-                         "other", None, f"response-{step_id}", None, "", None)
+                         "other", None, f"response-{step_id}", f"request-{step_id}",
+                         "" if position in earlier_empty else "output", None)
         for position, step_id in enumerate(_SIX_STEP_IDS[: step_index - 1], 1)
     ]
+    if step_index > 1:
+        immediate = step_index - 1
+        events[immediate - 1] = RuntimeStepEvent(
+            "step_succeeded", "w", _SIX_STEP_IDS[immediate - 1], immediate,
+            _SIX_STEP_IDS[immediate - 1][0], "running", "succeeded",
+            "openai", None, f"response-{_SIX_STEP_IDS[immediate - 1]}", None, "", None)
     if status == "succeeded":
         events.append(RuntimeStepEvent("step_succeeded", "w", current_step_id, step_index, current_step_id[0],
                                        "running", "succeeded", "openai", None, f"response-{current_step_id}",
@@ -166,34 +174,27 @@ def test_phase155_fallback_rejects_non_string_predecessor_output_before_phase100
     assert calls == 0
 
 
-def test_phase155_fallback_requires_current_step_index_at_least_six(tmp_path: Path) -> None:
-    state, events, result, workflow, *_ = _setup_phase155(tmp_path, "succeeded", step_index=5)
-    calls = 0
-    def seam(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-    with pytest.raises(PersistedTransitionOutcomeClassificationCycleContinuationCompatibilityError) as caught:
-        route_persisted_transition_outcome_classification_cycle_continuation_boundary(
-            result, workflow, state, events, phase100_function=seam
-        )
-    assert caught.value.detail.classification == "terminal_contract"
-    assert calls == 0
-
-
-def test_phase155_fallback_rejects_empty_terminal_success_output_at_final_index(tmp_path: Path) -> None:
-    state, events, result, workflow, *_ = _setup_phase155(tmp_path, "succeeded", terminal_output="")
-    calls = 0
-    def seam(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-    with pytest.raises(PersistedTransitionOutcomeClassificationCycleContinuationCompatibilityError) as caught:
-        route_persisted_transition_outcome_classification_cycle_continuation_boundary(
-            result, workflow, state, events, phase100_function=seam
-        )
-    assert caught.value.detail.classification == "terminal_contract"
-    assert calls == 0
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_phase155_fallback_multiple_earlier_empty_accepts_and_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    state, events, result, workflow, before_state, before_events = _setup_phase155(
+        tmp_path, status, earlier_empty=(2, 3)
+    )
+    expected = PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure",
+        "w", "six", 6, "s", None if status == "succeeded" else "api_error",
+    )
+    calls: list[tuple[object, ...]] = []
+    def seam(*args: object) -> object:
+        calls.append(args)
+        return expected
+    returned = route_persisted_transition_outcome_classification_cycle_continuation_boundary(
+        result, workflow, state, events, phase100_function=seam
+    )
+    assert returned is expected
+    assert calls == [(result, workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 def test_public_signature_and_default_identity() -> None:

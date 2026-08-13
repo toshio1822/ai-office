@@ -2700,15 +2700,15 @@ Phase 100 (strict seam: Phase-155 provenance history は terminal_contract で�
 
 ### Focused regression（+18 cases）
 
-Phase 121 / 114 / 107の既存test moduleへ各**+6 cases**を追加します。
+Phase 121 / 114 / 107の既存test moduleへ各**+6 cases**を追加します（fixtureはexact Phase-155 provenance: earlier predecessorは`provider="other"`・`request_id=request-{step_id}`（非空）、immediate predecessor（step 5）は`provider="openai"`・`request_id=None`・空`output_text`）。
 
-- Phase 121（cycle handoff reentry）: Phase-155 six-step historyフォールバック受理（succeeded / failed、Phase 114 seam exactly-once・identity・targets不変）、predecessor `output_text=None`拒否（`terminal_contract`・Phase 114未呼び出し）、predecessor `output_text` non-string拒否、`current_step_index < 6`拒否、最終step succeeded空`output_text`拒否
+- Phase 121（cycle handoff reentry）: Phase-155 six-step historyフォールバック受理（earlier empty step 2 + immediate empty step 5 + immediate `request_id=None`、succeeded / failed、Phase 114 seam exactly-once・identity・targets不変）、multiple earlier empty predecessors（step 2・3空）+ immediate empty/None委譲（succeeded / failed）、earlier predecessor `output_text=None`拒否（`terminal_contract`・Phase 114未呼び出し）、predecessor `output_text` non-string拒否
 - Phase 114（cycle reentry）: 同上のboundaryを`phase107_function` seamで検証
 - Phase 107（cycle）: 同上のboundaryを`phase100_function` seamで検証
 
 ### Real-segment regression（+6 cases）
 
-新規test file（`tests/test_persisted_transition_outcome_classification_phase121_114_107_phase155_provenance_real_segment.py`、**6 collected total**）:
+新規test file（`tests/test_persisted_transition_outcome_classification_phase121_107_phase155_provenance_compatibility.py`、**6 collected total**）:
 
 - **実Phase 121 → 実Phase 114 → 実Phase 107 → synthetic Phase 100 seam**のreal chain（succeeded / failed）: 呼び出し前に public storage loader（`load_workflow_execution_history`）でpersisted state/historyを明示的にreloadし、earlier empty（step 2）・immediate empty（step 5）・immediate `request_id=None`・non-`"openai"` providerを実データとしてassert、reloaded terminal state/historyをexpected success/failure outcome contractに照合。dependency call count `{phase121: 1, phase114: 1, phase107: 1, seam: 1}`、canonical four-argument order・同一identity・exactly once委譲、returned outcomeのexact identity、両target byte-for-byte不変、retryなしを検証
 - multiple earlier empty predecessors（step 2・3）のdelegation（succeeded / failed）
@@ -2735,7 +2735,7 @@ Phase 121 / 114 / 107の既存test moduleへ各**+6 cases**を追加します。
 4. `tests/test_persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary.py` — Phase 121 regression +6
 5. `tests/test_persisted_transition_outcome_classification_cycle_reentry_continuation_boundary.py` — Phase 114 regression +6
 6. `tests/test_persisted_transition_outcome_classification_cycle_continuation_boundary.py` — Phase 107 regression +6
-7. `tests/test_persisted_transition_outcome_classification_phase121_114_107_phase155_provenance_real_segment.py` — 新規 real-segment regression（6 cases）
+7. `tests/test_persisted_transition_outcome_classification_phase121_107_phase155_provenance_compatibility.py` — 新規 real-segment regression（6 cases）
 8. `tests/test_persisted_transition_outcome_classification_phase143_128_phase155_provenance_compatibility.py` — Phase 162 regression保守（next-seam proofをPhase 100へ更新、assertion/import-only、+0 cases）
 9. `README.md` — Phase 163 documentation
 10. `docs/architecture.md` — Phase 163 architecture documentation

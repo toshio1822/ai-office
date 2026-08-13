@@ -225,7 +225,7 @@ def _valid_terminal_event(event: RuntimeStepEvent, state: WorkflowExecutionState
     return (event.event_type == "step_failed" and event.next_status == "failed"
             and event.failure_category == state.last_failure_category
             and event.response_id is None and event.output_text is None
-            and _nonempty_string(event.message))
+            and isinstance(event.message, str))
 
 
 def _nonempty_string(value: object) -> bool:
