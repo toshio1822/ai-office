@@ -2455,7 +2455,7 @@ Phase 121 / 114 / 107の既存test moduleへ各+6 casesを追加する（fixture
 - 実Phase 121 → 実Phase 114 → 実Phase 107 → synthetic Phase 100 seamのreal chain（succeeded / failed）: 呼び出し前にpublic storage loader（`load_workflow_execution_history`）でpersisted state/historyを明示的にreloadし、earlier empty（step 2）・immediate empty（step 5）・immediate `request_id=None`・non-`"openai"` providerを実データとしてassertし、reloaded terminal state/historyをexpected success/failure outcome contractに照合する。dependency call count `{phase121: 1, phase114: 1, phase107: 1, seam: 1}`、canonical four-argument order・同一identity・exactly once委譲、returned outcomeのexact identity、両target byte-for-byte不変、retryなしを検証する
 - multiple earlier empty predecessors（step 2・3）のdelegation（succeeded / failed）
 - Phase 100 next-seam reference（delegatesテスト内にinline、追加collected caseなし）: 同一persisted historyを実Phase 100に直接渡すと`PersistedOutcomeClassificationDispatchContinuationCompatibilityError`・分類`terminal_contract`で拒否し、Phase 93呼び出し0回、targets不変
-- predecessor `output_text=None` / non-string（`1`）のPhase 121拒否（`terminal_contract`・downstream未呼び出し・targets不変）: 2 negativeとも変異前に public loader で intact provenance（earlier request IDs non-empty・immediate step 5 `request_id=None`・terminal state/history）を明示reload/assertしてから、`None` 変異は step 2 の `request_id` を non-empty（`request-two`）維持のまま `output_text` のみ None に、non-string 変異は step 1 の `output_text` のみ `1` に変更して呼び出す
+- predecessor `output_text=None` / non-string（`1`）のPhase 121拒否（`terminal_contract`・downstream未呼び出し・targets不変）: 2 negativeとも変異前に public loader で intact provenance（earlier request IDs non-empty・immediate step 5 `request_id=None`・terminal state/history）を明示reload/assertしてから、`None` 変異は step 2 の `request_id` を non-empty（`request-two`）維持のまま `output_text` のみ None に、non-string 変異は **immediate predecessor（step 5）** の `output_text` のみ `1` に変更（step 2 earlier empty・step 5 の `request_id=None`・provider `"openai"` 維持）して呼び出す
 
 ### Collect invariant
 
@@ -2481,6 +2481,20 @@ Phase 121 / 114 / 107の既存test moduleへ各+6 casesを追加する（fixture
 8. `tests/test_persisted_transition_outcome_classification_phase143_128_phase155_provenance_compatibility.py` — Phase 162 regression保守（next-seam proofをPhase 100へ更新、assertion/import-only、+0 cases）
 9. `README.md` — Phase 163 documentation
 10. `docs/architecture.md` — Phase 163 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 163は以下のbehaviorを**一切**追加・変更しない:
+
+- 新しいpublic boundary（新規public関数・新規ルーティング・新規API）を追加しない
+- 自動継続（automatic continuation）は行わない
+- Phase 144 progression call（`decide_workflow_progression` 系の呼び出し）は行わない
+- workflow progression・next-step preparation・start は行わない
+- provider / tool 実行は行わない
+- retry・loop・schedule・parallel・finalize は行わない
+- CLI・GUI behavior は追加・変更しない
+- 共有 `terminal_history_contract.py` の意味を広げない（strict contract は不変）
+- 新しい request-ID / provider semantics を導入しない（Phase 155 provenance の `request_id=None`・`provider="other"` を許容するだけ）
 
 ### 変更しないもの
 

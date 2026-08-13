@@ -397,10 +397,18 @@ def test_real_segment_rejects_non_string_predecessor_output_before_seam(
     lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
     import json
 
-    payload = json.loads(lines[0])
-    assert payload["request_id"] == "request-one"
+    # Issue exact case #6: the immediate predecessor (step 5) output_text is
+    # mutated to a representative non-string. Step 2 earlier empty (""), step 5
+    # request_id None and provider "openai" are preserved.
+    assert json.loads(lines[1])["step_id"] == "two"
+    assert json.loads(lines[1])["output_text"] == ""
+    payload = json.loads(lines[4])
+    assert payload["step_id"] == "five"
+    assert payload["request_id"] is None
+    assert payload["provider"] == "openai"
+    assert payload["output_text"] == ""
     payload["output_text"] = 1
-    lines[0] = json.dumps(payload, separators=(",", ":")) + "\n"
+    lines[4] = json.dumps(payload, separators=(",", ":")) + "\n"
     events_path.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
     before = values["state_path"].read_bytes(), events_path.read_bytes()  # type: ignore[union-attr]
     calls = {"phase114": 0, "phase107": 0, "seam": 0}
