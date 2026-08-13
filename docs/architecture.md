@@ -2355,23 +2355,31 @@ Phase 121 (synthetic seam delegation / real Phase 121 terminal_contract rejectio
 
 ### 実チェーン委譲（synthetic Phase 121 seam）
 
-- 実Phase 143 → 実Phase 135 → 実Phase 128のreal chainにsynthetic Phase 121 seamを注入し、`succeeded` / `failed`の両ケースでcanonical four-argument order・同一identity・exactly once委譲、dependency call count `{phase143: 1, phase135: 1, phase128: 1, seam: 1}`、returned outcomeのexact identity、両target byte-for-byte不変、retryなしを検証する
+- 実Phase 143 → 実Phase 135 → 実Phase 128のreal chainにsynthetic Phase 121 seamを注入する
+- 呼び出し前に public storage loader（`load_workflow_execution_history`）でpersisted state/historyを明示的にreloadし、Issue #330指定のearlier empty predecessor（step 2）・immediate empty predecessor（step 5）・immediate predecessor `request_id=None`を実データとしてassertする
+- reloaded terminal state/historyはexpected success/failure outcome contractと一致することをassertする
+- `succeeded` / `failed`の両ケースでcanonical four-argument order・同一identity・exactly once委譲、dependency call count `{phase143: 1, phase135: 1, phase128: 1, seam: 1}`、returned outcomeのexact identity、両target byte-for-byte不変、retryなしを検証する
 
-### 実Phase 121 rejection reference
+### 実Phase 121 rejection reference（delegatesテスト内にinline）
 
-- real Phase 128へ実Phase 121を渡したとき、Phase-155 provenance historyは`PersistedTransitionOutcomeClassificationCycleHandoffReentryContinuationCompatibilityError`・分類`terminal_contract`でrejectされるreferenceを`succeeded` / `failed`両ケースで固定する。seam call countはzero、両targetはbyte-for-byte不変である
+- 上記delegatesテスト内で、実Phase 121ルートを`phase121_function`として渡すと、Phase-155 provenance historyは`PersistedTransitionOutcomeClassificationCycleHandoffReentryContinuationCompatibilityError`・分類`terminal_contract`でrejectされるreferenceを`succeeded` / `failed`両ケースで固定する（追加のcollected caseは取らない）
+- 両targetはbyte-for-byte不変である
 
 ### Focused regression（+18 cases）
 
 Phase 143 / 135 / 128の既存test moduleへ各+6 casesを追加する。
 
-- Phase 143（outer bridge）: immediate predecessor `request_id=None`受理・provider `"openai"`要求、earlier `request_id=None`拒否、immediate `request_id==""`拒否、non-string predecessor `output_text`拒否、Phase-155 compatible history委譲（succeeded / failed）
-- Phase 135（bridge）: 同上のboundaryをPhase 135入口で検証
-- Phase 128（chain）: 6-step Phase-155 compatible history委譲（succeeded / failed）、`index=5`（threshold未満）拒否、non-string predecessor `output_text`（`None` / `4`）拒否、request-ID policy非追加（`predecessor_request_id=None`でも委譲）
+- Phase 143（outer bridge）: immediate predecessor `request_id=None` + empty `output_text`委譲（succeeded / failed）、immediate predecessor `request_id=None` + non-empty `output_text`委譲（succeeded / failed）、earlier predecessor `request_id=None`拒否（Phase 135へ委譲しない）、immediate predecessor `request_id==""`拒否
+- Phase 135（bridge）: 同上のboundaryをPhase 135入口で検証する（immediate `request_id=None` + empty / non-empty `output_text`委譲 ×2、earlier `request_id=None`拒否、immediate `request_id==""`拒否）
+- Phase 128（chain）: Phase-155 compatible history委譲（earlier-empty step 2 + immediate-empty step 5 + immediate `request_id=None`、succeeded / failed）、multiple earlier empty（step 2・3）+ immediate empty/None委譲（succeeded / failed）、non-string predecessor `output_text`（`None` / `4`）拒否。`index<6`境界・request-ID policy非追加はdelegatesテスト内でinline検証し、独立collected caseは取らない
 
 ### Real-segment regression（+6 cases）
 
-新規test file（`tests/test_persisted_transition_outcome_classification_phase143_128_phase155_provenance_compatibility.py`、6 collected total）で、real chain + synthetic Phase 121 seamのdelegation（succeeded / failed）、実Phase 121の`terminal_contract` rejection reference（succeeded / failed）、earlier predecessor `request_id=None`のPhase 143拒否、immediate predecessor `request_id==""`のPhase 143拒否を検証する。
+新規test file（`tests/test_persisted_transition_outcome_classification_phase143_128_phase155_provenance_compatibility.py`、6 collected total）:
+
+- real chain + synthetic Phase 121 seamのdelegation（succeeded / failed）: 呼び出し前に public storage loader（`load_workflow_execution_history`）でpersisted state/historyを明示的にreloadし、earlier empty（step 2）・immediate empty（step 5）・immediate `request_id=None`を実データとしてassert、reloaded terminal state/historyをexpected success/failure outcome contractに照合する。実Phase 121の`terminal_contract` rejection referenceもこのdelegatesテスト内でinline実証する（追加collected caseは取らない）
+- multiple earlier empty predecessors（step 2・3）のdelegation（succeeded / failed）
+- earlier predecessor `request_id=None`のPhase 143拒否、immediate predecessor `request_id==""`のPhase 143拒否
 
 ### Collect invariant
 

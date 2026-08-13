@@ -25,6 +25,8 @@ from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -151,6 +153,62 @@ def setup(
     }
 
 
+def reload_and_assert_provenance(
+    values: dict[str, object], status: str, *, earlier_empty: tuple[int, ...] = (2,)
+) -> None:
+    """Explicitly reload persisted state/history via the public storage loader
+    and assert the Issue #330 Phase-155 provenance facts before invocation."""
+    loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"],  # type: ignore[arg-type]
+            values["events_path"],  # type: ignore[arg-type]
+        )
+    )
+    state, events = loaded.state, loaded.events
+    # Earlier empty predecessor output (step 2; steps 2,3 for the multiple case).
+    for position in earlier_empty:
+        assert events[position - 1].step_id == _STEP_IDS[position - 1]
+        assert events[position - 1].output_text == ""
+    # Immediate empty predecessor output (step 5).
+    assert events[4].step_id == "five"
+    assert events[4].output_text == ""
+    # Immediate predecessor request_id is None.
+    assert events[4].request_id is None
+    # Reloaded terminal state matches the expected outcome contract.
+    assert state.status == status
+    assert state.current_step_id == "six"
+    assert state.current_step_index == 6
+    assert state.current_employee_id == "s"
+    assert state.completed_step_ids == (
+        tuple(_STEP_IDS) if status == "succeeded" else tuple(_STEP_IDS[:5])
+    )
+    assert state.last_failure_category == (
+        None if status == "succeeded" else "api_error"
+    )
+    # Reloaded terminal event matches the expected outcome contract.
+    terminal = events[-1]
+    assert terminal.step_id == "six"
+    assert terminal.step_index == 6
+    assert terminal.employee_id == "s"
+    assert terminal.provider == "openai"
+    if status == "succeeded":
+        assert terminal.event_type == "step_succeeded"
+        assert terminal.next_status == "succeeded"
+        assert terminal.failure_category is None
+        assert terminal.response_id == "response-six"
+        assert terminal.request_id == "request-six"
+        assert terminal.output_text == "output-six"
+        assert terminal.message is None
+    else:
+        assert terminal.event_type == "step_failed"
+        assert terminal.next_status == "failed"
+        assert terminal.failure_category == "api_error"
+        assert terminal.response_id is None
+        assert terminal.request_id == "request-six"
+        assert terminal.output_text is None
+        assert terminal.message == "safe failure"
+
+
 def six_step_outcome(status: str) -> PersistedExecutionOutcome:
     return PersistedExecutionOutcome(
         "persisted_success" if status == "succeeded" else "persisted_failure",
@@ -224,6 +282,7 @@ def assert_chain_ok(
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
 def test_real_chain_synthetic_seam_delegates_once(tmp_path: Path, status: str) -> None:
     values = setup(tmp_path, status)
+    reload_and_assert_provenance(values, status)
     before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
     out, calls, handoffs, seam_values = run_chain(values, status)
     assert_chain_ok(values, out, calls, handoffs, seam_values)
@@ -253,6 +312,7 @@ def test_real_chain_multiple_earlier_empty_delegates_once(
     tmp_path: Path, status: str
 ) -> None:
     values = setup(tmp_path, status, earlier_empty=(2, 3))
+    reload_and_assert_provenance(values, status, earlier_empty=(2, 3))
     before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
     out, calls, handoffs, seam_values = run_chain(values, status)
     assert_chain_ok(values, out, calls, handoffs, seam_values)
