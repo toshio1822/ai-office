@@ -2382,3 +2382,114 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 - CLI / GUI behavior
 - 新しいrequest-ID/provider semantics
 - real network / provider / paid API / tool call
+
+## Phase 160: Complete Phase-155 Provenance Compatibility across Phase 57 → 50 → 43 → 36 → persistence
+
+Phase 160は、Phase 159で修復したセグメント（Phase 78 → 71 → 64）の次にある最後の遷移区間（**実Phase 57 → 実Phase 50 → 実Phase 43 → 実Phase 36 → 実Phase 30 persistence**）が、Phase-155 provenance runtime resultを正しく受け渡せるようにする**staged compatibility/correctness repair**です。新しいorchestration boundaryは追加しません。
+
+```text
+Phase 155 runtime result
+    ↓ explicit caller action
+Phase 142 → 134 → 127   (Phase 156 repaired)
+    ↓
+Phase 120 → 113 → 106   (Phase 157 repaired)
+    ↓
+Phase 99 → 92 → 85      (Phase 158 repaired)
+    ↓
+Phase 78 → 71 → 64      (Phase 159 repaired)
+    ↓
+Phase 57 → 50 → 43 → 36 → persistence
+    repaired to preserve Phase-155 empty-output provenance
+```
+
+Phase 155 / 156 / 157 / 158 / 159は現在、以下を同時に満たすrunning continuation provenanceを正しく生成・受理します。
+
+- `current_step_index >= 6`
+- succeeded predecessor `output_text`はexact built-in `str`（empty/non-empty）
+- earlier predecessor `request_id`はexact non-empty built-in `str`
+- immediate predecessor `request_id`は`None`またはexact non-empty built-in `str`
+- immediate predecessor providerはexact `"openai"`
+
+Phase 160は、この全ドメインを最後のtransition-persistence区間が保持できるよう、以下の2つのproduction boundaryだけを狭く修正します。
+
+### Production correction A — Phase 57 runtime route
+
+`src/ai_office/engine/executed_result_transition_persistence_phase_bridge_reentry.py`
+
+`_validate_running_history`内のsucceeded predecessor `output_text`に対するtruthiness/non-empty要件だけを除去します。
+
+- `type(event.output_text) is str`を維持し、`""`と非空を許容
+- `None`・non-stringは引き続きinvalid
+- `response_id`のexact non-empty built-in `str`要件を維持
+- 新しいrequest-ID/provider要件は導入せず、Phase 57の現在のrequest-ID/provider挙動を正確に維持
+- running-state/workflow/linkage validation・stop routes・Phase 50呼び出し方・persistence/compensation/safe-error挙動は変更なし
+
+### Production correction B — Phase 50 runtime route
+
+`src/ai_office/engine/executed_result_transition_persistence_bridge_reentry.py`
+
+`_validate_running_history`内に同じ狭いempty-output修正を適用します。
+
+- exact built-in `str`型要件を維持し、empty/non-emptyを許容
+- `None`・non-stringは引き続きinvalid
+- Phase 50の現在のrequest-ID/provider挙動を正確に維持
+- runtime-result linkage・stop routes・Phase 43呼び出し方・persistence/compensation/error挙動は変更なし
+
+Phase 43 / Phase 36 / Phase 30のproduction codeは変更しません。Phase 30は実際の`persist_executed_step_transition`がそのまま最終persistenceを行います。
+
+### Focused regression additions
+
+各focusedファイルにexactly 6 collected casesを追加しました（既存テストの削除・弱体化なし）。
+
+- Phase 57 focused（`..._persistence_phase_bridge_reentry.py`）: earlier/immediate/combined exact empty `output_text`がPhase 50へexactly once委譲、`None`/`123`/`True`はPhase 50より前にreject
+- Phase 50 focused（`..._persistence_bridge_reentry.py`）: 同じ6ケースをPhase 50→43境界で検証
+
+### Real lower-chain regression
+
+`tests/test_executed_result_transition_persistence_phase57_30_phase155_provenance_compatibility.py`（新規）で、**実Phase 57 → 実Phase 50 → 実Phase 43 → 実Phase 36 → 実Phase 30（実`persist_executed_step_transition`）**の6ケースを追加しました。
+
+- exact `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`、earlier-empty（step 2）+ immediate-empty（step 5）+ immediate-`request_id=None`の組み合わせが実persistenceまでexactly once到達
+- 複数earlier-empty + immediate-empty/`None`も実persistenceまでexactly once到達
+- earlier `output_text=None`、immediate `output_text=None`はPhase 57でPhase 50/43/36/30より前にreject（目的のprovenanceはraw JSONL reloadで明示的に検証）
+- 各handoffでcanonical four-argument identity/order保持、最終returnがexact `WorkflowExecutionPersistenceResult`であり、同一のstate/events targetsと正確なbyte countsを持つことを検証
+- 実persistence後のstate/eventsにempty-output provenanceが正しく反映されることをexplicit reloadで検証（successは`succeeded` state + `step_succeeded` event、failureは`failed` state + `step_failed` event、provider/response_id/request_id/output_text/messageのexact値を検証）
+
+### Collect invariant
+
+```text
+11,316 + 18 = 11,334
+```
+
+- Phase 57 focused: +6
+- Phase 50 focused: +6
+- real lower-chain regression: +6
+
+### 変更範囲（7ファイル）
+
+1. `src/ai_office/engine/executed_result_transition_persistence_phase_bridge_reentry.py` — Phase 57 narrow empty-output compatibility
+2. `src/ai_office/engine/executed_result_transition_persistence_bridge_reentry.py` — Phase 50 narrow empty-output compatibility
+3. `tests/test_executed_result_transition_persistence_phase_bridge_reentry.py` — +6 focused collected（helperはsentinelで`None`注入を修正）
+4. `tests/test_executed_result_transition_persistence_bridge_reentry.py` — +6 focused collected
+5. `tests/test_executed_result_transition_persistence_phase57_30_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
+6. `README.md` — Phase 160 documentation
+7. `docs/architecture.md` — Phase 160 architecture documentation
+
+### 変更しないもの
+
+- `src/ai_office/engine/__init__.py`（新しいpublic APIなし）
+- Phase 155 / 156 / 157 / 158 / 159 productionまたはそのregression
+- Phase 43 / Phase 36 / Phase 30 production code
+- Phase 143以降のclassification/progression boundary
+- `src/ai_office/engine/terminal_history_contract.py`
+- provider/runtime/storage generic modules
+
+### Phase 160は以下を行いません
+
+- 新しいpublic boundaryの追加
+- Phase 155 → 142の自動継続
+- Phase 143の呼び出し
+- outcome classification / workflow progression
+- retry / loop / schedule / parallel / finalize behavior
+- CLI / GUI behavior
+- 新しいrequest-ID/provider semantics
+- real network / provider / paid API / tool call

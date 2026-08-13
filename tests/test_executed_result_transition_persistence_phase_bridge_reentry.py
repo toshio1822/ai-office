@@ -1010,3 +1010,245 @@ def test_public_errors_do_not_expose_sensitive_details() -> None:
     )
     assert all(value not in str(error) for value in sensitive.split())
     assert all(value not in repr(error) for value in sensitive.split())
+
+
+# ---------------------------------------------------------------------------
+# Phase 160 (Issue #326): empty-output predecessor compatibility
+# ---------------------------------------------------------------------------
+
+_CHAIN_STEP_IDS = ("s1", "s2", "s3", "s4", "s5", "s6")
+_SENTINEL = object()
+
+
+def chain_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": step_id,
+                    "name": step_id.upper(),
+                    "employee": "e",
+                    "instructions": step_id,
+                }
+                for step_id in _CHAIN_STEP_IDS
+            ],
+        }
+    )
+
+
+def chain_success() -> StepRuntimeExecutionSuccess:
+    return StepRuntimeExecutionSuccess(
+        "w",
+        "s6",
+        6,
+        "e",
+        ModelInvocationSuccess("openai", "r", "q", "done", ("out",), "out"),
+    )
+
+
+def chain_failure() -> StepRuntimeExecutionFailure:
+    return StepRuntimeExecutionFailure(
+        "w",
+        "s6",
+        6,
+        "e",
+        ModelInvocationFailure("openai", "api_error", "safe", "q", 500, None, None),
+    )
+
+
+def chain_predecessor_event(
+    step_id: str, position: int, output_text: object, request_id: object
+) -> RuntimeStepEvent:
+    return RuntimeStepEvent(
+        "step_succeeded",
+        "w",
+        step_id,
+        position,
+        "e",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        f"response-{step_id}",
+        request_id,  # type: ignore[arg-type]
+        output_text,  # type: ignore[arg-type]
+        None,
+    )
+
+
+def chain_setup(
+    tmp_path: Path,
+    *,
+    empty_earlier: tuple[int, ...] = (),
+    immediate_empty: bool = False,
+    bad_output: object = _SENTINEL,
+    bad_position: int = 2,
+) -> tuple[Path, Path, bytes, bytes]:
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state = WorkflowExecutionState(
+        "w", "running", "s6", 6, "e", ("s1", "s2", "s3", "s4", "s5"), None
+    )
+    state_path.write_text(
+        serialize_workflow_execution_state_json(state), encoding="utf-8"
+    )
+    records = []
+    for position, step_id in enumerate(_CHAIN_STEP_IDS[:5], 1):
+        output: object = "output"
+        if position in empty_earlier or (position == 5 and immediate_empty):
+            output = ""
+        if bad_output is not _SENTINEL and position == bad_position:
+            output = bad_output
+        request_id: object = None if position == 5 else f"request-{step_id}"
+        records.append(
+            serialize_runtime_step_event_jsonl(
+                chain_predecessor_event(step_id, position, output, request_id)
+            )
+        )
+    events_path.write_text("".join(records), encoding="utf-8")
+    return state_path, events_path, state_path.read_bytes(), events_path.read_bytes()
+
+
+def chain_persist_fake(
+    result: object, _workflow: object, state: Path, events: Path
+) -> WorkflowExecutionPersistenceResult:
+    invocation = result.invocation_result  # type: ignore[union-attr]
+    ok = type(result) is StepRuntimeExecutionSuccess
+    next_state = WorkflowExecutionState(
+        "w",
+        "succeeded" if ok else "failed",
+        "s6",
+        6,
+        "e",
+        ("s1", "s2", "s3", "s4", "s5", "s6")
+        if ok
+        else ("s1", "s2", "s3", "s4", "s5"),
+        None if ok else invocation.category,
+    )
+    event = RuntimeStepEvent(
+        "step_succeeded" if ok else "step_failed",
+        "w",
+        "s6",
+        6,
+        "e",
+        "running",
+        next_state.status,
+        "openai",
+        None if ok else invocation.category,
+        invocation.response_id if ok else None,
+        invocation.request_id,
+        invocation.text if ok else None,
+        None if ok else invocation.message,
+    )
+    state_bytes = serialize_workflow_execution_state_json(next_state).encode("utf-8")
+    event_bytes = serialize_runtime_step_event_jsonl(event).encode("utf-8")
+    events.write_bytes(events.read_bytes() + event_bytes)
+    state.write_bytes(state_bytes)
+    return WorkflowExecutionPersistenceResult(
+        state, events, len(state_bytes), len(event_bytes)
+    )
+
+
+def test_earlier_empty_output_delegates_once_to_phase50(tmp_path: Path) -> None:
+    state, events, before_state, before_events = chain_setup(
+        tmp_path, empty_earlier=(2,)
+    )
+    result = chain_success()
+    supplied_workflow = chain_workflow()
+    calls: list[tuple[object, ...]] = []
+    expected: WorkflowExecutionPersistenceResult | None = None
+
+    def fake(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert args[0] is result and args[1] is supplied_workflow
+        assert args[2] is state and args[3] is events
+        expected = chain_persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    returned = route_executed_result_transition_persistence_phase_bridge_reentry(
+        result, supplied_workflow, state, events, phase50_function=fake
+    )
+    assert returned is expected and len(calls) == 1
+    assert (state.read_bytes(), events.read_bytes()) != (before_state, before_events)
+
+
+def test_immediate_empty_output_delegates_once_to_phase50(tmp_path: Path) -> None:
+    state, events, before_state, before_events = chain_setup(
+        tmp_path, immediate_empty=True
+    )
+    result = chain_failure()
+    supplied_workflow = chain_workflow()
+    calls: list[tuple[object, ...]] = []
+    expected: WorkflowExecutionPersistenceResult | None = None
+
+    def fake(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert args[0] is result and args[1] is supplied_workflow
+        assert args[2] is state and args[3] is events
+        expected = chain_persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    returned = route_executed_result_transition_persistence_phase_bridge_reentry(
+        result, supplied_workflow, state, events, phase50_function=fake
+    )
+    assert returned is expected and len(calls) == 1
+    assert (state.read_bytes(), events.read_bytes()) != (before_state, before_events)
+
+
+def test_combined_earlier_and_immediate_empty_outputs_delegate_once(
+    tmp_path: Path,
+) -> None:
+    state, events, before_state, before_events = chain_setup(
+        tmp_path, empty_earlier=(2, 3), immediate_empty=True
+    )
+    result = chain_success()
+    supplied_workflow = chain_workflow()
+    calls: list[tuple[object, ...]] = []
+    expected: WorkflowExecutionPersistenceResult | None = None
+
+    def fake(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        assert args[0] is result and args[1] is supplied_workflow
+        assert args[2] is state and args[3] is events
+        expected = chain_persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    returned = route_executed_result_transition_persistence_phase_bridge_reentry(
+        result, supplied_workflow, state, events, phase50_function=fake
+    )
+    assert returned is expected and len(calls) == 1
+    assert (state.read_bytes(), events.read_bytes()) != (before_state, before_events)
+
+
+@pytest.mark.parametrize("bad", [None, 123, True])
+def test_bad_predecessor_output_text_rejected_before_phase50(
+    tmp_path: Path, bad: object
+) -> None:
+    state, events, before_state, before_events = chain_setup(
+        tmp_path, bad_output=bad
+    )
+    calls = 0
+
+    def unexpected(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(
+        ExecutedResultTransitionPersistencePhaseBridgeCompatibilityError
+    ) as caught:
+        route_executed_result_transition_persistence_phase_bridge_reentry(
+            chain_success(),
+            chain_workflow(),
+            state,
+            events,
+            phase50_function=unexpected,
+        )
+    assert caught.value.detail.classification == "runtime_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
