@@ -61,6 +61,155 @@ def _failure() -> PersistedExecutionOutcome:
     return PersistedExecutionOutcome("persisted_failure", "w", "one", 1, "a", "api_error")
 
 
+_SIX_STEP_IDS = ("one", "two", "three", "four", "five", "six")
+_BAD_SENTINEL = object()
+
+
+def _setup_phase155(
+    tmp_path: Path,
+    status: str,
+    *,
+    step_index: int = 6,
+    terminal_output: str = "output-six",
+    earlier_empty: tuple[int, ...] = (2,),
+    bad_predecessor_output: object = _BAD_SENTINEL,
+    failed_message: str = "safe failure",
+):
+    workflow = WorkflowDefinition.model_validate(
+        {"id": "w", "name": "W", "description": "D", "steps": [
+            {"id": step_id, "name": step_id.capitalize(), "employee": step_id[0], "instructions": step_id}
+            for step_id in _SIX_STEP_IDS
+        ]}
+    )
+    completed = tuple(_SIX_STEP_IDS) if status == "succeeded" else tuple(_SIX_STEP_IDS[: step_index - 1])
+    current_step_id = _SIX_STEP_IDS[step_index - 1]
+    state_model = WorkflowExecutionState(
+        "w", status, current_step_id, step_index, current_step_id[0], completed,
+        None if status == "succeeded" else "api_error",
+    )
+    events = [
+        RuntimeStepEvent("step_succeeded", "w", step_id, position, step_id[0], "running", "succeeded",
+                         "other", None, f"response-{step_id}", f"request-{step_id}",
+                         "" if position in earlier_empty else "output", None)
+        for position, step_id in enumerate(_SIX_STEP_IDS[: step_index - 1], 1)
+    ]
+    if step_index > 1:
+        immediate = step_index - 1
+        events[immediate - 1] = RuntimeStepEvent(
+            "step_succeeded", "w", _SIX_STEP_IDS[immediate - 1], immediate,
+            _SIX_STEP_IDS[immediate - 1][0], "running", "succeeded",
+            "openai", None, f"response-{_SIX_STEP_IDS[immediate - 1]}", None, "", None)
+    if status == "succeeded":
+        events.append(RuntimeStepEvent("step_succeeded", "w", current_step_id, step_index, current_step_id[0],
+                                       "running", "succeeded", "openai", None, f"response-{current_step_id}",
+                                       f"request-{current_step_id}", terminal_output, None))
+    else:
+        events.append(RuntimeStepEvent("step_failed", "w", current_step_id, step_index, current_step_id[0],
+                                       "running", "failed", "openai", "api_error", None,
+                                       f"request-{current_step_id}", None, failed_message))
+    state_bytes = serialize_workflow_execution_state_json(state_model).encode()
+    event_bytes = "".join(serialize_runtime_step_event_jsonl(event) for event in events).encode()
+    if bad_predecessor_output is not _BAD_SENTINEL:
+        lines = event_bytes.decode().splitlines()
+        payload = json.loads(lines[0])
+        payload["output_text"] = bad_predecessor_output
+        lines[0] = json.dumps(payload, separators=(",", ":"))
+        event_bytes = ("\n".join(lines) + "\n").encode()
+    state, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    result = WorkflowExecutionPersistenceResult(
+        state, events_path, len(state_bytes), len(serialize_runtime_step_event_jsonl(events[-1]).encode())
+    )
+    return state, events_path, result, workflow, state_bytes, event_bytes
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_phase155_six_step_history_fallback_accepts_and_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    # failed_message="" pins strict-contract semantics in the fallback
+    # (isinstance(str), empty allowed); a non-empty strengthening would regress.
+    state, events, result, workflow, before_state, before_events = _setup_phase155(
+        tmp_path, status, failed_message=""
+    )
+    expected = PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure",
+        "w", "six", 6, "s", None if status == "succeeded" else "api_error",
+    )
+    calls: list[tuple[object, ...]] = []
+    def seam(*args: object) -> object:
+        calls.append(args)
+        return expected
+    returned = route_persisted_transition_outcome_classification_cycle_continuation_boundary(
+        result, workflow, state, events, phase100_function=seam
+    )
+    assert returned is expected
+    assert calls == [(result, workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_fallback_rejects_none_predecessor_output_before_phase100(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = _setup_phase155(
+        tmp_path, "succeeded", bad_predecessor_output=None
+    )
+    calls = 0
+    def seam(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+    with pytest.raises(PersistedTransitionOutcomeClassificationCycleContinuationCompatibilityError) as caught:
+        route_persisted_transition_outcome_classification_cycle_continuation_boundary(
+            result, workflow, state, events, phase100_function=seam
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    # Rejected cases leave both persistence targets byte-for-byte unchanged.
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_fallback_rejects_non_string_predecessor_output_before_phase100(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = _setup_phase155(
+        tmp_path, "succeeded", bad_predecessor_output=1
+    )
+    calls = 0
+    def seam(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+    with pytest.raises(PersistedTransitionOutcomeClassificationCycleContinuationCompatibilityError) as caught:
+        route_persisted_transition_outcome_classification_cycle_continuation_boundary(
+            result, workflow, state, events, phase100_function=seam
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    # Rejected cases leave both persistence targets byte-for-byte unchanged.
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_phase155_fallback_multiple_earlier_empty_accepts_and_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    state, events, result, workflow, before_state, before_events = _setup_phase155(
+        tmp_path, status, earlier_empty=(2, 3)
+    )
+    expected = PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure",
+        "w", "six", 6, "s", None if status == "succeeded" else "api_error",
+    )
+    calls: list[tuple[object, ...]] = []
+    def seam(*args: object) -> object:
+        calls.append(args)
+        return expected
+    returned = route_persisted_transition_outcome_classification_cycle_continuation_boundary(
+        result, workflow, state, events, phase100_function=seam
+    )
+    assert returned is expected
+    assert calls == [(result, workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
 def test_public_signature_and_default_identity() -> None:
     signature = inspect.signature(route_persisted_transition_outcome_classification_cycle_continuation_boundary)
     parameters = list(signature.parameters.values())

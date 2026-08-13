@@ -2669,3 +2669,96 @@ Phase 143 / 135 / 128の既存test moduleへ各**+6 cases**を追加します。
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - エラー分類・quality feedback literal・provider / request-ID semantics
 - 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
+
+## Phase 163: Repair Phase-155 Provenance Compatibility across Phase 121 → 114 → 107 Outcome-Classification Segment
+
+Phase 163は、outcome-classification segment（**実Phase 121 → 実Phase 114 → 実Phase 107 → Phase 100**）がPhase-155 provenance persisted transitionを正しく受け渡せるようにする**staged compatibility repair**です。Phase 162で修復したPhase 143 → 135 → 128セグメントの直後にあるclassification segmentで、`load_strict_terminal_history` がPhase-155 provenance history（`current_step_index >= 6`、predecessorの空`output_text`）を拒否する場合にのみ、public `load_workflow_execution_history` + 限定されたPhase-155互換検証へフォールバックします。
+
+```text
+Phase 121 (cycle handoff reentry, final dependency: Phase 114)
+    ↓ Phase 114 (cycle reentry, final dependency: Phase 107)
+    ↓ Phase 107 (cycle, final dependency: Phase 100)
+Phase 100 (strict seam: Phase-155 provenance history は terminal_contract で拒否のまま)
+```
+
+### 互換性フォールバック（Phase 121 / 114 / 107 共通）
+
+- `load_strict_terminal_history` が失敗した場合のみ、public `load_workflow_execution_history`（`WorkflowExecutionPersistenceTargets`）でreloadし、`_valid_phase155_compatible_history` を実行
+- `current_step_index >= 6` のexact built-in `int` のみ許可（`< 6` は拒否）
+- predecessorの`output_text`はexact built-in `str`（空文字含む）のみ許可（`None` / non-stringは拒否）
+- provider / request-ID policyは追加しない（Phase 155 provenanceの `provider="other"`・`request_id=None` を許容）
+- terminal event semanticsはstrictのallow-empty-success-output ruleを維持（最終stepのsucceeded空outputは拒否）
+- 無効ケースはdownstream dependency call count **zero**とし、分類文字列`terminal_contract`を正確に使用
+- 有効な委譲ではcanonical four-argument delegation、dependency exactly-once、returned outcomeのexact identity、targetsのbyte-for-byte unchanged、retryなしを検証
+
+### Phase 162 regression保守（10ファイル目、scope amendment 2026-08-13承認）
+
+- `tests/test_persisted_transition_outcome_classification_phase143_128_phase155_provenance_compatibility.py` の`test_real_chain_synthetic_seam_delegates_once`にあるstale next-seam proofを更新（assertion/import-only、collected case増加なし）
+- (a) **実Phase 121受理の証明**: 同一persisted historyを実`route_persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary(...)`に渡し、最終依存Phase 114を決定論的test seam（contract-validな`PersistedExecutionOutcome`を返す）に置換。canonical four-argument identity/order、Phase 114 seam呼び出しちょうど1回、返り値の同一性（`out is` seam返値）、no retry、targets byte-for-byte不変をassert
+- (b) **実Phase 100拒否の証明**: 同一persisted historyを実`route_persisted_outcome_classification_dispatch_continuation_boundary(...)`に直接渡し、`PersistedOutcomeClassificationDispatchContinuationCompatibilityError`＋`terminal_contract`をassert。Phase 93呼び出し0回、targets不変
+- Phase 162 productionは不変、`terminal_history_contract.py`・Phase 100 productionは不変
+
+### Focused regression（+18 cases）
+
+Phase 121 / 114 / 107の既存test moduleへ各**+6 cases**を追加します（fixtureはexact Phase-155 provenance: earlier predecessorは`provider="other"`・`request_id=request-{step_id}`（非空）、immediate predecessor（step 5）は`provider="openai"`・`request_id=None`・空`output_text`）。
+
+- Phase 121（cycle handoff reentry）: Phase-155 six-step historyフォールバック受理（earlier empty step 2 + immediate empty step 5 + immediate `request_id=None`、succeeded / failed、failed委譲は `message=""` でも成功＝strict contract と同一の `isinstance(str)` 意味・non-empty 強化なし、Phase 114 seam exactly-once・identity・targets不変）、multiple earlier empty predecessors（step 2・3空）+ immediate empty/None委譲（succeeded / failed）、earlier predecessor `output_text=None`拒否（`terminal_contract`・Phase 114未呼び出し・state/events byte-for-byte不変）、predecessor `output_text` non-string拒否（同上・targets不変）
+- Phase 114（cycle reentry）: 同上のboundaryを`phase107_function` seamで検証
+- Phase 107（cycle）: 同上のboundaryを`phase100_function` seamで検証
+
+### Real-segment regression（+6 cases）
+
+新規test file（`tests/test_persisted_transition_outcome_classification_phase121_107_phase155_provenance_compatibility.py`、**6 collected total**）:
+
+- **実Phase 121 → 実Phase 114 → 実Phase 107 → synthetic Phase 100 seam**のreal chain（succeeded / failed）: 呼び出し前に public storage loader（`load_workflow_execution_history`）でpersisted state/historyを明示的にreloadし、earlier empty（step 2）・immediate empty（step 5）・immediate `request_id=None`・non-`"openai"` providerを実データとしてassert、reloaded terminal state/historyをexpected success/failure outcome contractに照合。dependency call count `{phase121: 1, phase114: 1, phase107: 1, seam: 1}`、canonical four-argument order・同一identity・exactly once委譲、returned outcomeのexact identity、両target byte-for-byte不変、retryなしを検証
+- multiple earlier empty predecessors（step 2・3）のdelegation（succeeded / failed）
+- **Phase 100 next-seam reference**（delegatesテスト内にinline、追加collected caseなし）: 同一persisted historyを実Phase 100に直接渡すと`PersistedOutcomeClassificationDispatchContinuationCompatibilityError`・分類`terminal_contract`で拒否、Phase 93呼び出し0回、targets不変
+- predecessor `output_text=None` / non-string（`1`）のPhase 121拒否（`terminal_contract`・downstream未呼び出し・targets不変）: 2 negativeとも変異前に public loader で intact provenance（earlier request IDs non-empty・immediate step 5 `request_id=None`・terminal state/history）を明示reload/assertしてから、`None` 変異は step 2 の `request_id` を non-empty（`request-two`）維持のまま `output_text` のみ None に、non-string 変異は **immediate predecessor（step 5）** の `output_text` のみ `1` に変更（step 2 earlier empty・step 5 の `request_id=None`・provider `"openai"` 維持）して呼び出す
+
+### Collect invariant
+
+```text
+11,540 + 24 = 11,564
+```
+
+- Phase 121 test module: **+6 cases**
+- Phase 114 test module: **+6 cases**
+- Phase 107 test module: **+6 cases**
+- Phase 163 real-segment test file: **+6 cases**
+- Phase 162 regression保守: **+0 cases**（assertion/import-only）
+
+### 変更範囲（10ファイル、scope amendment 2026-08-13で9→10に承認）
+
+1. `src/ai_office/engine/persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary.py` — Phase 121 production修正A（フォールバック追加）
+2. `src/ai_office/engine/persisted_transition_outcome_classification_cycle_reentry_continuation_boundary.py` — Phase 114 production修正B（フォールバック追加）
+3. `src/ai_office/engine/persisted_transition_outcome_classification_cycle_continuation_boundary.py` — Phase 107 production修正C（フォールバック追加）
+4. `tests/test_persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary.py` — Phase 121 regression +6
+5. `tests/test_persisted_transition_outcome_classification_cycle_reentry_continuation_boundary.py` — Phase 114 regression +6
+6. `tests/test_persisted_transition_outcome_classification_cycle_continuation_boundary.py` — Phase 107 regression +6
+7. `tests/test_persisted_transition_outcome_classification_phase121_107_phase155_provenance_compatibility.py` — 新規 real-segment regression（6 cases）
+8. `tests/test_persisted_transition_outcome_classification_phase143_128_phase155_provenance_compatibility.py` — Phase 162 regression保守（next-seam proofをPhase 100へ更新、assertion/import-only、+0 cases）
+9. `README.md` — Phase 163 documentation
+10. `docs/architecture.md` — Phase 163 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 163は以下のbehaviorを**一切**追加・変更しない:
+
+- 新しいpublic boundary（新規public関数・新規ルーティング・新規API）を追加しない
+- 自動継続（automatic continuation）は行わない
+- Phase 144 progression call（`decide_workflow_progression` 系の呼び出し）は行わない
+- workflow progression・next-step preparation・start は行わない
+- provider / tool 実行は行わない
+- retry・loop・schedule・parallel・finalize は行わない
+- CLI・GUI behavior は追加・変更しない
+- 共有 `terminal_history_contract.py` の意味を広げない（strict contract は不変）
+- 新しい request-ID / provider semantics を導入しない（Phase 155 provenance の `request_id=None`・`provider="other"` を許容するだけ）
+
+### 変更しないもの
+
+- Phase 162 production module（`persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary.py` ほか）
+- `src/ai_office/engine/terminal_history_contract.py`
+- Phase 100 production module（`persisted_outcome_classification_dispatch_continuation_boundary.py`）
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- エラー分類・quality feedback literal・provider / request-ID semantics
+- 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
