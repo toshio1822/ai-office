@@ -2583,3 +2583,89 @@ Phase 161は新しいcompatibility correctionを行いません。Phase 142以�
 - 次のstepのprepare/start、provider/tool実行、retry / loop / schedule / parallel / finalize
 - Phase 155の再呼び出し・他dependency経由のrouting・private/underscore validation helperの参照
 - CLI / GUI behavior、real network / provider / paid API / tool call
+
+## Phase 162: Repair Phase-155 Provenance Compatibility across Phase 143 → 135 → 128 Outcome-Classification Segment
+
+Phase 162は、outcome-classification segment（**実Phase 143 → 実Phase 135 → 実Phase 128 → Phase 121**）がPhase-155 provenance persisted transitionを受け渡せるようにする**staged compatibility repair**です。Phase 156–161が修復・証明したruntime-result persistence chainの直後に存在するclassification segmentで、Phase-155 compatible history（`current_step_index >= 6`）を正しく受理・委譲しつつ、predecessorのrequest-ID / provider policyを追加しないことを保証します。
+
+```text
+Phase 143 (outer bridge, immediate predecessor: request_id=None + provider=="openai")
+    ↓ Phase 135 (bridge, immediate predecessor: request_id=None + provider=="openai")
+    ↓ Phase 128 (chain, Phase-155 compatible history: current_step_index >= 6)
+Phase 121 (synthetic seam delegation / real Phase 121 terminal_contract rejection)
+```
+
+Phase 162は新規orchestration boundaryを追加せず、既存のpublic route 3つ（Phase 143 / 135 / 128）の`_valid_history` / `_valid_predecessor` / `_valid_phase155_compatible_history`を狭く修正します。Phase 121 production moduleと`terminal_history_contract.py`は変更しません。
+
+### 互換性境界（Phase 143 / 135）
+
+- immediate predecessorの`request_id`は`None`またはexact non-empty built-in `str`を許可し、providerはexact `"openai"`を要求
+- earlier predecessorの`request_id=None`とimmediate predecessorの`request_id==""`は拒否
+- predecessorの`output_text`はexact built-in `str`（空文字含む）のみ許可（`None` / non-stringは拒否）
+- 無効ケースはdownstream dependency call count **zero**とし、分類文字列は`persistence_contract` / `outcome_contract` / `terminal_contract` / `dependency_error`を正確に使用
+
+### 互換性境界（Phase 128）
+
+- `current_step_index >= 6`のPhase-155 compatible history（6-step）を追加受理
+- predecessorの`request_id` / provider policyは追加しない（Phase 143/135の境界が保持）
+- terminal event semanticsはshared validator（`_valid_terminal_event`）を継承
+- 有効な委譲ではcanonical four-argument delegation、dependency exactly-once、returned outcomeのexact identity、targetsのbyte-for-byte unchanged、retryなしを検証
+
+### 実チェーン委譲（synthetic Phase 121 seam）
+
+- **実Phase 143 → 実Phase 135 → 実Phase 128**のreal chainにsynthetic Phase 121 seamを注入
+- 呼び出し前に public storage loader（`load_workflow_execution_history`）でpersisted state/historyを明示的にreloadし、Issue #330指定のearlier empty predecessor（step 2）・immediate empty predecessor（step 5）・immediate predecessor `request_id=None`を**実データとして**assert
+- reloaded terminal state/historyはexpected success/failure outcome contractと一致することをassert
+- `succeeded` / `failed`の両ケースでcanonical four-argument order・同一identity・exactly once委譲、dependency call count `{phase143: 1, phase135: 1, phase128: 1, seam: 1}`、returned outcomeのexact identity、両target byte-for-byte不変、retryなしを検証
+
+### 実Phase 121 rejection reference（delegatesテスト内にinline）
+
+- 上記delegatesテスト内で、実Phase 121ルートを`phase121_function`として渡すと、Phase-155 provenance historyは`PersistedTransitionOutcomeClassificationCycleHandoffReentryContinuationCompatibilityError`・分類`terminal_contract`でrejectされるreferenceを`succeeded` / `failed`両ケースで固定（追加のcollected caseは取らない）
+- 両targetはbyte-for-byte不変
+
+### Focused regression（+18 cases）
+
+Phase 143 / 135 / 128の既存test moduleへ各**+6 cases**を追加します。
+
+- Phase 143（outer bridge）: immediate predecessor `request_id=None` + empty `output_text`委譲（succeeded / failed）、immediate predecessor `request_id=None` + non-empty `output_text`委譲（succeeded / failed）、earlier predecessor `request_id=None`拒否（Phase 135へ委譲しない）、immediate predecessor `request_id==""`拒否
+- Phase 135（bridge）: 同上のboundaryをPhase 135入口で検証（immediate `request_id=None` + empty / non-empty `output_text`委譲 ×2、earlier `request_id=None`拒否、immediate `request_id==""`拒否）
+- Phase 128（chain）: Phase-155 compatible history委譲（earlier-empty step 2 + immediate-empty step 5 + immediate `request_id=None`、succeeded / failed）、multiple earlier empty（step 2・3）+ immediate empty/None委譲（succeeded / failed）、non-string predecessor `output_text`（`None` / `4`）拒否。`index<6`境界・request-ID policy非追加はdelegatesテスト内でinline検証（独立collected caseは取らない）
+
+### Real-segment regression（+6 cases）
+
+新規test file（`tests/test_persisted_transition_outcome_classification_phase143_128_phase155_provenance_compatibility.py`、**6 collected total**）:
+
+- real chain + synthetic Phase 121 seamのdelegation（succeeded / failed）: 呼び出し前に public storage loader（`load_workflow_execution_history`）でpersisted state/historyを明示的にreloadし、earlier empty（step 2）・immediate empty（step 5）・immediate `request_id=None`を実データとしてassert、reloaded terminal state/historyをexpected success/failure outcome contractに照合。実Phase 121の`terminal_contract` rejection referenceもこのdelegatesテスト内でinline実証（追加collected caseは取らない）
+- multiple earlier empty predecessors（step 2・3）のdelegation（succeeded / failed）
+- earlier predecessor `request_id=None`のPhase 143拒否、immediate predecessor `request_id==""`のPhase 143拒否
+
+### Collect invariant
+
+```text
+11,516 + 24 = 11,540
+```
+
+- Phase 143 test module: **+6 cases**
+- Phase 135 test module: **+6 cases**
+- Phase 128 test module: **+6 cases**
+- Phase 162 real-segment test file: **+6 cases**
+
+### 変更範囲（9ファイル）
+
+1. `src/ai_office/engine/persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 143 boundary修正
+2. `src/ai_office/engine/persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 135 boundary修正
+3. `src/ai_office/engine/persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary.py` — Phase 128 boundary修正（Phase-155 compatible history受理）
+4. `tests/test_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 143 regression +6
+5. `tests/test_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 135 regression +6
+6. `tests/test_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary.py` — Phase 128 regression +6
+7. `tests/test_persisted_transition_outcome_classification_phase143_128_phase155_provenance_compatibility.py` — 新規 real-segment regression（6 cases）
+8. `README.md` — Phase 162 documentation
+9. `docs/architecture.md` — Phase 162 architecture documentation
+
+### 変更しないもの
+
+- Phase 121 production module（`persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary.py`）
+- `src/ai_office/engine/terminal_history_contract.py`
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- エラー分類・quality feedback literal・provider / request-ID semantics
+- 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior

@@ -1026,10 +1026,88 @@ def test_predecessor_empty_output_text_still_requires_response_id(tmp_path: Path
     reject(data, "persistence_contract")
 
 
-@pytest.mark.parametrize("request_id", ["", None])
+@pytest.mark.parametrize("request_id", [None, ""])
 def test_predecessor_empty_output_text_still_requires_request_id(tmp_path: Path, request_id: object) -> None:
     data = values(tmp_path)
     _replace_predecessor(data, 3, predecessor_event("three", 3, "c", "openai", output_text="", request_id=request_id))
+    if request_id is None:
+        expected = expected_outcome()
+        calls: list[tuple[object, ...]] = []
+
+        def dependency(*args: object) -> object:
+            calls.append(args)
+            return expected
+
+        assert call(data, dependency) is expected
+        assert calls == [
+            (data["result"], data["workflow"], data["state_path"], data["events_path"])
+        ]
+        assert_unchanged(data)
+    else:
+        reject(data, "persistence_contract")
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_immediate_predecessor_none_request_id_empty_output_delegates(
+    tmp_path: Path, status: str
+) -> None:
+    data = values(tmp_path, status)
+    _replace_predecessor(
+        data, 3, predecessor_event("three", 3, "c", "openai", output_text="", request_id=None)
+    )
+    expected = expected_outcome(status)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    assert call(data, dependency) is expected
+    assert calls == [
+        (data["result"], data["workflow"], data["state_path"], data["events_path"])
+    ]
+    assert_unchanged(data)
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_immediate_predecessor_none_request_id_nonempty_output_delegates(
+    tmp_path: Path, status: str
+) -> None:
+    data = values(tmp_path, status)
+    _replace_predecessor(
+        data, 3, predecessor_event("three", 3, "c", "openai", request_id=None)
+    )
+    expected = expected_outcome(status)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    assert call(data, dependency) is expected
+    assert calls == [
+        (data["result"], data["workflow"], data["state_path"], data["events_path"])
+    ]
+    assert_unchanged(data)
+
+
+def test_earlier_predecessor_none_request_id_is_rejected_before_phase128(
+    tmp_path: Path,
+) -> None:
+    data = values(tmp_path)
+    _replace_predecessor(
+        data,
+        2,
+        predecessor_event("two", 2, "b", "openai", request_id=None),
+    )
+    reject(data, "persistence_contract")
+
+
+def test_immediate_predecessor_empty_request_id_is_rejected(tmp_path: Path) -> None:
+    data = values(tmp_path)
+    _replace_predecessor(
+        data, 3, predecessor_event("three", 3, "c", "openai", request_id="")
+    )
     reject(data, "persistence_contract")
 
 

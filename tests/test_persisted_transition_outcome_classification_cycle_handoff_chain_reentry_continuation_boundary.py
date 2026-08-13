@@ -126,6 +126,148 @@ def setup(
     return state_path, events_path, result, supplied_workflow, state_bytes, event_bytes
 
 
+def six_step_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "a", "instructions": "one"},
+                {"id": "two", "name": "Two", "employee": "b", "instructions": "two"},
+                {"id": "three", "name": "Three", "employee": "c", "instructions": "three"},
+                {"id": "four", "name": "Four", "employee": "d", "instructions": "four"},
+                {"id": "five", "name": "Five", "employee": "e", "instructions": "five"},
+                {"id": "six", "name": "Six", "employee": "f", "instructions": "six"},
+            ],
+        }
+    )
+
+
+_MISSING = object()
+
+
+def six_step_persisted(
+    tmp_path: Path,
+    status: str,
+    *,
+    index: int = 6,
+    predecessor_position: int | None = None,
+    predecessor_output: object = _MISSING,
+    predecessor_request_id: object = _MISSING,
+    terminal_output: object = _MISSING,
+    predecessor_overrides: dict[int, dict[str, object]] | None = None,
+) -> tuple[Path, Path, WorkflowExecutionPersistenceResult, WorkflowDefinition, bytes, bytes]:
+    supplied_workflow = six_step_workflow()
+    current = supplied_workflow.steps[index - 1]
+    failure_category = None if status == "succeeded" else "api_error"
+    completed = tuple(
+        step.id
+        for step in supplied_workflow.steps[
+            : index if status == "succeeded" else index - 1
+        ]
+    )
+    state_model = WorkflowExecutionState(
+        "w",
+        status,
+        current.id,
+        index,
+        current.employee,
+        completed,
+        failure_category,
+    )
+    events: list[RuntimeStepEvent] = []
+    for position, step in enumerate(supplied_workflow.steps[: index - 1], 1):
+        override = predecessor_position is not None and position == predecessor_position
+        output = (
+            f"output-{step.id}"
+            if predecessor_output is _MISSING or not override
+            else predecessor_output
+        )
+        request_id = (
+            f"request-{step.id}"
+            if predecessor_request_id is _MISSING or not override
+            else predecessor_request_id
+        )
+        if predecessor_overrides is not None and position in predecessor_overrides:
+            changes = predecessor_overrides[position]
+            output = changes.get("output_text", output)
+            request_id = changes.get("request_id", request_id)
+        events.append(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "w",
+                step.id,
+                position,
+                step.employee,
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                f"response-{step.id}",
+                request_id,
+                output,
+                None,
+            )
+        )
+    if status == "succeeded":
+        terminal = RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            current.id,
+            index,
+            current.employee,
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response-six",
+            "request-six",
+            "output-six" if terminal_output is _MISSING else terminal_output,
+            None,
+        )
+    else:
+        terminal = RuntimeStepEvent(
+            "step_failed",
+            "w",
+            current.id,
+            index,
+            current.employee,
+            "running",
+            "failed",
+            "openai",
+            "api_error",
+            None,
+            "request-six",
+            None,
+            "safe failure",
+        )
+    events.append(terminal)
+    state_bytes = serialize_workflow_execution_state_json(state_model).encode("utf-8")
+    event_bytes = "".join(
+        serialize_runtime_step_event_jsonl(event) for event in events
+    ).encode("utf-8")
+    terminal_bytes = serialize_runtime_step_event_jsonl(terminal).encode("utf-8")
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    result = WorkflowExecutionPersistenceResult(
+        state_path, events_path, len(state_bytes), len(terminal_bytes)
+    )
+    return state_path, events_path, result, supplied_workflow, state_bytes, event_bytes
+
+
+def six_step_outcome(status: str) -> PersistedExecutionOutcome:
+    return PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure",
+        "w",
+        "six",
+        6,
+        "f",
+        None if status == "succeeded" else "api_error",
+    )
+
+
 def completion() -> WorkflowProgressionDecision:
     return WorkflowProgressionDecision(
         "workflow_complete", "w", "four", 4, "d", None, None, None, "last_step_succeeded"
@@ -888,3 +1030,92 @@ def test_empty_success_fallback_preserves_workflow_current_step_linkage(
     assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == before
     assert (before_state, before_events) != before
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_phase155_compatible_six_step_history_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    state, events, result, supplied_workflow, before_state, before_events = six_step_persisted(
+        tmp_path,
+        status,
+        predecessor_overrides={
+            2: {"output_text": ""},
+            5: {"output_text": "", "request_id": None},
+        },
+    )
+    expected = six_step_outcome(status)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    assert call(result, supplied_workflow, state, events, dependency) is expected
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    # Inline bound: continuation index below 6 is not silently broadened.
+    below_dir = tmp_path / "below"
+    below_dir.mkdir()
+    below_state, below_events, below_result, below_workflow, _, _ = six_step_persisted(
+        below_dir, "failed", index=5, predecessor_position=4, predecessor_output=""
+    )
+    below_before = below_state.read_bytes(), below_events.read_bytes()
+    below_calls = 0
+
+    def below_dependency(*_: object) -> object:
+        nonlocal below_calls
+        below_calls += 1
+        return six_step_outcome("failed")
+
+    assert_rejected(
+        below_result, below_workflow, below_state, below_events,
+        "terminal_contract", below_dependency,
+    )
+    assert below_calls == 0
+    assert (below_state.read_bytes(), below_events.read_bytes()) == below_before
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_phase155_compatible_multiple_earlier_empty_history_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    state, events, result, supplied_workflow, before_state, before_events = six_step_persisted(
+        tmp_path,
+        status,
+        predecessor_overrides={
+            2: {"output_text": ""},
+            3: {"output_text": ""},
+            5: {"output_text": "", "request_id": None},
+        },
+    )
+    expected = six_step_outcome(status)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    assert call(result, supplied_workflow, state, events, dependency) is expected
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+@pytest.mark.parametrize("output", [None, 4])
+def test_phase155_compatible_history_non_string_predecessor_output_is_rejected(
+    tmp_path: Path, output: object
+) -> None:
+    state, events, result, supplied_workflow, before_state, before_events = six_step_persisted(
+        tmp_path, "succeeded", predecessor_position=4, predecessor_output=output
+    )
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return six_step_outcome("succeeded")
+
+    assert_rejected(result, supplied_workflow, state, events, "terminal_contract", dependency)
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
