@@ -2702,7 +2702,7 @@ Phase 100 (strict seam: Phase-155 provenance history は terminal_contract で�
 
 Phase 121 / 114 / 107の既存test moduleへ各**+6 cases**を追加します（fixtureはexact Phase-155 provenance: earlier predecessorは`provider="other"`・`request_id=request-{step_id}`（非空）、immediate predecessor（step 5）は`provider="openai"`・`request_id=None`・空`output_text`）。
 
-- Phase 121（cycle handoff reentry）: Phase-155 six-step historyフォールバック受理（earlier empty step 2 + immediate empty step 5 + immediate `request_id=None`、succeeded / failed、Phase 114 seam exactly-once・identity・targets不変）、multiple earlier empty predecessors（step 2・3空）+ immediate empty/None委譲（succeeded / failed）、earlier predecessor `output_text=None`拒否（`terminal_contract`・Phase 114未呼び出し）、predecessor `output_text` non-string拒否
+- Phase 121（cycle handoff reentry）: Phase-155 six-step historyフォールバック受理（earlier empty step 2 + immediate empty step 5 + immediate `request_id=None`、succeeded / failed、failed委譲は `message=""` でも成功＝strict contract と同一の `isinstance(str)` 意味・non-empty 強化なし、Phase 114 seam exactly-once・identity・targets不変）、multiple earlier empty predecessors（step 2・3空）+ immediate empty/None委譲（succeeded / failed）、earlier predecessor `output_text=None`拒否（`terminal_contract`・Phase 114未呼び出し・state/events byte-for-byte不変）、predecessor `output_text` non-string拒否（同上・targets不変）
 - Phase 114（cycle reentry）: 同上のboundaryを`phase107_function` seamで検証
 - Phase 107（cycle）: 同上のboundaryを`phase100_function` seamで検証
 
@@ -2713,7 +2713,7 @@ Phase 121 / 114 / 107の既存test moduleへ各**+6 cases**を追加します（
 - **実Phase 121 → 実Phase 114 → 実Phase 107 → synthetic Phase 100 seam**のreal chain（succeeded / failed）: 呼び出し前に public storage loader（`load_workflow_execution_history`）でpersisted state/historyを明示的にreloadし、earlier empty（step 2）・immediate empty（step 5）・immediate `request_id=None`・non-`"openai"` providerを実データとしてassert、reloaded terminal state/historyをexpected success/failure outcome contractに照合。dependency call count `{phase121: 1, phase114: 1, phase107: 1, seam: 1}`、canonical four-argument order・同一identity・exactly once委譲、returned outcomeのexact identity、両target byte-for-byte不変、retryなしを検証
 - multiple earlier empty predecessors（step 2・3）のdelegation（succeeded / failed）
 - **Phase 100 next-seam reference**（delegatesテスト内にinline、追加collected caseなし）: 同一persisted historyを実Phase 100に直接渡すと`PersistedOutcomeClassificationDispatchContinuationCompatibilityError`・分類`terminal_contract`で拒否、Phase 93呼び出し0回、targets不変
-- predecessor `output_text=None` / non-string（`1`）のPhase 121拒否（`terminal_contract`・downstream未呼び出し・targets不変）
+- predecessor `output_text=None` / non-string（`1`）のPhase 121拒否（`terminal_contract`・downstream未呼び出し・targets不変）: 2 negativeとも変異前に public loader で intact provenance（earlier request IDs non-empty・immediate step 5 `request_id=None`・terminal state/history）を明示reload/assertしてから、`None` 変異は step 2 の `request_id` を non-empty（`request-two`）維持のまま `output_text` のみ None に、non-string 変異は step 1 の `output_text` のみ `1` に変更して呼び出す
 
 ### Collect invariant
 

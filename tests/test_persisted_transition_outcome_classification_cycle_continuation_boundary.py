@@ -73,6 +73,7 @@ def _setup_phase155(
     terminal_output: str = "output-six",
     earlier_empty: tuple[int, ...] = (2,),
     bad_predecessor_output: object = _BAD_SENTINEL,
+    failed_message: str = "safe failure",
 ):
     workflow = WorkflowDefinition.model_validate(
         {"id": "w", "name": "W", "description": "D", "steps": [
@@ -105,7 +106,7 @@ def _setup_phase155(
     else:
         events.append(RuntimeStepEvent("step_failed", "w", current_step_id, step_index, current_step_id[0],
                                        "running", "failed", "openai", "api_error", None,
-                                       f"request-{current_step_id}", None, "safe failure"))
+                                       f"request-{current_step_id}", None, failed_message))
     state_bytes = serialize_workflow_execution_state_json(state_model).encode()
     event_bytes = "".join(serialize_runtime_step_event_jsonl(event) for event in events).encode()
     if bad_predecessor_output is not _BAD_SENTINEL:
@@ -127,7 +128,11 @@ def _setup_phase155(
 def test_phase155_six_step_history_fallback_accepts_and_delegates_once(
     tmp_path: Path, status: str
 ) -> None:
-    state, events, result, workflow, before_state, before_events = _setup_phase155(tmp_path, status)
+    # failed_message="" pins strict-contract semantics in the fallback
+    # (isinstance(str), empty allowed); a non-empty strengthening would regress.
+    state, events, result, workflow, before_state, before_events = _setup_phase155(
+        tmp_path, status, failed_message=""
+    )
     expected = PersistedExecutionOutcome(
         "persisted_success" if status == "succeeded" else "persisted_failure",
         "w", "six", 6, "s", None if status == "succeeded" else "api_error",
@@ -145,7 +150,9 @@ def test_phase155_six_step_history_fallback_accepts_and_delegates_once(
 
 
 def test_phase155_fallback_rejects_none_predecessor_output_before_phase100(tmp_path: Path) -> None:
-    state, events, result, workflow, *_ = _setup_phase155(tmp_path, "succeeded", bad_predecessor_output=None)
+    state, events, result, workflow, before_state, before_events = _setup_phase155(
+        tmp_path, "succeeded", bad_predecessor_output=None
+    )
     calls = 0
     def seam(*_: object) -> object:
         nonlocal calls
@@ -157,10 +164,14 @@ def test_phase155_fallback_rejects_none_predecessor_output_before_phase100(tmp_p
         )
     assert caught.value.detail.classification == "terminal_contract"
     assert calls == 0
+    # Rejected cases leave both persistence targets byte-for-byte unchanged.
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 def test_phase155_fallback_rejects_non_string_predecessor_output_before_phase100(tmp_path: Path) -> None:
-    state, events, result, workflow, *_ = _setup_phase155(tmp_path, "succeeded", bad_predecessor_output=1)
+    state, events, result, workflow, before_state, before_events = _setup_phase155(
+        tmp_path, "succeeded", bad_predecessor_output=1
+    )
     calls = 0
     def seam(*_: object) -> object:
         nonlocal calls
@@ -172,6 +183,8 @@ def test_phase155_fallback_rejects_non_string_predecessor_output_before_phase100
         )
     assert caught.value.detail.classification == "terminal_contract"
     assert calls == 0
+    # Rejected cases leave both persistence targets byte-for-byte unchanged.
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])

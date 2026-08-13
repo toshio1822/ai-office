@@ -165,8 +165,12 @@ def reload_and_assert_provenance(
         )
     )
     state, events = loaded.state, loaded.events
-    for position in earlier_empty:
+    # Issue exact provenance via public loader: earlier request IDs are
+    # non-empty built-in str; only immediate step 5 has request_id None.
+    for position in range(1, 5):
         assert events[position - 1].step_id == _STEP_IDS[position - 1]
+        assert events[position - 1].request_id == f"request-{_STEP_IDS[position - 1]}"
+    for position in earlier_empty:
         assert events[position - 1].output_text == ""
     assert events[4].step_id == "five"
     assert events[4].output_text == ""
@@ -335,11 +339,23 @@ def test_real_segment_rejects_none_predecessor_output_before_seam(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
+    # Public-loader reload before the rejecting invocation: the intact persisted
+    # provenance keeps earlier request IDs non-empty built-in str and immediate
+    # step 5 request_id None, and terminal state/history matches the contract.
+    reload_and_assert_provenance(values, "succeeded")
     events_path = values["events_path"]
     lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    import json
+
+    # Issue exact provenance: step two keeps its non-empty built-in request_id
+    # ("request-two"); only output_text becomes None. Immediate step 5 keeps
+    # request_id None.
     replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("two", 2, "other", request_id=None, output_text=None)
+        predecessor_event("two", 2, output_text=None)
     )
+    mutated = json.loads(replacement)
+    assert mutated["request_id"] == "request-two"
+    assert mutated["output_text"] is None
     events_path.write_text(lines[0] + replacement + "".join(lines[2:]), encoding="utf-8")  # type: ignore[union-attr]
     before = values["state_path"].read_bytes(), events_path.read_bytes()  # type: ignore[union-attr]
     calls = {"phase114": 0, "phase107": 0, "seam": 0}
@@ -373,11 +389,16 @@ def test_real_segment_rejects_non_string_predecessor_output_before_seam(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
+    # Public-loader reload before the rejecting invocation: the intact persisted
+    # provenance keeps earlier request IDs non-empty built-in str and immediate
+    # step 5 request_id None, and terminal state/history matches the contract.
+    reload_and_assert_provenance(values, "succeeded")
     events_path = values["events_path"]
     lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
     import json
 
     payload = json.loads(lines[0])
+    assert payload["request_id"] == "request-one"
     payload["output_text"] = 1
     lines[0] = json.dumps(payload, separators=(",", ":")) + "\n"
     events_path.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
