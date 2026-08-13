@@ -452,7 +452,37 @@ def test_predecessor_empty_output_text_still_requires_request_id(
         predecessor_event("four", 4, "openai", output_text="", request_id=request_id)
     )
     events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
-    reject(data, "persistence_contract")
+    if request_id is None:
+        expected = expected_outcome()
+        seen: list[tuple[object, ...]] = []
+        rewritten = (
+            data["state_path"].read_bytes(),  # type: ignore[union-attr]
+            data["events_path"].read_bytes(),  # type: ignore[union-attr]
+        )
+
+        def dependency(*args: object) -> object:
+            seen.append(args)
+            return expected
+
+        assert call(data, dependency) is expected
+        assert len(seen) == 1
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                seen[0],
+                tuple(
+                    data[key]
+                    for key in ("result", "workflow", "state_path", "events_path")
+                ),
+                strict=True,
+            )
+        )
+        assert (
+            data["state_path"].read_bytes(),  # type: ignore[union-attr]
+            data["events_path"].read_bytes(),  # type: ignore[union-attr]
+        ) == rewritten
+    else:
+        reject(data, "persistence_contract")
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
@@ -492,6 +522,102 @@ def test_predecessor_request_id_contract_is_strict(
     lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(
         predecessor_event("four", 4, "openai", request_id=request_id)
+    ).encode()
+    events.write_bytes(b"".join(lines[:3]) + replacement + lines[4])  # type: ignore[union-attr]
+    if request_id is None:
+        expected = expected_outcome()
+        seen: list[tuple[object, ...]] = []
+        rewritten = (
+            data["state_path"].read_bytes(),  # type: ignore[union-attr]
+            data["events_path"].read_bytes(),  # type: ignore[union-attr]
+        )
+
+        def dependency(*args: object) -> object:
+            seen.append(args)
+            return expected
+
+        assert call(data, dependency) is expected
+        assert len(seen) == 1
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                seen[0],
+                tuple(
+                    data[key]
+                    for key in ("result", "workflow", "state_path", "events_path")
+                ),
+                strict=True,
+            )
+        )
+        assert (
+            data["state_path"].read_bytes(),  # type: ignore[union-attr]
+            data["events_path"].read_bytes(),  # type: ignore[union-attr]
+        ) == rewritten
+    else:
+        reject(data, "persistence_contract")
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_immediate_predecessor_none_request_id_empty_output_delegates(
+    tmp_path: Path, status: str
+) -> None:
+    data = values(tmp_path, status)
+    events = data["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("four", 4, "openai", output_text="", request_id=None)
+    )
+    events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
+    expected = expected_outcome(status)
+    seen: list[tuple[object, ...]] = []
+    rewritten = (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    )
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    assert call(data, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                data[key] for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+    assert (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    ) == rewritten
+
+
+@pytest.mark.parametrize("position", [1, 2, 3])
+def test_earlier_predecessor_none_request_id_is_rejected_before_phase135(
+    tmp_path: Path, position: int
+) -> None:
+    data = values(tmp_path)
+    events = data["events_path"]
+    lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    step_id = ("one", "two", "three")[position - 1]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event(step_id, position, "other", request_id=None)
+    ).encode()
+    events.write_bytes(b"".join(lines[: position - 1]) + replacement + b"".join(lines[position:]))  # type: ignore[union-attr]
+    reject(data, "persistence_contract")
+
+
+def test_immediate_predecessor_none_request_id_requires_openai_provider(tmp_path: Path) -> None:
+    data = values(tmp_path)
+    events = data["events_path"]
+    lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("four", 4, "other", request_id=None)
     ).encode()
     events.write_bytes(b"".join(lines[:3]) + replacement + lines[4])  # type: ignore[union-attr]
     reject(data, "persistence_contract")

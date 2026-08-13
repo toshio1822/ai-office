@@ -365,7 +365,10 @@ def _load_compatible_terminal_history(
         _fail("terminal_contract")
     state = loaded.state
     history = loaded.events
-    if not _valid_empty_success_history(workflow, state, history):
+    if not (
+        _valid_empty_success_history(workflow, state, history)
+        or _valid_phase155_compatible_history(workflow, state, history)
+    ):
         _fail("terminal_contract")
     return state, history
 
@@ -433,6 +436,75 @@ def _valid_empty_success_history(
         and terminal.output_text == ""
         and terminal.message is None
     )
+
+
+def _valid_phase155_compatible_history(
+    workflow: WorkflowDefinition,
+    state: WorkflowExecutionState,
+    history: tuple[RuntimeStepEvent, ...],
+) -> bool:
+    """Bounded Phase-155 provenance compatibility: current_step_index >= 6.
+
+    Allows exact built-in str predecessor output_text to be empty or non-empty
+    (None / non-string are rejected). Terminal event semantics are inherited
+    from the shared validator. Only reachable from the persistence route.
+    """
+    if type(state) is not WorkflowExecutionState or type(history) is not tuple:
+        return False
+    if not (
+        _nonempty_string(state.workflow_id)
+        and state.workflow_id == workflow.id
+        and state.status in {"succeeded", "failed"}
+        and _nonempty_string(state.current_step_id)
+        and type(state.current_step_index) is int
+        and state.current_step_index >= 6
+        and state.current_step_index <= len(workflow.steps)
+        and state.current_step_id == workflow.steps[state.current_step_index - 1].id
+        and _nonempty_string(state.current_employee_id)
+        and state.current_employee_id
+        == workflow.steps[state.current_step_index - 1].employee
+        and type(state.completed_step_ids) is tuple
+        and all(_nonempty_string(item) for item in state.completed_step_ids)
+        and state.completed_step_ids
+        == tuple(
+            step.id
+            for step in workflow.steps[
+                : state.current_step_index
+                if state.status == "succeeded"
+                else state.current_step_index - 1
+            ]
+        )
+        and (
+            state.last_failure_category is None
+            if state.status == "succeeded"
+            else type(state.last_failure_category) is str
+            and state.last_failure_category in _FAILURE_CATEGORIES
+        )
+    ):
+        return False
+    prior_steps = workflow.steps[: state.current_step_index - 1]
+    if len(history) != len(prior_steps) + 1:
+        return False
+    for position, (event, step) in enumerate(
+        zip(history[:-1], prior_steps, strict=True), 1
+    ):
+        if not (
+            type(event) is RuntimeStepEvent
+            and _exact_string(event.event_type, "step_succeeded")
+            and _exact_string(event.workflow_id, state.workflow_id)
+            and _exact_string(event.step_id, step.id)
+            and type(event.step_index) is int
+            and event.step_index == position
+            and _exact_string(event.employee_id, step.employee)
+            and _exact_string(event.previous_status, "running")
+            and _exact_string(event.next_status, "succeeded")
+            and event.failure_category is None
+            and _nonempty_string(event.response_id)
+            and type(event.output_text) is str
+            and event.message is None
+        ):
+            return False
+    return _valid_terminal_event(history[-1], state)
 
 
 def _check_outcome(value: object, state: WorkflowExecutionState) -> None:
