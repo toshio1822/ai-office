@@ -2451,7 +2451,7 @@ Phase 43 / Phase 36 / Phase 30のproduction codeは変更しません。Phase 30
 - exact `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`、earlier-empty（step 2）+ immediate-empty（step 5）+ immediate-`request_id=None`の組み合わせが実persistenceまでexactly once到達
 - 複数earlier-empty + immediate-empty/`None`も実persistenceまでexactly once到達
 - earlier `output_text=None`、immediate `output_text=None`はPhase 57でPhase 50/43/36/30より前にreject（目的のprovenanceはraw JSONL reloadで明示的に検証）
-- 各handoffでcanonical four-argument identity/order保持、最終`WorkflowExecutionPersistenceResult`のobject identityを全実境界がそのまま返すことを検証
+- 各handoffでcanonical four-argument identity/order保持、最終returnがexact `WorkflowExecutionPersistenceResult`であり、同一のstate/events targetsと正確なbyte countsを持つことを検証
 - 実persistence後のstate/eventsにempty-output provenanceが正しく反映されることをexplicit reloadで検証（successは`succeeded` state + `step_succeeded` event、failureは`failed` state + `step_failed` event、provider/response_id/request_id/output_text/messageのexact値を検証）
 
 ### Collect invariant
@@ -2464,13 +2464,15 @@ Phase 43 / Phase 36 / Phase 30のproduction codeは変更しません。Phase 30
 - Phase 50 focused: +6
 - real lower-chain regression: +6
 
-### 変更範囲（5ファイル）
+### 変更範囲（7ファイル）
 
 1. `src/ai_office/engine/executed_result_transition_persistence_phase_bridge_reentry.py` — Phase 57 narrow empty-output compatibility
 2. `src/ai_office/engine/executed_result_transition_persistence_bridge_reentry.py` — Phase 50 narrow empty-output compatibility
 3. `tests/test_executed_result_transition_persistence_phase_bridge_reentry.py` — +6 focused collected（helperはsentinelで`None`注入を修正）
 4. `tests/test_executed_result_transition_persistence_bridge_reentry.py` — +6 focused collected
 5. `tests/test_executed_result_transition_persistence_phase57_30_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
+6. `README.md` — Phase 160 documentation
+7. `docs/architecture.md` — Phase 160 architecture documentation
 
 ### 変更しないもの
 
