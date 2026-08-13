@@ -2241,3 +2241,85 @@ Phase 43 / Phase 36 / Phase 30のproduction codeは変更しない。Phase 30は
 - CLI / GUI behavior
 - 新しいrequest-ID/provider semantics
 - real network / provider / paid API / tool call
+
+## Phase 161: Phase-155 Runtime-Result Transition-Persistence Outer-Chain Continuation Boundary
+
+Phase 161は、Phase 155 continuation pathが生成するexact runtime resultを、既存のpublic Phase 142 boundaryへexactly once渡すcaller boundaryである。Phase 156–160が修復・証明した実persistence chain（Phase 142 → 134 → 127 → 120 → 113 → 106 → 99 → 92 → 85 → 78 → 71 → 64 → 57 → 50 → 43 → 36 → 実Phase 30 persistence）に対して、唯一欠けていたPhase 155 → Phase 142 runtime-result persistence handoffを追加する。
+
+```text
+Phase 155 runtime result
+    ↓ Phase 161
+Phase 142 (exactly once, canonical four-argument order)
+    ↓ repaired real chain from Phase 156–160
+actual Phase 30 persistence
+```
+
+Phase 161はcompatibility correctionを行わない。Phase 142以下のproduction boundaryは一切変更せず、public Phase 142関数をkeyword-only dependency（`phase142_function`）として注入可能にした上で、runtime-result routeでのみ直接exactly once呼び出す。
+
+### Public API
+
+`route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(result, workflow, state_path, events_path, *, phase142_function=...)`を追加し、detail-safe error family（`...OuterChainReentryContinuationFailureDetail` / `...Error` / `...CompatibilityError`）を公開する。canonical dependency引数順は`result, workflow, state_path, events_path`である。
+
+### Runtime-result route（success / failure）
+
+- exact `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`、exact `WorkflowDefinition` / `WorkflowStepDefinition`要素、exactで互いに異なるregular `Path` targetsを要求する
+- 供給targetsからexact running `WorkflowExecutionState`をロードし、workflow/current-step/index/employee linkageを検証する
+- Phase-155 continuation provenanceとしてexact built-in `int current_step_index >= 6`を要求し、index 1–5はPhase 142呼び出し前にrejectする
+- predecessor historyは全stepについてexact `RuntimeStepEvent`、exact `step_succeeded` / `running -> succeeded`、linkage、`failure_category is None` / `message is None`を要求する
+- predecessor `output_text`はexact built-in `str`（empty/non-empty許容）、`response_id`はexact non-empty built-in `str`、earlier `request_id`はexact non-empty built-in `str`、immediate `request_id`は`None`またはexact non-empty built-in `str`、immediate providerはexact `"openai"`である
+- runtime resultのnested invocation-resultもexact型・exact built-in型・exact provider `"openai"`・exact success/failure semanticsを再検証する
+- Phase 142呼び出し前にoriginal state/event bytesをスナップショットし、4引数すべてをcanonical order・同一identityでexactly once委譲する
+
+### Phase 142 result / persistence validation
+
+- 戻り値はexact `WorkflowExecutionPersistenceResult`のみ受理（subclass・attribute-compatible substituteはreject）
+- returned `state_path` / `events_path`は供給targetsと同一identity
+- `state_bytes_written` / `event_bytes_appended`はexact positive built-in `int`（`bool`・int subclassはreject）
+- state targetはsupplied runtime resultに対応するexact terminal state、event targetはoriginal predecessor history + current stepのterminal eventをexactly 1件のみ
+- terminal eventのlinkage、success→succeeded / failure→failed semantics、byte countsを再検証する
+- 不正な戻り値・部分/不整合なtarget効果は両targetをbyte-for-byteでpre-dependency snapshotへ復元し、retryなしでrejectする
+- safe Phase 142 errorはidentity保持、unexpected exceptionはsanitize、compensation失敗は`dependency_rollback`、両targetの復元を試行し、Phase 142をretryしない
+
+### Stop routes（zero call）
+
+- exact `WorkflowProgressionDecision(workflow_complete)` / exact `PersistedExecutionOutcome(persisted_failure)`はPhase 155 stop-route domainを継承し、Phase 142呼び出し回数0・同一supplied object返却・両target byte-for-byte不変
+- 非終端predecessorの空`output_text`、継承されたrequest-ID/provider semanticsを保持し、`workflow_complete`のsucceeded terminal output非空strictness・persisted-failure terminal semanticsを保持する
+- malformed stop values・unsupported値・direct persistence/start/running-state値・subclass/substitute・invalid targets・terminal mismatchはzero-call rejectする
+
+### Focused regression
+
+新規テストファイル（182 collected）で、public signature/source audit、canonical four-argument identity、index 1–5 pre-reject、predecessor provenance matrix、persistence result exact型・identity・byte counts・terminal semantics、compensation（state/events/both、malformed return、safe error identity、unexpected sanitize、rollback failure）、stop routes（zero call、empty predecessor output、non-openai terminal provider、empty terminal output reject）を注入Phase 142 fakeで検証する。
+
+### Real-default persistence regression
+
+新規テストファイル内のreal-default proofで、fake Phase 142注入なし・production関数のmonkeypatchなし・実provider/network/toolなしで、Phase 161 public entryだけを外側から呼び、実Phase 142 → 実下位chain → 実Phase 30 persistenceまで到達させる。exact `StepRuntimeExecutionSuccess`とexact `StepRuntimeExecutionFailure`の両ケースで、current running step 6、succeeded steps 1–5、earlier/immediate `output_text == ""`、immediate `request_id is None`、earlier request IDs exact non-empty、immediate provider `"openai"`を検証し、exact `WorkflowExecutionPersistenceResult`返却・exact terminal state・terminal event exactly 1件・predecessor provenance不変・byte counts exact・retryなしを確認する。
+
+### Collect invariant
+
+```text
+11,334 + 182 = 11,516
+```
+
+### 変更範囲（5ファイル）
+
+1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — 新規 Phase 161 module
+2. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — 新規 focused + real-default tests
+3. `src/ai_office/engine/__init__.py` — Phase 161 public exportsのみ
+4. `README.md` — Phase 161 documentation
+5. `docs/architecture.md` — Phase 161 architecture documentation
+
+### 変更しないもの
+
+- Phase 155 / 156 / 157 / 158 / 159 / 160 productionまたはそのregression
+- Phase 142 production（呼び出しのみで修正なし）
+- Phase 143以降のclassification/progression boundary（Phase 143は呼び出さない）
+- 実Phase 30 persistence、shared storage/runtime/provider code
+- `src/ai_office/engine/terminal_history_contract.py`
+
+### Phase 161は以下を行わない
+
+- Phase 142以下のcompatibility correction
+- Phase 143の呼び出し・outcome classification / workflow progression
+- 次のstepのprepare/start、provider/tool実行、retry / loop / schedule / parallel / finalize
+- Phase 155の再呼び出し・他dependency経由のrouting・private/underscore validation helperの参照
+- CLI / GUI behavior、real network / provider / paid API / tool call
