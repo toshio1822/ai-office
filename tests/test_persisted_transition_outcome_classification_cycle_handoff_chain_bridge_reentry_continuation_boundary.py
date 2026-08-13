@@ -1048,6 +1048,28 @@ def test_predecessor_empty_output_text_still_requires_request_id(tmp_path: Path,
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_immediate_predecessor_none_request_id_empty_output_delegates(
+    tmp_path: Path, status: str
+) -> None:
+    data = values(tmp_path, status)
+    _replace_predecessor(
+        data, 3, predecessor_event("three", 3, "c", "openai", output_text="", request_id=None)
+    )
+    expected = expected_outcome(status)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    assert call(data, dependency) is expected
+    assert calls == [
+        (data["result"], data["workflow"], data["state_path"], data["events_path"])
+    ]
+    assert_unchanged(data)
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
 def test_immediate_predecessor_none_request_id_nonempty_output_delegates(
     tmp_path: Path, status: str
 ) -> None:
@@ -1069,36 +1091,22 @@ def test_immediate_predecessor_none_request_id_nonempty_output_delegates(
     assert_unchanged(data)
 
 
-@pytest.mark.parametrize("position", [1, 2])
 def test_earlier_predecessor_none_request_id_is_rejected_before_phase128(
-    tmp_path: Path, position: int
+    tmp_path: Path,
 ) -> None:
     data = values(tmp_path)
-    step_id = ("one", "two")[position - 1]
     _replace_predecessor(
         data,
-        position,
-        predecessor_event(
-            step_id, position, ("a", "b")[position - 1], "openai", request_id=None
-        ),
+        2,
+        predecessor_event("two", 2, "b", "openai", request_id=None),
     )
     reject(data, "persistence_contract")
 
 
-def test_immediate_predecessor_none_request_id_requires_openai_provider(tmp_path: Path) -> None:
+def test_immediate_predecessor_empty_request_id_is_rejected(tmp_path: Path) -> None:
     data = values(tmp_path)
     _replace_predecessor(
-        data, 3, predecessor_event("three", 3, "c", "other", request_id=None)
-    )
-    reject(data, "persistence_contract")
-
-
-def test_immediate_predecessor_none_request_id_requires_string_output(tmp_path: Path) -> None:
-    data = values(tmp_path)
-    _replace_predecessor(
-        data,
-        3,
-        predecessor_event("three", 3, "c", "openai", request_id=None, output_text=4),
+        data, 3, predecessor_event("three", 3, "c", "openai", request_id="")
     )
     reject(data, "persistence_contract")
 

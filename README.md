@@ -2599,7 +2599,7 @@ Phase 162は新規orchestration boundaryを追加せず、既存のpublic route 
 
 ### 互換性境界（Phase 143 / 135）
 
-- immediate predecessorの`request_id`は`None`のみ許可し、providerはexact `"openai"`を要求
+- immediate predecessorの`request_id`は`None`またはexact non-empty built-in `str`を許可し、providerはexact `"openai"`を要求
 - earlier predecessorの`request_id=None`とimmediate predecessorの`request_id==""`は拒否
 - predecessorの`output_text`はexact built-in `str`（空文字含む）のみ許可（`None` / non-stringは拒否）
 - 無効ケースはdownstream dependency call count **zero**とし、分類文字列は`persistence_contract` / `outcome_contract` / `terminal_contract` / `dependency_error`を正確に使用

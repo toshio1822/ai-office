@@ -2341,7 +2341,7 @@ Phase 121 (synthetic seam delegation / real Phase 121 terminal_contract rejectio
 
 ### 互換性境界（Phase 143 / 135）
 
-- immediate predecessorの`request_id`は`None`のみ許可し、providerはexact `"openai"`を要求する
+- immediate predecessorの`request_id`は`None`またはexact non-empty built-in `str`を許可し、providerはexact `"openai"`を要求する
 - earlier predecessorの`request_id=None`とimmediate predecessorの`request_id==""`は拒否する
 - predecessorの`output_text`はexact built-in `str`（空文字含む）のみ許可し、`None` / non-stringは拒否する
 - 無効ケースはdownstream dependency call count zeroとし、分類文字列`persistence_contract` / `outcome_contract` / `terminal_contract` / `dependency_error`を正確に使用する

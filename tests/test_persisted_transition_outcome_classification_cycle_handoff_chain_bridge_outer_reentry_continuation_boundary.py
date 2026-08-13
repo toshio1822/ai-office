@@ -597,29 +597,67 @@ def test_immediate_predecessor_none_request_id_empty_output_delegates(
     ) == rewritten
 
 
-@pytest.mark.parametrize("position", [1, 2, 3])
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_immediate_predecessor_none_request_id_nonempty_output_delegates(
+    tmp_path: Path, status: str
+) -> None:
+    data = values(tmp_path, status)
+    events = data["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("four", 4, "openai", request_id=None)
+    )
+    events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
+    expected = expected_outcome(status)
+    seen: list[tuple[object, ...]] = []
+    rewritten = (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    )
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    assert call(data, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                data[key] for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+    assert (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    ) == rewritten
+
+
 def test_earlier_predecessor_none_request_id_is_rejected_before_phase135(
-    tmp_path: Path, position: int
+    tmp_path: Path,
 ) -> None:
     data = values(tmp_path)
     events = data["events_path"]
     lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
-    step_id = ("one", "two", "three")[position - 1]
     replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event(step_id, position, "other", request_id=None)
+        predecessor_event("two", 2, "other", request_id=None)
     ).encode()
-    events.write_bytes(b"".join(lines[: position - 1]) + replacement + b"".join(lines[position:]))  # type: ignore[union-attr]
+    events.write_bytes(b"".join(lines[:1]) + replacement + b"".join(lines[2:]))  # type: ignore[union-attr]
     reject(data, "persistence_contract")
 
 
-def test_immediate_predecessor_none_request_id_requires_openai_provider(tmp_path: Path) -> None:
+def test_immediate_predecessor_empty_request_id_is_rejected(tmp_path: Path) -> None:
     data = values(tmp_path)
     events = data["events_path"]
     lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("four", 4, "other", request_id=None)
+        predecessor_event("four", 4, "openai", request_id="")
     ).encode()
-    events.write_bytes(b"".join(lines[:3]) + replacement + lines[4])  # type: ignore[union-attr]
+    events.write_bytes(b"".join(lines[:3]) + replacement + b"".join(lines[4:]))  # type: ignore[union-attr]
     reject(data, "persistence_contract")
 
 

@@ -106,7 +106,9 @@ def terminal_event(status: str) -> RuntimeStepEvent:
     )
 
 
-def setup(tmp_path: Path, status: str) -> dict[str, object]:
+def setup(
+    tmp_path: Path, status: str, *, earlier_empty: tuple[int, ...] = (2,)
+) -> dict[str, object]:
     supplied_workflow = workflow()
     state = WorkflowExecutionState(
         "w",
@@ -118,7 +120,9 @@ def setup(tmp_path: Path, status: str) -> dict[str, object]:
         None if status == "succeeded" else "api_error",
     )
     events = [
-        predecessor_event(step_id, position)
+        predecessor_event(
+            step_id, position, output_text="" if position in earlier_empty else "output"
+        )
         for position, step_id in enumerate(_STEP_IDS[:5], 1)
     ]
     events[4] = predecessor_event(
@@ -224,20 +228,8 @@ def test_real_chain_synthetic_seam_delegates_once(tmp_path: Path, status: str) -
     out, calls, handoffs, seam_values = run_chain(values, status)
     assert_chain_ok(values, out, calls, handoffs, seam_values)
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
-
-
-@pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_real_phase121_rejects_phase155_provenance_terminal_contract(
-    tmp_path: Path, status: str
-) -> None:
-    values = setup(tmp_path, status)
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    calls: dict[str, int] = {"phase128": 0, "seam": 0}
-
-    def fail(*_: object) -> object:
-        calls["seam"] += 1
-        pytest.fail("Phase 121 seam must not be called")
-
+    # Next-seam proof: the real Phase 121 route rejects the same persisted
+    # Phase-155 provenance terminal contract without touching any target.
     with pytest.raises(
         PersistedTransitionOutcomeClassificationCycleHandoffReentryContinuationCompatibilityError
     ) as caught:
@@ -253,7 +245,17 @@ def test_real_phase121_rejects_phase155_provenance_terminal_contract(
         is PersistedTransitionOutcomeClassificationCycleHandoffReentryContinuationCompatibilityError
     )
     assert caught.value.detail.classification == "terminal_contract"
-    assert calls["seam"] == 0
+    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_real_chain_multiple_earlier_empty_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    values = setup(tmp_path, status, earlier_empty=(2, 3))
+    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
+    out, calls, handoffs, seam_values = run_chain(values, status)
+    assert_chain_ok(values, out, calls, handoffs, seam_values)
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
@@ -302,7 +304,7 @@ def test_immediate_predecessor_empty_request_id_is_rejected_at_phase143(
     replacement = serialize_runtime_step_event_jsonl(
         predecessor_event("five", 5, "openai", request_id="", output_text="")
     )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
+    events.write_text("".join(lines[:4]) + replacement + "".join(lines[5:]), encoding="utf-8")  # type: ignore[union-attr]
     before = values["state_path"].read_bytes(), events.read_bytes()  # type: ignore[union-attr]
     calls = {"phase135": 0}
 

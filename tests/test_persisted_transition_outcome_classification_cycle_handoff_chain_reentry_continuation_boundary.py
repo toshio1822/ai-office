@@ -156,6 +156,7 @@ def six_step_persisted(
     predecessor_output: object = _MISSING,
     predecessor_request_id: object = _MISSING,
     terminal_output: object = _MISSING,
+    predecessor_overrides: dict[int, dict[str, object]] | None = None,
 ) -> tuple[Path, Path, WorkflowExecutionPersistenceResult, WorkflowDefinition, bytes, bytes]:
     supplied_workflow = six_step_workflow()
     current = supplied_workflow.steps[index - 1]
@@ -188,6 +189,10 @@ def six_step_persisted(
             if predecessor_request_id is _MISSING or not override
             else predecessor_request_id
         )
+        if predecessor_overrides is not None and position in predecessor_overrides:
+            changes = predecessor_overrides[position]
+            output = changes.get("output_text", output)
+            request_id = changes.get("request_id", request_id)
         events.append(
             RuntimeStepEvent(
                 "step_succeeded",
@@ -1032,7 +1037,12 @@ def test_phase155_compatible_six_step_history_delegates_once(
     tmp_path: Path, status: str
 ) -> None:
     state, events, result, supplied_workflow, before_state, before_events = six_step_persisted(
-        tmp_path, status, predecessor_position=4, predecessor_output=""
+        tmp_path,
+        status,
+        predecessor_overrides={
+            2: {"output_text": ""},
+            5: {"output_text": "", "request_id": None},
+        },
     )
     expected = six_step_outcome(status)
     calls: list[tuple[object, ...]] = []
@@ -1044,23 +1054,51 @@ def test_phase155_compatible_six_step_history_delegates_once(
     assert call(result, supplied_workflow, state, events, dependency) is expected
     assert calls == [(result, supplied_workflow, state, events)]
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
-
-
-def test_phase155_compatible_history_below_index_six_is_rejected(tmp_path: Path) -> None:
-    state, events, result, supplied_workflow, _, _ = six_step_persisted(
-        tmp_path, "failed", index=5, predecessor_position=4, predecessor_output=""
+    # Inline bound: continuation index below 6 is not silently broadened.
+    below_dir = tmp_path / "below"
+    below_dir.mkdir()
+    below_state, below_events, below_result, below_workflow, _, _ = six_step_persisted(
+        below_dir, "failed", index=5, predecessor_position=4, predecessor_output=""
     )
-    before = state.read_bytes(), events.read_bytes()
-    calls = 0
+    below_before = below_state.read_bytes(), below_events.read_bytes()
+    below_calls = 0
 
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
+    def below_dependency(*_: object) -> object:
+        nonlocal below_calls
+        below_calls += 1
         return six_step_outcome("failed")
 
-    assert_rejected(result, supplied_workflow, state, events, "terminal_contract", dependency)
-    assert calls == 0
-    assert (state.read_bytes(), events.read_bytes()) == before
+    assert_rejected(
+        below_result, below_workflow, below_state, below_events,
+        "terminal_contract", below_dependency,
+    )
+    assert below_calls == 0
+    assert (below_state.read_bytes(), below_events.read_bytes()) == below_before
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_phase155_compatible_multiple_earlier_empty_history_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    state, events, result, supplied_workflow, before_state, before_events = six_step_persisted(
+        tmp_path,
+        status,
+        predecessor_overrides={
+            2: {"output_text": ""},
+            3: {"output_text": ""},
+            5: {"output_text": "", "request_id": None},
+        },
+    )
+    expected = six_step_outcome(status)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    assert call(result, supplied_workflow, state, events, dependency) is expected
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("output", [None, 4])
@@ -1081,20 +1119,3 @@ def test_phase155_compatible_history_non_string_predecessor_output_is_rejected(
     assert_rejected(result, supplied_workflow, state, events, "terminal_contract", dependency)
     assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == before
-
-
-def test_phase155_compatible_history_does_not_add_request_id_policy(tmp_path: Path) -> None:
-    state, events, result, supplied_workflow, before_state, before_events = six_step_persisted(
-        tmp_path, "succeeded", predecessor_position=4, predecessor_output="",
-        predecessor_request_id=None,
-    )
-    expected = six_step_outcome("succeeded")
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> object:
-        calls.append(args)
-        return expected
-
-    assert call(result, supplied_workflow, state, events, dependency) is expected
-    assert calls == [(result, supplied_workflow, state, events)]
-    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
