@@ -2538,13 +2538,13 @@ Phase 161は新しいcompatibility correctionを行いません。Phase 142以�
 - `workflow_complete`のsucceeded terminal output非空strictness、persisted-failure terminal semanticsを保持
 - malformed stop values・unsupported progression/outcome・direct persistence/start/running-state値・subclass/substitute・invalid targets・terminal mismatchはzero-call reject
 
-### Focused regression
+### Focused regression（180 cases）
 
-`tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py`（新規、182 collected）に、public signature/source audit、canonical four-argument identity、index 1–5 pre-reject、predecessor provenance matrix（duplicate/missing/reordered/unrelated/malformed/extra、empty output、request_id None/empty/non-string、provider）、persistence result exact型・identity・byte counts・terminal state/event semantics、compensation（state-only/event-only/both、malformed return、safe error identity、unexpected sanitize、rollback failure）、stop routes（zero call、empty predecessor output、non-openai terminal provider、empty terminal output reject）を注入Phase 142 fakeで検証します。
+新規Phase 161 test file（`tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py`、**182 collected total**）のうち、**focused / contract cases 180件**で、public signature/source audit、canonical four-argument identity、index 1–5 pre-reject、predecessor provenance matrix（duplicate/missing/reordered/unrelated/malformed/extra、empty output、request_id None/empty/non-string、provider）、persistence result exact型・identity・byte counts・terminal state/event semantics、compensation（state-only/event-only/both、malformed return、safe error identity、unexpected sanitize、rollback failure）、stop routes（zero call、empty predecessor output、non-openai terminal provider、empty terminal output reject）を注入Phase 142 fakeで検証します（残り2件は下記real-default persistence cases）。
 
-### Real-default persistence regression
+### Real-default persistence regression（2 cases）
 
-新規テストファイル内のreal-default proofで、**fake Phase 142 注入なし・production関数のmonkeypatchなし・実provider/network/toolなし**で、Phase 161 public entryだけを外側から呼び、**実Phase 142 → 実下位chain（Phase 156–160で修復済み）→ 実Phase 30 persistence**まで到達させます。
+新規Phase 161 test fileの**real-default persistence cases 2件**で、**fake Phase 142 注入なし・production関数のmonkeypatchなし・実provider/network/toolなし**で、Phase 161 public entryだけを外側から呼び、**実Phase 142 → 実下位chain（Phase 156–160で修復済み）→ 実Phase 30 persistence**まで到達させます。
 
 - exact `StepRuntimeExecutionSuccess`とexact `StepRuntimeExecutionFailure`の両ケース
 - current running step 6、succeeded steps 1–5、earlier/immediate predecessor `output_text == ""`、immediate predecessor `request_id is None`、earlier request IDs exact non-empty built-in strings、immediate provider exact `"openai"`
@@ -2556,7 +2556,9 @@ Phase 161は新しいcompatibility correctionを行いません。Phase 142以�
 11,334 + 182 = 11,516
 ```
 
-- Phase 161 focused（注入Phase 142）: 182 collected
+- Phase 161 new test file: **182 collected total**
+  - focused / contract cases: **180**
+  - real-default persistence cases: **2**
 
 ### 変更範囲（5ファイル）
 
