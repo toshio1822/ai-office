@@ -250,7 +250,14 @@ def _validate_terminal(
 ) -> None:
     try:
         persisted, _ = load_strict_terminal_history(workflow, state, events)
-    except TerminalHistoryContractError:
+    except TerminalHistoryContractError as error:
+        if isinstance(error.__cause__, WorkflowExecutionLoadError):
+            # A real storage I/O/load failure on the strict path must remain
+            # terminal_contract: it is not a strict-contract violation that the
+            # Phase-155 fallback may repair, so we must not retry via the
+            # public loader (a transient read failure must not be papered over
+            # by entering compatibility fallback).
+            _raise("terminal_contract")
         persisted, _ = _load_phase155_terminal_history(value, workflow, state, events)
     except OSError:
         _raise("terminal_contract")

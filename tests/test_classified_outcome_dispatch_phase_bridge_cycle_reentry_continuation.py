@@ -564,7 +564,9 @@ def _phase155_replace_event(
     events_path.write_text("".join(lines), encoding="utf-8")
 
 
-def test_phase155_success_delegates_to_phase87_exactly_once(tmp_path: Path) -> None:
+def test_phase155_success_delegates_to_phase87_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Phase-155 persisted success delegates to Phase 87 exactly once with
     canonical four-argument object identity/order, exact returned-object
     identity, and unchanged targets.  Phase 94 production is unchanged; the
@@ -725,6 +727,45 @@ def test_phase155_success_delegates_to_phase87_exactly_once(tmp_path: Path) -> N
     assert caught.value.detail.classification == "terminal_contract"
     assert pin3_calls["phase87"] == 0
     assert (pin3[2].read_bytes(), pin3[3].read_bytes()) == pin3_before
+
+    # A transient OSError on the strict-path state read stays terminal_contract:
+    # storage wraps it as WorkflowExecutionLoadError and load_strict_terminal_history
+    # re-wraps it as TerminalHistoryContractError with a cause, so the Phase-155
+    # fallback must not be entered even though a retry read would succeed.  The
+    # dependency stays uncalled and both targets stay byte-for-byte unchanged.
+    # Phase 94 production is unchanged; the repaired Phase 87 `_terminal` it
+    # reuses raises terminal_contract transitively, which `_raise_from_phase87`
+    # converts to this Phase 94 error with the same classification.
+    io = phase155_setup(tmp_path / "io", "succeeded")
+    io_before = io[2].read_bytes(), io[3].read_bytes()
+    real_read_bytes = Path.read_bytes
+    state_reads = {"count": 0}
+
+    def flaky_read_bytes(self: Path, *args: object, **kwargs: object) -> bytes:
+        if self == io[2]:
+            state_reads["count"] += 1
+            if state_reads["count"] == 2:  # the strict-path storage state read
+                raise OSError("simulated transient strict-path read failure")
+        return real_read_bytes(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    io_calls = {"phase87": 0}
+
+    def io_forbidden(*_: object) -> object:
+        io_calls["phase87"] += 1
+        raise AssertionError("must not be called")
+
+    with pytest.raises(
+        ClassifiedOutcomeDispatchPhaseBridgeCycleReentryContinuationCompatibilityError
+    ) as caught:
+        route_classified_outcome_dispatch_phase_bridge_cycle_reentry_continuation(
+            io[0], io[1], io[2], io[3], phase87_function=io_forbidden
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert io_calls["phase87"] == 0
+    assert state_reads["count"] == 2  # no fallback retry read occurred
+    # The failure was transient: a fresh read succeeds with identical bytes.
+    assert (io[2].read_bytes(), io[3].read_bytes()) == io_before
 
 
 def test_phase155_failure_empty_message_returns_unchanged_zero_calls(
