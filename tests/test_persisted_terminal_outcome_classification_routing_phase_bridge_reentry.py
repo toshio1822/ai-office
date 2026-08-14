@@ -3,6 +3,7 @@
 # The test names and contract fixtures intentionally use the full public names.
 # ruff: noqa: E501
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -294,3 +295,219 @@ def test_dependency_mutation_with_malformed_return_is_restored(tmp_path: Path) -
             result, definition, state, events, phase58_function=phase58
         )
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+# Phase 155 provenance compatibility: six-step fixture accepted through the
+# strict-first fallback and rejected when the bounded contract is violated.
+
+_SIX_STEP_IDS = ("one", "two", "three", "four", "five", "six")
+_SENTINEL = object()
+
+
+def six_step_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate({
+        "id": "w", "name": "W", "description": "D",
+        "steps": [
+            {"id": sid, "name": sid.capitalize(), "employee": sid[0], "instructions": sid}
+            for sid in _SIX_STEP_IDS
+        ],
+    })
+
+
+def six_step_predecessor(
+    step_id: str, position: int, *, provider: object = "other",
+    request_id: object = _SENTINEL, output_text: object = "output",
+) -> RuntimeStepEvent:
+    resolved = f"request-{step_id}" if request_id is _SENTINEL else request_id
+    return RuntimeStepEvent(
+        "step_succeeded", "w", step_id, position, step_id[0],
+        "running", "succeeded", provider, None,
+        f"response-{step_id}", resolved, output_text, None,
+    )
+
+
+def six_step_terminal(status: str, *, message: str = "safe failure") -> RuntimeStepEvent:
+    if status == "succeeded":
+        return RuntimeStepEvent(
+            "step_succeeded", "w", "six", 6, "s", "running", "succeeded",
+            "openai", None, "response-six", "request-six", "output-six", None,
+        )
+    return RuntimeStepEvent(
+        "step_failed", "w", "six", 6, "s", "running", "failed",
+        "openai", "api_error", None, "request-six", None, message,
+    )
+
+
+def six_step_setup(
+    tmp_path: Path, status: str, *, earlier_empty: tuple[int, ...] = (2,),
+    message: str = "safe failure",
+) -> tuple[Path, Path, WorkflowExecutionPersistenceResult, WorkflowDefinition, bytes, bytes]:
+    workflow = six_step_workflow()
+    state_model = WorkflowExecutionState(
+        "w", status, "six", 6, "s",
+        tuple(_SIX_STEP_IDS) if status == "succeeded" else tuple(_SIX_STEP_IDS[:5]),
+        None if status == "succeeded" else "api_error",
+    )
+    events = [
+        six_step_predecessor(
+            step_id, position,
+            output_text="" if position in earlier_empty else "output",
+        )
+        for position, step_id in enumerate(_SIX_STEP_IDS[:5], 1)
+    ]
+    events[4] = six_step_predecessor("five", 5, provider="openai", request_id=None, output_text="")
+    events.append(six_step_terminal(status, message=message))
+    state_bytes = serialize_workflow_execution_state_json(state_model).encode()
+    event_bytes = "".join(serialize_runtime_step_event_jsonl(ev) for ev in events).encode()
+    terminal_bytes = serialize_runtime_step_event_jsonl(events[-1]).encode()
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    result = WorkflowExecutionPersistenceResult(
+        state_path, events_path, len(state_bytes), len(terminal_bytes),
+    )
+    return state_path, events_path, result, workflow, state_bytes, event_bytes
+
+
+def six_step_outcome(status: str) -> PersistedExecutionOutcome:
+    return PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure",
+        "w", "six", 6, "s", None if status == "succeeded" else "api_error",
+    )
+
+
+def test_phase155_six_step_succeeded_delegates_once(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = six_step_setup(tmp_path, "succeeded")
+    expected = six_step_outcome("succeeded")
+    calls: list[tuple[object, ...]] = []
+
+    def phase58(*args: object) -> object:
+        calls.append(args)
+        assert args == (result, workflow, state, events)
+        return expected
+
+    returned = route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
+        result, workflow, state, events, phase58_function=phase58
+    )
+    assert returned is expected and len(calls) == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    # Inline: the fallback does not weaken the strict succeeded-terminal
+    # contract: an empty terminal response_id or empty final output_text is
+    # still rejected with exact terminal_contract before Phase 58.
+    for field, value in (("response_id", ""), ("output_text", "")):
+        terminal_lines = events.read_text(encoding="utf-8").splitlines(keepends=True)
+        terminal_payload = json.loads(terminal_lines[-1])
+        terminal_payload[field] = value
+        terminal_lines[-1] = json.dumps(terminal_payload, separators=(",", ":")) + "\n"
+        events.write_text("".join(terminal_lines), encoding="utf-8")
+        with pytest.raises(PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError) as caught:
+            route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
+                result, workflow, state, events,
+                phase58_function=lambda *_: pytest.fail("Phase 58 must not be called"),
+            )
+        assert caught.value.detail.classification == "terminal_contract"
+    events.write_bytes(before_events)
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_failed_delegates_once(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = six_step_setup(tmp_path, "failed", message="")
+    expected = six_step_outcome("failed")
+    calls: list[tuple[object, ...]] = []
+
+    def phase58(*args: object) -> object:
+        calls.append(args)
+        assert args == (result, workflow, state, events)
+        return expected
+
+    returned = route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
+        result, workflow, state, events, phase58_function=phase58
+    )
+    assert returned is expected and len(calls) == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_multiple_earlier_empty_delegates_once(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = six_step_setup(tmp_path, "succeeded", earlier_empty=(2, 3))
+    expected = six_step_outcome("succeeded")
+    calls: list[tuple[object, ...]] = []
+
+    def phase58(*args: object) -> object:
+        calls.append(args)
+        assert args == (result, workflow, state, events)
+        return expected
+
+    returned = route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
+        result, workflow, state, events, phase58_function=phase58
+    )
+    assert returned is expected and len(calls) == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_failed_multiple_earlier_empty_delegates_once(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = six_step_setup(tmp_path, "failed", earlier_empty=(2, 3), message="")
+    expected = six_step_outcome("failed")
+    calls: list[tuple[object, ...]] = []
+
+    def phase58(*args: object) -> object:
+        calls.append(args)
+        assert args == (result, workflow, state, events)
+        return expected
+
+    returned = route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
+        result, workflow, state, events, phase58_function=phase58
+    )
+    assert returned is expected and len(calls) == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_rejects_none_earlier_predecessor_output(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = six_step_setup(tmp_path, "succeeded")
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)
+    payload = json.loads(lines[1])
+    assert payload["step_id"] == "two" and payload["request_id"] == "request-two"
+    payload["output_text"] = None
+    lines[1] = json.dumps(payload, separators=(",", ":")) + "\n"
+    events.write_text("".join(lines), encoding="utf-8")
+    mutated_events = events.read_bytes()
+    calls = {"phase58": 0}
+
+    def phase58(*_: object) -> object:
+        calls["phase58"] += 1
+        pytest.fail("Phase 58 must not be called")
+
+    with pytest.raises(PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError) as caught:
+        route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
+            result, workflow, state, events, phase58_function=phase58
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == {"phase58": 0}
+    # The rejection leaves the mutated targets byte-identical (no compensation
+    # write is expected because the route never delegated).
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, mutated_events)
+
+
+def test_phase155_six_step_rejects_non_string_immediate_predecessor_output(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = six_step_setup(tmp_path, "succeeded")
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)
+    payload = json.loads(lines[4])
+    assert payload["step_id"] == "five" and payload["request_id"] is None and payload["provider"] == "openai"
+    payload["output_text"] = 1
+    lines[4] = json.dumps(payload, separators=(",", ":")) + "\n"
+    events.write_text("".join(lines), encoding="utf-8")
+    mutated_events = events.read_bytes()
+    calls = {"phase58": 0}
+
+    def phase58(*_: object) -> object:
+        calls["phase58"] += 1
+        pytest.fail("Phase 58 must not be called")
+
+    with pytest.raises(PersistedTerminalOutcomeClassificationRoutingPhaseBridgeCompatibilityError) as caught:
+        route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
+            result, workflow, state, events, phase58_function=phase58
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == {"phase58": 0}
+    # The rejection leaves the mutated targets byte-identical (no compensation
+    # write is expected because the route never delegated).
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, mutated_events)

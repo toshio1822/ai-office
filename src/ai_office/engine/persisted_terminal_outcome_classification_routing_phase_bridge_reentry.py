@@ -22,10 +22,17 @@ from ai_office.engine.terminal_history_contract import (
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
-from ai_office.runtime import WorkflowExecutionState
+from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     serialize_runtime_step_event_jsonl,
+)
+from ai_office.storage.workflow_execution_history import (
+    WorkflowExecutionDataError,
+    WorkflowExecutionHistoryInconsistencyError,
+    WorkflowExecutionLoadError,
 )
 
 Classification = Literal[
@@ -244,7 +251,9 @@ def _validate_persistence(
     try:
         state, history = load_strict_terminal_history(workflow, state_path, events_path)
     except (OSError, TerminalHistoryContractError):
-        _raise("terminal_contract")
+        state, history = _load_phase155_compatible_history(
+            workflow, state_path, events_path
+        )
     if state.status not in ("succeeded", "failed"):
         _raise("persistence_contract")
     final_event = serialize_runtime_step_event_jsonl(history[-1]).encode()
@@ -259,6 +268,127 @@ def _validate_persistence(
     ):
         _raise("persistence_contract")
     return state
+
+
+def _load_phase155_compatible_history(
+    workflow: WorkflowDefinition,
+    state_path: Path,
+    events_path: Path,
+) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
+    """Strict-first Phase 65 fallback bounded to the exact Phase-155 domain.
+
+    Reachable only when the shared strict loader rejects. Reconstructs through
+    the public storage loader and re-validates the complete shared strict
+    terminal contract with the single relaxation that succeeded predecessors
+    keep exact built-in str output_text, empty or non-empty. Bounded to exact
+    built-in int current_step_index >= 6. No predecessor provider/request-ID
+    gating; Phase 65 target matching stays `==` on this path.
+    """
+    try:
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state_path, events_path)
+        )
+    except (
+        WorkflowExecutionDataError,
+        WorkflowExecutionHistoryInconsistencyError,
+        WorkflowExecutionLoadError,
+        OSError,
+    ):
+        _raise("terminal_contract")
+    state, events = history.state, history.events
+    if not (
+        state.status in ("succeeded", "failed")
+        and state.workflow_id == workflow.id
+        and events
+        and type(state.current_step_index) is int
+        and state.current_step_index >= 6
+        and state.current_step_index <= len(workflow.steps)
+    ):
+        _raise("terminal_contract")
+    current = workflow.steps[state.current_step_index - 1]
+    if (
+        current.id != state.current_step_id
+        or current.employee != state.current_employee_id
+    ):
+        _raise("terminal_contract")
+    expected_ids = (
+        tuple(step.id for step in workflow.steps[: state.current_step_index])
+        if state.status == "succeeded"
+        else tuple(step.id for step in workflow.steps[: state.current_step_index - 1])
+    )
+    if state.completed_step_ids != expected_ids:
+        _raise("terminal_contract")
+    prior_ids = expected_ids[:-1] if state.status == "succeeded" else expected_ids
+    if len(events) != len(prior_ids) + 1:
+        _raise("terminal_contract")
+    for event, step_id in zip(events[:-1], prior_ids, strict=True):
+        step_index = next(
+            (
+                index
+                for index, step in enumerate(workflow.steps, 1)
+                if step.id == step_id
+            ),
+            0,
+        )
+        if not (
+            event.event_type == "step_succeeded"
+            and event.workflow_id == state.workflow_id
+            and event.step_id == step_id
+            and event.step_index == step_index
+            and event.employee_id == workflow.steps[step_index - 1].employee
+            and event.previous_status == "running"
+            and event.next_status == "succeeded"
+            and event.failure_category is None
+            and type(event.response_id) is str
+            and event.response_id != ""
+            and type(event.output_text) is str
+            and event.message is None
+        ):
+            _raise("terminal_contract")
+    _validate_phase155_terminal_event(state, events[-1], workflow)
+    return state, events
+
+
+def _validate_phase155_terminal_event(
+    state: WorkflowExecutionState, event: RuntimeStepEvent, workflow: WorkflowDefinition
+) -> None:
+    """Keep the complete shared strict terminal semantics on the fallback."""
+    allow_empty_success_output = (
+        state.status == "succeeded" and state.current_step_index < len(workflow.steps)
+    )
+    base = (
+        event.workflow_id == state.workflow_id
+        and event.step_id == state.current_step_id
+        and event.step_index == state.current_step_index
+        and event.employee_id == state.current_employee_id
+        and event.previous_status == "running"
+    )
+    if state.status == "succeeded":
+        valid = (
+            base
+            and event.event_type == "step_succeeded"
+            and event.next_status == "succeeded"
+            and state.last_failure_category is None
+            and event.failure_category is None
+            and type(event.response_id) is str
+            and event.response_id != ""
+            and type(event.output_text) is str
+            and (allow_empty_success_output or event.output_text != "")
+            and event.message is None
+        )
+    else:
+        valid = (
+            base
+            and event.event_type == "step_failed"
+            and event.next_status == "failed"
+            and state.last_failure_category in _FAILURE_CATEGORIES
+            and event.failure_category == state.last_failure_category
+            and event.response_id is None
+            and event.output_text is None
+            and isinstance(event.message, str)
+        )
+    if not valid:
+        _raise("terminal_contract")
 
 
 def _validate_outcome(value: object, state: WorkflowExecutionState) -> None:
