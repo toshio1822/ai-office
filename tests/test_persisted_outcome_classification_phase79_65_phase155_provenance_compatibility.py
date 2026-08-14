@@ -8,6 +8,9 @@ import pytest
 
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import PersistedExecutionOutcome
+from ai_office.engine.persisted_execution_outcome_reentry import (
+    classify_persisted_execution_outcome_reentry,
+)
 from ai_office.engine.persisted_outcome_classification_routing_phase_bridge_continuation import (
     PersistedOutcomeClassificationRoutingPhaseBridgeContinuationCompatibilityError,
     route_persisted_outcome_classification_routing_phase_bridge_continuation,
@@ -17,7 +20,6 @@ from ai_office.engine.persisted_outcome_classification_routing_phase_bridge_cycl
     route_persisted_outcome_classification_routing_phase_bridge_cycle_continuation,
 )
 from ai_office.engine.persisted_terminal_outcome_classification_phase_bridge_reentry import (
-    PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError,
     route_persisted_terminal_outcome_classification_phase_bridge_reentry,
 )
 from ai_office.engine.persisted_terminal_outcome_classification_routing_phase_bridge_reentry import (
@@ -298,31 +300,50 @@ def test_real_segment_synthetic_seam_delegates_once(tmp_path: Path, status: str)
     out, calls, handoffs, seam_values = run_real_segment(values, status)
     assert_segment_ok(values, out, calls, handoffs, seam_values)
     assert_targets_unchanged(values, before)
-    # Inline Phase 58 next-seam reference: the same valid persisted history is
-    # still rejected by real Phase 58 before Phase 51 with exact
-    # terminal_contract, proving the Phase 165 fallback stops at Phase 58.
+    # Inline Phase 166 next-seam reference: real Phase 58 now accepts the same
+    # valid persisted history and delegates exactly once to a synthetic Phase 51
+    # seam with four-argument identity, proving the Phase 166 fallback reaches
+    # Phase 51.
     phase51_calls = {"phase51": 0}
+    phase51_handoffs: list[tuple[object, ...]] = []
+    phase51_seam_values: list[object] = []
 
-    def phase51_seam(*_: object) -> object:
+    def phase51_seam(
+        result: object, workflow: object, state: object, events: object
+    ) -> object:
         phase51_calls["phase51"] += 1
-        pytest.fail("Phase 51 must not be called")
+        phase51_handoffs.append((result, workflow, state, events))
+        phase51_seam_values.append(six_step_outcome(status))
+        return phase51_seam_values[-1]
 
-    with pytest.raises(
-        PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError
-    ) as caught:
-        route_persisted_terminal_outcome_classification_phase_bridge_reentry(
-            values["result"],  # type: ignore[arg-type]
-            values["workflow"],  # type: ignore[arg-type]
-            values["state_path"],  # type: ignore[arg-type]
-            values["events_path"],  # type: ignore[arg-type]
-            phase51_function=phase51_seam,  # type: ignore[arg-type]
-        )
-    assert (
-        type(caught.value)
-        is PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError
+    phase58_out = route_persisted_terminal_outcome_classification_phase_bridge_reentry(
+        values["result"],  # type: ignore[arg-type]
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+        phase51_function=phase51_seam,  # type: ignore[arg-type]
     )
-    assert caught.value.detail.classification == "terminal_contract"
-    assert phase51_calls == {"phase51": 0}
+    assert phase51_calls == {"phase51": 1}
+    assert phase58_out is phase51_seam_values[0]
+    expected_args = tuple(
+        values[key] for key in ("result", "workflow", "state_path", "events_path")
+    )
+    assert len(phase51_handoffs) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(phase51_handoffs[0], expected_args, strict=True)
+    )
+    assert_targets_unchanged(values, before)
+    # Inline Phase 166 review proof (Phase 165 maintenance): real Phase 37
+    # directly classifies the same intact persisted history via the public
+    # loader, returning the exact expected outcome fields with all targets
+    # unchanged.
+    phase37_out = classify_persisted_execution_outcome_reentry(
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+    )
+    assert phase37_out == six_step_outcome(status)
     assert_targets_unchanged(values, before)
 
 
