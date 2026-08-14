@@ -340,10 +340,12 @@ def test_real_chain_synthetic_seam_success_delegates_once(
     phase115_calls = {"phase115": 0}
     handoffs: list[tuple[object, ...]] = []
 
+    synthetic_phase115_decision = expected_decision()
+
     def fake115(result: object, workflow: object, state: object, events: object) -> object:
         phase115_calls["phase115"] += 1
         handoffs.append((result, workflow, state, events))
-        return expected_decision()
+        return synthetic_phase115_decision
 
     phase115_out = route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
         outcome,
@@ -367,7 +369,7 @@ def test_real_chain_synthetic_seam_success_delegates_once(
             strict=True,
         )
     )
-    assert phase115_out is expected_decision() or phase115_out is not outcome
+    assert phase115_out is synthetic_phase115_decision
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
     # Inline strict-seam proof: real Phase 101 still rejects the same persisted
     # Phase-155 history with exact terminal_contract and zero Phase 94 calls,
