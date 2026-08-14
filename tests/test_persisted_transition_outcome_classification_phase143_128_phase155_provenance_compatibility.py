@@ -27,7 +27,6 @@ from ai_office.engine.persisted_outcome_classification_routing_phase_bridge_cycl
     route_persisted_outcome_classification_routing_phase_bridge_cycle_continuation,
 )
 from ai_office.engine.persisted_terminal_outcome_classification_phase_bridge_reentry import (
-    PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError,
     route_persisted_terminal_outcome_classification_phase_bridge_reentry,
 )
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary import (
@@ -367,8 +366,9 @@ def test_real_chain_synthetic_seam_delegates_once(tmp_path: Path, status: str) -
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
     # Next-seam proof (Phase 165 amendment): real Phase 79 now accepts the same
     # persisted Phase-155 history and delegates exactly once to a synthetic
-    # Phase 72 seam; real Phase 58 remains the next explicit strict seam and
-    # still rejects the same history with terminal_contract before Phase 51.
+    # Phase 72 seam. Phase 166 amendment: real Phase 58 now accepts the same
+    # history too and delegates exactly once to a synthetic Phase 51 seam,
+    # proving the Phase 166 fallback reaches Phase 51.
     phase72_calls = {"phase72": 0}
     phase72_handoffs: list[tuple[object, ...]] = []
     phase72_seam_values: list[object] = []
@@ -397,27 +397,31 @@ def test_real_chain_synthetic_seam_delegates_once(tmp_path: Path, status: str) -
     )
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
     phase51_calls = {"phase51": 0}
+    phase51_handoffs: list[tuple[object, ...]] = []
+    phase51_seam_values: list[object] = []
 
-    def phase51_seam(*_: object) -> object:
+    def phase51_seam(
+        result: object, workflow: object, state: object, events: object
+    ) -> object:
         phase51_calls["phase51"] += 1
-        pytest.fail("Phase 51 must not be called")
+        phase51_handoffs.append((result, workflow, state, events))
+        phase51_seam_values.append(six_step_outcome(status))
+        return phase51_seam_values[-1]
 
-    with pytest.raises(
-        PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError
-    ) as caught:
-        route_persisted_terminal_outcome_classification_phase_bridge_reentry(
-            values["result"],  # type: ignore[arg-type]
-            values["workflow"],  # type: ignore[arg-type]
-            values["state_path"],  # type: ignore[arg-type]
-            values["events_path"],  # type: ignore[arg-type]
-            phase51_function=phase51_seam,  # type: ignore[arg-type]
-        )
-    assert (
-        type(caught.value)
-        is PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError
+    phase58_out = route_persisted_terminal_outcome_classification_phase_bridge_reentry(
+        values["result"],  # type: ignore[arg-type]
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+        phase51_function=phase51_seam,  # type: ignore[arg-type]
     )
-    assert caught.value.detail.classification == "terminal_contract"
-    assert phase51_calls == {"phase51": 0}
+    assert phase51_calls == {"phase51": 1}
+    assert phase58_out is phase51_seam_values[0]
+    assert len(phase51_handoffs) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(phase51_handoffs[0], expected_args, strict=True)
+    )
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 

@@ -823,3 +823,325 @@ def test_rollback_failure_overrides_all_dependency_outcomes_and_attempts_both_ta
         )
     assert caught.value.detail.classification == "dependency_rollback"
     assert state in attempts and events in attempts
+
+
+# ---------------------------------------------------------------------------
+# Phase 166: Phase-155 provenance compatibility (empty predecessor output_text)
+# ---------------------------------------------------------------------------
+
+
+_STEP_IDS = ("one", "two", "three", "four", "five", "six")
+_SENTINEL = object()
+
+
+def six_step_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "workflow",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": step_id,
+                    "name": step_id.upper(),
+                    "employee": step_id[0],
+                    "instructions": "do",
+                }
+                for step_id in _STEP_IDS
+            ],
+        }
+    )
+
+
+def predecessor_event(
+    step_id: str,
+    position: int,
+    *,
+    provider: str = "openai",
+    request_id: object = _SENTINEL,
+    output_text: object = "output",
+) -> RuntimeStepEvent:
+    resolved_request_id = (
+        f"request-{step_id}" if request_id is _SENTINEL else request_id
+    )
+    return RuntimeStepEvent(
+        "step_succeeded",
+        "workflow",
+        step_id,
+        position,
+        step_id[0],
+        "running",
+        "succeeded",
+        provider,  # type: ignore[arg-type]
+        None,
+        f"response-{step_id}",
+        resolved_request_id,  # type: ignore[arg-type]
+        output_text,  # type: ignore[arg-type]
+        None,
+    )
+
+
+def terminal_event(status: str, *, message: str = "safe failure") -> RuntimeStepEvent:
+    if status == "succeeded":
+        return RuntimeStepEvent(
+            "step_succeeded",
+            "workflow",
+            "six",
+            6,
+            "s",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response-six",
+            "request-six",
+            "output-six",
+            None,
+        )
+    return RuntimeStepEvent(
+        "step_failed",
+        "workflow",
+        "six",
+        6,
+        "s",
+        "running",
+        "failed",
+        "openai",
+        "api_error",
+        None,
+        "request-six",
+        None,
+        message,
+    )
+
+
+def setup_six(
+    tmp_path: Path,
+    status: str,
+    *,
+    earlier_empty: tuple[int, ...] = (2,),
+    message: str = "safe failure",
+) -> dict[str, object]:
+    supplied_workflow = six_step_workflow()
+    state = WorkflowExecutionState(
+        "workflow",
+        status,
+        "six",
+        6,
+        "s",
+        tuple(_STEP_IDS) if status == "succeeded" else tuple(_STEP_IDS[:5]),
+        None if status == "succeeded" else "api_error",
+    )  # type: ignore[arg-type]
+    events = [
+        predecessor_event(
+            step_id, position, output_text="" if position in earlier_empty else "output"
+        )
+        for position, step_id in enumerate(_STEP_IDS[:5], 1)
+    ]
+    events[4] = predecessor_event(
+        "five", 5, provider="openai", request_id=None, output_text=""
+    )
+    events.append(terminal_event(status, message=message))
+    state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
+    event_bytes = "".join(
+        serialize_runtime_step_event_jsonl(event) for event in events
+    ).encode("utf-8")
+    terminal_bytes = serialize_runtime_step_event_jsonl(events[-1]).encode("utf-8")
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    result = WorkflowExecutionPersistenceResult(
+        state_path, events_path, len(state_bytes), len(terminal_bytes)
+    )
+    return {
+        "result": result,
+        "workflow": supplied_workflow,
+        "state_path": state_path,
+        "events_path": events_path,
+    }
+
+
+def six_step_outcome(status: str) -> PersistedExecutionOutcome:
+    return PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure",
+        "workflow",
+        "six",
+        6,
+        "s",
+        None if status == "succeeded" else "api_error",
+    )
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_empty_predecessor_output_is_accepted_and_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    values = setup_six(
+        tmp_path,
+        status,
+        earlier_empty=(2,),
+        message="" if status == "failed" else "safe failure",
+    )
+    expected = six_step_outcome(status)
+    before = (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        values["events_path"].read_bytes(),  # type: ignore[union-attr]
+    )
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*args: object) -> PersistedExecutionOutcome:
+        calls.append(args)
+        assert args == (
+            values["result"],
+            values["workflow"],
+            values["state_path"],
+            values["events_path"],
+        )
+        return expected
+
+    returned = route_persisted_terminal_outcome_classification_phase_bridge_reentry(
+        values["result"],  # type: ignore[arg-type]
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+        phase51_function=fake,
+    )
+    assert returned is expected
+    assert len(calls) == 1
+    assert (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        values["events_path"].read_bytes(),  # type: ignore[union-attr]
+    ) == before
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_multiple_earlier_empty_outputs_are_accepted_and_delegate_once(
+    tmp_path: Path, status: str
+) -> None:
+    values = setup_six(
+        tmp_path,
+        status,
+        earlier_empty=(1, 3),
+        message="" if status == "failed" else "safe failure",
+    )
+    expected = six_step_outcome(status)
+    before = (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        values["events_path"].read_bytes(),  # type: ignore[union-attr]
+    )
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*args: object) -> PersistedExecutionOutcome:
+        calls.append(args)
+        assert args == (
+            values["result"],
+            values["workflow"],
+            values["state_path"],
+            values["events_path"],
+        )
+        return expected
+
+    returned = route_persisted_terminal_outcome_classification_phase_bridge_reentry(
+        values["result"],  # type: ignore[arg-type]
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+        phase51_function=fake,
+    )
+    assert returned is expected
+    assert len(calls) == 1
+    assert (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        values["events_path"].read_bytes(),  # type: ignore[union-attr]
+    ) == before
+
+
+def test_none_predecessor_output_is_rejected_before_phase51(tmp_path: Path) -> None:
+    values = setup_six(tmp_path, "succeeded")
+    events_path = values["events_path"]
+    lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    import json
+
+    # Step two keeps its non-empty built-in request_id; only output_text becomes
+    # None. The immediate step five keeps request_id None and empty output_text.
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("two", 2, output_text=None)
+    )
+    mutated = json.loads(replacement)
+    assert mutated["request_id"] == "request-two"
+    assert mutated["output_text"] is None
+    events_path.write_text(  # type: ignore[union-attr]
+        lines[0] + replacement + "".join(lines[2:]), encoding="utf-8"
+    )
+    before = (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        events_path.read_bytes(),  # type: ignore[union-attr]
+    )
+    calls = {"phase51": 0}
+
+    def fail(*_: object) -> object:
+        calls["phase51"] += 1
+        pytest.fail("no dependency may be called")
+
+    with pytest.raises(
+        PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError
+    ) as caught:
+        route_persisted_terminal_outcome_classification_phase_bridge_reentry(
+            values["result"],  # type: ignore[arg-type]
+            values["workflow"],  # type: ignore[arg-type]
+            values["state_path"],  # type: ignore[arg-type]
+            values["events_path"],  # type: ignore[arg-type]
+            phase51_function=fail,  # type: ignore[arg-type]
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == {"phase51": 0}
+    assert (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        events_path.read_bytes(),  # type: ignore[union-attr]
+    ) == before
+
+
+def test_non_string_predecessor_output_is_rejected_before_phase51(
+    tmp_path: Path,
+) -> None:
+    values = setup_six(tmp_path, "succeeded")
+    events_path = values["events_path"]
+    lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    import json
+
+    # Immediate predecessor step five keeps request_id None and provider
+    # "openai"; its output_text is mutated to a representative non-string.
+    payload = json.loads(lines[4])
+    assert payload["step_id"] == "five"
+    assert payload["request_id"] is None
+    assert payload["provider"] == "openai"
+    assert payload["output_text"] == ""
+    payload["output_text"] = 1
+    lines[4] = json.dumps(payload, separators=(",", ":")) + "\n"
+    events_path.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
+    before = (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        events_path.read_bytes(),  # type: ignore[union-attr]
+    )
+    calls = {"phase51": 0}
+
+    def fail(*_: object) -> object:
+        calls["phase51"] += 1
+        pytest.fail("no dependency may be called")
+
+    with pytest.raises(
+        PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError
+    ) as caught:
+        route_persisted_terminal_outcome_classification_phase_bridge_reentry(
+            values["result"],  # type: ignore[arg-type]
+            values["workflow"],  # type: ignore[arg-type]
+            values["state_path"],  # type: ignore[arg-type]
+            values["events_path"],  # type: ignore[arg-type]
+            phase51_function=fail,  # type: ignore[arg-type]
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == {"phase51": 0}
+    assert (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        events_path.read_bytes(),  # type: ignore[union-attr]
+    ) == before
