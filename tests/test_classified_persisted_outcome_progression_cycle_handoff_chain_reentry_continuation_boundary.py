@@ -1273,7 +1273,29 @@ def test_phase155_six_step_success_delegates_once_with_empty_and_none_provenance
 
     returned = call(result, supplied_workflow, state, events, dependency)
     assert returned is decision
-    assert calls == [(result, supplied_workflow, state, events)]
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0], (result, supplied_workflow, state, events), strict=True
+    ):
+        assert actual is expected
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    # Inline pin: Phase 129 preserves its existing request-ID policy; a
+    # terminal request_id="" stays rejected with exact terminal_contract and
+    # zero Phase 122 calls.
+    rewrite_event(events, 5, request_id="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    forbidden_calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal forbidden_calls
+        forbidden_calls += 1
+        raise AssertionError("Phase 122 must not be called")
+
+    assert_rejected(
+        result, supplied_workflow, state, events, "terminal_contract", forbidden
+    )
+    assert forbidden_calls == 0
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
@@ -1314,7 +1336,31 @@ def test_phase155_six_step_multiple_empty_outputs_success_delegates_once(
 
     returned = call(result, supplied_workflow, state, events, dependency)
     assert returned is decision
-    assert calls == [(result, supplied_workflow, state, events)]
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0], (result, supplied_workflow, state, events), strict=True
+    ):
+        assert actual is expected
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    # Inline pin: Phase 129 preserves its Phase-140/legacy persisted-success
+    # terminal empty-output compatibility exactly — the new Phase-155 path does
+    # not broaden it. With empty predecessor outputs the final terminal success
+    # output must stay non-empty, so terminal output_text="" stays rejected with
+    # exact terminal_contract and zero Phase 122 calls.
+    rewrite_event(events, 5, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    forbidden_calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal forbidden_calls
+        forbidden_calls += 1
+        raise AssertionError("Phase 122 must not be called")
+
+    assert_rejected(
+        result, supplied_workflow, state, events, "terminal_contract", forbidden
+    )
+    assert forbidden_calls == 0
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 

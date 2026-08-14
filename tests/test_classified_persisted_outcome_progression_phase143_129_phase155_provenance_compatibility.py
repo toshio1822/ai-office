@@ -179,9 +179,17 @@ def reload_and_assert_provenance(
     for position in earlier_empty:
         assert events[position - 1].step_id == _STEP_IDS[position - 1]
         assert events[position - 1].output_text == ""
+    # Issue #341: earlier predecessor request IDs stay exact non-empty built-in
+    # strings at Phase 144 / 136.
+    for position in (1, 2, 3, 4):
+        assert isinstance(events[position - 1].request_id, str)
+        assert events[position - 1].request_id
     assert events[4].step_id == "five"
     assert events[4].output_text == ""
     assert events[4].request_id is None
+    # Issue #341: the immediate predecessor provider is exactly "openai" where
+    # the existing boundary requires it.
+    assert events[4].provider == "openai"
     assert state.status == status
     assert state.current_step_id == "six"
     assert state.current_step_index == 6
@@ -229,9 +237,10 @@ def expected_decision() -> WorkflowProgressionDecision:
     )
 
 
-def classify(values: dict[str, object]) -> PersistedExecutionOutcome:
+def classify(values: dict[str, object], status: str) -> PersistedExecutionOutcome:
     """Run the real Phase 143 public classification boundary on the persisted
-    result and require an exact PersistedExecutionOutcome."""
+    result and require an exact PersistedExecutionOutcome with the exact Issue
+    #341 Phase-155 fields."""
     outcome = route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
         values["result"],  # type: ignore[arg-type]
         values["workflow"],  # type: ignore[arg-type]
@@ -239,6 +248,16 @@ def classify(values: dict[str, object]) -> PersistedExecutionOutcome:
         values["events_path"],  # type: ignore[arg-type]
     )
     assert type(outcome) is PersistedExecutionOutcome
+    assert outcome.outcome == (
+        "persisted_success" if status == "succeeded" else "persisted_failure"
+    )
+    assert outcome.workflow_id == "w"
+    assert outcome.current_step_id == "six"
+    assert outcome.current_step_index == 6
+    assert outcome.current_employee_id == "s"
+    assert outcome.failure_category == (
+        None if status == "succeeded" else "api_error"
+    )
     return outcome
 
 
@@ -306,7 +325,7 @@ def test_real_chain_synthetic_seam_success_delegates_once(
     values = setup(tmp_path, "succeeded")
     reload_and_assert_provenance(values, "succeeded")
     before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    outcome = classify(values)
+    outcome = classify(values, "succeeded")
     out, calls, handoffs, seam_values = run_chain(values, outcome)
     assert_chain_ok(values, outcome, out, calls, handoffs, seam_values)
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
@@ -338,7 +357,7 @@ def test_real_chain_failure_stops_at_phase144_with_zero_progression_calls(
     values = setup(tmp_path, "failed")
     reload_and_assert_provenance(values, "failed")
     before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    outcome = classify(values)
+    outcome = classify(values, "failed")
     assert outcome.outcome == "persisted_failure"
     calls = {"phase136": 0, "phase129": 0, "seam122": 0}
 
@@ -363,7 +382,7 @@ def test_real_chain_multiple_earlier_empty_success_delegates_once(
     values = setup(tmp_path, "succeeded", earlier_empty=(2, 3))
     reload_and_assert_provenance(values, "succeeded", earlier_empty=(2, 3))
     before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    outcome = classify(values)
+    outcome = classify(values, "succeeded")
     out, calls, handoffs, seam_values = run_chain(values, outcome)
     assert_chain_ok(values, outcome, out, calls, handoffs, seam_values)
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
@@ -375,7 +394,7 @@ def test_real_chain_multiple_earlier_empty_failure_stops_at_phase144(
     values = setup(tmp_path, "failed", earlier_empty=(2, 3))
     reload_and_assert_provenance(values, "failed", earlier_empty=(2, 3))
     before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    outcome = classify(values)
+    outcome = classify(values, "failed")
     assert outcome.outcome == "persisted_failure"
     calls = {"phase136": 0, "phase129": 0, "seam122": 0}
 
@@ -398,7 +417,7 @@ def test_step2_output_none_mutation_is_rejected_at_phase144_before_phase136(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
-    outcome = classify(values)
+    outcome = classify(values, "succeeded")
     events = values["events_path"]
     lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(
@@ -429,7 +448,7 @@ def test_step5_output_non_string_mutation_is_rejected_at_phase144_before_phase13
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
-    outcome = classify(values)
+    outcome = classify(values, "succeeded")
     events = values["events_path"]
     lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(

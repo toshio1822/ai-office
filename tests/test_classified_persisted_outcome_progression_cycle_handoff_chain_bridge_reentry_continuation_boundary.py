@@ -1277,15 +1277,47 @@ def test_phase155_six_step_success_accepts_empty_and_none_provenance_delegates_o
         return decision
 
     assert invoke(data_set, dependency) is decision
-    assert calls == [
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0],
         (
             data_set["result"],
             data_set["workflow"],
             data_set["state_path"],
             data_set["events_path"],
-        )
-    ]
+        ),
+        strict=True,
+    ):
+        assert actual is expected
     unchanged(data_set)
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    # Inline pin: the immediate predecessor request_id="" stays rejected in
+    # the exact >=6 Phase-155 domain (empty-string predecessor request ID
+    # remains invalid at Phase 136).
+    step5 = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            steps[4], 5, provider="openai", request_id="", output_text=""
+        )
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:4]) + step5 + b"".join(lines[5:])
+    )
+    reject(data_set, "terminal_contract")
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    # Inline pin: an earlier (non-immediate) predecessor request_id=None stays
+    # rejected in the exact >=6 Phase-155 domain; only the immediate
+    # predecessor may carry request_id=None.
+    step2 = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            steps[1], 2, provider="other", request_id=None, output_text=""
+        )
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:1]) + step2 + b"".join(lines[2:])
+    )
+    reject(data_set, "terminal_contract")
 
 
 def test_phase155_six_step_failure_accepts_empty_and_none_provenance_zero_call_stop(
@@ -1326,14 +1358,42 @@ def test_phase155_six_step_multiple_empty_outputs_success_delegates_once(
         return decision
 
     assert invoke(data_set, dependency) is decision
-    assert calls == [
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0],
         (
             data_set["result"],
             data_set["workflow"],
             data_set["state_path"],
             data_set["events_path"],
-        )
-    ]
+        ),
+        strict=True,
+    ):
+        assert actual is expected
+    unchanged(data_set)
+    # Inline pin: the persisted-success terminal empty output_text stays
+    # accepted (narrow Phase-136 empty-terminal-output compatibility) and the
+    # canonical four-argument identity/order delegation still holds.
+    replace_terminal(
+        data_set, terminal_event(steps[5], 6, "succeeded", output_text="")
+    )
+    set_before(data_set)
+    calls = []
+    assert invoke(data_set, dependency) is decision
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0],
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        ),
+        strict=True,
+    ):
+        assert actual is expected
     unchanged(data_set)
 
 
