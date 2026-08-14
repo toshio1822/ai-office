@@ -890,11 +890,18 @@ def test_empty_predecessor_output_is_accepted_and_routes_once(
 
     def fake(*args: object) -> PersistedExecutionOutcome:
         calls.append(args)
-        assert args == (
-            values["result"],
-            values["workflow"],
-            values["state_path"],
-            values["events_path"],
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                args,
+                (
+                    values["result"],
+                    values["workflow"],
+                    values["state_path"],
+                    values["events_path"],
+                ),
+                strict=True,
+            )
         )
         return expected
 
@@ -911,6 +918,46 @@ def test_empty_predecessor_output_is_accepted_and_routes_once(
         values["state_path"].read_bytes(),  # type: ignore[union-attr]
         values["events_path"].read_bytes(),  # type: ignore[union-attr]
     ) == before
+    if status == "succeeded":
+        # Issue-required inline terminal-success regressions on the fallback
+        # path: terminal response_id="" and final succeeded terminal
+        # output_text="" are each independently rejected with exact
+        # terminal_contract, restoring the original terminal bytes before each
+        # mutation. Valid failed message="" acceptance stays pinned above.
+        import json
+
+        events_path = values["events_path"]  # type: ignore[union-attr]
+        original_lines = events_path.read_text(encoding="utf-8").splitlines(
+            keepends=True
+        )
+        for key in ("response_id", "output_text"):
+            mutated_lines = list(original_lines)
+            terminal = json.loads(original_lines[-1])
+            assert terminal["step_id"] == "six"
+            terminal[key] = ""
+            mutated_lines[-1] = json.dumps(terminal, separators=(",", ":")) + "\n"
+            events_path.write_text(  # type: ignore[union-attr]
+                "".join(mutated_lines), encoding="utf-8"
+            )
+            with pytest.raises(
+                PersistedTerminalOutcomeClassificationBridgeCompatibilityError
+            ) as caught:
+                route_persisted_terminal_outcome_classification_bridge_reentry(
+                    values["result"],  # type: ignore[arg-type]
+                    values["workflow"],  # type: ignore[arg-type]
+                    values["state_path"],  # type: ignore[arg-type]
+                    events_path,
+                    classification_routing_function=fake,
+                )
+            assert caught.value.detail.classification == "terminal_contract"
+            assert len(calls) == 1
+            events_path.write_text(  # type: ignore[union-attr]
+                "".join(original_lines), encoding="utf-8"
+            )
+        assert (
+            values["state_path"].read_bytes(),  # type: ignore[union-attr]
+            events_path.read_bytes(),  # type: ignore[union-attr]
+        ) == before
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
@@ -920,7 +967,7 @@ def test_multiple_earlier_empty_outputs_are_accepted_and_routes_once(
     values = setup_six(
         tmp_path,
         status,
-        earlier_empty=(1, 3),
+        earlier_empty=(2, 3),
         message="" if status == "failed" else "safe failure",
     )
     expected = six_step_outcome(status)
@@ -932,11 +979,18 @@ def test_multiple_earlier_empty_outputs_are_accepted_and_routes_once(
 
     def fake(*args: object) -> PersistedExecutionOutcome:
         calls.append(args)
-        assert args == (
-            values["result"],
-            values["workflow"],
-            values["state_path"],
-            values["events_path"],
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                args,
+                (
+                    values["result"],
+                    values["workflow"],
+                    values["state_path"],
+                    values["events_path"],
+                ),
+                strict=True,
+            )
         )
         return expected
 

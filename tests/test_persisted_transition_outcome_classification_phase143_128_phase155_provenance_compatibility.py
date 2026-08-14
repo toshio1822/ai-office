@@ -8,6 +8,9 @@ import pytest
 
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import PersistedExecutionOutcome
+from ai_office.engine.persisted_execution_outcome_reentry import (
+    classify_persisted_execution_outcome_reentry,
+)
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError,
     route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
@@ -422,6 +425,17 @@ def test_real_chain_synthetic_seam_delegates_once(tmp_path: Path, status: str) -
         actual is wanted
         for actual, wanted in zip(phase51_handoffs[0], expected_args, strict=True)
     )
+    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+    # Inline Phase 166 review proof (Phase 163 maintenance): real Phase 37
+    # directly classifies the same intact persisted history via the public
+    # loader, returning the exact expected outcome fields with all targets
+    # unchanged.
+    phase37_out = classify_persisted_execution_outcome_reentry(
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+    )
+    assert phase37_out == six_step_outcome(status)
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 

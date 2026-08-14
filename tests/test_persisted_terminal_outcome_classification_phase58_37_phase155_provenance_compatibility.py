@@ -342,8 +342,8 @@ def test_real_chain_accepts_empty_predecessor_output(
 @pytest.mark.parametrize(
     ("status", "message", "earlier_empty"),
     [
-        ("succeeded", "safe failure", (1, 3)),
-        ("failed", "safe failure", (1, 3)),
+        ("succeeded", "safe failure", (2, 3)),
+        ("failed", "safe failure", (2, 3)),
     ],
 )
 def test_real_chain_accepts_multiple_earlier_empty_outputs(
