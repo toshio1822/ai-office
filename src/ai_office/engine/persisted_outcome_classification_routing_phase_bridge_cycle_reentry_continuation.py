@@ -21,9 +21,12 @@ from ai_office.engine.terminal_history_contract import (
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
-from ai_office.runtime import WorkflowExecutionState
+from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
+    WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceResult,
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     serialize_runtime_step_event_jsonl,
 )
 
@@ -195,7 +198,7 @@ def _validate_persistence(result: WorkflowExecutionPersistenceResult, workflow: 
     except OSError:
         _raise("event_target")
     try:
-        state, history = load_strict_terminal_history(workflow, state_path, events_path)
+        state, history = _load_compatible_terminal_history(workflow, state_path, events_path)
     except (OSError, TerminalHistoryContractError):
         _raise("terminal_contract")
     if state.status not in ("succeeded", "failed"):
@@ -208,6 +211,82 @@ def _validate_persistence(result: WorkflowExecutionPersistenceResult, workflow: 
             or not events_bytes.endswith(final_event)):
         _raise("persistence_contract")
     return state
+
+
+def _load_compatible_terminal_history(workflow: WorkflowDefinition, state_path: Path, events_path: Path):
+    """Load one valid Phase-155 provenance terminal history without weakening the strict contract."""
+    try:
+        return load_strict_terminal_history(workflow, state_path, events_path)
+    except (OSError, TerminalHistoryContractError):
+        pass
+    try:
+        loaded = load_workflow_execution_history(WorkflowExecutionPersistenceTargets(state_path, events_path))
+    except (OSError, WorkflowExecutionLoadError):
+        _raise("terminal_contract")
+    if not _valid_phase155_compatible_history(workflow, loaded.state, loaded.events):
+        _raise("terminal_contract")
+    return loaded.state, loaded.events
+
+
+def _valid_phase155_compatible_history(workflow: WorkflowDefinition, state: WorkflowExecutionState, history: tuple[RuntimeStepEvent, ...]) -> bool:
+    """Bounded Phase-155 provenance compatibility: current_step_index >= 6.
+
+    Allows exact built-in str predecessor output_text to be empty or non-empty
+    (None / non-string rejected). The terminal event keeps the existing
+    _valid_event_types(...) meaning; failed terminal message stays any exact
+    built-in str including "" (no provider/request-id gating).
+    """
+    if type(state) is not WorkflowExecutionState or type(history) is not tuple:
+        return False
+    if not (type(state.current_step_index) is int and state.current_step_index >= 6
+            and state.current_step_index <= len(workflow.steps)
+            and _exact_str(state.workflow_id, workflow.id)
+            and state.status in {"succeeded", "failed"}
+            and _exact_str(state.current_step_id, workflow.steps[state.current_step_index - 1].id)
+            and _exact_str(state.current_employee_id, workflow.steps[state.current_step_index - 1].employee)
+            and type(state.completed_step_ids) is tuple
+            and all(_nonempty_str(item) for item in state.completed_step_ids)
+            and state.completed_step_ids == tuple(step.id for step in workflow.steps[: state.current_step_index if state.status == "succeeded" else state.current_step_index - 1])
+            and (state.last_failure_category is None if state.status == "succeeded"
+                 else type(state.last_failure_category) is str and state.last_failure_category in _FAILURE_CATEGORIES)):
+        return False
+    prior_steps = workflow.steps[: state.current_step_index - 1]
+    if len(history) != len(prior_steps) + 1:
+        return False
+    for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
+        if not (type(event) is RuntimeStepEvent
+                and _exact_str(event.event_type, "step_succeeded")
+                and _exact_str(event.workflow_id, state.workflow_id)
+                and _exact_str(event.step_id, step.id)
+                and type(event.step_index) is int and event.step_index == position
+                and _exact_str(event.employee_id, step.employee)
+                and _exact_str(event.previous_status, "running")
+                and _exact_str(event.next_status, "succeeded")
+                and event.failure_category is None
+                and _nonempty_str(event.response_id)
+                and type(event.output_text) is str
+                and event.message is None):
+            return False
+    return _valid_terminal_event_types(state, history[-1], workflow)
+
+
+def _valid_terminal_event_types(state: WorkflowExecutionState, event: object, workflow: WorkflowDefinition) -> bool:
+    """Strict succeeded-terminal contract for the Phase-155 fallback.
+
+    The existing succeeded terminal contract is not weakened: response_id stays
+    non-empty, final succeeded output_text stays non-empty, intermediate
+    succeeded empty output stays allowed, and failed terminal message stays any
+    exact built-in str including "".
+    """
+    if not _valid_event_types(state, event):
+        return False
+    if state.status == "succeeded":
+        allow_empty_success_output = state.current_step_index < len(workflow.steps)
+        if event.response_id == "":
+            return False
+        if not allow_empty_success_output and event.output_text == "":
+            return False
+    return True
 
 
 def _valid_event_types(state: WorkflowExecutionState, event: object) -> bool:
@@ -282,3 +361,7 @@ def _raise(classification: Classification) -> None:
 
 def _exact_str(value: object, expected: str) -> bool:
     return type(value) is str and value == expected
+
+
+def _nonempty_str(value: object) -> bool:
+    return type(value) is str and bool(value)

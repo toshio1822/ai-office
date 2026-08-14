@@ -22,6 +22,10 @@ from ai_office.engine.persisted_outcome_classification_dispatch_continuation_bou
     PersistedOutcomeClassificationDispatchContinuationCompatibilityError,
     route_persisted_outcome_classification_dispatch_continuation_boundary,
 )
+from ai_office.engine.persisted_outcome_classification_routing_phase_bridge_cycle_continuation import (
+    PersistedOutcomeClassificationRoutingPhaseBridgeCycleContinuationCompatibilityError,
+    route_persisted_outcome_classification_routing_phase_bridge_cycle_continuation,
+)
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary import (
     route_persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary,
 )
@@ -323,30 +327,62 @@ def test_real_chain_synthetic_seam_delegates_once(tmp_path: Path, status: str) -
         for actual, wanted in zip(phase114_handoffs[0], expected_args, strict=True)
     )
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
-    # Next-seam proof: real Phase 100 remains the strict seam and still rejects
-    # the same persisted Phase-155 history before Phase 93 with terminal_contract.
+    # Next-seam proof (Phase 164 amendment): real Phase 100 now accepts the same
+    # persisted Phase-155 history and delegates exactly once to a synthetic
+    # Phase 93 seam; real Phase 79 remains the next explicit strict seam and
+    # still rejects the same history with terminal_contract before Phase 72.
     phase93_calls = {"phase93": 0}
+    phase93_handoffs: list[tuple[object, ...]] = []
+    phase93_seam_values: list[object] = []
 
-    def phase93_seam(*_: object) -> object:
+    def phase93_seam(
+        result: object, workflow: object, state: object, events: object
+    ) -> object:
         phase93_calls["phase93"] += 1
-        pytest.fail("Phase 93 must not be called")
+        phase93_handoffs.append((result, workflow, state, events))
+        phase93_seam_values.append(six_step_outcome(status))
+        return phase93_seam_values[-1]
+
+    phase100_out = route_persisted_outcome_classification_dispatch_continuation_boundary(
+        values["result"],  # type: ignore[arg-type]
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+        phase93_function=phase93_seam,  # type: ignore[arg-type]
+    )
+    assert phase93_calls == {"phase93": 1}
+    assert phase100_out is phase93_seam_values[0]
+    expected_args = tuple(
+        values[key] for key in ("result", "workflow", "state_path", "events_path")
+    )
+    assert len(phase93_handoffs) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(phase93_handoffs[0], expected_args, strict=True)
+    )
+    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+    phase72_calls = {"phase72": 0}
+
+    def phase72_seam(*_: object) -> object:
+        phase72_calls["phase72"] += 1
+        pytest.fail("Phase 72 must not be called")
 
     with pytest.raises(
-        PersistedOutcomeClassificationDispatchContinuationCompatibilityError
+        PersistedOutcomeClassificationRoutingPhaseBridgeCycleContinuationCompatibilityError
     ) as caught:
-        route_persisted_outcome_classification_dispatch_continuation_boundary(
+        route_persisted_outcome_classification_routing_phase_bridge_cycle_continuation(
             values["result"],  # type: ignore[arg-type]
             values["workflow"],  # type: ignore[arg-type]
             values["state_path"],  # type: ignore[arg-type]
             values["events_path"],  # type: ignore[arg-type]
-            phase93_function=phase93_seam,  # type: ignore[arg-type]
+            phase72_function=phase72_seam,  # type: ignore[arg-type]
         )
     assert (
         type(caught.value)
-        is PersistedOutcomeClassificationDispatchContinuationCompatibilityError
+        is PersistedOutcomeClassificationRoutingPhaseBridgeCycleContinuationCompatibilityError
     )
     assert caught.value.detail.classification == "terminal_contract"
-    assert phase93_calls == {"phase93": 0}
+    assert phase72_calls == {"phase72": 0}
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
