@@ -16,6 +16,10 @@ from ai_office.engine.persisted_outcome_classification_routing_phase_bridge_cycl
     PersistedOutcomeClassificationRoutingPhaseBridgeCycleContinuationCompatibilityError,
     route_persisted_outcome_classification_routing_phase_bridge_cycle_continuation,
 )
+from ai_office.engine.persisted_terminal_outcome_classification_phase_bridge_reentry import (
+    PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError,
+    route_persisted_terminal_outcome_classification_phase_bridge_reentry,
+)
 from ai_office.engine.persisted_transition_outcome_classification_cycle_continuation_boundary import (
     route_persisted_transition_outcome_classification_cycle_continuation_boundary,
 )
@@ -334,28 +338,60 @@ def test_real_segment_synthetic_seam_delegates_once(tmp_path: Path, status: str)
         for actual, wanted in zip(phase93_handoffs[0], expected_args, strict=True)
     )
     assert_targets_unchanged(values, before)
+    # Inline next-seam references (Phase 165 amendment): the same persisted
+    # Phase-155 history is now accepted by real Phase 79 and delegated exactly
+    # once to a synthetic Phase 72 seam, while real Phase 58 remains the next
+    # explicit strict seam and still rejects it with terminal_contract before
+    # Phase 51, proving the fallback stays bounded to the 79/72/65 segment.
     phase72_calls = {"phase72": 0}
+    phase72_handoffs: list[tuple[object, ...]] = []
+    phase72_seam_values: list[object] = []
 
-    def phase72_seam(*_: object) -> object:
+    def phase72_seam(
+        result: object, workflow: object, state: object, events: object
+    ) -> object:
         phase72_calls["phase72"] += 1
-        pytest.fail("Phase 72 must not be called")
+        phase72_handoffs.append((result, workflow, state, events))
+        phase72_seam_values.append(six_step_outcome(status))
+        return phase72_seam_values[-1]
+
+    phase79_out = route_persisted_outcome_classification_routing_phase_bridge_cycle_continuation(
+        values["result"],  # type: ignore[arg-type]
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+        phase72_function=phase72_seam,  # type: ignore[arg-type]
+    )
+    assert phase72_calls == {"phase72": 1}
+    assert phase79_out is phase72_seam_values[0]
+    assert len(phase72_handoffs) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(phase72_handoffs[0], expected_args, strict=True)
+    )
+    assert_targets_unchanged(values, before)
+    phase51_calls = {"phase51": 0}
+
+    def phase51_seam(*_: object) -> object:
+        phase51_calls["phase51"] += 1
+        pytest.fail("Phase 51 must not be called")
 
     with pytest.raises(
-        PersistedOutcomeClassificationRoutingPhaseBridgeCycleContinuationCompatibilityError
+        PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError
     ) as caught:
-        route_persisted_outcome_classification_routing_phase_bridge_cycle_continuation(
+        route_persisted_terminal_outcome_classification_phase_bridge_reentry(
             values["result"],  # type: ignore[arg-type]
             values["workflow"],  # type: ignore[arg-type]
             values["state_path"],  # type: ignore[arg-type]
             values["events_path"],  # type: ignore[arg-type]
-            phase72_function=phase72_seam,  # type: ignore[arg-type]
+            phase51_function=phase51_seam,  # type: ignore[arg-type]
         )
     assert (
         type(caught.value)
-        is PersistedOutcomeClassificationRoutingPhaseBridgeCycleContinuationCompatibilityError
+        is PersistedTerminalOutcomeClassificationPhaseBridgeCompatibilityError
     )
     assert caught.value.detail.classification == "terminal_contract"
-    assert phase72_calls == {"phase72": 0}
+    assert phase51_calls == {"phase51": 0}
     assert_targets_unchanged(values, before)
 
 
