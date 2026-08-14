@@ -536,9 +536,12 @@ def test_phase155_six_step_succeeded_delegates_once(tmp_path: Path) -> None:
     assert returned is expected and len(calls) == 1
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
     # Inline: the fallback does not weaken the strict succeeded-terminal
-    # contract: an empty terminal response_id or empty final output_text is
-    # still rejected with exact terminal_contract before Phase 72.
+    # contract: an empty terminal response_id or an empty final output_text is
+    # independently rejected with exact terminal_contract before Phase 72.
+    # The original terminal bytes are restored before each mutation so the
+    # second rejection cannot be caused by the first mutation still on disk.
     for field, value in (("response_id", ""), ("output_text", "")):
+        events.write_bytes(before_events)
         terminal_lines = events.read_text(encoding="utf-8").splitlines(keepends=True)
         terminal_payload = json.loads(terminal_lines[-1])
         terminal_payload[field] = value
