@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import ai_office.engine.terminal_history_contract as _contract_module
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
     ClassifiedOutcomeRoutingPhaseBridgeContinuationError,
@@ -23,7 +22,6 @@ from ai_office.storage import (
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
-from ai_office.storage.workflow_execution_history import WorkflowExecutionLoadError
 
 
 class OutcomeSubclass(PersistedExecutionOutcome):
@@ -390,7 +388,39 @@ def test_phase155_success_delegates_once_with_identity_and_exact_return(tmp_path
     assert (state.read_bytes(), events.read_bytes()) == before
 
     # --- inline pins below (no extra collected tests) ---
-    # 1. WorkflowProgressionDecision(workflow_complete) never enters the
+    # 1. The fallback does not invent a provider/request-ID gate: an
+    #    immediate predecessor with provider="other", request_id=
+    #    "request-five", and output_text="" still delegates exactly once.
+    lines = events.read_text().splitlines(keepends=True)
+    predecessor_line = json.loads(lines[4])
+    predecessor_line.update(
+        provider="other", request_id="request-five", output_text=""
+    )
+    events.write_text(
+        "".join(lines[:4])
+        + json.dumps(predecessor_line, separators=(",", ":"))
+        + "\n"
+        + "".join(lines[5:])
+    )
+    alt_before = (state.read_bytes(), events.read_bytes())
+    alt_calls = {"count": 0}
+
+    def alt_phase73(*args: object) -> object:
+        alt_calls["count"] += 1
+        assert len(args) == 4
+        assert args[0] is result and args[1] is definition
+        assert args[2] is state and args[3] is events
+        return decision
+
+    alt_returned = route_classified_outcome_routing_phase_bridge_cycle_continuation(
+        result, definition, state, events, phase73_function=alt_phase73
+    )
+    assert alt_returned is decision
+    assert alt_calls["count"] == 1
+    assert (state.read_bytes(), events.read_bytes()) == alt_before
+    events.write_bytes(before[1])
+
+    # 2. WorkflowProgressionDecision(workflow_complete) never enters the
     #    Phase-155 fallback: the same empty-predecessor history stays strict.
     complete_value = completion(index=6, step_id="six", employee="s")
     dep_calls = {"count": 0}
@@ -405,7 +435,7 @@ def test_phase155_success_delegates_once_with_identity_and_exact_return(tmp_path
     assert dep_calls["count"] == 0
     assert (state.read_bytes(), events.read_bytes()) == before
 
-    # 2. Terminal succeeded response_id="" stays rejected: the fallback does
+    # 3. Terminal succeeded response_id="" stays rejected: the fallback does
     #    not weaken the terminal-success contract.
     lines = events.read_text().splitlines(keepends=True)
     terminal_line = json.loads(lines[-1])
@@ -417,7 +447,7 @@ def test_phase155_success_delegates_once_with_identity_and_exact_return(tmp_path
     assert dep_calls["count"] == 0
     events.write_bytes(before[1])
 
-    # 3. Final terminal succeeded output_text="" stays rejected.
+    # 4. Final terminal succeeded output_text="" stays rejected.
     lines = events.read_text().splitlines(keepends=True)
     terminal_line = json.loads(lines[-1])
     terminal_line["output_text"] = ""
@@ -428,24 +458,27 @@ def test_phase155_success_delegates_once_with_identity_and_exact_return(tmp_path
     assert dep_calls["count"] == 0
     events.write_bytes(before[1])
 
-    # 4. Transient strict-path storage load failure surfaces as exact
-    #    terminal_contract with NO fallback retry read (load-call count
-    #    proof), zero dependency calls and unchanged targets.
-    original_load = _contract_module.load_workflow_execution_history
-    load_calls = {"count": 0}
+    # 5. A transient OSError from the strict-storage state read surfaces as
+    #    exact terminal_contract: the initial capture read succeeds, the
+    #    failing strict read is not retried through the fallback, dependency
+    #    is not called, and both targets remain unchanged.
+    original_read_bytes = Path.read_bytes
+    read_calls: list[Path] = []
 
-    def failing_load(*_args: object, **_kwargs: object) -> object:
-        load_calls["count"] += 1
-        raise WorkflowExecutionLoadError("transient strict-path read failure")
+    def failing_strict_read(path: Path) -> bytes:
+        read_calls.append(path)
+        if path == state and read_calls.count(state) == 2:
+            raise OSError("transient strict-path read failure")
+        return original_read_bytes(path)
 
-    monkeypatch.setattr(_contract_module, "load_workflow_execution_history", failing_load)
+    monkeypatch.setattr(Path, "read_bytes", failing_strict_read)
     with pytest.raises(ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError) as caught:
         route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=forbidden)
     assert caught.value.detail.classification == "terminal_contract"
-    assert load_calls["count"] == 1  # no fallback retry read
+    assert read_calls.count(state) == 2  # capture + one failing strict read
+    assert read_calls.count(events) == 1  # no fallback retry read
     assert dep_calls["count"] == 0
-    assert (state.read_bytes(), events.read_bytes()) == before
-    monkeypatch.setattr(_contract_module, "load_workflow_execution_history", original_load)
+    assert (state.read_bytes(), events.read_bytes()) == before  # fresh read succeeds
 
 
 def test_phase155_failure_empty_message_is_unchanged_zero_call_stop(tmp_path: Path) -> None:
