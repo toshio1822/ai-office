@@ -13,6 +13,10 @@ from ai_office.engine.classified_outcome_cycle_closure_continuation_boundary imp
     ClassifiedOutcomeCycleClosureContinuationCompatibilityError as Phase101CompatError,
     route_classified_outcome_cycle_closure_continuation_boundary,
 )
+from ai_office.engine.classified_outcome_routing_phase_bridge_cycle_continuation import (
+    ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError as Phase80CompatError,
+    route_classified_outcome_routing_phase_bridge_cycle_continuation,
+)
 from ai_office.engine.classified_persisted_outcome_progression_cycle_continuation_boundary import (
     route_classified_persisted_outcome_progression_cycle_continuation_boundary,
 )
@@ -328,25 +332,63 @@ def test_real_chain_synthetic_seam_success_delegates_once(
     out, calls, handoffs, seam_values = run_chain(values, outcome)
     assert_chain_ok(values, outcome, out, calls, handoffs, seam_values)
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
-    # Inline next-seam proof: real Phase 101 stays the explicit strict seam and
-    # rejects the same persisted Phase-155 history with exact terminal_contract,
-    # zero Phase 94 calls and unchanged targets.
+    # Inline next-seam proof: real Phase 101 now accepts the intact persisted
+    # Phase-155 success and delegates to a synthetic Phase 94 seam exactly once
+    # with canonical four-argument object identity, exact returned-object
+    # identity and unchanged targets.
     phase94_calls = {"phase94": 0}
+    phase94_handoffs: list[tuple[object, ...]] = []
 
-    def fake94(*_: object) -> object:
+    synthetic_phase94_decision = expected_decision()
+
+    def fake94(result: object, workflow: object, state: object, events: object) -> object:
         phase94_calls["phase94"] += 1
-        pytest.fail("Phase 94 must not be called")
+        phase94_handoffs.append((result, workflow, state, events))
+        return synthetic_phase94_decision
 
-    with pytest.raises(Phase101CompatError) as caught:
-        route_classified_outcome_cycle_closure_continuation_boundary(
+    phase94_out = route_classified_outcome_cycle_closure_continuation_boundary(
+        outcome,
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+        phase94_function=fake94,  # type: ignore[arg-type]
+    )
+    assert phase94_calls == {"phase94": 1}
+    assert len(phase94_handoffs) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            phase94_handoffs[0],
+            (
+                outcome,
+                values["workflow"],
+                values["state_path"],
+                values["events_path"],
+            ),
+            strict=True,
+        )
+    )
+    assert phase94_out is synthetic_phase94_decision
+    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+    # Inline next-seam proof: real Phase 80 stays the explicit strict seam and
+    # rejects the same persisted Phase-155 history with exact terminal_contract,
+    # zero Phase 73 calls and unchanged targets.
+    phase73_calls = {"phase73": 0}
+
+    def fake73(*_: object) -> object:
+        phase73_calls["phase73"] += 1
+        pytest.fail("Phase 73 must not be called")
+
+    with pytest.raises(Phase80CompatError) as caught:
+        route_classified_outcome_routing_phase_bridge_cycle_continuation(
             outcome,
             values["workflow"],  # type: ignore[arg-type]
             values["state_path"],  # type: ignore[arg-type]
             values["events_path"],  # type: ignore[arg-type]
-            phase94_function=fake94,  # type: ignore[arg-type]
+            phase73_function=fake73,  # type: ignore[arg-type]
         )
     assert caught.value.detail.classification == "terminal_contract"
-    assert phase94_calls["phase94"] == 0
+    assert phase73_calls["phase73"] == 0
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
