@@ -266,13 +266,19 @@ def _check_terminal(
     expected_status: Literal["succeeded", "failed"],
 ) -> None:
     allow_empty_success_output = False
+    allow_empty_predecessor_output: bool | None = None
+    phase155_compatible = (
+        type(result) is PersistedExecutionOutcome
+        and type(result.current_step_index) is int
+        and result.current_step_index >= 6
+    )
     try:
         state, history = load_strict_terminal_history(workflow, state_path, events_path)
     except Exception:
         if not (
             type(result) is PersistedExecutionOutcome
             and result.outcome == "persisted_success"
-        ):
+        ) and not phase155_compatible:
             _fail("terminal_contract")
         try:
             loaded = load_workflow_execution_history(
@@ -286,8 +292,11 @@ def _check_terminal(
             and type(history[-1].output_text) is str
             and history[-1].output_text == ""
         ):
-            _fail("terminal_contract")
-        allow_empty_success_output = True
+            if not phase155_compatible:
+                _fail("terminal_contract")
+            allow_empty_predecessor_output = True
+        else:
+            allow_empty_success_output = True
     if (
         not allow_empty_success_output
         and type(result) is PersistedExecutionOutcome
@@ -313,6 +322,7 @@ def _check_terminal(
             and result.outcome == "persisted_success"
         ),
         allow_empty_success_output=allow_empty_success_output,
+        allow_empty_predecessor_output=allow_empty_predecessor_output,
     ):
         _fail("terminal_contract")
 
@@ -326,6 +336,7 @@ def _valid_terminal_history(
     expected_failure: object,
     require_openai_provider: bool,
     allow_empty_success_output: bool,
+    allow_empty_predecessor_output: bool | None = None,
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
         return False
@@ -366,11 +377,12 @@ def _valid_terminal_history(
         return False
     if any(type(event) is not RuntimeStepEvent for event in history):
         return False
-    allow_empty_predecessor_output = (
-        allow_empty_success_output
-        and state.status == "succeeded"
-        and state.current_step_index < len(workflow.steps)
-    )
+    if allow_empty_predecessor_output is None:
+        allow_empty_predecessor_output = (
+            allow_empty_success_output
+            and state.status == "succeeded"
+            and state.current_step_index < len(workflow.steps)
+        )
     for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
         if not _valid_event_shape(event) or not _valid_predecessor(
             event,

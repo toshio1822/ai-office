@@ -64,6 +64,24 @@ def workflow() -> WorkflowDefinition:
     )
 
 
+def workflow_six() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "a", "instructions": "one"},
+                {"id": "two", "name": "Two", "employee": "b", "instructions": "two"},
+                {"id": "three", "name": "Three", "employee": "c", "instructions": "three"},
+                {"id": "four", "name": "Four", "employee": "d", "instructions": "four"},
+                {"id": "five", "name": "Five", "employee": "e", "instructions": "five"},
+                {"id": "six", "name": "Six", "employee": "f", "instructions": "six"},
+            ],
+        }
+    )
+
+
 def predecessor_event(step_id: str, index: int, employee: str) -> RuntimeStepEvent:
     return RuntimeStepEvent(
         "step_succeeded",
@@ -121,6 +139,58 @@ def setup(
     bytes,
 ]:
     supplied_workflow = workflow()
+    current = supplied_workflow.steps[index - 1]
+    completed = (
+        tuple(step.id for step in supplied_workflow.steps[:index])
+        if status == "succeeded"
+        else tuple(step.id for step in supplied_workflow.steps[: index - 1])
+    )
+    state_model = WorkflowExecutionState(
+        "w",
+        status,
+        current.id,
+        index,
+        current.employee,
+        completed,
+        None if status == "succeeded" else "api_error",
+    )
+    prior = tuple(
+        predecessor_event(step.id, position, step.employee)
+        for position, step in enumerate(supplied_workflow.steps[: index - 1], 1)
+    )
+    events = (*prior, terminal_event(supplied_workflow, index, status))
+    state_bytes = serialize_workflow_execution_state_json(state_model).encode("utf-8")
+    event_bytes = "".join(
+        serialize_runtime_step_event_jsonl(event) for event in events
+    ).encode("utf-8")
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    result: object = PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure",
+        "w",
+        current.id,
+        index,
+        current.employee,
+        None if status == "succeeded" else "api_error",
+    )
+    return result, supplied_workflow, state_path, events_path, state_bytes, event_bytes
+
+
+def setup_six(
+    tmp_path: Path,
+    *,
+    status: str = "succeeded",
+) -> tuple[
+    object,
+    WorkflowDefinition,
+    Path,
+    Path,
+    bytes,
+    bytes,
+]:
+    supplied_workflow = workflow_six()
+    index = 6
     current = supplied_workflow.steps[index - 1]
     completed = (
         tuple(step.id for step in supplied_workflow.steps[:index])
@@ -1185,3 +1255,136 @@ def test_same_target_conflict_and_noncallable_dependency_are_zero_call(
         "dependency_error",
         None,
     )
+
+
+def test_phase155_six_step_success_delegates_once_with_empty_and_none_provenance(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup_six(tmp_path)
+    rewrite_event(events, 1, output_text="")
+    rewrite_event(events, 4, request_id=None, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    decision = expected_decision(supplied_workflow, 6)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    returned = call(result, supplied_workflow, state, events, dependency)
+    assert returned is decision
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_failure_returns_exact_identity_zero_call(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup_six(tmp_path, status="failed")
+    rewrite_event(events, 1, output_text="")
+    rewrite_event(events, 4, request_id=None, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 122 must not be called")
+
+    returned = call(result, supplied_workflow, state, events, forbidden)
+    assert returned is result
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_multiple_empty_outputs_success_delegates_once(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup_six(tmp_path)
+    rewrite_event(events, 1, output_text="")
+    rewrite_event(events, 2, output_text="")
+    rewrite_event(events, 4, request_id=None, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    decision = expected_decision(supplied_workflow, 6)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    returned = call(result, supplied_workflow, state, events, dependency)
+    assert returned is decision
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_multiple_empty_outputs_failure_zero_call_stop(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup_six(tmp_path, status="failed")
+    rewrite_event(events, 1, output_text="")
+    rewrite_event(events, 2, output_text="")
+    rewrite_event(events, 4, request_id=None, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 122 must not be called")
+
+    returned = call(result, supplied_workflow, state, events, forbidden)
+    assert returned is result
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_earlier_output_none_is_rejected_before_phase122(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup_six(tmp_path)
+    rewrite_event(events, 1, output_text=None)
+    rewrite_event(events, 4, request_id=None, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        state,
+        events,
+        "terminal_contract",
+        forbidden,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_phase155_six_step_immediate_output_non_string_is_rejected_before_phase122(
+    tmp_path: Path,
+) -> None:
+    result, supplied_workflow, state, events, *_ = setup_six(tmp_path)
+    rewrite_event(events, 4, request_id=None, output_text=1)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert_rejected(
+        result,
+        supplied_workflow,
+        state,
+        events,
+        "terminal_contract",
+        forbidden,
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)

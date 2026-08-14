@@ -1335,3 +1335,144 @@ def test_public_error_detail_has_only_safe_classification() -> None:
     )
     assert detail.classification == "result_type"
     assert OuterError is not None
+
+
+def phase155_six_values(
+    tmp_path: Path, *, status: str = "succeeded"
+) -> dict[str, object]:
+    """Six-step Phase-155 provenance fixture accepted by the Phase 144 fix."""
+    data_set = values(tmp_path, definition=workflow_six(), index=6, status=status)
+    steps = data_set["workflow"].steps
+    replace_predecessor(
+        data_set,
+        2,
+        predecessor_event(steps[1], 2, provider="other", output_text=""),
+    )
+    replace_predecessor(
+        data_set,
+        5,
+        predecessor_event(
+            steps[4], 5, provider="openai", request_id=None, output_text=""
+        ),
+    )
+    return data_set
+
+
+def test_phase155_six_step_success_accepts_empty_and_none_provenance_delegates_once(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path)
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert call(data_set, dependency) is decision
+    assert calls == [
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        )
+    ]
+    assert_unchanged(data_set)
+
+
+def test_phase155_six_step_failure_accepts_empty_and_none_provenance_zero_call_stop(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path, status="failed")
+    supplied = data_set["result"]
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert call(data_set, dependency) is supplied
+    assert calls == 0
+    assert_unchanged(data_set)
+
+
+def test_phase155_six_step_multiple_empty_outputs_success_delegates_once(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path)
+    steps = data_set["workflow"].steps
+    replace_predecessor(
+        data_set,
+        3,
+        predecessor_event(steps[2], 3, provider="other", output_text=""),
+    )
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert call(data_set, dependency) is decision
+    assert calls == [
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        )
+    ]
+    assert_unchanged(data_set)
+
+
+def test_phase155_six_step_multiple_empty_outputs_failure_zero_call_stop(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path, status="failed")
+    steps = data_set["workflow"].steps
+    replace_predecessor(
+        data_set,
+        3,
+        predecessor_event(steps[2], 3, provider="other", output_text=""),
+    )
+    supplied = data_set["result"]
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert call(data_set, dependency) is supplied
+    assert calls == 0
+    assert_unchanged(data_set)
+
+
+def test_phase155_six_step_earlier_output_none_is_rejected_before_phase136(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path)
+    steps = data_set["workflow"].steps
+    replace_predecessor(
+        data_set,
+        2,
+        predecessor_event(steps[1], 2, provider="other", output_text=None),
+    )
+    reject(data_set, "terminal_contract")
+
+
+def test_phase155_six_step_immediate_output_non_string_is_rejected_before_phase136(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path)
+    steps = data_set["workflow"].steps
+    replace_predecessor(
+        data_set,
+        5,
+        predecessor_event(
+            steps[4], 5, provider="openai", request_id=None, output_text=1
+        ),
+    )
+    reject(data_set, "terminal_contract")
