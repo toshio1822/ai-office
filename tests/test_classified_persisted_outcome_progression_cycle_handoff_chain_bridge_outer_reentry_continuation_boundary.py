@@ -1396,6 +1396,17 @@ def test_phase155_six_step_success_accepts_empty_and_none_provenance_delegates_o
         ),
     )
     reject(data_set, "terminal_contract")
+    # Restore the intact Phase-155 provenance (immediate predecessor step 5:
+    # provider="openai", request_id=None, output_text="") so the earlier
+    # predecessor request_id=None rejection below is proven independently,
+    # not as a side effect of the still-invalid immediate predecessor "".
+    replace_predecessor(
+        data_set,
+        5,
+        predecessor_event(
+            steps[4], 5, provider="openai", request_id=None, output_text=""
+        ),
+    )
     # Inline pin: an earlier (non-immediate) predecessor request_id=None stays
     # rejected in the exact >=6 Phase-155 domain; only the immediate
     # predecessor may carry request_id=None.
