@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import ai_office.engine.terminal_history_contract as _contract_module
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
     ClassifiedOutcomeRoutingPhaseBridgeContinuationError,
@@ -22,6 +23,7 @@ from ai_office.storage import (
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
+from ai_office.storage.workflow_execution_history import WorkflowExecutionLoadError
 
 
 class OutcomeSubclass(PersistedExecutionOutcome):
@@ -98,6 +100,65 @@ def rewrite_json(path: Path, field: str, value: object) -> None:
 
 def safe_error() -> ClassifiedOutcomeRoutingPhaseBridgeContinuationError:
     return ClassifiedOutcomeRoutingPhaseBridgeContinuationError("safe")
+
+
+_SIX = ("one", "two", "three", "four", "five", "six")
+_SENTINEL = object()
+
+
+def six_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate({
+        "id": "w", "name": "W", "description": "D",
+        "steps": [
+            {"id": step_id, "name": step_id.capitalize(), "employee": step_id[0], "instructions": step_id}
+            for step_id in _SIX
+        ],
+    })
+
+
+def six_predecessor(step_id: str, position: int, provider: object = "other", request_id: object = _SENTINEL, output_text: object = "output") -> RuntimeStepEvent:
+    resolved_request_id = f"request-{step_id}" if request_id is _SENTINEL else request_id
+    return RuntimeStepEvent(
+        "step_succeeded", "w", step_id, position, step_id[0],
+        "running", "succeeded", provider, None, f"response-{step_id}",
+        resolved_request_id, output_text, None,
+    )
+
+
+def six_terminal(status: str) -> RuntimeStepEvent:
+    if status == "succeeded":
+        return RuntimeStepEvent(
+            "step_succeeded", "w", "six", 6, "s", "running", "succeeded", "openai", None,
+            "response-six", "request-six", "output-six", None,
+        )
+    return RuntimeStepEvent(
+        "step_failed", "w", "six", 6, "s", "running", "failed", "openai", "api_error",
+        None, "request-six", None, "safe failure",
+    )
+
+
+def setup_six(tmp_path: Path, status: str, *, earlier_empty: tuple[int, ...] = (2,)) -> tuple[PersistedExecutionOutcome, WorkflowDefinition, Path, Path]:
+    definition = six_workflow()
+    state_model = WorkflowExecutionState(
+        "w", status, "six", 6, "s",
+        tuple(_SIX) if status == "succeeded" else tuple(_SIX[:5]),
+        None if status == "succeeded" else "api_error",
+    )
+    events = [
+        six_predecessor(step_id, position, output_text="" if position in earlier_empty else "output")
+        for position, step_id in enumerate(_SIX[:5], 1)
+    ]
+    events[4] = six_predecessor("five", 5, provider="openai", request_id=None, output_text="")
+    events.append(six_terminal(status))
+    state = tmp_path / "state.json"
+    events_path = tmp_path / "events.jsonl"
+    state.write_bytes(serialize_workflow_execution_state_json(state_model).encode())
+    events_path.write_bytes("".join(serialize_runtime_step_event_jsonl(event) for event in events).encode())
+    result = PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure", "w", "six", 6, "s",
+        None if status == "succeeded" else "api_error",
+    )
+    return result, definition, state, events_path
 
 
 @pytest.mark.parametrize("final", [False, True])
@@ -311,3 +372,161 @@ def test_malformed_return_call_count_one_no_retry_and_compensation(tmp_path: Pat
     with pytest.raises(ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError):
         route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=phase73)
     assert calls == 1 and (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_success_delegates_once_with_identity_and_exact_return(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result, definition, state, events = setup_six(tmp_path, "succeeded")
+    decision = completion(index=6, step_id="six", employee="s")
+    received: list[object] = []
+
+    def phase73(result_arg: object, workflow_arg: object, state_arg: object, events_arg: object) -> object:
+        received.extend((result_arg, workflow_arg, state_arg, events_arg))
+        return decision
+
+    before = (state.read_bytes(), events.read_bytes())
+    returned = route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=phase73)
+    assert returned is decision
+    assert received[0] is result and received[1] is definition and received[2] is state and received[3] is events
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+    # --- inline pins below (no extra collected tests) ---
+    # 1. WorkflowProgressionDecision(workflow_complete) never enters the
+    #    Phase-155 fallback: the same empty-predecessor history stays strict.
+    complete_value = completion(index=6, step_id="six", employee="s")
+    dep_calls = {"count": 0}
+
+    def forbidden(*_: object) -> object:
+        dep_calls["count"] += 1
+        raise AssertionError("progression dependency must not be called")
+
+    with pytest.raises(ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError) as caught:
+        route_classified_outcome_routing_phase_bridge_cycle_continuation(complete_value, definition, state, events, phase73_function=forbidden)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert dep_calls["count"] == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+    # 2. Terminal succeeded response_id="" stays rejected: the fallback does
+    #    not weaken the terminal-success contract.
+    lines = events.read_text().splitlines(keepends=True)
+    terminal_line = json.loads(lines[-1])
+    terminal_line["response_id"] = ""
+    events.write_text("".join(lines[:-1]) + json.dumps(terminal_line, separators=(",", ":")) + "\n")
+    with pytest.raises(ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError) as caught:
+        route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=forbidden)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert dep_calls["count"] == 0
+    events.write_bytes(before[1])
+
+    # 3. Final terminal succeeded output_text="" stays rejected.
+    lines = events.read_text().splitlines(keepends=True)
+    terminal_line = json.loads(lines[-1])
+    terminal_line["output_text"] = ""
+    events.write_text("".join(lines[:-1]) + json.dumps(terminal_line, separators=(",", ":")) + "\n")
+    with pytest.raises(ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError) as caught:
+        route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=forbidden)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert dep_calls["count"] == 0
+    events.write_bytes(before[1])
+
+    # 4. Transient strict-path storage load failure surfaces as exact
+    #    terminal_contract with NO fallback retry read (load-call count
+    #    proof), zero dependency calls and unchanged targets.
+    original_load = _contract_module.load_workflow_execution_history
+    load_calls = {"count": 0}
+
+    def failing_load(*_args: object, **_kwargs: object) -> object:
+        load_calls["count"] += 1
+        raise WorkflowExecutionLoadError("transient strict-path read failure")
+
+    monkeypatch.setattr(_contract_module, "load_workflow_execution_history", failing_load)
+    with pytest.raises(ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError) as caught:
+        route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=forbidden)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert load_calls["count"] == 1  # no fallback retry read
+    assert dep_calls["count"] == 0
+    assert (state.read_bytes(), events.read_bytes()) == before
+    monkeypatch.setattr(_contract_module, "load_workflow_execution_history", original_load)
+
+
+def test_phase155_failure_empty_message_is_unchanged_zero_call_stop(tmp_path: Path) -> None:
+    result, definition, state, events = setup_six(tmp_path, "failed")
+    events.write_text(events.read_text().replace('"safe failure"', '""'))
+    calls = 0
+
+    def phase73(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    before = (state.read_bytes(), events.read_bytes())
+    assert route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=phase73) is result
+    assert calls == 0 and (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_multiple_earlier_empty_success_delegates_once(tmp_path: Path) -> None:
+    result, definition, state, events = setup_six(tmp_path, "succeeded", earlier_empty=(2, 3))
+    decision = completion(index=6, step_id="six", employee="s")
+    received: list[object] = []
+
+    def phase73(result_arg: object, workflow_arg: object, state_arg: object, events_arg: object) -> object:
+        received.extend((result_arg, workflow_arg, state_arg, events_arg))
+        return decision
+
+    before = (state.read_bytes(), events.read_bytes())
+    returned = route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=phase73)
+    assert returned is decision
+    assert received[0] is result and received[1] is definition and received[2] is state and received[3] is events
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_multiple_earlier_empty_failure_is_unchanged_zero_call_stop(tmp_path: Path) -> None:
+    result, definition, state, events = setup_six(tmp_path, "failed", earlier_empty=(2, 3))
+    events.write_text(events.read_text().replace('"safe failure"', '""'))
+    calls = 0
+
+    def phase73(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    before = (state.read_bytes(), events.read_bytes())
+    assert route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=phase73) is result
+    assert calls == 0 and (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_step2_output_none_is_rejected_before_dependency(tmp_path: Path) -> None:
+    result, definition, state, events = setup_six(tmp_path, "succeeded")
+    lines = events.read_text().splitlines(keepends=True)
+    replacement = serialize_runtime_step_event_jsonl(six_predecessor("two", 2, output_text=None))
+    events.write_text(lines[0] + replacement + "".join(lines[2:]))
+    before = (state.read_bytes(), events.read_bytes())
+    calls = 0
+
+    def phase73(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError) as caught:
+        route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=phase73)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0 and (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_step5_output_non_string_is_rejected_before_dependency(tmp_path: Path) -> None:
+    result, definition, state, events = setup_six(tmp_path, "succeeded")
+    lines = events.read_text().splitlines(keepends=True)
+    replacement = serialize_runtime_step_event_jsonl(six_predecessor("five", 5, provider="openai", request_id=None, output_text=1))
+    events.write_text("".join(lines[:4]) + replacement + "".join(lines[5:]))
+    before = (state.read_bytes(), events.read_bytes())
+    calls = 0
+
+    def phase73(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError
+
+    with pytest.raises(ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError) as caught:
+        route_classified_outcome_routing_phase_bridge_cycle_continuation(result, definition, state, events, phase73_function=phase73)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0 and (state.read_bytes(), events.read_bytes()) == before

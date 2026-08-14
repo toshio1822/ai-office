@@ -14,7 +14,6 @@ from ai_office.engine.classified_outcome_cycle_closure_continuation_boundary imp
     route_classified_outcome_cycle_closure_continuation_boundary,
 )
 from ai_office.engine.classified_outcome_routing_phase_bridge_cycle_continuation import (
-    ClassifiedOutcomeRoutingPhaseBridgeCycleContinuationCompatibilityError as Phase80CompatError,
     route_classified_outcome_routing_phase_bridge_cycle_continuation,
 )
 from ai_office.engine.classified_persisted_outcome_progression_cycle_continuation_boundary import (
@@ -370,25 +369,40 @@ def test_real_chain_synthetic_seam_success_delegates_once(
     )
     assert phase94_out is synthetic_phase94_decision
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
-    # Inline next-seam proof: real Phase 80 stays the explicit strict seam and
-    # rejects the same persisted Phase-155 history with exact terminal_contract,
-    # zero Phase 73 calls and unchanged targets.
+    # Inline next-boundary proof: real Phase 80 now accepts the same persisted
+    # Phase-155 history through its local bounded fallback and delegates to
+    # public Phase 73 exactly once with canonical four-argument object
+    # identity/order, returning the exact synthetic decision object with
+    # unchanged targets and no retry.
     phase73_calls = {"phase73": 0}
+    seam_args: list[tuple[object, object, object, object]] = []
+    seam_decision = expected_decision()
 
-    def fake73(*_: object) -> object:
+    def fake73(
+        result_arg: object,
+        workflow_arg: object,
+        state_arg: object,
+        events_arg: object,
+    ) -> object:
         phase73_calls["phase73"] += 1
-        pytest.fail("Phase 73 must not be called")
+        seam_args.append((result_arg, workflow_arg, state_arg, events_arg))
+        return seam_decision
 
-    with pytest.raises(Phase80CompatError) as caught:
-        route_classified_outcome_routing_phase_bridge_cycle_continuation(
-            outcome,
-            values["workflow"],  # type: ignore[arg-type]
-            values["state_path"],  # type: ignore[arg-type]
-            values["events_path"],  # type: ignore[arg-type]
-            phase73_function=fake73,  # type: ignore[arg-type]
-        )
-    assert caught.value.detail.classification == "terminal_contract"
-    assert phase73_calls["phase73"] == 0
+    returned = route_classified_outcome_routing_phase_bridge_cycle_continuation(
+        outcome,
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
+        phase73_function=fake73,  # type: ignore[arg-type]
+    )
+    assert returned is seam_decision
+    assert phase73_calls["phase73"] == 1
+    assert len(seam_args) == 1
+    result_arg, workflow_arg, state_arg, events_arg = seam_args[0]
+    assert result_arg is outcome
+    assert workflow_arg is values["workflow"]
+    assert state_arg is values["state_path"]
+    assert events_arg is values["events_path"]
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
