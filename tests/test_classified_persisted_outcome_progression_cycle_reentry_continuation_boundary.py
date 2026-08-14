@@ -315,3 +315,456 @@ def test_rollback_failure_attempts_both_target_restores_once_without_retry(tmp_p
     assert writes.count(state) == 1
     assert writes.count(events) == 1
     assert "restore-secret" not in str(caught.value)
+
+
+_PHASE155_STEP_IDS = ("one", "two", "three", "four", "five", "six")
+_PHASE155_SENTINEL = object()
+
+
+def _phase155_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": step_id,
+                    "name": step_id.capitalize(),
+                    "employee": step_id[0],
+                    "instructions": step_id,
+                }
+                for step_id in _PHASE155_STEP_IDS
+            ],
+        }
+    )
+
+
+def _phase155_predecessor(
+    step_id: str,
+    position: int,
+    *,
+    provider: object = "other",
+    request_id: object = _PHASE155_SENTINEL,
+    output_text: object = "output",
+) -> RuntimeStepEvent:
+    resolved_request_id = (
+        f"request-{step_id}" if request_id is _PHASE155_SENTINEL else request_id
+    )
+    return RuntimeStepEvent(
+        "step_succeeded",
+        "w",
+        step_id,
+        position,
+        step_id[0],
+        "running",
+        "succeeded",
+        provider,  # type: ignore[arg-type]
+        None,
+        f"response-{step_id}",
+        resolved_request_id,  # type: ignore[arg-type]
+        output_text,  # type: ignore[arg-type]
+        None,
+    )
+
+
+def phase155_setup(
+    tmp_path: Path,
+    status: str,
+    *,
+    earlier_empty: tuple[int, ...] = (2,),
+    message: str = "safe failure",
+):
+    """Six-step Phase-155 provenance fixture shared by the Phase 168 tests.
+
+    Terminal step 6, predecessors 1-5 succeeded, step 2 (and any extra
+    ``earlier_empty`` positions) with empty ``output_text``, immediate step 5
+    with empty ``output_text``, provider ``"openai"`` and ``request_id=None``,
+    earlier request IDs exact non-empty built-in strings, and valid terminal
+    succeeded/failed variants.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    definition = _phase155_workflow()
+    state = WorkflowExecutionState(
+        "w",
+        status,
+        "six",
+        6,
+        "s",
+        tuple(_PHASE155_STEP_IDS)
+        if status == "succeeded"
+        else tuple(_PHASE155_STEP_IDS[:5]),
+        None if status == "succeeded" else "api_error",
+    )
+    events = [
+        _phase155_predecessor(
+            step_id,
+            position,
+            output_text="" if position in earlier_empty else "output",
+        )
+        for position, step_id in enumerate(_PHASE155_STEP_IDS[:5], 1)
+    ]
+    events[4] = _phase155_predecessor(
+        "five", 5, provider="openai", request_id=None, output_text=""
+    )
+    if status == "succeeded":
+        terminal = RuntimeStepEvent(
+            "step_succeeded",
+            "w",
+            "six",
+            6,
+            "s",
+            "running",
+            "succeeded",
+            "openai",
+            None,
+            "response-six",
+            "request-six",
+            "output-six",
+            None,
+        )
+        result = PersistedExecutionOutcome(
+            "persisted_success", "w", "six", 6, "s", None
+        )
+    else:
+        terminal = RuntimeStepEvent(
+            "step_failed",
+            "w",
+            "six",
+            6,
+            "s",
+            "running",
+            "failed",
+            "openai",
+            "api_error",
+            None,
+            "request-six",
+            None,
+            message,
+        )
+        result = PersistedExecutionOutcome(
+            "persisted_failure", "w", "six", 6, "s", "api_error"
+        )
+    events.append(terminal)
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_bytes(serialize_workflow_execution_state_json(state).encode("utf-8"))
+    events_path.write_bytes(
+        "".join(serialize_runtime_step_event_jsonl(event) for event in events).encode("utf-8")
+    )
+    return result, definition, state_path, events_path
+
+
+def _phase155_expected_decision() -> WorkflowProgressionDecision:
+    return WorkflowProgressionDecision(
+        "workflow_complete",
+        "w",
+        "six",
+        6,
+        "s",
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+
+
+def _phase155_replace_event(
+    events_path: Path, position: int, event: RuntimeStepEvent
+) -> None:
+    lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    replacement = serialize_runtime_step_event_jsonl(event)
+    lines[position - 1] = replacement
+    events_path.write_text("".join(lines), encoding="utf-8")
+
+
+def test_phase155_success_delegates_to_phase108_exactly_once(tmp_path: Path) -> None:
+    """Phase-155 persisted success delegates to Phase 108 exactly once with
+    canonical four-argument object identity/order, exact returned-object
+    identity, and unchanged targets."""
+    result, definition, state, events = phase155_setup(tmp_path, "succeeded")
+    before = state.read_bytes(), events.read_bytes()
+    decision = _phase155_expected_decision()
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    returned = route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+        result, definition, state, events, phase108_function=dependency
+    )
+    assert returned is decision
+    assert len(calls) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            calls[0], (result, definition, state, events), strict=True
+        )
+    )
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+    # The fallback must not invent predecessor provider/request-ID policy: an
+    # otherwise identical history whose immediate predecessor keeps
+    # provider="other" and a non-empty request ID still delegates.
+    alt = phase155_setup(tmp_path / "alt", "succeeded")
+    _phase155_replace_event(
+        alt[3],
+        5,
+        _phase155_predecessor(
+            "five", 5, provider="other", request_id="request-five", output_text=""
+        ),
+    )
+    alt_before = alt[2].read_bytes(), alt[3].read_bytes()
+    alt_calls: list[tuple[object, ...]] = []
+
+    def alt_dependency(*args: object) -> WorkflowProgressionDecision:
+        alt_calls.append(args)
+        return decision
+
+    alt_returned = route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+        alt[0],
+        alt[1],
+        alt[2],
+        alt[3],
+        phase108_function=alt_dependency,
+    )
+    assert alt_returned is decision
+    assert len(alt_calls) == 1
+    assert (alt[2].read_bytes(), alt[3].read_bytes()) == alt_before
+
+    # Terminal succeeded response_id="" stays rejected.
+    pin = phase155_setup(tmp_path / "pin-response", "succeeded")
+    empty_response = RuntimeStepEvent(
+        "step_succeeded",
+        "w",
+        "six",
+        6,
+        "s",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        "",
+        "request-six",
+        "output-six",
+        None,
+    )
+    _phase155_replace_event(pin[3], 6, empty_response)
+    pin_before = pin[2].read_bytes(), pin[3].read_bytes()
+    pin_calls = {"phase108": 0}
+
+    def pin_dependency(*_: object) -> object:
+        pin_calls["phase108"] += 1
+        raise AssertionError("must not be called")
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+            pin[0], pin[1], pin[2], pin[3], phase108_function=pin_dependency
+        )
+    assert classification(caught) == "terminal_contract"
+    assert pin_calls["phase108"] == 0
+    assert (pin[2].read_bytes(), pin[3].read_bytes()) == pin_before
+
+    # Final succeeded terminal output_text="" stays rejected.
+    pin2 = phase155_setup(tmp_path / "pin-output", "succeeded")
+    empty_output = RuntimeStepEvent(
+        "step_succeeded",
+        "w",
+        "six",
+        6,
+        "s",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        "response-six",
+        "request-six",
+        "",
+        None,
+    )
+    _phase155_replace_event(pin2[3], 6, empty_output)
+    pin2_before = pin2[2].read_bytes(), pin2[3].read_bytes()
+    pin2_calls = {"phase108": 0}
+
+    def pin2_dependency(*_: object) -> object:
+        pin2_calls["phase108"] += 1
+        raise AssertionError("must not be called")
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+            pin2[0], pin2[1], pin2[2], pin2[3], phase108_function=pin2_dependency
+        )
+    assert classification(caught) == "terminal_contract"
+    assert pin2_calls["phase108"] == 0
+    assert (pin2[2].read_bytes(), pin2[3].read_bytes()) == pin2_before
+
+    # workflow_complete stays strict: the completion route must not gain
+    # predecessor-empty compatibility through the fallback.
+    pin3 = phase155_setup(tmp_path / "pin-complete", "succeeded")
+    pin3_before = pin3[2].read_bytes(), pin3[3].read_bytes()
+    completion = WorkflowProgressionDecision(
+        "workflow_complete",
+        "w",
+        "six",
+        6,
+        "s",
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+    pin3_calls = {"phase108": 0}
+
+    def pin3_dependency(*_: object) -> object:
+        pin3_calls["phase108"] += 1
+        raise AssertionError("must not be called")
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+            completion,
+            pin3[1],
+            pin3[2],
+            pin3[3],
+            phase108_function=pin3_dependency,
+        )
+    assert classification(caught) == "terminal_contract"
+    assert pin3_calls["phase108"] == 0
+    assert (pin3[2].read_bytes(), pin3[3].read_bytes()) == pin3_before
+
+
+def test_phase155_failure_empty_message_returns_unchanged_zero_calls(
+    tmp_path: Path,
+) -> None:
+    """Phase-155 persisted failure with valid message="" returns the exact
+    supplied object with Phase 108 call count zero and unchanged targets."""
+    result, definition, state, events = phase155_setup(
+        tmp_path, "failed", message=""
+    )
+    before = state.read_bytes(), events.read_bytes()
+    calls = {"phase108": 0}
+
+    def forbidden(*_: object) -> object:
+        calls["phase108"] += 1
+        raise AssertionError("must not be called")
+
+    returned = route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+        result, definition, state, events, phase108_function=forbidden
+    )
+    assert returned is result
+    assert calls == {"phase108": 0}
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_success_multiple_earlier_empty_delegates_once(tmp_path: Path) -> None:
+    """Phase-155 persisted success with multiple earlier empty outputs (steps
+    2 and 3) delegates to Phase 108 exactly once with unchanged targets."""
+    result, definition, state, events = phase155_setup(
+        tmp_path, "succeeded", earlier_empty=(2, 3)
+    )
+    before = state.read_bytes(), events.read_bytes()
+    decision = _phase155_expected_decision()
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    returned = route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+        result, definition, state, events, phase108_function=dependency
+    )
+    assert returned is decision
+    assert len(calls) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            calls[0], (result, definition, state, events), strict=True
+        )
+    )
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_failure_multiple_earlier_empty_returns_unchanged_zero_calls(
+    tmp_path: Path,
+) -> None:
+    """Phase-155 persisted failure with multiple earlier empty outputs returns
+    the exact supplied object with zero calls and unchanged targets."""
+    result, definition, state, events = phase155_setup(
+        tmp_path, "failed", earlier_empty=(2, 3), message=""
+    )
+    before = state.read_bytes(), events.read_bytes()
+    calls = {"phase108": 0}
+
+    def forbidden(*_: object) -> object:
+        calls["phase108"] += 1
+        raise AssertionError("must not be called")
+
+    returned = route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+        result, definition, state, events, phase108_function=forbidden
+    )
+    assert returned is result
+    assert calls == {"phase108": 0}
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_step2_output_none_rejected_before_phase108(tmp_path: Path) -> None:
+    """Earlier predecessor step 2 output_text=None rejects with exact
+    terminal_contract before Phase 108 with zero calls."""
+    result, definition, state, events = phase155_setup(tmp_path, "succeeded")
+    _phase155_replace_event(
+        events,
+        2,
+        _phase155_predecessor("two", 2, output_text=None),
+    )
+    before = state.read_bytes(), events.read_bytes()
+    calls = {"phase108": 0}
+
+    def forbidden(*_: object) -> object:
+        calls["phase108"] += 1
+        raise AssertionError("must not be called")
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+            result, definition, state, events, phase108_function=forbidden
+        )
+    assert classification(caught) == "terminal_contract"
+    assert calls == {"phase108": 0}
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_phase155_step5_output_non_string_rejected_before_phase108(
+    tmp_path: Path,
+) -> None:
+    """Immediate predecessor step 5 output_text=1 (non-string) rejects with
+    exact terminal_contract before Phase 108 with zero calls."""
+    result, definition, state, events = phase155_setup(tmp_path, "succeeded")
+    _phase155_replace_event(
+        events,
+        5,
+        _phase155_predecessor(
+            "five", 5, provider="openai", request_id=None, output_text=1
+        ),
+    )
+    before = state.read_bytes(), events.read_bytes()
+    calls = {"phase108": 0}
+
+    def forbidden(*_: object) -> object:
+        calls["phase108"] += 1
+        raise AssertionError("must not be called")
+
+    with pytest.raises(
+        ClassifiedPersistedOutcomeProgressionCycleReentryContinuationCompatibilityError
+    ) as caught:
+        route_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary(
+            result, definition, state, events, phase108_function=forbidden
+        )
+    assert classification(caught) == "terminal_contract"
+    assert calls == {"phase108": 0}
+    assert (state.read_bytes(), events.read_bytes()) == before

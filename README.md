@@ -3107,3 +3107,58 @@ Phase 167は以下のbehaviorを**一切**追加・変更しない:
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - エラー分類・quality feedback literal・provider / request-ID semantics
 - 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
+
+## Phase 168: Repair Phase-155 Provenance Compatibility across Phase 122 → 115 → 108 Classified Persisted-Outcome Progression Segment
+
+Phase 168は、classified persisted-outcome progressionのsegment（**実Phase 122 → 実Phase 115 → 実Phase 108**）が、Phase 155 provenance persisted outcome（`current_step_index >= 6`、predecessorの空`output_text`、immediate predecessorの`request_id=None`・`provider="openai"`）を、次strict seamであるPhase 101へ正しく受け渡せるようにする**staged compatibility repair**です。Phase 167で修復したPhase 144→136→129 segmentの直後にあるprogression segmentで、各Phaseはstrict loader（`load_strict_terminal_history`）がPhase-155 provenance historyを拒否する場合にのみ、public `load_workflow_execution_history`（`WorkflowExecutionPersistenceTargets`）+ 限定されたPhase-155互換検証へフォールバックします。
+
+```text
+Phase 122 (classified persisted outcome progression cycle handoff reentry, final dependency: Phase 115)
+    ↓ Phase 115 (classified persisted outcome progression cycle reentry, final dependency: Phase 108)
+    ↓ Phase 108 (classified persisted outcome progression cycle, final dependency: Phase 101)
+Phase 101 (next strict seam: 変更しない)
+```
+
+### 互換性フォールバック（strict-first + local bounded）
+
+- **Phase 122 / 115 / 108 共通**: `_validate_terminal` のstrict loadを `try: state, events = load_strict_terminal_history(...)` / `except TerminalHistoryContractError:` で包み、Phase-155互換ケース（exact `PersistedExecutionOutcome` + exact builtin int `current_step_index >= 6`）に限定した `_load_phase155_terminal_history` へフォールバックする。public loader使用（`WorkflowExecutionPersistenceTargets(state_path, events_path)`）、`_valid_phase155_terminal_history` で検証
+- **predecessorの空`output_text`のみ緩和**: `type(output_text) is str`（空文字列は許容、`None`・非strはinvalid維持）。immediate predecessorの`request_id=None`・`provider="openai"`は許容（provider / request-ID semanticsは一切追加しない）。terminal succeededの`output_text`非空・`response_id`非空、terminal failedの`failure_category`・`message`はstrict契約を維持
+- **post-load identity チェックは共通**: strict / fallback 両経路の後で既存の `final = events[-1]` を起点とするstate.status・workflow_id・current_step_id/index/employee_id・last_failure_category・finalフィールド検証を不変のまま適用
+- **Phase 101はstrict seamのまま**: `route_classified_outcome_cycle_closure_continuation_boundary` は変更せず、intact Phase-155 historyを `terminal_contract` で拒否し続ける
+
+### 変更ファイル（正確に10ファイル）
+
+1. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary.py` — Phase 122 production
+2. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_reentry_continuation_boundary.py` — Phase 115 production
+3. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_continuation_boundary.py` — Phase 108 production
+4. `tests/test_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary.py` — Phase 122 focused test（+6 cases）
+5. `tests/test_classified_persisted_outcome_progression_cycle_reentry_continuation_boundary.py` — Phase 115 focused test（+6 cases）
+6. `tests/test_classified_persisted_outcome_progression_cycle_continuation_boundary.py` — Phase 108 focused test（+6 cases）
+7. `tests/test_classified_persisted_outcome_progression_phase122_108_phase155_provenance_compatibility.py` — 新規regression test（+6 cases + inline Phase 101 strict-seam proof）
+8. `tests/test_classified_persisted_outcome_progression_phase143_129_phase155_provenance_compatibility.py` — Phase 167 regression test（inline next-seam proofをacceptance proofへ更新、+0）
+9. `README.md` — Phase 168 documentation
+10. `docs/architecture.md` — Phase 168 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 168は以下のbehaviorを**一切**追加・変更しない:
+
+- 新しいpublic boundary（新規public関数・新規ルーティング・新規API）を追加しない
+- 自動継続（automatic continuation）は行わない
+- workflow progression・next-step preparation・start は行わない
+- provider / tool 実行は行わない
+- retry・loop・schedule・parallel・finalize は行わない
+- CLI・GUI behavior は追加・変更しない
+- 共有 `terminal_history_contract.py` の意味を広げない（strict contract は不変）
+- 新しい request-ID / provider semantics を導入しない（Phase 155 provenance の `request_id=None`・`provider="openai"` を許容するだけ）
+
+### 変更しないもの
+
+- Phase 143/144/136/129 production modules
+- Phase 101 production module（`classified_outcome_cycle_closure_continuation_boundary.py`）— strict seamのまま
+- Phase 162/163/164/165/166/167 production modules
+- `src/ai_office/engine/terminal_history_contract.py`
+- `src/ai_office/engine/__init__.py`
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- エラー分類・quality feedback literal・provider / request-ID semantics
+- 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
