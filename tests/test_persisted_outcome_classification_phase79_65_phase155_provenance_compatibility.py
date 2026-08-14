@@ -334,7 +334,7 @@ def test_real_segment_synthetic_seam_delegates_once(tmp_path: Path, status: str)
         for actual, wanted in zip(phase51_handoffs[0], expected_args, strict=True)
     )
     assert_targets_unchanged(values, before)
-    # Inline Phase 166 review proof (Phase 162 maintenance): real Phase 37
+    # Inline Phase 166 review proof (Phase 165 maintenance): real Phase 37
     # directly classifies the same intact persisted history via the public
     # loader, returning the exact expected outcome fields with all targets
     # unchanged.
