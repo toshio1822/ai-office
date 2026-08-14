@@ -123,6 +123,11 @@ def route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_ou
         allow_empty_success_output=allow_empty_success_output,
         require_immediate_openai=require_immediate_openai,
         allow_empty_predecessor_output=True,
+        allow_immediate_none_request_id=(
+            type(result) is PersistedExecutionOutcome
+            and type(result.current_step_index) is int
+            and result.current_step_index >= 6
+        ),
     )
     _require_unchanged(state_path, events_path, original, "terminal_contract")
 
@@ -274,6 +279,7 @@ def _check_terminal(
     allow_empty_success_output: bool,
     require_immediate_openai: bool,
     allow_empty_predecessor_output: bool,
+    allow_immediate_none_request_id: bool,
 ) -> None:
     state, history = _load_history(workflow, state_path, events_path, "terminal_contract")
     expected_failure = (
@@ -296,6 +302,7 @@ def _check_terminal(
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=allow_empty_predecessor_output,
+        allow_immediate_none_request_id=allow_immediate_none_request_id,
     ):
         _fail("terminal_contract")
 
@@ -332,6 +339,7 @@ def _valid_history(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    allow_immediate_none_request_id: bool,
 ) -> bool:
     index = state.current_step_index
     result_identity_valid = (
@@ -373,6 +381,9 @@ def _valid_history(
             state,
             require_openai=require_immediate_openai and position == len(prior_steps),
             allow_empty_output=allow_empty_predecessor_output,
+            allow_none_request_id=(
+                allow_immediate_none_request_id and position == len(prior_steps)
+            ),
         ):
             return False
     return _valid_terminal_event(
@@ -418,6 +429,7 @@ def _valid_predecessor(
     *,
     require_openai: bool,
     allow_empty_output: bool = False,
+    allow_none_request_id: bool = False,
 ) -> bool:
     return (
         type(event) is RuntimeStepEvent
@@ -433,7 +445,10 @@ def _valid_predecessor(
         and (not require_openai or event.provider == "openai")
         and event.failure_category is None
         and _nonempty_string(event.response_id)
-        and _nonempty_string(event.request_id)
+        and (
+            (allow_none_request_id and event.request_id is None)
+            or _nonempty_string(event.request_id)
+        )
         and type(event.output_text) is str
         and (allow_empty_output or bool(event.output_text))
         and event.message is None

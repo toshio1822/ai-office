@@ -87,6 +87,24 @@ def workflow() -> WorkflowDefinition:
     )
 
 
+def workflow_six() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "a", "instructions": "one"},
+                {"id": "two", "name": "Two", "employee": "b", "instructions": "two"},
+                {"id": "three", "name": "Three", "employee": "c", "instructions": "three"},
+                {"id": "four", "name": "Four", "employee": "d", "instructions": "four"},
+                {"id": "five", "name": "Five", "employee": "e", "instructions": "five"},
+                {"id": "six", "name": "Six", "employee": "f", "instructions": "six"},
+            ],
+        }
+    )
+
+
 def predecessor_event(
     step: WorkflowStepDefinition,
     index: int,
@@ -152,6 +170,7 @@ def terminal_event(
 def data(
     tmp_path: Path,
     *,
+    definition: WorkflowDefinition | None = None,
     index: int = 4,
     status: str = "succeeded",
     terminal_provider: object = "openai",
@@ -160,7 +179,7 @@ def data(
     terminal_response_id: object = "response",
     predecessor_providers: dict[int, object] | None = None,
 ) -> dict[str, object]:
-    definition = workflow()
+    definition = definition or workflow()
     step = definition.steps[index - 1]
     predecessor_providers = predecessor_providers or {}
     predecessors = tuple(
@@ -1222,5 +1241,226 @@ def test_stop_routes_still_reject_empty_predecessor_output(
     ).encode()
     data_set["events_path"].write_bytes(  # type: ignore[union-attr]
         b"".join(lines[:1]) + replacement + b"".join(lines[2:])
+    )
+    reject(data_set, "terminal_contract")
+
+
+def phase155_six_values(
+    tmp_path: Path, *, status: str = "succeeded"
+) -> dict[str, object]:
+    """Six-step Phase-155 provenance fixture accepted by the Phase 136 fix."""
+    data_set = data(tmp_path, definition=workflow_six(), index=6, status=status)
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    step2 = serialize_runtime_step_event_jsonl(
+        predecessor_event(steps[1], 2, provider="other", output_text="")
+    ).encode()
+    step5 = serialize_runtime_step_event_jsonl(
+        predecessor_event(steps[4], 5, provider="openai", request_id=None, output_text="")
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:1]) + step2 + b"".join(lines[2:4]) + step5 + b"".join(lines[5:])
+    )
+    set_before(data_set)
+    return data_set
+
+
+def test_phase155_six_step_success_accepts_empty_and_none_provenance_delegates_once(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path)
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert invoke(data_set, dependency) is decision
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0],
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        ),
+        strict=True,
+    ):
+        assert actual is expected
+    unchanged(data_set)
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    # Inline pin: the immediate predecessor request_id="" stays rejected in
+    # the exact >=6 Phase-155 domain (empty-string predecessor request ID
+    # remains invalid at Phase 136).
+    step5 = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            steps[4], 5, provider="openai", request_id="", output_text=""
+        )
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:4]) + step5 + b"".join(lines[5:])
+    )
+    reject(data_set, "terminal_contract")
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    # Restore the intact Phase-155 provenance (immediate predecessor step 5:
+    # provider="openai", request_id=None, output_text="") so the earlier
+    # predecessor request_id=None rejection below is proven independently,
+    # not as a side effect of the still-invalid immediate predecessor "".
+    step5 = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            steps[4], 5, provider="openai", request_id=None, output_text=""
+        )
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:4]) + step5 + b"".join(lines[5:])
+    )
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    # Inline pin: an earlier (non-immediate) predecessor request_id=None stays
+    # rejected in the exact >=6 Phase-155 domain; only the immediate
+    # predecessor may carry request_id=None.
+    step2 = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            steps[1], 2, provider="other", request_id=None, output_text=""
+        )
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:1]) + step2 + b"".join(lines[2:])
+    )
+    reject(data_set, "terminal_contract")
+
+
+def test_phase155_six_step_failure_accepts_empty_and_none_provenance_zero_call_stop(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path, status="failed")
+    supplied = data_set["result"]
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert invoke(data_set, dependency) is supplied
+    assert calls == 0
+    unchanged(data_set)
+
+
+def test_phase155_six_step_multiple_empty_outputs_success_delegates_once(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path)
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    step3 = serialize_runtime_step_event_jsonl(
+        predecessor_event(steps[2], 3, provider="other", output_text="")
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:2]) + step3 + b"".join(lines[3:])
+    )
+    set_before(data_set)
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert invoke(data_set, dependency) is decision
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0],
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        ),
+        strict=True,
+    ):
+        assert actual is expected
+    unchanged(data_set)
+    # Inline pin: the persisted-success terminal empty output_text stays
+    # accepted (narrow Phase-136 empty-terminal-output compatibility) and the
+    # canonical four-argument identity/order delegation still holds.
+    replace_terminal(
+        data_set, terminal_event(steps[5], 6, "succeeded", output_text="")
+    )
+    set_before(data_set)
+    calls = []
+    assert invoke(data_set, dependency) is decision
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0],
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        ),
+        strict=True,
+    ):
+        assert actual is expected
+    unchanged(data_set)
+
+
+def test_phase155_six_step_multiple_empty_outputs_failure_zero_call_stop(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path, status="failed")
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    step3 = serialize_runtime_step_event_jsonl(
+        predecessor_event(steps[2], 3, provider="other", output_text="")
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:2]) + step3 + b"".join(lines[3:])
+    )
+    set_before(data_set)
+    supplied = data_set["result"]
+    calls = 0
+
+    def dependency(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert invoke(data_set, dependency) is supplied
+    assert calls == 0
+    unchanged(data_set)
+
+
+def test_phase155_six_step_earlier_output_none_is_rejected_before_phase129(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path)
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    step2 = serialize_runtime_step_event_jsonl(
+        predecessor_event(steps[1], 2, provider="other", output_text=None)
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:1]) + step2 + b"".join(lines[2:])
+    )
+    reject(data_set, "terminal_contract")
+
+
+def test_phase155_six_step_immediate_output_non_string_is_rejected_before_phase129(
+    tmp_path: Path,
+) -> None:
+    data_set = phase155_six_values(tmp_path)
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    step5 = serialize_runtime_step_event_jsonl(
+        predecessor_event(steps[4], 5, provider="openai", request_id=None, output_text=1)
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:4]) + step5 + b"".join(lines[5:])
     )
     reject(data_set, "terminal_contract")

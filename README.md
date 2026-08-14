@@ -3054,3 +3054,56 @@ Phase 166は以下のbehaviorを**一切**追加・変更しない:
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - エラー分類・quality feedback literal・provider / request-ID semantics
 - 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
+
+## Phase 167: Repair Phase-155 Provenance Compatibility across Phase 144 → 136 → 129 Classified Persisted-Outcome Progression Segment
+
+Phase 167は、classified persisted-outcome progressionのsegment（**実Phase 144 → 実Phase 136 → 実Phase 129**）が、Phase 155 provenance persisted outcome（`current_step_index >= 6`、predecessorの空`output_text`、immediate predecessorの`request_id=None`）を、次strict seamであるPhase 122へ正しく受け渡せるようにする**staged compatibility repair**です。Phase 166で修復したclassification tailの直後にあるprogression segmentで、各Phaseはstrict loaderがPhase-155 provenance historyを拒否する場合にのみ、public `load_workflow_execution_history`（`WorkflowExecutionPersistenceTargets`）+ 限定されたPhase-155互換検証へフォールバックします。
+
+```text
+Phase 144 (classified persisted outcome progression cycle handoff chain bridge outer reentry, final dependency: Phase 136)
+    ↓ Phase 136 (classified persisted outcome progression cycle handoff chain bridge reentry, final dependency: Phase 129)
+    ↓ Phase 129 (classified persisted outcome progression cycle handoff chain reentry, final dependency: Phase 122)
+Phase 122 (next strict seam: 変更しない)
+```
+
+### 互換性フォールバック（strict-first + local bounded）
+
+- **Phase 144**: route内で `allow_immediate_none_request_id`（exact `PersistedExecutionOutcome` + exact builtin int `current_step_index >= 6` 限定）を計算し、`_check_terminal` → `_valid_history` → `_valid_predecessor` へ伝搬。immediate predecessorのみ `request_id is None` を許可（`""` はinvalid維持、earlierは非空必須）。`allow_empty_predecessor_output=True` 固定は全routeで維持
+- **Phase 136**: Phase 144と同様のNone許可 + persisted-failure direct stop routeの `allow_empty_predecessor_output` を `False`固定 → `(current_step_index >= 6)` に変更（zero-call stop維持、Phase-155空output + immediate-None provenanceを受理）
+- **Phase 129**: `phase155_compatible`（exact `PersistedExecutionOutcome` + exact builtin int `current_step_index >= 6`）限定でstrict失敗時の新フォールバック追加。public loader使用、predecessor空output（exact builtin strのみ）許可。`_valid_terminal_history` に `allow_empty_predecessor_output: bool | None = None` オーバーライド引数追加（None=従来どおり派生計算）
+
+### 変更ファイル（正確に9ファイル）
+
+1. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 144 production
+2. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 136 production
+3. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary.py` — Phase 129 production
+4. `tests/test_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 144 focused test（+6 cases）
+5. `tests/test_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 136 focused test（+6 cases）
+6. `tests/test_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary.py` — Phase 129 focused test（+6 cases）
+7. `tests/test_classified_persisted_outcome_progression_phase143_129_phase155_provenance_compatibility.py` — 新規regression test（+6 cases + inline next-seam proof）
+8. `README.md` — Phase 167 documentation
+9. `docs/architecture.md` — Phase 167 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 167は以下のbehaviorを**一切**追加・変更しない:
+
+- 新しいpublic boundary（新規public関数・新規ルーティング・新規API）を追加しない
+- 自動継続（automatic continuation）は行わない
+- workflow progression・next-step preparation・start は行わない
+- provider / tool 実行は行わない
+- retry・loop・schedule・parallel・finalize は行わない
+- CLI・GUI behavior は追加・変更しない
+- 共有 `terminal_history_contract.py` の意味を広げない（strict contract は不変）
+- 新しい request-ID / provider semantics を導入しない（Phase 155 provenance の `request_id=None`・`provider="openai"` を許容するだけ）
+
+### 変更しないもの
+
+- Phase 143 production module（`persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py`）
+- Phase 122 production module（`classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary.py`）
+- Phase 115 production module（`classified_persisted_outcome_progression_cycle_reentry_continuation_boundary.py`）
+- `src/ai_office/engine/terminal_history_contract.py`
+- Phase 162/163/164/165/166 production modules（`persisted_transition_outcome_classification_*` ほか）
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- エラー分類・quality feedback literal・provider / request-ID semantics
+- 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
