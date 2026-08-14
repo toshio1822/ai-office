@@ -121,6 +121,27 @@ def test_phase155_succeeded_predecessor_empty_output_delegates_once(tmp_path: Pa
     returned = route_persisted_outcome_classification_dispatch_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase86_function=fake)
     assert returned is expected and calls == [(result, workflow, state, events)]
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    # Inline transitive regression (no new collected case): Phase 93's own
+    # validation runs the real Phase 86 _validate_persistence, so the strict
+    # succeeded-terminal contract is enforced transitively — terminal response_id=""
+    # and final succeeded output_text="" are rejected with terminal_contract before
+    # the phase86_function seam is reached (seam not called again).
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)
+    terminal = json.loads(lines[-1])
+    assert terminal["step_id"] == "six" and terminal["next_status"] == "succeeded"
+    terminal["response_id"] = ""
+    events.write_text("".join(lines[:-1]) + json.dumps(terminal, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(PersistedOutcomeClassificationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_persisted_outcome_classification_dispatch_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase86_function=fake)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == [(result, workflow, state, events)]  # seam not called again
+    terminal["response_id"] = "response-six"
+    terminal["output_text"] = ""
+    events.write_text("".join(lines[:-1]) + json.dumps(terminal, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(PersistedOutcomeClassificationDispatchPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_persisted_outcome_classification_dispatch_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase86_function=fake)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == [(result, workflow, state, events)]  # seam not called again
 
 
 def test_phase155_failed_predecessor_empty_output_message_empty_delegates_once(tmp_path: Path):

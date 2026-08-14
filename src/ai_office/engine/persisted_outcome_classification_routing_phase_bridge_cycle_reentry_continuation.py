@@ -267,7 +267,26 @@ def _valid_phase155_compatible_history(workflow: WorkflowDefinition, state: Work
                 and type(event.output_text) is str
                 and event.message is None):
             return False
-    return _valid_event_types(state, history[-1])
+    return _valid_terminal_event_types(state, history[-1], workflow)
+
+
+def _valid_terminal_event_types(state: WorkflowExecutionState, event: object, workflow: WorkflowDefinition) -> bool:
+    """Strict succeeded-terminal contract for the Phase-155 fallback.
+
+    The existing succeeded terminal contract is not weakened: response_id stays
+    non-empty, final succeeded output_text stays non-empty, intermediate
+    succeeded empty output stays allowed, and failed terminal message stays any
+    exact built-in str including "".
+    """
+    if not _valid_event_types(state, event):
+        return False
+    if state.status == "succeeded":
+        allow_empty_success_output = state.current_step_index < len(workflow.steps)
+        if event.response_id == "":
+            return False
+        if not allow_empty_success_output and event.output_text == "":
+            return False
+    return True
 
 
 def _valid_event_types(state: WorkflowExecutionState, event: object) -> bool:

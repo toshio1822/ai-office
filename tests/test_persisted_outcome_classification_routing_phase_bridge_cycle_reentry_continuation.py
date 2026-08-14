@@ -139,6 +139,25 @@ def test_phase155_succeeded_predecessor_empty_output_delegates_once(tmp_path: Pa
     returned = route_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase79_function=phase79)
     assert returned is expected and calls == [(result, workflow, state, events)]
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    # Inline regression (no new collected case): the Phase-155 fallback must not
+    # weaken the strict succeeded-terminal contract — terminal response_id stays
+    # non-empty and final succeeded output_text stays non-empty.
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)
+    terminal = json.loads(lines[-1])
+    assert terminal["step_id"] == "six" and terminal["next_status"] == "succeeded"
+    terminal["response_id"] = ""
+    events.write_text("".join(lines[:-1]) + json.dumps(terminal, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(PersistedOutcomeClassificationRoutingPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase79_function=phase79)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == [(result, workflow, state, events)]  # phase79 not called again
+    terminal["response_id"] = "response-six"
+    terminal["output_text"] = ""
+    events.write_text("".join(lines[:-1]) + json.dumps(terminal, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(PersistedOutcomeClassificationRoutingPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase79_function=phase79)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == [(result, workflow, state, events)]  # phase79 not called again
 
 
 def test_phase155_failed_predecessor_empty_output_message_empty_delegates_once(tmp_path: Path) -> None:

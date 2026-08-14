@@ -2780,10 +2780,10 @@ Phase 79 (strict seam: Phase-155 provenance history は terminal_contract で拒
 - `current_step_index >= 6` のexact built-in `int` のみ許可（`< 6` は拒否）
 - predecessorの`output_text`はexact built-in `str`（空文字含む）のみ許可（`None` / non-stringは拒否）
 - provider / request-ID policyは追加しない（Phase 155 provenance の `provider="openai"`・`request_id=None` を許容）
-- terminal event semanticsは既存の `_valid_event_types(state, history[-1])` 意味を維持（failed terminal `message` は任意のexact str、`""` 含む）
+- terminal event semanticsは既存の `_valid_event_types(state, history[-1])` 意味を維持しつつ、fallbackでは `_valid_terminal_event_types` で strict succeeded-terminal 契約を維持（terminal `response_id` は non-empty、final succeeded `output_text` は non-empty、intermediate succeeded の empty output は許容、failed terminal `message` は任意のexact str、`""` 含む）
 - 無効ケースはdownstream dependency call count **zero**とし、分類文字列`terminal_contract`を正確に使用
 - 有効な委譲ではcanonical four-argument delegation、dependency exactly-once、returned outcomeのexact identity、targetsのbyte-for-byte unchanged、retryなしを検証
-- **Phase 86修復**: 壊れていた `_valid_phase155_compatible_history`（`if False else False` で常にFalseを返すラッパー＋body分割）を単一のクリーンな関数へ統合・置換（`_valid_phase155_compatible_history_body` は削除）。Phase 93 は無変更だが Phase 86 の `_validate_persistence` / `_load_compatible_terminal_history` を再利用しているため、Phase 86 修復に伴いPhase-155 provenanceを受理する
+- **Phase 86**: strict-first local bounded compatibility fallback/helper を新規追加（base には存在しなかった）。`_validate_persistence` は `load_strict_terminal_history` を優先し、失敗時のみ `_load_compatible_terminal_history` → public `load_workflow_execution_history` + `_valid_phase155_compatible_history`（`current_step_index >= 6`、predecessor `output_text` は exact built-in str で空/非空とも可、`None`/non-string拒否、provider/request-ID gatingなし）。terminal は `_valid_terminal_event_types` で既存 succeeded terminal 契約を弱めない。Phase 93 は無変更だが Phase 86 の `_validate_persistence` / `_load_compatible_terminal_history` を再利用しているため、Phase-155 provenanceを受理する
 
 ### Phase 162/163 regression保守（+0 cases）
 
@@ -2824,7 +2824,7 @@ Phase 100 / 93 / 86の既存test moduleへ各**+6 cases**を追加します（fi
 ### 変更範囲（10ファイル）
 
 1. `src/ai_office/engine/persisted_outcome_classification_dispatch_continuation_boundary.py` — Phase 100 production修正A（フォールバック追加）
-2. `src/ai_office/engine/persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation.py` — Phase 86 production修正B（フォールバック追加・`_valid_phase155_compatible_history` 単一関数化）
+2. `src/ai_office/engine/persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation.py` — Phase 86 production修正B（strict-first local bounded fallback `_load_compatible_terminal_history` と `_valid_phase155_compatible_history` / `_valid_terminal_event_types` を新規追加）
 3. `tests/test_persisted_outcome_classification_dispatch_continuation_boundary.py` — Phase 100 regression +6
 4. `tests/test_persisted_outcome_classification_dispatch_phase_bridge_cycle_reentry_continuation.py` — Phase 93 regression +6
 5. `tests/test_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation.py` — Phase 86 regression +6
