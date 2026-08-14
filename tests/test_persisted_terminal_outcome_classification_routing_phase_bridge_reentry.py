@@ -383,7 +383,12 @@ def test_phase155_six_step_succeeded_delegates_once(tmp_path: Path) -> None:
 
     def phase58(*args: object) -> object:
         calls.append(args)
-        assert args == (result, workflow, state, events)
+        expected_args = (result, workflow, state, events)
+        assert len(args) == 4
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(args, expected_args, strict=True)
+        )
         return expected
 
     returned = route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
@@ -420,7 +425,12 @@ def test_phase155_six_step_failed_delegates_once(tmp_path: Path) -> None:
 
     def phase58(*args: object) -> object:
         calls.append(args)
-        assert args == (result, workflow, state, events)
+        expected_args = (result, workflow, state, events)
+        assert len(args) == 4
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(args, expected_args, strict=True)
+        )
         return expected
 
     returned = route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
@@ -437,7 +447,12 @@ def test_phase155_six_step_multiple_earlier_empty_delegates_once(tmp_path: Path)
 
     def phase58(*args: object) -> object:
         calls.append(args)
-        assert args == (result, workflow, state, events)
+        expected_args = (result, workflow, state, events)
+        assert len(args) == 4
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(args, expected_args, strict=True)
+        )
         return expected
 
     returned = route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
@@ -454,7 +469,12 @@ def test_phase155_six_step_failed_multiple_earlier_empty_delegates_once(tmp_path
 
     def phase58(*args: object) -> object:
         calls.append(args)
-        assert args == (result, workflow, state, events)
+        expected_args = (result, workflow, state, events)
+        assert len(args) == 4
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(args, expected_args, strict=True)
+        )
         return expected
 
     returned = route_persisted_terminal_outcome_classification_routing_phase_bridge_reentry(
