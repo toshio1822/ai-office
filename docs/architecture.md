@@ -3123,3 +3123,78 @@ Phase 155 result (success / failure / stop decision / persisted outcome)
 - 予期しない例外は `dependency_error` に sanitize（エラーメッセージは固定文字列）
 - `_restore_if_changed` は両 target を 1 回ずつ write 試行し、失敗または bytes 不一致残存なら `rollback_failure`
 - retry・loop なし（`_restore_if_changed` の 2 要素 for のみ）、各 stage 最大 1 回
+
+## Phase 173: Post-Runtime → Approved-Preparation Orchestration Boundary
+
+Phase 173は、Phase 172 の公開 result を受け取り、**公開 Phase 172 → 公開 Phase 145 をこの順でちょうど 1 回ずつ合成する**、Phase 172 に続く integration boundary である。compatibility repair ではなく、既存の公開境界の直列接続であり、**まだ workflow runner ではない**。
+
+```text
+Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
+    ↓ Phase 172 runtime result → persistence → classification → progression
+    ↓ WorkflowProgressionDecision(prepare_next_step | workflow_complete)
+    ↓   または exact PersistedExecutionOutcome(persisted_failure)
+    ↓ Phase 145 progression → explicitly approved next-step preparation
+    ↓ PreparedWorkflowStep / exact stop object (workflow_complete / persisted_failure)
+```
+
+### stage ownership（Phase-172 no-destructive-outer-rollback）
+
+- Phase 172 が Phase 161 durable commit point と自身の downstream compensation を所有するため、Phase 173 は **pre-Phase172 rollback を行わない**
+- Phase 172 stage が safe error を raise した場合は exact object identity で re-raise（Phase 145 呼び出し 0 回、target への write なし）
+- 予期しない例外は `dependency_error` に sanitize、不正戻り値は `phase172_contract`（いずれも Phase 145 呼び出し 0 回・write なし）
+- Phase 172 retry なし
+
+### committed continuation snapshot
+
+- 有効な Phase 172 結果を受け入れた時点の target bytes を post-Phase172 committed snapshot とし、Phase 145 はそれに対して read-only
+- Phase 145 の safe error は復元成功時のみ exact identity で re-raise、予期しない例外は sanitize、不正戻り値は `phase145_contract`、有効戻り値 + target mutation は `committed_mutation`
+- committed への復元失敗は `rollback_failure`（両 target を 1 回ずつ試行、stage retry なし）
+
+### thin 契約（下流検証の非重複）
+
+- Phase 172 出力: stop は exact identity、runtime success は exact `WorkflowProgressionDecision`（decision / workflow / current-step / index / employee / next フィールドの linkage）、runtime failure は exact `persisted_failure`（failure category 一致）
+- Phase 145 出力: `prepare_next_step` は exact `PreparedWorkflowStep`（workflow id / next step id・index・employee / employee・step instructions / model / allowed_tool_names）、stop は exact identity
+- approval / employee は Phase 172 前に prevalidate しない（Phase 145 の責務）。Phase 145 の terminal-history / approval / employee validator は重複実装しない
+
+### エラー分類（11 分類）
+
+| classification | 意味 |
+|---|---|
+| `result_type` | 入力 result が Phase-155 4 型以外 |
+| `workflow_definition` | workflow が exact `WorkflowDefinition` でない |
+| `state_target` / `event_target` | target が exact `Path` でない、または file でない |
+| `target_conflict` | state_path == events_path |
+| `configuration` | 依存関数が callable でない |
+| `phase172_contract` | Phase 172 の戻り値・stop identity の契約違反 |
+| `phase145_contract` | Phase 145 の戻り値・stop identity・prepared フィールドの契約違反 |
+| `dependency_error` | 予期しない例外（sanitize、detail-safe 固定メッセージ） |
+| `committed_mutation` | Phase 145 有効戻り値後の target mutation を検出 |
+| `rollback_failure` | 補償 restore 自体が失敗 |
+
+### 依存と no-bypass
+
+- orchestration は公開 Phase 172 / 公開 Phase 145 のみ。Phase 161 / 143 / 144 / 137 / 129 / 30 / 37 / 31 / 25 / 155 の lower boundary は import / call しない
+- import は公開 data / error type（`WorkflowDefinition`、`EmployeeDefinition`、`NextStepPreparationApproval`、`PreparedWorkflowStep`、`WorkflowProgressionDecision`、`PersistedExecutionOutcome`、`StepRuntimeExecutionSuccess/Failure`、`Path`）と両境界の public function + error class のみ
+- 依存注入は keyword-only の `phase172_function` / `phase145_function`（default は実公開関数の exact identity）
+- workflow loop・stage retry・alternate bypass path なし
+
+### real-default regression（4 cases）
+
+- A: 7-step step-6 success + valid approval/matching employee → exact `PreparedWorkflowStep`(step 7)。step-6 は実チェーンで 1 回 durable persist、terminal bytes 維持、step 7 未 start/persist/execute
+- B: 6-step success + `None` approval/employee → exact `workflow_complete` identity
+- C: 6-step failure + `None` approval/employee → exact `persisted_failure` identity
+- D: 7-step step-6 success + missing/invalid approval → Phase 172 が先に durable commit、Phase 145 が既存 safe error で reject、committed terminal bytes 維持、retry なし・step 7 未 start
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_approved_preparation_orchestration_boundary.py` — Phase 173 production（新規）
+2. `src/ai_office/engine/__init__.py` — Phase 173 public export（+4 symbols、アルファベット順）
+3. `tests/test_runtime_result_to_approved_preparation_orchestration_boundary.py` — Phase 173 focused test（focused 16 + real-default A/B/C/D = 20 cases）
+4. `README.md` — Phase 173 documentation
+5. `docs/architecture.md` — Phase 173 architecture documentation
+
+### 変更しないもの
+
+- Phase 172 / 145 または下流 production modules、`terminal_history_contract.py`
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- shared storage/runtime/provider code、CLI / GUI behavior、自動 next-step start・provider / tool 実行・schedule・parallel・finalize
