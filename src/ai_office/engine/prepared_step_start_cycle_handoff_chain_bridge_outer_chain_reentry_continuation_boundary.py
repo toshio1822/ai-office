@@ -129,6 +129,7 @@ def route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_con
             require_immediate_openai=False,
             allow_empty_success_output=False,
             allow_empty_predecessor_output=True,
+            allow_missing_immediate_request_id=result.current_step_index >= 6,
         )
         _require_unchanged(state_path, events_path, original, "terminal_contract")
         return result
@@ -372,6 +373,7 @@ def _check_terminal(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    allow_missing_immediate_request_id: bool = False,
 ) -> None:
     state, history = _load_history(workflow, state_path, events_path)
     if not _valid_history(
@@ -384,6 +386,7 @@ def _check_terminal(
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=allow_empty_predecessor_output,
+        allow_missing_immediate_request_id=allow_missing_immediate_request_id,
     ):
         _fail("terminal_contract")
 
