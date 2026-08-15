@@ -1,4 +1,4 @@
-"""Focused Phase 60 boundary tests with injected Phase 53 fakes plus one real-default regression."""
+"""Phase 60 boundary tests: injected fakes + one real-default regression."""
 
 from dataclasses import replace
 from pathlib import Path
