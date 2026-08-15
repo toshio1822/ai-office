@@ -701,6 +701,40 @@ def test_malformed_phase172_return_phase172_contract_phase145_zero(
         assert calls == {"phase145": 0}
         assert state_path.read_bytes() == values["state_before"]
         assert events_path.read_bytes() == values["events_before"]
+    # A Phase-172 stage that already wrote committed-like bytes before
+    # returning a malformed value must leave those bytes untouched: Phase 173
+    # performs no outer rollback/write for a Phase-172 stage outcome and
+    # never reaches Phase 145.
+    calls = {"phase145": 0}
+
+    def phase172_committed(*_: object) -> object:
+        state_path.write_bytes(b"committed-state")
+        events_path.write_bytes(b"committed-events")
+        return "malformed"
+
+    def phase145_never(*_: object) -> object:
+        calls["phase145"] += 1
+        raise AssertionError("phase145 must not be called")
+
+    with pytest.raises(
+        RuntimeResultToApprovedPreparationOrchestrationBoundaryCompatibilityError
+    ) as exc:
+        route_runtime_result_to_approved_preparation_orchestration_boundary(
+            result,
+            wf,
+            None,
+            None,
+            state_path,
+            events_path,
+            phase172_function=phase172_committed,  # type: ignore[arg-type]
+            phase145_function=phase145_never,  # type: ignore[arg-type]
+        )
+    assert exc.value.detail.classification == "phase172_contract"
+    assert calls == {"phase145": 0}
+    # the committed-like Phase-172 side-effect bytes remain, no rollback to
+    # the pre-Phase172 running bytes and no outer write
+    assert state_path.read_bytes() == b"committed-state"
+    assert events_path.read_bytes() == b"committed-events"
     # stop inputs must come back by exact identity
     for bad_stop in (replace(stop), replace(stop, decision="prepare_next_step")):
         def phase172_stop(*_: object, bad: object = bad_stop) -> object:
@@ -719,8 +753,10 @@ def test_malformed_phase172_return_phase172_contract_phase145_zero(
                 phase172_function=phase172_stop,  # type: ignore[arg-type]
             )
         assert exc.value.detail.classification == "phase172_contract"
-        assert state_path.read_bytes() == values["state_before"]
-        assert events_path.read_bytes() == values["events_before"]
+        # no outer rollback/write: the committed-like Phase-172 side-effect
+        # bytes remain untouched by the Phase-172 stage failure
+        assert state_path.read_bytes() == b"committed-state"
+        assert events_path.read_bytes() == b"committed-events"
 
 
 # ---------------------------------------------------------------------------
@@ -979,6 +1015,18 @@ def test_input_and_target_domain_rejection_before_phase172(tmp_path: Path) -> No
     bad_inputs: list[tuple[object, object, object, object, str]] = [
         ("not-a-result", wf, state_path, events_path, "result_type"),
         (None, wf, state_path, events_path, "result_type"),
+        # stop input domain is narrowed to the discriminator before Phase
+        # 172: a prepare_next_step decision and a persisted_success outcome
+        # are not stop inputs and are rejected as result_type without
+        # reaching Phase 172 / Phase 145.
+        (prepare_decision(wf, 6), wf, state_path, events_path, "result_type"),
+        (
+            replace(failure_outcome(wf, 6), outcome="persisted_success"),
+            wf,
+            state_path,
+            events_path,
+            "result_type",
+        ),
         (result, "not-a-workflow", state_path, events_path, "workflow_definition"),
         (result, wf, str(state_path), events_path, "state_target"),
         (result, wf, state_path, str(events_path), "event_target"),
@@ -1146,21 +1194,36 @@ def test_approval_employee_not_prevalidated_phase172_runs_first(
 
 
 def test_rollback_failure_attempts_both_targets_once_without_retry(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = setup(tmp_path, steps=7, current=6)
     wf = values["workflow"]
     assert isinstance(wf, WorkflowDefinition)
+    state_path = values["state_path"]
+    events_path = values["events_path"]
+    assert isinstance(state_path, Path) and isinstance(events_path, Path)
     result = runtime_success(wf, 6)
     decision = prepare_decision(wf, 6)
     approval = approval_for(decision)
     employee = employee_for(decision)
     expected = prepared_for(wf, decision, employee)
     calls: dict[str, int] = {"phase172": 0, "phase145": 0}
+    # Phase 172 already durably committed the continuation bytes; restore
+    # attempts are the only writes that must be counted per target.
+    state_path.write_bytes(b"committed-state")
+    events_path.write_bytes(b"committed-events")
+    write_attempts: list[tuple[Path, bytes]] = []
+    original_write_bytes = Path.write_bytes
+
+    def counting_write_bytes(path: Path, data: bytes) -> int:
+        write_attempts.append((path, data))
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", counting_write_bytes)
 
     def phase172(r: object, w: object, s: object, e: object) -> object:
         calls["phase172"] += 1
-        return _commit_phase172(values, result)
+        return decision
 
     def phase145(r: object, w: object, a: object, m: object, s: object, e: object) -> object:
         calls["phase145"] += 1
@@ -1179,17 +1242,29 @@ def test_rollback_failure_attempts_both_targets_once_without_retry(
             wf,
             approval,
             employee,
-            values["state_path"],
-            values["events_path"],
+            state_path,
+            events_path,
             phase172_function=phase172,  # type: ignore[arg-type]
             phase145_function=phase145,  # type: ignore[arg-type]
         )
     assert exc.value.detail.classification == "rollback_failure"
     assert calls == {"phase172": 1, "phase145": 1}
-    # the state target restoration was attempted (succeeded); the events
-    # target restoration was attempted and failed (directory remains)
-    assert values["state_path"].read_bytes() == b"committed-state"  # type: ignore[union-attr]
-    assert values["events_path"].is_dir()  # type: ignore[union-attr]
+    # each target's committed-bytes restore was attempted exactly once (the
+    # phase145 mutation wrote mutated-state once; no retry of any restore)
+    state_restores = [
+        data for path, data in write_attempts
+        if path == state_path and data == b"committed-state"
+    ]
+    events_restores = [
+        data for path, data in write_attempts
+        if path == events_path and data == b"committed-events"
+    ]
+    assert state_restores == [b"committed-state"]
+    assert events_restores == [b"committed-events"]
+    # the state target restoration succeeded; the events target restoration
+    # failed and its directory remains
+    assert state_path.read_bytes() == b"committed-state"
+    assert events_path.is_dir()
 
 
 # ---------------------------------------------------------------------------

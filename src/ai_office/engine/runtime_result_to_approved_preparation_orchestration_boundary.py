@@ -163,11 +163,20 @@ def _check_inputs(
     phase172: object,
     phase145: object,
 ) -> None:
-    if type(result) not in (
+    # The stop input domain is narrowed to the discriminator before Phase
+    # 172: only an exact workflow_complete decision and an exact
+    # persisted_failure outcome may reach the Phase-172 stage.  A
+    # prepare_next_step decision or persisted_success outcome is not a stop
+    # input and is rejected here as result_type.
+    if type(result) is WorkflowProgressionDecision:
+        if result.decision != "workflow_complete":
+            _fail("result_type")
+    elif type(result) is PersistedExecutionOutcome:
+        if result.outcome != "persisted_failure":
+            _fail("result_type")
+    elif type(result) not in (
         StepRuntimeExecutionSuccess,
         StepRuntimeExecutionFailure,
-        WorkflowProgressionDecision,
-        PersistedExecutionOutcome,
     ):
         _fail("result_type")
     if type(workflow) is not WorkflowDefinition:
