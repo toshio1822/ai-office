@@ -1339,6 +1339,48 @@ def test_prepare_index_six_immediate_predecessor_none_request_id_delegates_once(
     assert calls == 1
     unchanged(value)
 
+    # --- Review-required narrowness subcases (inline, +0 collected) ---
+    # (a) normal non-empty request IDs remain accepted (delegates once).
+    rewrite_event(value["events_path"], 4, request_id="request")
+    value["before_events"] = value["events_path"].read_bytes()
+    calls = 0
+
+    def fake_nonempty(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert invoke(value, fake_nonempty) is expected
+    assert calls == 1
+    unchanged(value)
+
+    # (b) terminal request_id=None remains accepted (delegates once).
+    rewrite_event(value["events_path"], 5, request_id=None)
+    value["before_events"] = value["events_path"].read_bytes()
+    calls = 0
+
+    def fake_terminal_none(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert invoke(value, fake_terminal_none) is expected
+    assert calls == 1
+    unchanged(value)
+
+    # (c) earlier (non-immediate) predecessor request_id=None is rejected at
+    # index >= 6: the relaxation is immediate-predecessor-only.
+    rewrite_event(value["events_path"], 0, request_id=None)
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+    # (d) immediate predecessor empty request_id is rejected at index >= 6.
+    rewrite_event(value["events_path"], 4, request_id="")
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+    # (e) immediate predecessor invalid request-id type is rejected.
+    rewrite_event(value["events_path"], 4, request_id=4)
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
 
 def test_prepare_index_five_immediate_predecessor_none_request_id_rejected(
     tmp_path: Path,
@@ -1348,3 +1390,36 @@ def test_prepare_index_five_immediate_predecessor_none_request_id_rejected(
     value = data(tmp_path)
     rewrite_event(value["events_path"], 3, request_id=None)
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+    # --- Review-required narrowness subcases (inline, +0 collected) ---
+    # (a) workflow_complete stop route at index 6 accepts the immediate
+    # predecessor request_id=None: exact identity with zero dependency calls.
+    completed = completion_data(tmp_path)
+    rewrite_event(completed["events_path"], 4, request_id=None)
+    completed["before_events"] = completed["events_path"].read_bytes()
+    calls = 0
+
+    def forbidden_complete(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert invoke(completed, forbidden_complete) is completed["result"]
+    assert calls == 0
+    unchanged(completed)
+
+    # (b) persisted_failure stop route at index 6 accepts the immediate
+    # predecessor request_id=None: exact identity with zero dependency calls.
+    failed = data(tmp_path, index=6, status="failed")
+    rewrite_event(failed["events_path"], 4, request_id=None)
+    failed["before_events"] = failed["events_path"].read_bytes()
+    calls = 0
+
+    def forbidden_failed(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    assert invoke(failed, forbidden_failed) is failed["result"]
+    assert calls == 0
+    unchanged(failed)

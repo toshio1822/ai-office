@@ -226,7 +226,8 @@ def test_case_a_seven_step_step6_success_reaches_prepared_workflow_step(
 
     approval = approval_for(decision)
     employee = employee_for(decision)
-    committed = values["events_path"].read_bytes()
+    committed_state = values["state_path"].read_bytes()
+    committed_events = values["events_path"].read_bytes()
     prepared = public_phase145(
         decision,
         wf,
@@ -236,12 +237,39 @@ def test_case_a_seven_step_step6_success_reaches_prepared_workflow_step(
         values["events_path"],
     )
     assert type(prepared) is PreparedWorkflowStep
+    assert prepared.workflow_id == "w"
     assert prepared.step_id == "step-7"
     assert prepared.step_index == 7
+    assert prepared.employee_id == "e7"
+    assert prepared.employee_instructions == "employee instructions"
+    assert prepared.step_instructions == "step-7"
+    assert prepared.model == "model-name"
+    assert prepared.allowed_tool_names == ("tool-one", "tool-two")
+    # committed state and event bytes unchanged during preparation
+    assert values["state_path"].read_bytes() == committed_state
+    assert values["events_path"].read_bytes() == committed_events
     # step 7 not started: only the six committed step events exist
     assert len(loaded_events(base)) == 6
-    # committed bytes unchanged during preparation
-    assert values["events_path"].read_bytes() == committed
+    # terminal state still at step 6 with the completed prefix pinned
+    loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"], values["events_path"]
+        )
+    )
+    assert loaded.state.current_step_id == "step-6"
+    assert loaded.state.current_step_index == 6
+    assert loaded.state.completed_step_ids == tuple(
+        f"step-{i}" for i in range(1, 7)
+    )
+    # exactly one step-6 terminal event; predecessor provenance unchanged
+    assert [event.step_id for event in loaded.events] == [
+        f"step-{i}" for i in range(1, 7)
+    ]
+    assert loaded.events[-1].step_id == "step-6"
+    assert loaded.events[-1].step_index == 6
+    assert loaded.events[4].request_id is None
+    assert loaded.events[4].provider == "openai"
+    assert loaded.events[4].output_text == ""
 
 
 def test_case_b_six_step_step6_success_workflow_complete_identity(
@@ -255,10 +283,24 @@ def test_case_b_six_step_step6_success_workflow_complete_identity(
     )
     assert type(decision) is WorkflowProgressionDecision
     assert decision.decision == "workflow_complete"
+    committed_state = values["state_path"].read_bytes()
+    committed_events = values["events_path"].read_bytes()
     out = public_phase145(
         decision, wf, None, None, values["state_path"], values["events_path"]
     )
     assert out is decision
+    # committed state and event bytes unchanged through the stop route
+    assert values["state_path"].read_bytes() == committed_state
+    assert values["events_path"].read_bytes() == committed_events
+    # Phase-155 immediate predecessor request_id=None survives unchanged
+    loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"], values["events_path"]
+        )
+    )
+    assert loaded.events[4].request_id is None
+    assert loaded.events[4].provider == "openai"
+    assert loaded.events[4].output_text == ""
 
 
 def test_case_c_six_step_step6_failure_persisted_failure_identity(
@@ -272,10 +314,24 @@ def test_case_c_six_step_step6_failure_persisted_failure_identity(
     )
     assert type(outcome) is PersistedExecutionOutcome
     assert outcome.outcome == "persisted_failure"
+    committed_state = values["state_path"].read_bytes()
+    committed_events = values["events_path"].read_bytes()
     out = public_phase145(
         outcome, wf, None, None, values["state_path"], values["events_path"]
     )
     assert out is outcome
+    # committed state and event bytes unchanged through the stop route
+    assert values["state_path"].read_bytes() == committed_state
+    assert values["events_path"].read_bytes() == committed_events
+    # Phase-155 immediate predecessor request_id=None survives unchanged
+    loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"], values["events_path"]
+        )
+    )
+    assert loaded.events[4].request_id is None
+    assert loaded.events[4].provider == "openai"
+    assert loaded.events[4].output_text == ""
 
 
 def test_case_d_missing_approval_safe_rejection_committed_bytes_remain(
@@ -300,3 +356,21 @@ def test_case_d_missing_approval_safe_rejection_committed_bytes_remain(
     assert values["state_path"].read_bytes() == committed_state
     assert values["events_path"].read_bytes() == committed_events
     assert len(loaded_events(base)) == 6
+    # provenance pinned: Phase-155 immediate predecessor survives unchanged
+    loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"], values["events_path"]
+        )
+    )
+    assert [event.step_id for event in loaded.events] == [
+        f"step-{i}" for i in range(1, 7)
+    ]
+    assert loaded.events[4].request_id is None
+    assert loaded.events[4].provider == "openai"
+    assert loaded.events[4].output_text == ""
+    # step 7 not started: terminal state still at step 6 with completed prefix
+    assert loaded.state.current_step_id == "step-6"
+    assert loaded.state.current_step_index == 6
+    assert loaded.state.completed_step_ids == tuple(
+        f"step-{i}" for i in range(1, 7)
+    )
