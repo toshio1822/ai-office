@@ -626,33 +626,48 @@ def test_malformed_phase161_return_rejected_and_pre_persistence_restored(
 ) -> None:
     values = setup(tmp_path)
     result = runtime_success(values["workflow"], 6)  # type: ignore[arg-type]
-    calls: dict[str, int] = {"phase143": 0, "phase144": 0}
+    state_path = values["state_path"]
+    events_path = values["events_path"]
+    assert isinstance(state_path, Path) and isinstance(events_path, Path)
+    # exact-but-malformed injected Phase 161 results: wrong type, wrong target
+    # identity, or non-positive byte counts must be rejected as
+    # phase161_contract before Phase 143 runs (Phase-155 provenance/history
+    # validator is intentionally not duplicated here).
+    malformed_returns: list[object] = [
+        "malformed",
+        WorkflowExecutionPersistenceResult(tmp_path / "other-state", events_path, 1, 1),
+        WorkflowExecutionPersistenceResult(state_path, tmp_path / "other-events", 1, 1),
+        WorkflowExecutionPersistenceResult(state_path, events_path, 0, 1),
+        WorkflowExecutionPersistenceResult(state_path, events_path, 1, 0),
+    ]
+    for bad in malformed_returns:
+        calls: dict[str, int] = {"phase143": 0, "phase144": 0}
 
-    def phase161(*_: object) -> object:
-        return "malformed"
+        def phase161(*_: object, bad: object = bad) -> object:
+            return bad
 
-    def phase143(*_: object) -> object:
-        calls["phase143"] += 1
-        raise AssertionError("phase143 must not be called")
+        def phase143(*_: object) -> object:
+            calls["phase143"] += 1
+            raise AssertionError("phase143 must not be called")
 
-    def phase144(*_: object) -> object:
-        calls["phase144"] += 1
-        raise AssertionError("phase144 must not be called")
+        def phase144(*_: object) -> object:
+            calls["phase144"] += 1
+            raise AssertionError("phase144 must not be called")
 
-    with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError) as exc:
-        route_runtime_result_to_progression_orchestration_boundary(
-            result,
-            values["workflow"],
-            values["state_path"],
-            values["events_path"],
-            phase161_function=phase161,
-            phase143_function=phase143,
-            phase144_function=phase144,
-        )
-    assert exc.value.detail.classification == "phase161_contract"
-    assert calls == {"phase143": 0, "phase144": 0}
-    assert values["state_path"].read_bytes() == values["state_before"]  # type: ignore[union-attr]
-    assert values["events_path"].read_bytes() == values["events_before"]  # type: ignore[union-attr]
+        with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError) as exc:
+            route_runtime_result_to_progression_orchestration_boundary(
+                result,
+                values["workflow"],
+                state_path,
+                events_path,
+                phase161_function=phase161,
+                phase143_function=phase143,
+                phase144_function=phase144,
+            )
+        assert exc.value.detail.classification == "phase161_contract"
+        assert calls == {"phase143": 0, "phase144": 0}
+        assert state_path.read_bytes() == values["state_before"]  # type: ignore[union-attr]
+        assert events_path.read_bytes() == values["events_before"]  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
@@ -748,33 +763,58 @@ def test_malformed_phase143_return_committed_retained_phase144_zero(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path)
-    result = runtime_success(values["workflow"], 6)  # type: ignore[arg-type]
-    calls: dict[str, int] = {"phase144": 0}
+    wf = values["workflow"]
+    assert isinstance(wf, WorkflowDefinition)
+    state_path = values["state_path"]
+    events_path = values["events_path"]
+    assert isinstance(state_path, Path) and isinstance(events_path, Path)
+    success = runtime_success(wf, 6)
+    failure = runtime_failure(wf, 6)
+    success_out = success_outcome(wf, 6)
+    failure_out = failure_outcome(wf, 6)
+    # Phase 143 must return a PersistedExecutionOutcome semantically consistent
+    # with the original runtime result: exact type, discriminator matching the
+    # runtime outcome, exact identity fields, and a failure category matching
+    # the runtime failure category (None on success).
+    bad_cases: list[tuple[object, object]] = [
+        (success, "malformed"),
+        (success, failure_out),  # wrong discriminator for a success result
+        (success, replace(success_out, workflow_id="other")),
+        (success, replace(success_out, current_step_id="step-5")),
+        (success, replace(success_out, current_step_index=5)),
+        (success, replace(success_out, current_employee_id="e9")),
+        (success, replace(success_out, failure_category="api_error")),
+        (failure, success_out),  # wrong discriminator for a failure result
+        (failure, replace(failure_out, failure_category="rate_limit")),
+        (failure, replace(failure_out, workflow_id="other")),
+    ]
+    for result, bad in bad_cases:
+        calls: dict[str, int] = {"phase144": 0}
 
-    def phase161(r: object, w: object, s: object, e: object) -> object:
-        return _commit_phase161(values, result)
+        def phase161(r: object, w: object, s: object, e: object) -> object:
+            return _commit_phase161(values, result)
 
-    def phase143(*_: object) -> object:
-        return "malformed"
+        def phase143(*_: object, bad: object = bad) -> object:
+            return bad
 
-    def phase144(*_: object) -> object:
-        calls["phase144"] += 1
-        raise AssertionError("phase144 must not be called")
+        def phase144(*_: object) -> object:
+            calls["phase144"] += 1
+            raise AssertionError("phase144 must not be called")
 
-    with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError) as exc:
-        route_runtime_result_to_progression_orchestration_boundary(
-            result,
-            values["workflow"],
-            values["state_path"],
-            values["events_path"],
-            phase161_function=phase161,
-            phase143_function=phase143,
-            phase144_function=phase144,
-        )
-    assert exc.value.detail.classification == "phase143_contract"
-    assert calls == {"phase144": 0}
-    assert values["state_path"].read_bytes() == b"committed-state"  # type: ignore[union-attr]
-    assert values["events_path"].read_bytes() == b"committed-events"  # type: ignore[union-attr]
+        with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError) as exc:
+            route_runtime_result_to_progression_orchestration_boundary(
+                result,
+                wf,
+                state_path,
+                events_path,
+                phase161_function=phase161,
+                phase143_function=phase143,
+                phase144_function=phase144,
+            )
+        assert exc.value.detail.classification == "phase143_contract"
+        assert calls == {"phase144": 0}
+        assert state_path.read_bytes() == b"committed-state"
+        assert events_path.read_bytes() == b"committed-events"
 
 
 # ---------------------------------------------------------------------------
@@ -847,31 +887,143 @@ def test_phase144_unexpected_error_restored_to_committed(tmp_path: Path) -> None
 
 def test_malformed_phase144_return_committed_retained(tmp_path: Path) -> None:
     values = setup(tmp_path)
-    result = runtime_success(values["workflow"], 6)  # type: ignore[arg-type]
-    outcome = success_outcome(values["workflow"], 6)  # type: ignore[arg-type]
+    wf = values["workflow"]
+    assert isinstance(wf, WorkflowDefinition)
+    state_path = values["state_path"]
+    events_path = values["events_path"]
+    assert isinstance(state_path, Path) and isinstance(events_path, Path)
+    result = runtime_success(wf, 6)
+    outcome = success_outcome(wf, 6)
+    complete = complete_decision(wf, 6)
+    # persisted_success: the returned value must be an exact
+    # WorkflowProgressionDecision; at the final step the decision must be
+    # workflow_complete with None next fields and last_step_succeeded, and the
+    # current identity must link back to the supplied runtime result.
+    bad_final: list[object] = [
+        "malformed",
+        replace(complete, decision="not_progressable"),
+        replace(complete, workflow_id="other"),
+        replace(complete, current_step_id="step-5"),
+        replace(complete, current_step_index=5),
+        replace(complete, current_employee_id="e9"),
+        replace(complete, next_step_id="step-7"),
+        replace(complete, next_step_index=7),
+        replace(complete, next_employee_id="e7"),
+        replace(complete, reason="next_step_available"),
+        replace(complete, decision="prepare_next_step"),
+    ]
+    for bad in bad_final:
+        def phase161(r: object, w: object, s: object, e: object) -> object:
+            return _commit_phase161(values, result)
 
-    def phase161(r: object, w: object, s: object, e: object) -> object:
-        return _commit_phase161(values, result)
+        def phase143(*_: object) -> object:
+            return outcome
 
-    def phase143(*_: object) -> object:
-        return outcome
+        def phase144(*_: object, bad: object = bad) -> object:
+            return bad
 
-    def phase144(*_: object) -> object:
-        return "malformed"
+        with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError) as exc:
+            route_runtime_result_to_progression_orchestration_boundary(
+                result,
+                wf,
+                state_path,
+                events_path,
+                phase161_function=phase161,
+                phase143_function=phase143,
+                phase144_function=phase144,
+            )
+        assert exc.value.detail.classification == "phase144_contract"
+        assert state_path.read_bytes() == b"committed-state"
+        assert events_path.read_bytes() == b"committed-events"
+    # persisted_success at a non-final step: prepare_next_step must reference
+    # the supplied workflow's exact next step id/index/employee.
+    values7 = setup(tmp_path / "seven", steps=7, current=6)
+    wf7 = values7["workflow"]
+    assert isinstance(wf7, WorkflowDefinition)
+    state7 = values7["state_path"]
+    events7 = values7["events_path"]
+    assert isinstance(state7, Path) and isinstance(events7, Path)
+    result7 = runtime_success(wf7, 6)
+    outcome7 = success_outcome(wf7, 6)
+    prepare = WorkflowProgressionDecision(
+        "prepare_next_step",
+        "w",
+        "step-6",
+        6,
+        "e6",
+        "step-7",
+        7,
+        "e7",
+        "next_step_available",
+    )
+    bad_prepare: list[object] = [
+        "malformed",
+        replace(prepare, decision="workflow_complete"),
+        replace(prepare, workflow_id="other"),
+        replace(prepare, current_step_id="step-5"),
+        replace(prepare, current_step_index=5),
+        replace(prepare, current_employee_id="e9"),
+        replace(prepare, next_step_id="step-8"),
+        replace(prepare, next_step_index=8),
+        replace(prepare, next_employee_id="e8"),
+        replace(prepare, reason="last_step_succeeded"),
+    ]
+    for bad in bad_prepare:
+        def phase161(r: object, w: object, s: object, e: object) -> object:
+            return _commit_phase161(values7, result7)
 
-    with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError) as exc:
-        route_runtime_result_to_progression_orchestration_boundary(
-            result,
-            values["workflow"],
-            values["state_path"],
-            values["events_path"],
-            phase161_function=phase161,
-            phase143_function=phase143,
-            phase144_function=phase144,
-        )
-    assert exc.value.detail.classification == "phase144_contract"
-    assert values["state_path"].read_bytes() == b"committed-state"  # type: ignore[union-attr]
-    assert values["events_path"].read_bytes() == b"committed-events"  # type: ignore[union-attr]
+        def phase143(*_: object) -> object:
+            return outcome7
+
+        def phase144(*_: object, bad: object = bad) -> object:
+            return bad
+
+        with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError) as exc:
+            route_runtime_result_to_progression_orchestration_boundary(
+                result7,
+                wf7,
+                state7,
+                events7,
+                phase161_function=phase161,
+                phase143_function=phase143,
+                phase144_function=phase144,
+            )
+        assert exc.value.detail.classification == "phase144_contract"
+        assert state7.read_bytes() == b"committed-state"
+        assert events7.read_bytes() == b"committed-events"
+    # persisted_failure: only the exact same classified object by identity is
+    # accepted; an equal-but-not-identical outcome is a phase144_contract.
+    failure = runtime_failure(wf, 6)
+    failure_outcome_obj = failure_outcome(wf, 6)
+    bad_failure: list[object] = [
+        "malformed",
+        failure_outcome(wf, 6),  # equal fields but a different object
+        replace(failure_outcome_obj, workflow_id="other"),
+        success_outcome(wf, 6),
+    ]
+    for bad in bad_failure:
+        def phase161(r: object, w: object, s: object, e: object) -> object:
+            return _commit_phase161(values, failure)
+
+        def phase143(*_: object) -> object:
+            return failure_outcome_obj
+
+        def phase144(*_: object, bad: object = bad) -> object:
+            return bad
+
+        with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError) as exc:
+            route_runtime_result_to_progression_orchestration_boundary(
+                failure,
+                wf,
+                state_path,
+                events_path,
+                phase161_function=phase161,
+                phase143_function=phase143,
+                phase144_function=phase144,
+            )
+        assert exc.value.detail.classification == "phase144_contract"
+        assert state_path.read_bytes() == b"committed-state"
+        assert events_path.read_bytes() == b"committed-events"
 
 
 # ---------------------------------------------------------------------------
