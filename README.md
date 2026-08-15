@@ -3389,3 +3389,57 @@ Phase 172は以下のbehaviorを**一切**追加・変更しない:
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - エラー分類・quality feedback literal・provider / request-ID semantics
 - 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
+
+## Phase 173: Post-Runtime → Approved-Preparation Orchestration Boundary
+
+Phase 173は、**Phase 172 の公開 result を、そのまま公開 Phase 145 の approved next-step preparation 境界に合成する、Phase 172 に続く次の integration boundary**です。compatibility repair ではなく、既存の公開境界を直列接続します。**まだ workflow runner ではありません**。
+
+```text
+Phase 155 result
+    ↓ Phase 172 runtime result → persistence → classification → progression
+    ↓ WorkflowProgressionDecision(prepare_next_step | workflow_complete)
+    ↓   または exact PersistedExecutionOutcome(persisted_failure)
+    ↓ Phase 145 progression → explicitly approved next-step preparation
+    ↓ PreparedWorkflowStep
+    ↓   または exact stop object (workflow_complete / persisted_failure)
+```
+
+### 核心契約（stage ownership / committed continuation）
+
+- **Phase 172 は Phase 161 の durable commit point を所有する**: Phase 173 は Phase 172 stage の失敗・不正戻り値に対して pre-Phase172 への巻き戻しを行わない（既に永続化済みの runtime result を消さない）
+- **Phase 172 成功後の target bytes を post-Phase172 committed continuation snapshot とする**
+- Phase 145 はその snapshot に対して read-only。失敗時は committed bytes への復元のみ（pre-Phase172 へは戻さない）
+- approval / employee は **Phase 172 の前に prevalidate しない**: 完了済み runtime result は approval が欠落・不正でも durable に persist/classify/progress され、検証は Phase 145 の責務
+- 各 stage ちょうど 1 回、retry・loop・bypass なし。`PreparedWorkflowStep` または exact stop object で停止し、次の step を start / persist / execute しない
+
+### エラー分類（11 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase172_contract` / `phase145_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
+
+- Phase 172 / 145 の既存 safe error は同一 object を identity で re-raise
+- 予期しない例外は `dependency_error` に sanitize（detail-safe 固定メッセージ）
+- Phase 145 成功後の target mutation は `committed_mutation`、復元不能は `rollback_failure`
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_approved_preparation_orchestration_boundary.py` — Phase 173 production（新規）
+2. `src/ai_office/engine/__init__.py` — Phase 173 public export（+4 symbols、アルファベット順）
+3. `tests/test_runtime_result_to_approved_preparation_orchestration_boundary.py` — Phase 173 focused test（focused 16 + real-default A/B/C/D = 20 cases）
+4. `README.md` — Phase 173 documentation
+5. `docs/architecture.md` — Phase 173 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 173は以下のbehaviorを**一切**追加・変更しない:
+
+- Phase 172 / 145 または下流 production を変更しない（public function + error class のみ import）
+- 自動 next-step start・start-state persistence・provider / model 呼び出し・tool 実行を行わない
+- retry・workflow loop・schedule・parallel・finalize・artifact persistence を行わない
+- CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない
+- `terminal_history_contract.py` を変更しない
+
+### 変更しないもの
+
+- Phase 172 / 145 / 161 / 143 / 144 / 137 / 129 / 30 / 37 / 31 / 25 / 155 production modules
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- shared storage/runtime/provider code、CLI / GUI behavior

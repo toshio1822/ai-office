@@ -670,6 +670,12 @@ from ai_office.engine.progression_to_approved_preparation_cycle_reentry_continua
     ProgressionToApprovedPreparationCycleReentryContinuationFailureDetail,
     route_progression_to_approved_preparation_cycle_reentry_continuation_boundary,
 )
+from ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary import (  # noqa: E501
+    RuntimeResultToApprovedPreparationOrchestrationBoundaryCompatibilityError,
+    RuntimeResultToApprovedPreparationOrchestrationBoundaryError,
+    RuntimeResultToApprovedPreparationOrchestrationBoundaryFailureDetail,
+    route_runtime_result_to_approved_preparation_orchestration_boundary,
+)
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (  # noqa: E501
     RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError,
     RuntimeResultToProgressionOrchestrationBoundaryError,
@@ -1230,6 +1236,10 @@ __all__ = [
     "RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError",
     "RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail",
     "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
+    "RuntimeResultToApprovedPreparationOrchestrationBoundaryCompatibilityError",
+    "RuntimeResultToApprovedPreparationOrchestrationBoundaryError",
+    "RuntimeResultToApprovedPreparationOrchestrationBoundaryFailureDetail",
+    "route_runtime_result_to_approved_preparation_orchestration_boundary",
     "RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError",
     "RuntimeResultToProgressionOrchestrationBoundaryError",
     "RuntimeResultToProgressionOrchestrationBoundaryFailureDetail",
