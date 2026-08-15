@@ -673,6 +673,93 @@ def test_earlier_nonopenai_predecessor_remains_valid(tmp_path: Path) -> None:
     assert calls == 1
 
 
+def test_prepare_index_six_immediate_predecessor_none_request_id_delegates_once(
+    tmp_path: Path,
+) -> None:
+    # Phase-155 provenance: seven-step workflow, step six succeeded, immediate
+    # predecessor (step five) has request_id None.  Phase 137 must accept the
+    # None request_id on the prepare route when index >= 6 and the event is the
+    # immediate predecessor only.
+    supplied_workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{position}",
+                    "name": f"Step {position}",
+                    "employee": f"e{position}",
+                    "instructions": f"step-{position}",
+                }
+                for position in range(1, 8)
+            ],
+        }
+    )
+    index = 6
+    step = supplied_workflow.steps[index - 1]
+    predecessors = tuple(
+        predecessor_event(
+            prior,
+            position,
+            provider="openai" if position == index - 1 else "other",
+            request_id=None if position == index - 1 else "request",
+        )
+        for position, prior in enumerate(supplied_workflow.steps[: index - 1], 1)
+    )
+    state = WorkflowExecutionState(
+        "w",
+        "succeeded",
+        step.id,
+        index,
+        step.employee,
+        tuple(item.id for item in supplied_workflow.steps[:index]),
+        None,
+    )
+    terminal = terminal_event(step, index)
+    state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
+    event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+        for event in (*predecessors, terminal)
+    )
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    result = progression(supplied_workflow, index)
+    value = {
+        "result": result,
+        "workflow": supplied_workflow,
+        "approval": approval(result),
+        "employee": employee(result),
+        "state_path": state_path,
+        "events_path": events_path,
+        "before_state": state_bytes,
+        "before_events": event_bytes,
+    }
+    expected = prepared(supplied_workflow, result, employee(result))
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert invoke(value, fake) is expected
+    assert calls == 1
+    unchanged(value)
+
+
+def test_stop_route_rejects_immediate_predecessor_none_request_id_zero_call(
+    tmp_path: Path,
+) -> None:
+    # The prepare-only relaxation must never leak into the stop routes: a
+    # workflow_complete result with an immediate predecessor whose request_id
+    # is None is rejected before any dependency call.
+    value = completion_data(tmp_path)
+    rewrite_event(value["events_path"], 3, request_id=None)
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+
 @pytest.mark.parametrize("field,value_field", [("request_id", ""), ("request_id", 4), ("response_id", ""), ("response_id", 4), ("output_text", 4)])
 def test_predecessor_runtime_fields_are_strict(tmp_path: Path, field: str, value_field: object) -> None:
     value = data(tmp_path)

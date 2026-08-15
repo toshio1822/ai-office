@@ -427,6 +427,9 @@ def _valid_history(
             state,
             require_openai=require_immediate_openai and position == len(prior_steps),
             allow_empty_output=allow_empty_predecessor_output,
+            allow_none_immediate_predecessor_request=(
+                index >= 6 and position == len(prior_steps)
+            ),
         ):
             return False
     return _valid_terminal_event(
@@ -472,6 +475,7 @@ def _valid_predecessor(
     *,
     require_openai: bool,
     allow_empty_output: bool = False,
+    allow_none_immediate_predecessor_request: bool = False,
 ) -> bool:
     return (
         type(event) is RuntimeStepEvent
@@ -487,7 +491,13 @@ def _valid_predecessor(
         and (not require_openai or event.provider == "openai")
         and event.failure_category is None
         and _nonempty_string(event.response_id)
-        and _nonempty_string(event.request_id)
+        and (
+            _nonempty_string(event.request_id)
+            or (
+                allow_none_immediate_predecessor_request
+                and event.request_id is None
+            )
+        )
         and type(event.output_text) is str
         and (allow_empty_output or bool(event.output_text))
         and event.message is None

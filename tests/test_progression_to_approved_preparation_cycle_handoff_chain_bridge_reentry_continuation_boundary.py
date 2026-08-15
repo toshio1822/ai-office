@@ -1740,3 +1740,117 @@ def test_empty_success_fallback_accepts_optional_none_request_id(
     )
     assert calls == 1
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_prepare_index_six_empty_predecessor_output_delegates_once(
+    tmp_path: Path,
+) -> None:
+    # Phase-155 provenance: seven-step workflow, step six succeeded, an earlier
+    # predecessor has empty output_text.  Phase 130 must accept the empty
+    # predecessor output on the prepare route when current_step_index >= 6.
+    supplied_workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{position}",
+                    "name": f"Step {position}",
+                    "employee": f"e{position}",
+                    "instructions": f"step-{position}",
+                }
+                for position in range(1, 8)
+            ],
+        }
+    )
+    index = 6
+    current = supplied_workflow.steps[index - 1]
+    state_model = WorkflowExecutionState(
+        supplied_workflow.id,
+        "succeeded",
+        current.id,
+        index,
+        current.employee,
+        tuple(step.id for step in supplied_workflow.steps[:index]),
+        None,
+    )
+    prior = tuple(
+        predecessor_event(step.id, position, step.employee)
+        for position, step in enumerate(supplied_workflow.steps[: index - 1], 1)
+    )
+    events = (*prior, terminal_event(supplied_workflow, index, "succeeded"))
+    state_bytes = serialize_workflow_execution_state_json(state_model).encode("utf-8")
+    event_bytes = "".join(
+        serialize_runtime_step_event_jsonl(event) for event in events
+    ).encode("utf-8")
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    rewrite_event(events_path, 1, output_text="")
+    before_state, before_events = state_path.read_bytes(), events_path.read_bytes()
+    decision = progression(supplied_workflow, index)
+    supplied_approval = approval(decision)
+    supplied_employee = employee(decision)
+    expected = prepared(supplied_workflow, decision, supplied_employee)
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert (
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state_path,
+            events_path,
+            fake,
+        )
+        is expected
+    )
+    assert calls == 1
+    assert (state_path.read_bytes(), events_path.read_bytes()) == (
+        before_state,
+        before_events,
+    )
+
+
+def test_workflow_complete_empty_predecessor_output_is_rejected_zero_call(
+    tmp_path: Path,
+) -> None:
+    # The prepare-only empty predecessor relaxation must never leak into the
+    # stop routes: a workflow_complete result with an empty predecessor output
+    # is rejected before any dependency call.
+    supplied_workflow = workflow()
+    _, _, _, _, state, events, *_ = setup(
+        tmp_path, index=len(supplied_workflow.steps)
+    )
+    result = completion(supplied_workflow)
+    rewrite_event(events, 0, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(
+        ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError
+    ) as caught:
+        invoke(
+            result,
+            supplied_workflow,
+            None,
+            None,
+            state,
+            events,
+            forbidden,
+        )
+    assert classification(caught) == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
