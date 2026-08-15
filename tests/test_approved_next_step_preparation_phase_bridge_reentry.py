@@ -1,4 +1,4 @@
-"""Focused Phase 60 boundary tests using injected Phase 53 fakes only."""
+"""Phase 60 boundary tests: injected fakes + one real-default regression."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -172,12 +172,12 @@ def test_prepare_delegates_once_with_exact_identity_and_returns_prepared(
     def phase53(*args: object) -> PreparedWorkflowStep:
         nonlocal calls
         calls += 1
-        assert args == (definition, state, events, supplied, approval_value, person)
+        assert args == (supplied, definition, state, events, approval_value, person)
         assert all(
             actual is expected_arg
             for actual, expected_arg in zip(
                 args,
-                (definition, state, events, supplied, approval_value, person),
+                (supplied, definition, state, events, approval_value, person),
                 strict=True,
             )
         )
@@ -669,3 +669,26 @@ def test_missing_and_non_regular_targets_are_rejected_before_phase53(
         "state_target" if target == "state" else "event_target"
     )
     assert calls == 0
+
+
+def test_real_default_phase53_phase32_phase26_chain_returns_prepared(
+    tmp_path: Path,
+) -> None:
+    """Real-default regression: Phase 60 -> Phase 53 -> Phase 32 -> Phase 26.
+
+    No injected fake: real public Phase 60 uses its real default phase53_function
+    and must return an exact valid PreparedWorkflowStep without touching targets.
+    """
+    state, events = targets(tmp_path)
+    before = state.read_bytes(), events.read_bytes()
+    result = route_approved_next_step_preparation_phase_bridge_reentry(
+        decision(),
+        workflow(),
+        state,
+        events,
+        approval(),
+        employee(),
+    )
+    assert type(result) is PreparedWorkflowStep
+    assert result == prepared()
+    assert (state.read_bytes(), events.read_bytes()) == before

@@ -112,7 +112,7 @@ def route_approved_next_step_preparation_phase_bridge_reentry(
     _validate_terminal(result, workflow, state_path, events_path, "succeeded")
     try:
         prepared = phase53_function(
-            workflow, state_path, events_path, result, approval, employee
+            result, workflow, state_path, events_path, approval, employee
         )
     except ApprovedNextStepPreparationBridgeError:
         _restore_changed(state_path, events_path, original)
