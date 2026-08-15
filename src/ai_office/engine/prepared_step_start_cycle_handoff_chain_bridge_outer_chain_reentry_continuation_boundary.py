@@ -342,6 +342,7 @@ def _check_predecessor(
         require_immediate_openai=True,
         allow_empty_success_output=True,
         allow_empty_predecessor_output=True,
+        allow_missing_immediate_request_id=prepared.step_index - 1 >= 6,
     ):
         _fail("terminal_contract")
     previous_index = prepared.step_index - 1
@@ -398,6 +399,7 @@ def _valid_history(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    allow_missing_immediate_request_id: bool = False,
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
         return False
@@ -439,6 +441,9 @@ def _valid_history(
             state,
             require_openai=require_immediate_openai and position == len(prior_steps),
             allow_empty_output=allow_empty_predecessor_output,
+            allow_missing_request_id=(
+                allow_missing_immediate_request_id and position == len(prior_steps)
+            ),
         ):
             return False
     return _valid_terminal_event(
@@ -481,6 +486,7 @@ def _valid_predecessor(
     *,
     require_openai: bool,
     allow_empty_output: bool = False,
+    allow_missing_request_id: bool = False,
 ) -> bool:
     return (
         type(event) is RuntimeStepEvent
@@ -496,7 +502,10 @@ def _valid_predecessor(
         and (not require_openai or event.provider == "openai")
         and event.failure_category is None
         and _nonempty_string(event.response_id)
-        and _nonempty_string(event.request_id)
+        and (
+            (allow_missing_request_id and event.request_id is None)
+            or _nonempty_string(event.request_id)
+        )
         and type(event.output_text) is str
         and (allow_empty_output or bool(event.output_text))
         and event.message is None
