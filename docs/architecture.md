@@ -3076,3 +3076,50 @@ Phase 171は以下のbehaviorを**一切**追加・変更しない:
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - エラー分類・quality feedback literal・provider / request-ID semantics
 - 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
+
+## Phase 172: Post-Runtime Persistence → Classification → Progression Orchestration Boundary
+
+Phase 172は、Phase-155 runtime/stop result を 1 つ受け取り、**公開 Phase 161 → Phase 143 → Phase 144 をこの順でちょうど 1 回ずつ直列接続する最初の明示的な orchestration boundary**です。compatibility repair ではなく、既存の公開境界の合成です。
+
+### アーキテクチャ上の位置づけ
+
+```text
+Phase 155 result (success / failure / stop decision / persisted outcome)
+    ↓ Phase 161  runtime-result transition-persistence outer-chain continuation boundary
+    ↓ Phase 143  persisted transition outcome classification
+    ↓ Phase 144  classified persisted outcome progression
+    ↓ WorkflowProgressionDecision / PersistedExecutionOutcome
+```
+
+- 入力は Phase 161 と同じ 4 型（`StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure` / `WorkflowProgressionDecision` / `PersistedExecutionOutcome`）に限定
+- 出力は `WorkflowProgressionDecision`（progression 継続・workflow_complete）または `PersistedExecutionOutcome`（persisted failure）の 2 型のみ
+- Phase 161 が exact `WorkflowExecutionPersistenceResult` を返した後の target bytes を **durable commit point** とし、Phase 143 / 144 の失敗は committed bytes への復元のみで対応（pre-Phase161 running 状態へ巻き戻さない）
+
+### 依存関係の制約
+
+- import は Phase 161 / 143 / 144 の **public function + error class**、`WorkflowExecutionPersistenceResult`、`PersistedExecutionOutcome`、`WorkflowProgressionDecision`、`StepRuntimeExecutionSuccess/Failure`、`WorkflowDefinition`、`Path` のみ
+- 下流（Phase 142 / 135 / 136 / 30 / 37 / 31 / 25 等）・private cross-phase helpers は一切参照しない
+- 依存注入は keyword-only の `phase161_function` / `phase143_function` / `phase144_function`（default は実公開関数の exact identity）
+
+### エラー分類（12 分類）
+
+| classification | 意味 |
+|---|---|
+| `result_type` | 入力 result が 4 型以外 |
+| `workflow_definition` | workflow が exact `WorkflowDefinition` でない |
+| `state_target` / `event_target` | target が exact `Path` でない、または file でない |
+| `target_conflict` | state_path == events_path |
+| `configuration` | 依存関数が callable でない |
+| `phase161_contract` | Phase 161 の戻り値・stop identity・target 不変の契約違反 |
+| `phase143_contract` | Phase 143 が exact `PersistedExecutionOutcome` を返さない |
+| `phase144_contract` | Phase 144 が decision または exact identity outcome を返さない |
+| `dependency_error` | 予期しない例外（sanitize、detail-safe 固定メッセージ） |
+| `committed_mutation` | 成功後の target mutation を検出 |
+| `rollback_failure` | 補償 restore 自体が失敗 |
+
+### 補償パターン
+
+- safe error（各 Phase の公開エラー型）は同一 object を identity で re-raise
+- 予期しない例外は `dependency_error` に sanitize（エラーメッセージは固定文字列）
+- `_restore_if_changed` は両 target を 1 回ずつ write 試行し、失敗または bytes 不一致残存なら `rollback_failure`
+- retry・loop なし（`_restore_if_changed` の 2 要素 for のみ）、各 stage 最大 1 回
