@@ -3334,3 +3334,58 @@ Phase 171は以下のbehaviorを**一切**追加・変更しない:
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - エラー分類・quality feedback literal・provider / request-ID semantics
 - 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
+
+## Phase 172: Post-Runtime Persistence → Classification → Progression Orchestration Boundary
+
+Phase 172は、**Phase-155 runtime/stop result を 1 つ受け取り、公開 Phase 161 → Phase 143 → Phase 144 をこの順でちょうど 1 回ずつ合成する最初の明示的な orchestration boundary**です。compatibility repair ではなく、既存の公開境界を直列接続します。
+
+```text
+Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop: WorkflowProgressionDecision / PersistedExecutionOutcome)
+    ↓ Phase 161 (runtime-result transition-persistence outer-chain continuation boundary)
+    ↓ Phase 143 (persisted transition outcome classification)
+    ↓ Phase 144 (classified persisted outcome progression)
+    ↓ WorkflowProgressionDecision / PersistedExecutionOutcome
+```
+
+### 核心契約（durable commit point）
+
+- **Phase 161 が exact `WorkflowExecutionPersistenceResult` を返した時点で、post-call target bytes を durable commit point とする**
+- **Phase 143 / 144 の失敗で pre-Phase161 running 状態へ巻き戻さない**: 補償は committed bytes への復元のみ
+- stop 入力（`WorkflowProgressionDecision` / `PersistedExecutionOutcome`）は Phase 161 を 1 回呼び、identity を返して停止（後続 stage は 0 回）
+- retry・loop なし、各 stage 最大 1 回
+
+### エラー分類（12 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase161_contract` / `phase143_contract` / `phase144_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
+
+- safe error（Phase 161 / 143 / 144 の公開エラー型）は同一 object を identity で re-raise
+- 予期しない例外は `dependency_error` に sanitize（detail-safe 固定メッセージ）
+- 成功後の target mutation は `committed_mutation`、復元不能は `rollback_failure`
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_progression_orchestration_boundary.py` — Phase 172 production（新規）
+2. `src/ai_office/engine/__init__.py` — Phase 172 public export（+4 symbols、アルファベット順）
+3. `tests/test_runtime_result_to_progression_orchestration_boundary.py` — Phase 172 focused test（focused 18 + real-default A/B/C = 21 cases）
+4. `README.md` — Phase 172 documentation
+5. `docs/architecture.md` — Phase 172 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 172は以下のbehaviorを**一切**追加・変更しない:
+
+- 新しい互換性修復（compatibility repair）を追加しない
+- 自動継続・workflow progression 自体の実行・next-step preparation・start・provider / tool 実行は行わない
+- retry・loop・schedule・parallel・finalize は行わない
+- Phase 161 / 143 / 144 production は変更しない（public function + error class のみ import）
+- CLI・GUI behavior は追加・変更しない
+- 下流（Phase 142 / 135 / 136 / 30 / 37 / 31 / 25 等）を参照しない
+
+### 変更しないもの
+
+- Phase 161 / 143 / 144 production modules
+- Phase 155 / 142 / 135 / 136 / 30 / 37 / 31 / 25 production modules
+- `src/ai_office/engine/terminal_history_contract.py`
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- エラー分類・quality feedback literal・provider / request-ID semantics
+- 実Phase 30 persistence、shared storage/runtime/provider code、CLI / GUI behavior
