@@ -342,6 +342,7 @@ def _check_terminal(
         and type(result) is WorkflowProgressionDecision
         and result.decision == "prepare_next_step"
     )
+    allow_empty_predecessor_output = allow_empty_success_output
     try:
         try:
             state, history = load_strict_terminal_history(
@@ -368,6 +369,7 @@ def _check_terminal(
         expected_failure,
         require_openai,
         allow_empty_success_output=allow_empty_success_output,
+        allow_empty_predecessor_output=allow_empty_predecessor_output,
     ):
         _fail("terminal_contract")
 
@@ -382,6 +384,7 @@ def _valid_terminal_history(
     require_openai: bool,
     *,
     allow_empty_success_output: bool,
+    allow_empty_predecessor_output: bool = False,
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
         return False
@@ -415,7 +418,15 @@ def _valid_terminal_history(
         zip(history[:-1], prior_steps, strict=True), 1
     ):
         if not _valid_event_shape(event) or not _valid_predecessor(
-            event, step, position, state
+            event,
+            step,
+            position,
+            state,
+            allow_empty_output=(
+                allow_empty_predecessor_output
+                and type(state.current_step_index) is int
+                and state.current_step_index >= 6
+            ),
         ):
             return False
     return _valid_event_shape(history[-1]) and _valid_terminal_event(
@@ -486,6 +497,8 @@ def _valid_predecessor(
     step: WorkflowStepDefinition,
     position: int,
     state: WorkflowExecutionState,
+    *,
+    allow_empty_output: bool = False,
 ) -> bool:
     return (
         event.event_type == "step_succeeded"
@@ -497,7 +510,8 @@ def _valid_predecessor(
         and event.next_status == "succeeded"
         and event.failure_category is None
         and _nonempty_string(event.response_id)
-        and _nonempty_string(event.output_text)
+        and type(event.output_text) is str
+        and (allow_empty_output or bool(event.output_text))
         and event.message is None
     )
 

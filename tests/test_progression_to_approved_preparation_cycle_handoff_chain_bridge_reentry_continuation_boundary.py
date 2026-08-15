@@ -1740,3 +1740,283 @@ def test_empty_success_fallback_accepts_optional_none_request_id(
     )
     assert calls == 1
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_prepare_index_six_empty_predecessor_output_delegates_once(
+    tmp_path: Path,
+) -> None:
+    # Phase-155 provenance: seven-step workflow, step six succeeded, an earlier
+    # predecessor has empty output_text.  Phase 130 must accept the empty
+    # predecessor output on the prepare route when current_step_index >= 6.
+    supplied_workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{position}",
+                    "name": f"Step {position}",
+                    "employee": f"e{position}",
+                    "instructions": f"step-{position}",
+                }
+                for position in range(1, 8)
+            ],
+        }
+    )
+    index = 6
+    current = supplied_workflow.steps[index - 1]
+    state_model = WorkflowExecutionState(
+        supplied_workflow.id,
+        "succeeded",
+        current.id,
+        index,
+        current.employee,
+        tuple(step.id for step in supplied_workflow.steps[:index]),
+        None,
+    )
+    prior = tuple(
+        predecessor_event(step.id, position, step.employee)
+        for position, step in enumerate(supplied_workflow.steps[: index - 1], 1)
+    )
+    events = (*prior, terminal_event(supplied_workflow, index, "succeeded"))
+    state_bytes = serialize_workflow_execution_state_json(state_model).encode("utf-8")
+    event_bytes = "".join(
+        serialize_runtime_step_event_jsonl(event) for event in events
+    ).encode("utf-8")
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    rewrite_event(events_path, 1, output_text="")
+    before_state, before_events = state_path.read_bytes(), events_path.read_bytes()
+    decision = progression(supplied_workflow, index)
+    supplied_approval = approval(decision)
+    supplied_employee = employee(decision)
+    expected = prepared(supplied_workflow, decision, supplied_employee)
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert (
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state_path,
+            events_path,
+            fake,
+        )
+        is expected
+    )
+    assert calls == 1
+    assert (state_path.read_bytes(), events_path.read_bytes()) == (
+        before_state,
+        before_events,
+    )
+
+    # --- Review-required narrowness subcases (inline, +0 collected) ---
+    # (a) normal non-empty predecessor output remains accepted (delegates once).
+    rewrite_event(events_path, 1, output_text="output-step-2")
+    before_state, before_events = state_path.read_bytes(), events_path.read_bytes()
+    calls = 0
+
+    def fake_nonempty(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert (
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state_path,
+            events_path,
+            fake_nonempty,
+        )
+        is expected
+    )
+    assert calls == 1
+    assert (state_path.read_bytes(), events_path.read_bytes()) == (
+        before_state,
+        before_events,
+    )
+
+    # (b) predecessor request_id=None remains accepted: Phase 130 does not
+    # inspect predecessor request_id on the prepare route (delegates once).
+    rewrite_event(events_path, 1, request_id=None)
+    before_state, before_events = state_path.read_bytes(), events_path.read_bytes()
+    calls = 0
+
+    def fake_none_request(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert (
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state_path,
+            events_path,
+            fake_none_request,
+        )
+        is expected
+    )
+    assert calls == 1
+    assert (state_path.read_bytes(), events_path.read_bytes()) == (
+        before_state,
+        before_events,
+    )
+
+    # (c) predecessor output_text=None is rejected.
+    rewrite_event(events_path, 1, output_text=None)
+    assert_rejected(
+        decision,
+        supplied_workflow,
+        supplied_approval,
+        supplied_employee,
+        state_path,
+        events_path,
+        "terminal_contract",
+        lambda *_: pytest.fail("called"),
+    )
+
+    # (d) non-string predecessor output is rejected.
+    rewrite_event(events_path, 1, output_text=4)
+    assert_rejected(
+        decision,
+        supplied_workflow,
+        supplied_approval,
+        supplied_employee,
+        state_path,
+        events_path,
+        "terminal_contract",
+        lambda *_: pytest.fail("called"),
+    )
+
+    # (e) the empty-output relaxation is bounded to current_step_index >= 6:
+    # a prepare route at index 5 with an empty predecessor output is rejected.
+    boundary_index = 5
+    boundary_step = supplied_workflow.steps[boundary_index - 1]
+    boundary_state_model = WorkflowExecutionState(
+        supplied_workflow.id,
+        "succeeded",
+        boundary_step.id,
+        boundary_index,
+        boundary_step.employee,
+        tuple(step.id for step in supplied_workflow.steps[:boundary_index]),
+        None,
+    )
+    boundary_prior = tuple(
+        predecessor_event(step.id, position, step.employee)
+        for position, step in enumerate(
+            supplied_workflow.steps[: boundary_index - 1], 1
+        )
+    )
+    boundary_events = (
+        *boundary_prior,
+        terminal_event(supplied_workflow, boundary_index, "succeeded"),
+    )
+    boundary_state_path = tmp_path / "boundary-state.json"
+    boundary_events_path = tmp_path / "boundary-events.jsonl"
+    boundary_state_path.write_bytes(
+        serialize_workflow_execution_state_json(boundary_state_model).encode("utf-8")
+    )
+    boundary_events_path.write_bytes(
+        "".join(
+            serialize_runtime_step_event_jsonl(event) for event in boundary_events
+        ).encode("utf-8")
+    )
+    rewrite_event(boundary_events_path, 1, output_text="")
+    boundary_decision = progression(supplied_workflow, boundary_index)
+    boundary_approval = approval(boundary_decision)
+    boundary_employee = employee(boundary_decision)
+    assert_rejected(
+        boundary_decision,
+        supplied_workflow,
+        boundary_approval,
+        boundary_employee,
+        boundary_state_path,
+        boundary_events_path,
+        "terminal_contract",
+        lambda *_: pytest.fail("called"),
+    )
+
+
+def test_workflow_complete_empty_predecessor_output_is_rejected_zero_call(
+    tmp_path: Path,
+) -> None:
+    # The prepare-only empty predecessor relaxation must never leak into the
+    # stop routes: a workflow_complete result with an empty predecessor output
+    # is rejected before any dependency call.
+    supplied_workflow = workflow()
+    _, _, _, _, state, events, *_ = setup(
+        tmp_path, index=len(supplied_workflow.steps)
+    )
+    result = completion(supplied_workflow)
+    rewrite_event(events, 0, output_text="")
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def forbidden(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(
+        ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError
+    ) as caught:
+        invoke(
+            result,
+            supplied_workflow,
+            None,
+            None,
+            state,
+            events,
+            forbidden,
+        )
+    assert classification(caught) == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+    # --- Review-required narrowness subcases (inline, +0 collected) ---
+    # persisted_failure is equally a stop route: an empty predecessor output
+    # must remain rejected there too (zero dependency calls, bytes unchanged).
+    failed_dir = tmp_path / "failed"
+    failed_dir.mkdir()
+    failed_result = failure(supplied_workflow)
+    _, _, _, _, failed_state, failed_events, *_ = setup(
+        failed_dir, status="failed"
+    )
+    rewrite_event(failed_events, 0, output_text="")
+    failed_before = (failed_state.read_bytes(), failed_events.read_bytes())
+    calls = 0
+
+    def forbidden_failure(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    with pytest.raises(
+        ProgressionToApprovedPreparationCycleHandoffChainBridgeReentryContinuationCompatibilityError
+    ) as failed_caught:
+        invoke(
+            failed_result,
+            supplied_workflow,
+            None,
+            None,
+            failed_state,
+            failed_events,
+            forbidden_failure,
+        )
+    assert classification(failed_caught) == "terminal_contract"
+    assert calls == 0
+    assert (failed_state.read_bytes(), failed_events.read_bytes()) == failed_before
