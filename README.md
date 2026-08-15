@@ -3443,3 +3443,69 @@ Phase 173は以下のbehaviorを**一切**追加・変更しない:
 - Phase 172 / 145 / 161 / 143 / 144 / 137 / 129 / 30 / 37 / 31 / 25 / 155 production modules
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - shared storage/runtime/provider code、CLI / GUI behavior
+
+## Phase 174: Repair Phase-155 Prepared-step-start Compatibility across Phase 146 → 138 → 131
+
+Phase 174は、Phase 173 `PreparedWorkflowStep(step 7)` が**実 Phase 146 → 実 Phase 138 → 実 Phase 131 → 無変更の Phase 124 → 117 → 110 → 103 → 96 → 89 → 82 → 75 → 68 → 無変更の Phase 61 → 54 → 47 → 40 → 33** を経て exact `PreparedStepExecutionStart(step 7)` に到達するための最小 compatibility repair です。新しい orchestration boundary は追加せず、将来の Phase173→146 boundary も追加しません。
+
+```text
+Phase 173 PreparedWorkflowStep(step 7)
+    ↓ Phase 146 → 138 → 131（本 Phase で修復）
+    ↓ unchanged Phase 124 → 117 → 110 → 103 → 96 → 89 → 82 → 75 → 68
+    ↓ unchanged Phase 61 → 54 → 47 → 40 → 33
+    ↓ PreparedStepExecutionStart(step 7)
+```
+
+### 実測された残存 seam（#360 は superseded）
+
+#360 の preflight は base `cf401996` 上で Phase 47/54/61 の blocker が存在しないことを証明しました（実 Phase 61→54→47→40→33 は canonical history を受理・targets 不変）。commit `0d13f9f` が共有 strict terminal-history contract を非final empty-success 受理に修正済みで、共有契約は predecessor request-ID gate を持ちません。残る local seam は次の3つだけです:
+
+1. **Phase 146** が全 predecessor の `request_id` 非空を要求
+2. **Phase 138** が同じ制約を繰り返す
+3. **Phase 131** は request_id optional だが predecessor `output_text` 非空を要求
+
+Phase 124→117→110→103→96→89→82→75→68 には同等の gate はありません（fresh audit 済み）。
+
+### Production correction A — Phase 146（prepared route only）
+
+- exact persisted current index `>= 6` に限定
+- **immediate predecessor のみ** `request_id is None` を許容
+- earlier predecessor の request ID は non-empty exact string のまま
+- immediate の `""` と無効型は従来どおり拒否
+- index 5 以下は strict 維持
+- immediate predecessor provider `"openai"` 必須維持
+- 既存の empty predecessor-output 互換性は不変
+- stop routes / terminal semantics は不変、Phase146→138 は exactly once・既存 compensation/no-retry 維持
+
+### Production correction B — Phase 138（prepared route only）
+
+同じ bounded immediate-predecessor request-ID compatibility を `PreparedWorkflowStep` のみに適用します。index 5 以下 strict、stop routes 不変、Phase138→131 を exactly once 維持し、Phase 131 を bypass しません。
+
+### Production correction C — Phase 131（prepared route only）
+
+Phase 131 の event shape は既に `request_id=None` を許可するため request-ID restriction は追加しません。exact persisted current index `>= 6` に限定して:
+
+- predecessor success `output_text` は exact built-in `str` のまま空文字を許容（immediate・earlier とも）
+- `None` / non-string は拒否維持
+- index 5 以下は旧 strict predecessor-output contract 維持
+- terminal / history loading は不変、Phase131→124 は exactly once・既存 compensation/no-retry 維持
+
+### 変更ファイル（正確に6ファイル）
+
+1. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 146 production
+2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 138 production
+3. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 131 production
+4. `tests/test_prepared_step_start_phase146_138_131_phase155_provenance_compatibility.py` — 新規 +8 compatibility test
+5. `README.md` — Phase 174 documentation
+6. `docs/architecture.md` — Phase 174 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 174は以下のbehaviorを**一切**追加・変更しない:
+
+- Phase 124 / 117 / 110 / 103 / 96 / 89 / 82 / 75 / 68 / 61 / 54 / 47 / 40 / 33、Phase 173、`terminal_history_contract.py` を変更しない
+- `engine/__init__.py` は変更しない
+- 自動 next-step start・start-state persistence・provider / model 呼び出し・tool 実行を行わない
+- retry・workflow loop・schedule・parallel・finalize・artifact persistence を行わない
+- CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない
+- 将来の Phase173→146 orchestration boundary は追加しない
