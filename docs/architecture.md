@@ -3266,4 +3266,82 @@ Phase 131 の event shape は既に `request_id=None` を許可するため requ
 
 - Phase 124 / 117 / 110 / 103 / 96 / 89 / 82 / 75 / 68 / 61 / 54 / 47 / 40 / 33、Phase 173 production、`terminal_history_contract.py`、`engine/__init__.py`
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
-- 自動 next-step start・start-state persistence・provider / model 呼び出し・tool 実行・retry・workflow loop・schedule・parallel・finalize・CLI / GUI behavior・credentials・provider / network / paid API 呼び出し・将来の Phase173→146 orchestration boundary
+- 自動 next-step start・start-state persistence・provider / model 呼び出し・tool 実行・retry・workflow loop・schedule・parallel・finalize・CLI / GUI behavior・credentials・provider / network / paid API 呼び出し・将来の Phase173→146 orchestration boundary（※ Phase 175 で追加されたため、本条は Phase 175 により superseded）
+
+## Phase 175: Post-Runtime → Prepared-Step-Start Orchestration Boundary
+
+Phase 175は、Phase 173 の公開 result を受け取り、**公開 Phase 173 → 公開 Phase 146 をこの順でちょうど 1 回ずつ合成する**、Phase 173 に続く integration boundary である。compatibility repair ではなく、既存の公開境界の直列接続であり、**まだ workflow runner ではない**。
+
+```text
+Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
+    ↓ Phase 173 post-runtime → persistence → classification → progression → approved preparation
+    ↓ PreparedWorkflowStep / exact stop object (workflow_complete / persisted_failure)
+    ↓ Phase 146 prepared-step-start chain（146 → 138 → 131 → … → 33）
+    ↓ PreparedStepExecutionStart / exact stop object
+```
+
+### stage ownership（Phase-173 no-destructive-outer-rollback）
+
+- Phase 173 が Phase 161 durable commit point と自身の downstream compensation を所有するため、Phase 175 は **pre-Phase173 rollback を行わない**
+- Phase 173 stage が safe error を raise した場合は exact object identity で re-raise（Phase 146 呼び出し 0 回、target への write なし）
+- 予期しない例外は `dependency_error` に sanitize、不正戻り値は `phase173_contract`（いずれも Phase 146 呼び出し 0 回・write なし）
+- Phase 173 retry なし
+
+### committed continuation snapshot
+
+- 有効な Phase 173 結果を受け入れた時点の target bytes を post-Phase173 committed snapshot とし、Phase 146 はそれに対して read-only
+- Phase 146 の safe error は復元成功時のみ exact identity で re-raise、予期しない例外は sanitize、不正戻り値は `phase146_contract`、有効戻り値 + target mutation は `committed_mutation`
+- committed への復元失敗は `rollback_failure`（両 target を 1 回ずつ試行、stage retry なし）
+
+### thin 契約（下流検証の非重複）
+
+- Phase 173 出力: stop は exact identity、runtime success は exact `PreparedWorkflowStep`（workflow id / next step id・index・employee / employee・step instructions / model / allowed_tool_names の linkage）、runtime failure は exact `persisted_failure`（failure category 一致）
+- Phase 146 出力: prepared は exact `PreparedStepExecutionStart`（ModelInvocationRequest の model / system・task instructions / allowed_tools、running `WorkflowExecutionState` の workflow / status / current step・index・employee / completed prefix / last_failure_category）、stop は exact identity
+- approval / employee は Phase 173 前に prevalidate しない（Phase 173 内部の Phase 145 の責務）。Phase 146 の terminal-history / prepared-start validator は重複実装しない
+
+### エラー分類（11 分類）
+
+| classification | 意味 |
+|---|---|
+| `result_type` | 入力 result が Phase-155 4 型以外（stop は workflow_complete / persisted_failure のみ） |
+| `workflow_definition` | workflow が exact `WorkflowDefinition` でない |
+| `state_target` / `event_target` | target が exact `Path` でない、または file でない |
+| `target_conflict` | state_path == events_path |
+| `configuration` | 依存関数が callable でない |
+| `phase173_contract` | Phase 173 の戻り値・stop identity の契約違反 |
+| `phase146_contract` | Phase 146 の戻り値・stop identity・prepared フィールドの契約違反 |
+| `dependency_error` | 予期しない例外（sanitize、detail-safe 固定メッセージ） |
+| `committed_mutation` | Phase 146 有効戻り値後の target mutation を検出 |
+| `rollback_failure` | 補償 restore 自体が失敗 |
+
+### 依存と no-bypass
+
+- orchestration は公開 Phase 173 / 公開 Phase 146 のみ。Phase 172 / 145 / 146 以下の lower boundary は直接 import / call しない（Phase 173 内部の Phase 172 → Phase 145 合成と Phase 146 内部のチェーンは各公開境界の責務）
+- import は公開 data / error type（`WorkflowDefinition`、`EmployeeDefinition`、`NextStepPreparationApproval`、`PreparedWorkflowStep`、`WorkflowProgressionDecision`、`PersistedExecutionOutcome`、`StepRuntimeExecutionSuccess/Failure`、`PreparedStepExecutionStart`、`ModelInvocationRequest`、`WorkflowExecutionState`、`Path`）と両境界の public function + error class のみ
+- 依存注入は keyword-only の `phase173_function` / `phase146_function`（default は実公開関数の exact identity）
+- workflow loop・stage retry・alternate bypass path なし
+
+### real-default regression（4 cases）
+
+- A: 7-step step-6 success + valid approval/matching employee → exact `PreparedStepExecutionStart`(step 7)。step-6 は実チェーンで 1 回 durable persist、terminal bytes 維持、step 7 未 start/persist/execute
+- B: 6-step success + `None` approval/employee → exact `workflow_complete` identity（strict provenance で検証、経緯は後述）
+- C: 6-step failure + `None` approval/employee → exact `persisted_failure` identity（strict provenance で検証）
+- D: 7-step step-6 success + missing/invalid approval → Phase 172 が先に durable commit、Phase 145 が既存 safe error で reject、committed terminal bytes 維持、retry なし・step 7 未 start
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_prepared_step_start_orchestration_boundary.py` — Phase 175 production（新規）
+2. `src/ai_office/engine/__init__.py` — Phase 175 public export（+4 symbols、アルファベット順）
+3. `tests/test_runtime_result_to_prepared_step_start_orchestration_boundary.py` — Phase 175 focused test（focused 16 + real-default A/B/C/D = 20 cases）
+4. `README.md` — Phase 175 documentation
+5. `docs/architecture.md` — Phase 175 architecture documentation
+
+### 既知の制約（B/C の strict provenance 採用）
+
+Issue #363 が指定する Phase-155 canonical provenance（直前 step-5 が `request_id=None`）は、現行 public Phase 146 の stop ルートが `terminal_contract` で拒否するため、B/C（6-step success → workflow_complete / 6-step failure → persisted_failure の identity 保持）は strict provenance（全 predecessor の request_id 非空）で実装・検証している。これは既存 Phase 146 production を変更せず（6 ファイル目を追加せず）に公開境界合成を実証するための最小の適用範囲再定義であり、詳細は PR 本文に blocker 経緯として記載する。
+
+### 変更しないもの
+
+- Phase 173 / 146 または下流 production modules、`terminal_history_contract.py`
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- shared storage/runtime/provider code、CLI / GUI behavior、自動 next-step start・provider / tool 実行・schedule・parallel・finalize

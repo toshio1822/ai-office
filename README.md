@@ -3508,4 +3508,54 @@ Phase 174は以下のbehaviorを**一切**追加・変更しない:
 - 自動 next-step start・start-state persistence・provider / model 呼び出し・tool 実行を行わない
 - retry・workflow loop・schedule・parallel・finalize・artifact persistence を行わない
 - CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない
-- 将来の Phase173→146 orchestration boundary は追加しない
+- 将来の Phase173→146 orchestration boundary は追加しない（※ Phase 175 で追加されたため、本条は Phase 175 により superseded）
+
+## Phase 175: Post-Runtime → Prepared-Step-Start Orchestration Boundary
+
+Phase 175は、**Phase 173 の公開 result を、そのまま公開 Phase 146 の prepared-step-start chain に合成する、Phase 173 に続く次の integration boundary** です。compatibility repair ではなく、既存の公開境界を直列接続します。**まだ workflow runner ではありません**。
+
+```text
+Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
+    ↓ Phase 173 post-runtime → persistence → classification → progression → approved preparation
+    ↓ PreparedWorkflowStep / exact stop object (workflow_complete / persisted_failure)
+    ↓ Phase 146 prepared-step-start chain（146 → 138 → 131 → … → 33）
+    ↓ PreparedStepExecutionStart / exact stop object
+```
+
+### 核心契約（stage ownership / committed continuation）
+
+- **Phase 173 は Phase 161 の durable commit point を所有する**: Phase 175 は Phase 173 stage の失敗・不正戻り値に対して pre-Phase173 への巻き戻しを行わない（既に永続化済みの runtime result を消さない）
+- **Phase 173 成功後の target bytes を post-Phase173 committed continuation snapshot とする**
+- Phase 146 はその snapshot に対して read-only。失敗時は committed bytes への復元のみ（pre-Phase173 へは戻さない）
+- approval / employee は **Phase 173 の前に prevalidate しない**: 完了済み runtime result は approval が欠落・不正でも durable に persist/classify/progress され、検証は Phase 173 内部の Phase 145 の責務
+- 各 stage ちょうど 1 回、retry・loop・bypass なし。`PreparedStepExecutionStart` または exact stop object で停止し、次の step を start / persist / execute しない
+
+### エラー分類（11 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase173_contract` / `phase146_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
+
+- Phase 173 stage の既存 safe error（Phase 173 / Phase 172 / Phase 145）は同一 object を identity で re-raise（Phase 146 呼び出し 0 回・write なし）
+- Phase 146 stage の既存 safe error（Phase 146 / Phase 138）は committed bytes 復元後に identity で re-raise
+- 予期しない例外は `dependency_error` に sanitize（detail-safe 固定メッセージ）、不正戻り値は `phase173_contract` / `phase146_contract`
+- 有効戻り値 + target mutation は `committed_mutation`、復元失敗は `rollback_failure`（両 target を 1 回ずつ試行、stage retry なし）
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_prepared_step_start_orchestration_boundary.py` — Phase 175 production（新規）
+2. `tests/test_runtime_result_to_prepared_step_start_orchestration_boundary.py` — 新規 +20 tests（focused 16 + real-default 4）
+3. `src/ai_office/engine/__init__.py` — Phase 175 public exports
+4. `README.md` — Phase 175 documentation
+5. `docs/architecture.md` — Phase 175 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 175は以下のbehaviorを**一切**追加・変更しない:
+
+- Phase 146 / 138 / 131 / 124 / 117 / 110 / 103 / 96 / 89 / 82 / 75 / 68 / 61 / 54 / 47 / 40 / 33、Phase 173、`terminal_history_contract.py` を変更しない
+- 自動 next-step start・start-state persistence・provider / model 呼び出し・tool 実行を行わない
+- retry・workflow loop・schedule・parallel・finalize・artifact persistence を行わない
+- CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない
+
+### 既知の制約（B/C の strict provenance 採用）
+
+Issue #363 が指定する Phase-155 canonical provenance（直前 step-5 が `request_id=None`）は、**現行 public Phase 146 の stop ルート**が `terminal_contract` で拒否するため、B/C（6-step success → workflow_complete / 6-step failure → persisted_failure の identity 保持）は **strict provenance（全 predecessor の request_id 非空）** で実装・検証しています。これは既存 Phase 146 production を変更せず（6 ファイル目を追加せず）に公開境界合成を実証するための最小の適用範囲再定義であり、詳細は PR 本文に blocker 経緯として記載します。
