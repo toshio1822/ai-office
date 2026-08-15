@@ -3556,6 +3556,6 @@ Phase 175は以下のbehaviorを**一切**追加・変更しない:
 - retry・workflow loop・schedule・parallel・finalize・artifact persistence を行わない
 - CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない
 
-### 既知の制約（B/C の strict provenance 採用）
+### canonical B/C provenance（prerequisite #365 解決済み）
 
-Issue #363 が指定する Phase-155 canonical provenance（直前 step-5 が `request_id=None`）は、**現行 public Phase 146 の stop ルート**が `terminal_contract` で拒否するため、B/C（6-step success → workflow_complete / 6-step failure → persisted_failure の identity 保持）は **strict provenance（全 predecessor の request_id 非空）** で実装・検証しています。これは既存 Phase 146 production を変更せず（6 ファイル目を追加せず）に公開境界合成を実証するための最小の適用範囲再定義であり、詳細は PR 本文に blocker 経緯として記載します。
+Phase 175 の B/C（6-step success → `workflow_complete` / 6-step failure → `persisted_failure` の exact identity 保持）は、Issue #363 が指定する **canonical Phase-155 provenance**（直前 step-5 が `provider="openai"` / `output_text=""` / `request_id=None`）のまま実検証しています。prerequisite #365 のマージにより public Phase 146 の stop ルートはこの canonical provenance を受理するため、strict provenance の deviation はありません（詳細は PR 本文参照）。

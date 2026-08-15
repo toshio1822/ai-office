@@ -166,15 +166,14 @@ def setup(
     tmp_path: Path,
     steps: int = 7,
     current: int = 6,
-    *,
-    strict: bool = False,
 ) -> dict[str, object]:
     """Phase-155-provenance running state at ``current`` for the boundary.
 
-    ``strict=True`` gives every predecessor event a non-empty request_id;
-    the canonical provenance leaves the immediate predecessor
-    (step ``current - 1``) with ``request_id=None``, which the current
-    public Phase 146 stop route rejects with ``terminal_contract``.
+    Canonical Phase-155 provenance: every predecessor event carries its
+    valid non-empty request_id except the immediate predecessor
+    (step ``current - 1``), which has ``output_text=""`` and
+    ``request_id=None``.  Phase 146 stop routes accept this provenance
+    after prerequisite #365.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     state_path, events_path = tmp_path / "state", tmp_path / "events"
@@ -192,18 +191,11 @@ def setup(
     events = []
     for index in range(1, current):
         if index == current - 1:
-            if strict:
-                events.append(
-                    predecessor_event(
-                        wf.steps[index - 1].id, index, output_text=""
-                    )
+            events.append(
+                predecessor_event(
+                    wf.steps[index - 1].id, index, output_text="", request_id=None
                 )
-            else:
-                events.append(
-                    predecessor_event(
-                        wf.steps[index - 1].id, index, output_text="", request_id=None
-                    )
-                )
+            )
         elif index in (2, 3, 4):
             events.append(
                 predecessor_event(wf.steps[index - 1].id, index, output_text="")
@@ -1412,7 +1404,6 @@ def _assert_step6_terminal_persisted(
     *,
     success: bool,
     steps: int,
-    strict: bool = False,
 ) -> None:
     history = load_workflow_execution_history(
         WorkflowExecutionPersistenceTargets(
@@ -1440,26 +1431,19 @@ def _assert_step6_terminal_persisted(
         assert event.message == "safe failure"
     assert final.current_step_id == f"step-{min(6, steps)}"
     assert final.current_step_index == min(6, steps)
-    # Phase-155 predecessor provenance unchanged
+    # Phase-155 predecessor provenance unchanged (canonical after #365:
+    # earlier predecessors keep valid non-empty request IDs, the immediate
+    # predecessor step-5 has request_id=None)
     assert [item.output_text for item in history.events[:5]] == [
         "output-step-1", "", "", "", "",
     ]
-    if strict:
-        assert [item.request_id for item in history.events[:5]] == [
-            "request-step-1",
-            "request-step-2",
-            "request-step-3",
-            "request-step-4",
-            "request-step-5",
-        ]
-    else:
-        assert [item.request_id for item in history.events[:4]] == [
-            "request-step-1",
-            "request-step-2",
-            "request-step-3",
-            "request-step-4",
-        ]
-        assert history.events[4].request_id is None
+    assert [item.request_id for item in history.events[:4]] == [
+        "request-step-1",
+        "request-step-2",
+        "request-step-3",
+        "request-step-4",
+    ]
+    assert history.events[4].request_id is None
     assert [item.provider for item in history.events[:5]] == ["openai"] * 5
     # exactly one step-6 terminal event was appended
     assert values["events_path"].read_bytes() != events_before  # type: ignore[union-attr]
@@ -1526,12 +1510,10 @@ def test_real_default_seven_step_step6_success_prepared_step7_start(
 def test_real_default_six_step_success_workflow_complete_identity(
     tmp_path: Path,
 ) -> None:
-    # The current public Phase 146 stop route requires every predecessor
-    # request_id to be non-empty (strict provenance); the canonical
-    # Phase-155 immediate-predecessor request_id=None is rejected with
-    # terminal_contract.  This regression therefore uses strict provenance
-    # and the deviation is documented in the PR (Issue #363 blocker note).
-    values = setup(tmp_path, steps=6, current=6, strict=True)
+    # canonical Phase-155 provenance: the immediate predecessor step-5 has
+    # provider="openai", output_text="", request_id=None (accepted by the
+    # public Phase 146 stop route after prerequisite #365)
+    values = setup(tmp_path, steps=6, current=6)
     result = runtime_success(values["workflow"], 6)  # type: ignore[arg-type]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
     real_phase173 = route_runtime_result_to_approved_preparation_orchestration_boundary
@@ -1559,14 +1541,14 @@ def test_real_default_six_step_success_workflow_complete_identity(
     assert out.reason == "last_step_succeeded"
     assert out.current_step_id == "step-6"
     assert out.current_step_index == 6
-    _assert_step6_terminal_persisted(values, events_before, success=True, steps=6, strict=True)
+    _assert_step6_terminal_persisted(values, events_before, success=True, steps=6)
 
 
 def test_real_default_six_step_failure_persisted_failure_identity(
     tmp_path: Path,
 ) -> None:
-    # strict provenance, same deviation note as the success stop route above
-    values = setup(tmp_path, steps=6, current=6, strict=True)
+    # canonical Phase-155 provenance, same as the success stop route above
+    values = setup(tmp_path, steps=6, current=6)
     result = runtime_failure(values["workflow"], 6)  # type: ignore[arg-type]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
     real_phase173 = route_runtime_result_to_approved_preparation_orchestration_boundary
@@ -1594,7 +1576,7 @@ def test_real_default_six_step_failure_persisted_failure_identity(
     assert out.failure_category == "api_error"
     assert out.current_step_id == "step-6"
     assert out.current_step_index == 6
-    _assert_step6_terminal_persisted(values, events_before, success=False, steps=6, strict=True)
+    _assert_step6_terminal_persisted(values, events_before, success=False, steps=6)
 
 
 def test_real_default_seven_step_step6_success_missing_approval_durable_commit(

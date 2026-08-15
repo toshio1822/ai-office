@@ -3324,8 +3324,8 @@ Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
 ### real-default regression（4 cases）
 
 - A: 7-step step-6 success + valid approval/matching employee → exact `PreparedStepExecutionStart`(step 7)。step-6 は実チェーンで 1 回 durable persist、terminal bytes 維持、step 7 未 start/persist/execute
-- B: 6-step success + `None` approval/employee → exact `workflow_complete` identity（strict provenance で検証、経緯は後述）
-- C: 6-step failure + `None` approval/employee → exact `persisted_failure` identity（strict provenance で検証）
+- B: 6-step success + `None` approval/employee → exact `workflow_complete` identity（canonical step-5 `request_id=None`、#365 解決済み）
+- C: 6-step failure + `None` approval/employee → exact `persisted_failure` identity（canonical step-5 `request_id=None`、#365 解決済み）
 - D: 7-step step-6 success + missing/invalid approval → Phase 172 が先に durable commit、Phase 145 が既存 safe error で reject、committed terminal bytes 維持、retry なし・step 7 未 start
 
 ### 変更ファイル（正確に5ファイル）
@@ -3336,9 +3336,9 @@ Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
 4. `README.md` — Phase 175 documentation
 5. `docs/architecture.md` — Phase 175 architecture documentation
 
-### 既知の制約（B/C の strict provenance 採用）
+### canonical B/C provenance（prerequisite #365 解決済み）
 
-Issue #363 が指定する Phase-155 canonical provenance（直前 step-5 が `request_id=None`）は、現行 public Phase 146 の stop ルートが `terminal_contract` で拒否するため、B/C（6-step success → workflow_complete / 6-step failure → persisted_failure の identity 保持）は strict provenance（全 predecessor の request_id 非空）で実装・検証している。これは既存 Phase 146 production を変更せず（6 ファイル目を追加せず）に公開境界合成を実証するための最小の適用範囲再定義であり、詳細は PR 本文に blocker 経緯として記載する。
+B/C（6-step success → `workflow_complete` / 6-step failure → `persisted_failure` の exact identity 保持）は、Issue #363 が指定する **canonical Phase-155 provenance**（直前 step-5 が `provider="openai"` / `output_text=""` / `request_id=None`）のまま検証している。prerequisite #365 のマージにより public Phase 146 の stop ルートはこの canonical provenance を受理するため、strict provenance の deviation はない。
 
 ### 変更しないもの
 
