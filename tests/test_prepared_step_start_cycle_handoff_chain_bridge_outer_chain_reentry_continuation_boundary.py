@@ -1657,3 +1657,117 @@ def test_state_and_event_target_oserrors_are_zero_call_rejections(
         fake,
     )
     assert calls == 0
+
+
+def test_stop_routes_accept_canonical_bounded_immediate_request_id_none(
+    tmp_path: Path,
+) -> None:
+    """Canonical step-5 request_id=None + empty output accepted on both stops."""
+    definition = workflow()
+
+    def assert_identity(
+        result: object, state: Path, events: Path
+    ) -> None:
+        before_state, before_events = state.read_bytes(), events.read_bytes()
+        calls = 0
+
+        def fake(*_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return object()
+
+        assert invoke(result, definition, None, state, events, fake) is result
+        assert calls == 0
+        assert (state.read_bytes(), events.read_bytes()) == (
+            before_state,
+            before_events,
+        )
+
+    # success stop: exact workflow_complete at step 6
+    success_dir = tmp_path / "success"
+    success_dir.mkdir(parents=True, exist_ok=True)
+    state, events, *_ = targets(success_dir, index=6)
+    rewrite_event(events, 4, output_text="", request_id=None)
+    rewrite_event(events, 2, output_text="")
+    assert_identity(completion(definition), state, events)
+
+    # failure stop: exact persisted_failure at step 6
+    failure_dir = tmp_path / "failure"
+    failure_dir.mkdir(parents=True, exist_ok=True)
+    state, events, *_ = targets(failure_dir, status="failed", index=6)
+    rewrite_event(events, 4, output_text="", request_id=None)
+    rewrite_event(events, 2, output_text="")
+    assert_identity(failure(definition, index=6), state, events)
+
+    # pin: terminal event request_id=None remains accepted under pre-existing contract
+    terminal_dir = tmp_path / "terminal"
+    terminal_dir.mkdir(parents=True, exist_ok=True)
+    state, events, *_ = targets(terminal_dir, index=6)
+    rewrite_event(events, 5, request_id=None)
+    assert_identity(completion(definition), state, events)
+
+    # pin: valid non-empty predecessor request IDs still work unchanged
+    nonempty_dir = tmp_path / "nonempty"
+    nonempty_dir.mkdir(parents=True, exist_ok=True)
+    state, events, *_ = targets(nonempty_dir, index=6)
+    assert_identity(completion(definition), state, events)
+
+
+def test_stop_route_bounded_request_id_compatibility_remains_narrow(
+    tmp_path: Path,
+) -> None:
+    """Bounded immediate-predecessor request-ID compatibility stays narrow."""
+    definition = workflow()
+
+    def assert_rejected_case(result: object, state: Path, events: Path) -> None:
+        before_state, before_events = state.read_bytes(), events.read_bytes()
+        calls = 0
+
+        def fake(*_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return object()
+
+        assert_rejected(
+            result,
+            definition,
+            None,
+            state,
+            events,
+            "terminal_contract",
+            fake,
+        )
+        assert calls == 0
+        assert (state.read_bytes(), events.read_bytes()) == (
+            before_state,
+            before_events,
+        )
+
+    # earlier predecessor request_id=None remains invalid
+    earlier_dir = tmp_path / "earlier"
+    earlier_dir.mkdir(parents=True, exist_ok=True)
+    state, events, *_ = targets(earlier_dir, index=6)
+    rewrite_event(events, 1, request_id=None)
+    assert_rejected_case(completion(definition), state, events)
+
+    # immediate predecessor request_id=="" remains invalid
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    state, events, *_ = targets(empty_dir, index=6)
+    rewrite_event(events, 4, request_id="")
+    assert_rejected_case(completion(definition), state, events)
+
+    # immediate predecessor non-string/non-None request ID remains invalid
+    int_dir = tmp_path / "int"
+    int_dir.mkdir(parents=True, exist_ok=True)
+    state, events, *_ = targets(int_dir, index=6)
+    rewrite_event(events, 4, request_id=4)
+    assert_rejected_case(completion(definition), state, events)
+
+    # terminal current index 5 (below 6) with immediate predecessor request_id=None
+    # on a valid persisted-failure stop remains invalid
+    index5_dir = tmp_path / "index5"
+    index5_dir.mkdir(parents=True, exist_ok=True)
+    state, events, *_ = targets(index5_dir, status="failed", index=5)
+    rewrite_event(events, 3, output_text="", request_id=None)
+    assert_rejected_case(failure(definition, index=5), state, events)
