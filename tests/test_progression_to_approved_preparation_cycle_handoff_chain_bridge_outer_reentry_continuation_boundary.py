@@ -783,13 +783,74 @@ def test_prepare_index_six_immediate_predecessor_none_request_id_delegates_once(
     rewrite_event(value["events_path"], 0, request_id=None)
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
 
-    # (d) immediate predecessor empty request_id is rejected.
+    # Restore the earlier predecessor to its valid baseline before the next
+    # subcase so each rejection proves exactly one independent bad condition.
+    rewrite_event(value["events_path"], 0, request_id="request")
+
+    # (d) immediate predecessor empty request_id is rejected as the sole bad
+    # condition (earlier predecessor back to baseline).
     rewrite_event(value["events_path"], 4, request_id="")
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
 
-    # (e) immediate predecessor invalid request-id type is rejected.
+    # Restore the immediate predecessor to its valid baseline.
+    rewrite_event(value["events_path"], 4, request_id="request")
+
+    # (e) immediate predecessor invalid request-id type is rejected as the
+    # sole bad condition.
     rewrite_event(value["events_path"], 4, request_id=4)
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+    # (f) prepare route at current_step_index=5 still rejects the immediate
+    # predecessor request_id=None: the None relaxation requires index >= 6
+    # (terminal_contract / zero dependency call / bytes unchanged).
+    five_index = 5
+    five_step = supplied_workflow.steps[five_index - 1]
+    five_predecessors = tuple(
+        predecessor_event(
+            prior,
+            position,
+            provider="openai" if position == five_index - 1 else "other",
+        )
+        for position, prior in enumerate(
+            supplied_workflow.steps[: five_index - 1], 1
+        )
+    )
+    five_state = WorkflowExecutionState(
+        "w",
+        "succeeded",
+        five_step.id,
+        five_index,
+        five_step.employee,
+        tuple(item.id for item in supplied_workflow.steps[:five_index]),
+        None,
+    )
+    five_terminal = terminal_event(five_step, five_index)
+    five_state_bytes = serialize_workflow_execution_state_json(five_state).encode(
+        "utf-8"
+    )
+    five_event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+        for event in (*five_predecessors, five_terminal)
+    )
+    five_state_path, five_events_path = (
+        tmp_path / "five-state.json",
+        tmp_path / "five-events.jsonl",
+    )
+    five_state_path.write_bytes(five_state_bytes)
+    five_events_path.write_bytes(five_event_bytes)
+    five_result = progression(supplied_workflow, five_index)
+    five_value = {
+        "result": five_result,
+        "workflow": supplied_workflow,
+        "approval": approval(five_result),
+        "employee": employee(five_result),
+        "state_path": five_state_path,
+        "events_path": five_events_path,
+        "before_state": five_state_bytes,
+        "before_events": five_event_bytes,
+    }
+    rewrite_event(five_value["events_path"], 3, request_id=None)
+    assert_rejected(five_value, "terminal_contract", lambda *_: pytest.fail("called"))
 
 
 def test_stop_route_rejects_immediate_predecessor_none_request_id_zero_call(

@@ -1373,11 +1373,20 @@ def test_prepare_index_six_immediate_predecessor_none_request_id_delegates_once(
     rewrite_event(value["events_path"], 0, request_id=None)
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
 
-    # (d) immediate predecessor empty request_id is rejected at index >= 6.
+    # Restore the earlier predecessor to its valid baseline before the next
+    # subcase so each rejection proves exactly one independent bad condition.
+    rewrite_event(value["events_path"], 0, request_id="request")
+
+    # (d) immediate predecessor empty request_id is rejected at index >= 6 as
+    # the sole bad condition (earlier predecessor back to baseline).
     rewrite_event(value["events_path"], 4, request_id="")
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
 
-    # (e) immediate predecessor invalid request-id type is rejected.
+    # Restore the immediate predecessor to its valid baseline.
+    rewrite_event(value["events_path"], 4, request_id="request")
+
+    # (e) immediate predecessor invalid request-id type is rejected as the
+    # sole bad condition.
     rewrite_event(value["events_path"], 4, request_id=4)
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
 
