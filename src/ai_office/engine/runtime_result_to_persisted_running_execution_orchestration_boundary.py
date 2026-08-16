@@ -185,11 +185,13 @@ def route_runtime_result_to_persisted_running_execution_orchestration_boundary(
     _check_targets(state_path, events_path)
 
     captured: list[object] = []
+    capture_calls: list[tuple[object, object, object, object, object]] = []
 
     def capture_phase147(
         value: object, wf: object, emp: object, sp: object, ep: object
     ) -> object:
         captured.append(value)
+        capture_calls.append((value, wf, emp, sp, ep))
         return phase147_function(value, wf, emp, sp, ep)
 
     try:
@@ -218,7 +220,14 @@ def route_runtime_result_to_persisted_running_execution_orchestration_boundary(
         _fail("dependency_error")
 
     if not _valid_phase176_output(
-        result, workflow, employee, progressed, captured, state_path, events_path
+        result,
+        workflow,
+        employee,
+        progressed,
+        captured,
+        capture_calls,
+        state_path,
+        events_path,
     ):
         _fail("phase176_contract")
 
@@ -316,20 +325,31 @@ def _valid_phase176_output(
     employee: object,
     value: object,
     captured: list[object],
+    capture_calls: list[tuple[object, object, object, object, object]],
     state: Path,
     events: Path,
 ) -> bool:
     """Thin Phase-176 output/capture contract for one exact Phase-155 input.
 
-    Stop routes require the exact stop object with no captured prepared
-    start; the prepared route requires an exact RunningStatePersistenceResult
-    plus exactly one exact PreparedStepExecutionStart captured from the real
-    Phase-147 handoff, with thin linkage to the persisted running state.
-    Phase 176's full terminal-history and persistence validation is not
-    duplicated here.
+    Stop routes require the exact stop value delegated through the
+    capture-only Phase-147 adapter exactly once with canonical 5 args, with
+    no captured prepared start; the prepared route requires an exact
+    RunningStatePersistenceResult plus exactly one exact
+    PreparedStepExecutionStart captured from the real Phase-147 handoff, with
+    thin linkage to the persisted running state.  Phase 176's full
+    terminal-history and persistence validation is not duplicated here.
     """
     if type(value) in (WorkflowProgressionDecision, PersistedExecutionOutcome):
-        return _valid_phase176_stop(result, workflow, value, captured)
+        return _valid_phase176_stop(
+            result,
+            workflow,
+            employee,
+            value,
+            captured,
+            capture_calls,
+            state,
+            events,
+        )
     if (
         type(value) is not RunningStatePersistenceResult
         or type(value.state_bytes_written) is not int
@@ -445,18 +465,35 @@ def _valid_phase176_event_history(
 def _valid_phase176_stop(
     result: object,
     workflow: WorkflowDefinition,
+    employee: object,
     value: object,
     captured: list[object],
+    capture_calls: list[tuple[object, object, object, object, object]],
+    state: Path,
+    events: Path,
 ) -> bool:
-    """Stop-route thin contract: exact stop identity / linkage, no captured start.
+    """Stop-route thin contract: exactly-once canonical delegation + identity.
 
-    Original stop inputs require the exact supplied stop object by identity.
-    Original final success requires exact ``workflow_complete`` with exact
-    workflow / current-step / index / employee / None-next-fields / reason
-    linkage.  Original runtime failure requires exact ``persisted_failure``
-    with exact linkage and failure category.  Any mismatch is
-    ``phase176_contract`` with Phase 155 zero calls.
+    Stop routes require the exact stop value delegated through the
+    capture-only Phase-147 adapter exactly once with canonical 5 args
+    (value, workflow, employee, state, events); zero calls, multiple calls, a
+    different value, or non-canonical args are ``phase176_contract`` with
+    Phase 155 zero calls.  Original stop inputs require the exact supplied
+    stop object by identity.  Original final success requires exact
+    ``workflow_complete`` with exact workflow / current-step / index /
+    employee / None-next-fields / reason linkage.  Original runtime failure
+    requires exact ``persisted_failure`` with exact linkage and failure
+    category.
     """
+    if (
+        len(capture_calls) != 1
+        or capture_calls[0][0] is not value
+        or capture_calls[0][1] is not workflow
+        or capture_calls[0][2] is not employee
+        or capture_calls[0][3] is not state
+        or capture_calls[0][4] is not events
+    ):
+        return False
     if any(type(item) is PreparedStepExecutionStart for item in captured):
         return False
     if type(result) in (WorkflowProgressionDecision, PersistedExecutionOutcome):

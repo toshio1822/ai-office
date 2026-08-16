@@ -820,6 +820,143 @@ def test_workflow_complete_stop_route_exact_identity_phase155_zero(
     assert Path(values["state_path"]).read_bytes() == values["state_before"]  # type: ignore[arg-type]
     assert Path(values["events_path"]).read_bytes() == values["events_before"]  # type: ignore[arg-type]
 
+    # +0 collected subcases: the stop route must delegate the exact stop
+    # value through the capture-only Phase-147 adapter exactly once with
+    # canonical 5 args.  Zero-call / multi-call / wrong stop value /
+    # non-canonical args are phase176_contract with Phase 155 zero calls.
+    def zero_call_phase176(
+        res: object,
+        wf_value: object,
+        approval_value: object,
+        employee_value: object,
+        sp: object,
+        ep: object,
+        **kwargs: object,
+    ) -> object:
+        return res
+
+    assert_classification(
+        lambda: phase177(
+            stop,
+            wf,
+            None,
+            None,
+            values["state_path"],
+            values["events_path"],
+            None,
+            None,
+            None,
+            None,
+            phase176_function=zero_call_phase176,  # type: ignore[arg-type]
+            phase147_function=stub_phase147,  # type: ignore[arg-type]
+            phase155_function=phase155_stub,  # type: ignore[arg-type]
+        ),
+        "phase176_contract",
+    )
+    assert len(phase155_calls) == 0
+
+    def multi_call_phase176(
+        res: object,
+        wf_value: object,
+        approval_value: object,
+        employee_value: object,
+        sp: object,
+        ep: object,
+        **kwargs: object,
+    ) -> object:
+        phase147_function = kwargs["phase147_function"]
+        phase147_function(res, wf_value, employee_value, sp, ep)
+        phase147_function(res, wf_value, employee_value, sp, ep)
+        return res
+
+    assert_classification(
+        lambda: phase177(
+            stop,
+            wf,
+            None,
+            None,
+            values["state_path"],
+            values["events_path"],
+            None,
+            None,
+            None,
+            None,
+            phase176_function=multi_call_phase176,  # type: ignore[arg-type]
+            phase147_function=stub_phase147,  # type: ignore[arg-type]
+            phase155_function=phase155_stub,  # type: ignore[arg-type]
+        ),
+        "phase176_contract",
+    )
+    assert len(phase155_calls) == 0
+
+    wrong_stop = complete_decision(wf, 6)
+
+    def wrong_value_phase176(
+        res: object,
+        wf_value: object,
+        approval_value: object,
+        employee_value: object,
+        sp: object,
+        ep: object,
+        **kwargs: object,
+    ) -> object:
+        phase147_function = kwargs["phase147_function"]
+        phase147_function(wrong_stop, wf_value, employee_value, sp, ep)
+        return res
+
+    assert_classification(
+        lambda: phase177(
+            stop,
+            wf,
+            None,
+            None,
+            values["state_path"],
+            values["events_path"],
+            None,
+            None,
+            None,
+            None,
+            phase176_function=wrong_value_phase176,  # type: ignore[arg-type]
+            phase147_function=stub_phase147,  # type: ignore[arg-type]
+            phase155_function=phase155_stub,  # type: ignore[arg-type]
+        ),
+        "phase176_contract",
+    )
+    assert len(phase155_calls) == 0
+
+    def noncanonical_args_phase176(
+        res: object,
+        wf_value: object,
+        approval_value: object,
+        employee_value: object,
+        sp: object,
+        ep: object,
+        **kwargs: object,
+    ) -> object:
+        phase147_function = kwargs["phase147_function"]
+        phase147_function(res, "not-the-workflow", employee_value, sp, ep)
+        return res
+
+    assert_classification(
+        lambda: phase177(
+            stop,
+            wf,
+            None,
+            None,
+            values["state_path"],
+            values["events_path"],
+            None,
+            None,
+            None,
+            None,
+            phase176_function=noncanonical_args_phase176,  # type: ignore[arg-type]
+            phase147_function=stub_phase147,  # type: ignore[arg-type]
+            phase155_function=phase155_stub,  # type: ignore[arg-type]
+        ),
+        "phase176_contract",
+    )
+    assert len(phase155_calls) == 0
+
 
 def test_persisted_failure_stop_route_exact_identity_phase155_zero(
     tmp_path: Path,
