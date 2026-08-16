@@ -1455,3 +1455,279 @@ def test_non_regular_target_is_rejected_before_phase132(tmp_path: Path, kind: st
     else:
         assert events.is_dir()
         assert state.read_bytes() == before_state
+
+
+def _seven_step_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "workflow",
+            "name": "Workflow",
+            "description": "focused",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "a", "instructions": "one"},
+                {"id": "two", "name": "Two", "employee": "b", "instructions": "two"},
+                {"id": "three", "name": "Three", "employee": "c", "instructions": "three"},
+                {"id": "four", "name": "Four", "employee": "d", "instructions": "four"},
+                {"id": "five", "name": "Five", "employee": "e", "instructions": "five"},
+                {"id": "six", "name": "Six", "employee": "f", "instructions": "six"},
+                {"id": "seven", "name": "Seven", "employee": "g", "instructions": "seven"},
+            ],
+        }
+    )
+
+
+def _seven_step_employee(index: int = 7) -> EmployeeDefinition:
+    step = _seven_step_workflow().steps[index - 1]
+    return EmployeeDefinition.model_validate(
+        {
+            "id": step.employee,
+            "name": step.name,
+            "role": "role",
+            "instructions": "employee instructions",
+            "model": "model",
+            "allowed_tools": ["tool-one", "tool-two"],
+        }
+    )
+
+
+def _seven_step_start(index: int = 7) -> PreparedStepExecutionStart:
+    definition = _seven_step_workflow()
+    step = definition.steps[index - 1]
+    person = _seven_step_employee(index)
+    return PreparedStepExecutionStart(
+        ModelInvocationRequest(
+            person.model,
+            person.instructions,
+            step.instructions,
+            tuple(person.allowed_tools),
+        ),
+        WorkflowExecutionState(
+            definition.id,
+            "running",
+            step.id,
+            index,
+            step.employee,
+            tuple(item.id for item in definition.steps[: index - 1]),
+            None,
+        ),
+    )
+
+
+def _seven_step_predecessor_targets(
+    tmp_path: Path,
+    *,
+    output_text: object = "output",
+    terminal_provider: object = "openai",
+    terminal_request_id: object = "request",
+    terminal_response_id: object = "response",
+) -> tuple[Path, Path, bytes, bytes]:
+    definition = _seven_step_workflow()
+    state = WorkflowExecutionState(
+        "workflow",
+        "succeeded",
+        "six",
+        6,
+        "f",
+        ("one", "two", "three", "four", "five", "six"),
+        None,
+    )
+    events = [
+        _event(definition, 1, provider="openai", request_id="request-step-1", output_text="output-step-1"),
+        _event(definition, 2, provider="openai", request_id="request-step-2", output_text=""),
+        _event(definition, 3, provider="openai", request_id="request-step-3", output_text=""),
+        _event(definition, 4, provider="openai", request_id="request-step-4", output_text=""),
+        _event(definition, 5, provider="openai", request_id=None, output_text=""),
+        _event(
+            definition,
+            6,
+            provider=terminal_provider,
+            output_text=output_text,
+            request_id=terminal_request_id,
+            response_id=terminal_response_id,
+        ),
+    ]
+    state_bytes = serialize_workflow_execution_state_json(state).encode()
+    event_bytes = b"".join(serialize_runtime_step_event_jsonl(event).encode() for event in events)
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    return state_path, events_path, state_bytes, event_bytes
+
+
+def test_seven_step_immediate_none_request_id_is_accepted_and_delegates_once(
+    tmp_path: Path,
+) -> None:
+    value, supplied_workflow, supplied_employee = (
+        _seven_step_start(),
+        _seven_step_workflow(),
+        _seven_step_employee(),
+    )
+    state, events, before_state, before_events = _seven_step_predecessor_targets(tmp_path)
+    expected = _valid_persistence(value)
+    expected_state = serialize_workflow_execution_state_json(value.running_state).encode()
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
+
+    returned = invoke(value, supplied_workflow, supplied_employee, state, events, fake)
+    assert returned is expected
+    assert calls == [(value, supplied_workflow, supplied_employee, state, events)]
+    assert state.read_bytes() == expected_state
+    assert events.read_bytes() == before_events
+    assert before_state != state.read_bytes()
+    # non-empty immediate predecessor request_id remains accepted and delegates once
+    state, events, _, _ = _seven_step_predecessor_targets(tmp_path)
+    _rewrite_event(events, 4, request_id="request-step-5")
+    rewritten_events = events.read_bytes()
+    expected_state = serialize_workflow_execution_state_json(value.running_state).encode()
+    calls.clear()
+
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
+
+    returned = invoke(value, supplied_workflow, supplied_employee, state, events, fake)
+    assert returned is expected
+    assert calls == [(value, supplied_workflow, supplied_employee, state, events)]
+    assert state.read_bytes() == expected_state
+    assert events.read_bytes() == rewritten_events
+
+
+def test_seven_step_immediate_none_request_id_narrowness_inline_subcases(
+    tmp_path: Path,
+) -> None:
+    # positive control: canonical 7-step immediate None is accepted once
+    value, supplied_workflow, supplied_employee = (
+        _seven_step_start(),
+        _seven_step_workflow(),
+        _seven_step_employee(),
+    )
+    state, events, _, _ = _seven_step_predecessor_targets(tmp_path)
+    expected = _valid_persistence(value)
+    expected_state = serialize_workflow_execution_state_json(value.running_state).encode()
+    calls = 0
+
+    def fake(*_: object) -> RunningStatePersistenceResult:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(expected_state)
+        return expected
+
+    assert invoke(value, supplied_workflow, supplied_employee, state, events, fake) is expected
+    assert calls == 1
+    # (1) earlier predecessor (step-4, position 4) request_id=None -> reject
+    state, events, before_state, _ = _seven_step_predecessor_targets(tmp_path)
+    _rewrite_event(events, 3, request_id=None)
+    rewritten_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(value, supplied_workflow, supplied_employee, state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
+    # (2) immediate predecessor request_id="" -> reject
+    state, events, before_state, _ = _seven_step_predecessor_targets(tmp_path)
+    _rewrite_event(events, 4, request_id="")
+    rewritten_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(value, supplied_workflow, supplied_employee, state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
+    # (3) immediate predecessor request_id non-string -> reject
+    state, events, before_state, _ = _seven_step_predecessor_targets(tmp_path)
+    _rewrite_event(events, 4, request_id=4)
+    rewritten_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(value, supplied_workflow, supplied_employee, state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
+    # (4) boundary: 5-step workflow + start(5) immediate None -> reject
+    state, events, before_state, _ = predecessor_targets(tmp_path)
+    _rewrite_event(events, 2, request_id=None)
+    rewritten_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(start(), workflow(), employee(), state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
+    # (5) stop route semantics unchanged: workflow_complete with an immediate
+    #     predecessor request_id=None is still rejected at terminal_contract
+    #     (Phase 139 stop routes were not relaxed by this change)
+    result = WorkflowProgressionDecision(
+        "workflow_complete", "workflow", "five", 5, "e", None, None, None,
+        "last_step_succeeded",
+    )
+    state, events, before_state, _ = stop_targets(tmp_path, status="succeeded", index=5)
+    _rewrite_event(events, 3, request_id=None)
+    rewritten_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(result, workflow(), None, state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
+    # (6) stop route semantics unchanged: persisted_failure with an immediate
+    #     predecessor request_id=None is still rejected at terminal_contract
+    outcome = PersistedExecutionOutcome(
+        "persisted_failure", "workflow", "four", 4, "d", "api_error"
+    )
+    state, events, before_state, _ = stop_targets(tmp_path, status="failed", index=4)
+    _rewrite_event(events, 2, request_id=None)
+    rewritten_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(outcome, workflow(), None, state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
