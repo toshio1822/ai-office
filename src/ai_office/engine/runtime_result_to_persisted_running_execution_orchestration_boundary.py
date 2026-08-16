@@ -2,6 +2,7 @@
 
 # ruff: noqa: E501,E701,I001
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,9 +53,11 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationRequest
 from ai_office.runtime import (
+    RuntimeStepEvent,
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
+    is_valid_step_runtime_execution_result,
 )
 from ai_office.storage import (
     RunningStatePersistenceResult,
@@ -322,7 +325,7 @@ def _valid_phase176_output(
     duplicated here.
     """
     if type(value) in (WorkflowProgressionDecision, PersistedExecutionOutcome):
-        return _valid_phase176_stop(result, value, captured)
+        return _valid_phase176_stop(result, workflow, value, captured)
     if (
         type(value) is not RunningStatePersistenceResult
         or type(value.state_bytes_written) is not int
@@ -342,7 +345,6 @@ def _valid_phase176_output(
     expected_completed = tuple(step.id for step in workflow.steps[:index])
     try:
         state_bytes = state.read_bytes()
-        event_bytes = events.read_bytes()
         loaded = load_workflow_execution_state(state)
     except Exception:
         return False
@@ -368,23 +370,121 @@ def _valid_phase176_output(
         and running.last_failure_category is None
         and value.state_bytes_written == len(state_bytes)
         and state_bytes == expected
-        and event_bytes != b""
+        and _valid_phase176_event_history(result, workflow, events)
         and type(loaded) is WorkflowExecutionState
         and loaded == running
     )
 
 
-def _valid_phase176_stop(
-    result: object, value: object, captured: list[object]
+def _valid_phase176_event_history(
+    result: StepRuntimeExecutionSuccess,
+    workflow: WorkflowDefinition,
+    events: Path,
 ) -> bool:
-    """Stop-route thin contract: exact stop identity and no captured start."""
+    """Thin committed terminal history check through the just-finished step.
+
+    Requires exactly ``result.step_index`` JSONL records, each an exact
+    succeeded runtime event whose workflow / step / index / employee linkage
+    matches the corresponding workflow step, with running→succeeded transition
+    and no failure category.  Phase 176's full terminal-history validator is
+    not duplicated here.
+    """
+    try:
+        lines = [
+            line
+            for line in events.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except OSError:
+        return False
+    if len(lines) != result.step_index:
+        return False
+    for position, line in enumerate(lines, start=1):
+        try:
+            event = RuntimeStepEvent(**json.loads(line))
+        except Exception:
+            return False
+        step = workflow.steps[position - 1]
+        if (
+            event.event_type != "step_succeeded"
+            or event.workflow_id != workflow.id
+            or event.step_id != step.id
+            or type(event.step_index) is not int
+            or event.step_index != position
+            or event.employee_id != step.employee
+            or event.previous_status != "running"
+            or event.next_status != "succeeded"
+            or event.failure_category is not None
+        ):
+            return False
+    return True
+
+
+def _valid_phase176_stop(
+    result: object,
+    workflow: WorkflowDefinition,
+    value: object,
+    captured: list[object],
+) -> bool:
+    """Stop-route thin contract: exact stop identity / linkage, no captured start.
+
+    Original stop inputs require the exact supplied stop object by identity.
+    Original final success requires exact ``workflow_complete`` with exact
+    workflow / current-step / index / employee / None-next-fields / reason
+    linkage.  Original runtime failure requires exact ``persisted_failure``
+    with exact linkage and failure category.  Any mismatch is
+    ``phase176_contract`` with Phase 155 zero calls.
+    """
     if any(type(item) is PreparedStepExecutionStart for item in captured):
         return False
     if type(result) in (WorkflowProgressionDecision, PersistedExecutionOutcome):
         return value is result
     if type(result) is StepRuntimeExecutionSuccess:
-        return type(value) is WorkflowProgressionDecision
-    return type(value) is PersistedExecutionOutcome
+        return _valid_workflow_complete(result, workflow, value)
+    return _valid_persisted_failure(result, workflow, value)
+
+
+def _valid_workflow_complete(
+    result: StepRuntimeExecutionSuccess,
+    workflow: WorkflowDefinition,
+    value: object,
+) -> bool:
+    """Exact final-success stop: workflow_complete with exact linkage / reason."""
+    if type(value) is not WorkflowProgressionDecision:
+        return False
+    return (
+        type(result.step_index) is int
+        and result.step_index == len(workflow.steps)
+        and value.decision == "workflow_complete"
+        and value.workflow_id == workflow.id
+        and value.current_step_id == result.step_id
+        and type(value.current_step_index) is int
+        and value.current_step_index == result.step_index
+        and value.current_employee_id == result.employee_id
+        and value.next_step_id is None
+        and value.next_step_index is None
+        and value.next_employee_id is None
+        and value.reason == "last_step_succeeded"
+    )
+
+
+def _valid_persisted_failure(
+    result: StepRuntimeExecutionFailure,
+    workflow: WorkflowDefinition,
+    value: object,
+) -> bool:
+    """Exact runtime-failure stop: persisted_failure with exact linkage / category."""
+    if type(value) is not PersistedExecutionOutcome:
+        return False
+    return (
+        value.outcome == "persisted_failure"
+        and value.workflow_id == workflow.id
+        and value.current_step_id == result.step_id
+        and type(value.current_step_index) is int
+        and value.current_step_index == result.step_index
+        and value.current_employee_id == result.employee_id
+        and value.failure_category == result.invocation_result.category
+    )
 
 
 def _valid_phase155_output(
@@ -395,25 +495,25 @@ def _valid_phase155_output(
 ) -> bool:
     """Thin Phase-155 output contract for one exact next-step runtime result.
 
-    Requires an exact StepRuntimeExecutionSuccess or StepRuntimeExecutionFailure
-    whose workflow/step/index/employee exactly match the captured start
-    running state and the supplied employee.  Phase 155's request/tool/key/
-    approval/transport validator and lower provider response parser are not
-    duplicated here.
+    Reuses the public canonical runtime-result validator
+    (``is_valid_step_runtime_execution_result``) for exact invocation-result
+    type / provider / response / status / request / text semantics.  The
+    handoff linkage is exact step-id / index / employee against the captured
+    start running state and the supplied employee.  Phase 155's
+    request/tool/key/approval/transport validator and lower provider response
+    parser are not duplicated here.
     """
-    if type(value) not in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure):
+    if type(employee) is not EmployeeDefinition:
         return False
     running = start.running_state
-    return (
-        type(employee) is EmployeeDefinition
-        and value.workflow_id == workflow.id
-        and value.workflow_id == running.workflow_id
-        and value.step_id == running.current_step_id
-        and type(value.step_index) is int
-        and value.step_index == running.current_step_index
-        and value.employee_id == running.current_employee_id
-        and value.employee_id == employee.id
-        and running.status == "running"
+    if type(running) is not WorkflowExecutionState or running.status != "running":
+        return False
+    return is_valid_step_runtime_execution_result(
+        value,
+        workflow_id=workflow.id,
+        step_id=running.current_step_id,
+        step_index=running.current_step_index,
+        employee_id=running.current_employee_id,
     )
 
 

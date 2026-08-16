@@ -3481,7 +3481,7 @@ finished current-step Phase-155 result
 - Phase 155 出力: exact `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure` で workflow / step / index / employee が captured start の running state と employee に一致
 - approval / employee / resolved_tools / api_key / execution_approval / transport は prevalidate しない（Phase 176 が先、実行入力の拒否は Phase 155 の責務）。Phase 176 / 155 の terminal-history・persistence・provider 検証は重複実装しない
 
-### エラー分類（12 分類）
+### エラー分類（11 分類）
 
 | classification | 意味 |
 |---|---|

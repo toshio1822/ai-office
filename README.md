@@ -3650,7 +3650,7 @@ finished current-step Phase-155 result (StepRuntimeExecutionSuccess / Failure, �
 - approval / employee / resolved_tools / api_key / execution_approval / transport は **prevalidate しない**: Phase 176 が先に実行され、実行入力の拒否は Phase 155 の責務。Phase 176 所有の preparation 拒否では Phase 155 は zero calls
 - 各 stage ちょうど 1 回、retry・loop・bypass なし。ちょうど 1 回の next-step runtime result（成功 / 失敗）または exact stop object で停止し、その runtime result の再永続化・再進行・別ステップ準備・自動継続はしない
 
-### エラー分類（12 分類）
+### エラー分類（11 分類）
 
 `result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase176_contract` / `phase155_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
 
