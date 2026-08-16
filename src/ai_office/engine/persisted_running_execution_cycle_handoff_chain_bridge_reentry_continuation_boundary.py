@@ -595,7 +595,7 @@ def _check_predecessor(
             running,
             require_openai=position == len(expected_steps),
             allow_empty_output=True,
-            allow_none_request_id=position == len(expected_steps),
+            allow_none_request_id=(position >= 5) or (position == len(expected_steps)),
         ):
             _fail("persistence_result_contract")
 
@@ -609,10 +609,11 @@ def _valid_predecessor_event(
     allow_empty_output: bool = False,
     allow_none_request_id: bool = False,
 ) -> bool:
+    none_request_id = event.request_id is None
     provider_valid = _nonempty_string(event.provider) and (
-        not require_openai or event.provider == "openai"
+        (not require_openai and not none_request_id) or event.provider == "openai"
     )
-    request_id_valid = (event.request_id is None and allow_none_request_id) or (
+    request_id_valid = (none_request_id and allow_none_request_id) or (
         _nonempty_string(event.request_id)
     )
     return (

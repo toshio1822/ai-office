@@ -1428,3 +1428,176 @@ def test_read_bytes_oserror_is_target_safe(
 
     monkeypatch.setattr(Path, "read_bytes", raising_read_bytes)
     reject(values, "state_target" if target == "state_path" else "event_target")
+
+
+def workflow7() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "e", "instructions": "a"},
+                {"id": "two", "name": "Two", "employee": "e", "instructions": "b"},
+                {"id": "three", "name": "Three", "employee": "e", "instructions": "c"},
+                {"id": "four", "name": "Four", "employee": "e", "instructions": "d"},
+                {"id": "five", "name": "Five", "employee": "e", "instructions": "e"},
+                {"id": "six", "name": "Six", "employee": "e", "instructions": "f"},
+                {"id": "seven", "name": "Seven", "employee": "e", "instructions": "g"},
+            ],
+        }
+    )
+
+
+def step7_setup(tmp_path: Path) -> dict[str, object]:
+    state_value = WorkflowExecutionState(
+        "w", "running", "seven", 7, "e", ("one", "two", "three", "four", "five", "six"), None
+    )
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path.write_text(serialize_workflow_execution_state_json(state_value), encoding="utf-8")
+    events_path.write_text(
+        "".join(
+            serialize_runtime_step_event_jsonl(event)
+            for event in (
+                _event("step_succeeded", "one", 1, "other"),
+                _event("step_succeeded", "two", 2, "other"),
+                _event("step_succeeded", "three", 3, "other"),
+                _event("step_succeeded", "four", 4, "other"),
+                _event("step_succeeded", "five", 5, "openai", output_text="", request_id=None),
+                _event("step_succeeded", "six", 6, "openai"),
+            )
+        ),
+        encoding="utf-8",
+    )
+    request = ModelInvocationRequest("model", "system", "g", ("tool",))
+    tools = (ToolDefinition("tool", "Tool", ()),)
+    return {
+        "result": RunningStatePersistenceResult(len(state_path.read_bytes())),
+        "start": PreparedStepExecutionStart(request, state_value),
+        "workflow": workflow7(),
+        "employee": employee(),
+        "state_path": state_path,
+        "events_path": events_path,
+        "resolved_tools": tools,
+        "api_key": OpenAIApiKey(value=SecretStr("synthetic")),
+        "approval": approve_model_invocation_execution(
+            request,
+            tools,
+            provider="openai",
+            approved_by="test",
+            approval_id="approval-id",
+        ),
+        "transport": lambda _: None,
+    }
+
+
+def runtime_success7() -> StepRuntimeExecutionSuccess:
+    return StepRuntimeExecutionSuccess(
+        "w",
+        "seven",
+        7,
+        "e",
+        ModelInvocationSuccess("openai", "response", "request", "completed", ("ok",), "ok"),
+    )
+
+
+def test_step7_aged_none_request_id_delegates_once_with_identity(tmp_path: Path) -> None:
+    values = step7_setup(tmp_path)
+    seen: list[tuple[object, ...]] = []
+    expected = runtime_success7()
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+        **values, phase133_function=dependency  # type: ignore[arg-type]
+    )
+    assert actual is expected and len(seen) == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            seen[0],
+            tuple(
+                values[name]
+                for name in (
+                    "result",
+                    "start",
+                    "workflow",
+                    "employee",
+                    "state_path",
+                    "events_path",
+                    "resolved_tools",
+                    "api_key",
+                    "approval",
+                    "transport",
+                )
+            ),
+            strict=True,
+        )
+    )
+
+    # Accumulated None request IDs (aged step-5 AND immediate step-6) still
+    # delegate exactly once with identity preserved (inline sub-case).
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    immediate = _event("step_succeeded", "six", 6, "openai", output_text="", request_id=None)
+    lines[-1] = serialize_runtime_step_event_jsonl(immediate)
+    events.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
+    seen.clear()
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+        **values, phase133_function=dependency  # type: ignore[arg-type]
+    )
+    assert actual is expected and len(seen) == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            seen[0],
+            tuple(
+                values[name]
+                for name in (
+                    "result",
+                    "start",
+                    "workflow",
+                    "employee",
+                    "state_path",
+                    "events_path",
+                    "resolved_tools",
+                    "api_key",
+                    "approval",
+                    "transport",
+                )
+            ),
+            strict=True,
+        )
+    )
+
+
+def test_step7_aged_none_request_id_empty_string_is_rejected(tmp_path: Path) -> None:
+    values = step7_setup(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    aged = _event("step_succeeded", "five", 5, "openai", output_text="", request_id="")
+    lines[4] = serialize_runtime_step_event_jsonl(aged)
+    events.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
+    reject_unchanged(values, "persistence_result_contract")
+
+
+def test_step7_aged_none_request_id_requires_exact_openai_provider(tmp_path: Path) -> None:
+    values = step7_setup(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    aged = _event("step_succeeded", "five", 5, "other", output_text="", request_id=None)
+    lines[4] = serialize_runtime_step_event_jsonl(aged)
+    events.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
+    reject_unchanged(values, "persistence_result_contract")
+
+
+def test_step7_prethreshold_none_request_id_is_rejected(tmp_path: Path) -> None:
+    values = step7_setup(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    pre = _event("step_succeeded", "four", 4, "other", output_text="", request_id=None)
+    lines[3] = serialize_runtime_step_event_jsonl(pre)
+    events.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
+    reject_unchanged(values, "persistence_result_contract")

@@ -1684,6 +1684,26 @@ Phase 155は以下を行わない:
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
 
+### Issue #371: Phase 155 → 141 → 133 Aged Request-ID Provenance Execution Compatibility Repair
+
+Issue #371は新しいorchestration boundaryではなく、Phase 176のcapture-only delegating Phase 147 adapterがrunning step 6をrunning step 7へ進めた後、同じ不変のstep-5 succeeded event（`request_id=None`、provider=`"openai"`）が「直前のpredecessor」から「それより前のpredecessor」へagingする際の互換性を修復するaged-provenance compatibility repairである。
+
+```text
+canonical step-5 success
+request_id=None, provider=openai
+    ↓ was immediate predecessor of running step 6
+Phase 176 advances to running step 7
+    ↓ same immutable event is now an earlier predecessor
+Phase 155 → 141 → 133
+    preserve that already-valid historical provenance
+    ↓
+Phase 126 and lower execution chain unchanged
+```
+
+Phase 155 / Phase 141 / Phase 133のexecution routeだけに、predecessor検証の`allow_none_request_id`を`position >= 5 or position == len(expected_steps)`へ狭く緩和する。positions 1-4は従来どおり`request_id`にexact non-empty built-in `str`を要求し、`request_id==""`・非str・非Noneは常にinvalid、`request_id=None`のときはproviderが正確に`"openai"`であることを要求する（非空`request_id`のearlier eventの既存provider semanticsは維持）。immediate predecessorのprovider=`"openai"`要求はNone/非空`request_id`の両方で維持する。stop route、Phase 126以下、`terminal_history_contract.py`は変更しない。
+
+このIssueはPhase 177を追加せず、Phase 176後に自動実行せず、新しいruntime resultをpersistせず、再度progressせず、retry/loop/schedule/finalize/parallel/CLI/GUI behaviorを変更しない。
+
 ## Phase 156: Phase 142 → 134 → 127 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair
 
 Phase 156は、Phase 155以降で有効になったrunning continuation provenanceを、最初のtransition-persistence互換セグメント（Phase 142 → Phase 134 → Phase 127）が正しく受け渡せるようにする**staged compatibility/correctness repair**である。新しいorchestration boundaryは追加しない。
