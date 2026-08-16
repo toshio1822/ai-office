@@ -308,15 +308,32 @@ def chain_inputs(tmp_path: Path) -> dict[str, object]:
     assert len(captured) == 1
     start = captured[0]
     assert type(start) is PreparedStepExecutionStart
+    # Issue #371 minimum proofs (helper-level, shared by all four cases):
+    # - final running state: step 7 with exact completed prefix steps 1-6
     final_state = load_workflow_execution_state(state_path)
     assert final_state.status == "running"
     assert final_state.current_step_id == "step-7"
     assert final_state.current_step_index == 7
-    return {
-        "result": RunningStatePersistenceResult(len(state_path.read_bytes())),
+    assert final_state.completed_step_ids == tuple(step.id for step in wf.steps[:6])
+    # - events: exact succeeded steps 1-6
+    events = load_events(events_path)
+    assert [event.step_id for event in events] == [step.id for step in wf.steps[:6]]
+    assert all(event.event_type == "step_succeeded" for event in events)
+    # - step5 (aged earlier predecessor): request_id=None / provider="openai"
+    step5 = events[4]
+    assert step5.request_id is None
+    assert step5.provider == "openai"
+    # - immediate step6 provenance (canonical): non-empty request_id / openai
+    step6 = events[5]
+    assert step6.provider == "openai"
+    assert isinstance(step6.request_id, str) and step6.request_id
+    # - actual Phase176 result.state_bytes_written == persisted running-state bytes
+    assert out.state_bytes_written == len(state_path.read_bytes())
+    inputs = {
+        "result": out,  # exact Phase176 return value, never rebuilt
         "start": start,
         "workflow": wf,
-        "employee": employee_for(prepare_decision(wf, 6)),
+        "employee": employee,
         "state_path": state_path,
         "events_path": events_path,
         "resolved_tools": TOOLS,
@@ -329,6 +346,20 @@ def chain_inputs(tmp_path: Path) -> dict[str, object]:
             approval_id="approval-id",
         ),
     }
+    # - Phase147 capture adapter received the exact PreparedStepExecutionStart
+    #   that is forwarded to Phase155 (same object, no reconstruction)
+    assert inputs["start"] is captured[0]
+    assert inputs["result"] is out
+    return inputs
+
+
+def load_events(events_path: Path) -> list[RuntimeStepEvent]:
+    """Load all JSONL runtime step events in file order."""
+    return [
+        RuntimeStepEvent(**json.loads(line))
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def replace_event_line(
@@ -344,6 +375,15 @@ def test_real_chain_step7_aged_step5_none_success_transport_once(tmp_path: Path)
     inputs = chain_inputs(tmp_path)
     state_path = inputs["state_path"]
     events_path = inputs["events_path"]
+    # Issue #371 minimum proofs (inline): canonical six-event succeeded history
+    # with aged step-5 request_id=None / provider="openai"; immediate step-6
+    # keeps its canonical non-empty request_id.
+    events = load_events(events_path)  # type: ignore[arg-type]
+    assert [event.step_id for event in events] == [f"step-{i}" for i in range(1, 7)]
+    assert all(event.event_type == "step_succeeded" for event in events)
+    assert events[4].request_id is None and events[4].provider == "openai"
+    assert isinstance(events[5].request_id, str) and events[5].request_id
+    assert events[5].provider == "openai"
     before = state_path.read_bytes(), events_path.read_bytes()  # type: ignore[union-attr]
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
     result = phase155(  # type: ignore[call-overload]
@@ -360,12 +400,24 @@ def test_real_chain_step7_aged_step5_none_success_transport_once(tmp_path: Path)
     assert invocation.request_id == "request_123"
     assert len(calls) == 1
     assert (state_path.read_bytes(), events_path.read_bytes()) == before  # type: ignore[union-attr]
+    # step7 runtime-result persistence NOT performed: six-event history intact
+    after = load_events(events_path)  # type: ignore[arg-type]
+    assert [event.step_id for event in after] == [f"step-{i}" for i in range(1, 7)]
+    assert all(event.event_type == "step_succeeded" for event in after)
 
 
 def test_real_chain_step7_aged_step5_none_deterministic_failure(tmp_path: Path) -> None:
     inputs = chain_inputs(tmp_path)
     state_path = inputs["state_path"]
     events_path = inputs["events_path"]
+    # Issue #371 minimum proofs (inline): same canonical six-event succeeded
+    # history; deterministic provider failure still reaches transport once.
+    events = load_events(events_path)  # type: ignore[arg-type]
+    assert [event.step_id for event in events] == [f"step-{i}" for i in range(1, 7)]
+    assert all(event.event_type == "step_succeeded" for event in events)
+    assert events[4].request_id is None and events[4].provider == "openai"
+    assert isinstance(events[5].request_id, str) and events[5].request_id
+    assert events[5].provider == "openai"
     before = state_path.read_bytes(), events_path.read_bytes()  # type: ignore[union-attr]
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
     result = phase155(  # type: ignore[call-overload]
@@ -379,6 +431,10 @@ def test_real_chain_step7_aged_step5_none_deterministic_failure(tmp_path: Path) 
     assert result.invocation_result.provider == "openai"
     assert len(calls) == 1
     assert (state_path.read_bytes(), events_path.read_bytes()) == before  # type: ignore[union-attr]
+    # step7 runtime-result persistence NOT performed: six-event history intact
+    after = load_events(events_path)  # type: ignore[arg-type]
+    assert [event.step_id for event in after] == [f"step-{i}" for i in range(1, 7)]
+    assert all(event.event_type == "step_succeeded" for event in after)
 
 
 def test_real_chain_step7_accumulated_none_request_ids_transport_once(
@@ -393,6 +449,13 @@ def test_real_chain_step7_accumulated_none_request_ids_transport_once(
     )
     state_path = inputs["state_path"]
     events_path = inputs["events_path"]
+    # Issue #371 minimum proofs (inline): accumulated None request IDs on the
+    # aged step-5 AND the immediate step-6 both remain None / provider="openai".
+    events = load_events(events_path)  # type: ignore[arg-type]
+    assert [event.step_id for event in events] == [f"step-{i}" for i in range(1, 7)]
+    assert all(event.event_type == "step_succeeded" for event in events)
+    assert events[4].request_id is None and events[4].provider == "openai"
+    assert events[5].request_id is None and events[5].provider == "openai"
     before = state_path.read_bytes(), events_path.read_bytes()  # type: ignore[union-attr]
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
     result = phase155(  # type: ignore[call-overload]
@@ -402,6 +465,10 @@ def test_real_chain_step7_accumulated_none_request_ids_transport_once(
     assert result.step_id == "step-7" and result.step_index == 7
     assert len(calls) == 1
     assert (state_path.read_bytes(), events_path.read_bytes()) == before  # type: ignore[union-attr]
+    # step7 runtime-result persistence NOT performed: six-event history intact
+    after = load_events(events_path)  # type: ignore[arg-type]
+    assert [event.step_id for event in after] == [f"step-{i}" for i in range(1, 7)]
+    assert all(event.event_type == "step_succeeded" for event in after)
 
 
 def test_real_chain_step7_prethreshold_step4_none_rejected(tmp_path: Path) -> None:
@@ -414,6 +481,14 @@ def test_real_chain_step7_prethreshold_step4_none_rejected(tmp_path: Path) -> No
     )
     state_path = inputs["state_path"]
     events_path = inputs["events_path"]
+    # Issue #371 minimum proofs (inline): pre-threshold step-4 request_id=None
+    # stays rejected; immediate step-6 keeps its canonical non-empty request_id.
+    events = load_events(events_path)  # type: ignore[arg-type]
+    assert [event.step_id for event in events] == [f"step-{i}" for i in range(1, 7)]
+    assert all(event.event_type == "step_succeeded" for event in events)
+    assert events[3].request_id is None and events[3].provider == "openai"
+    assert isinstance(events[5].request_id, str) and events[5].request_id
+    assert events[5].provider == "openai"
     before = state_path.read_bytes(), events_path.read_bytes()  # type: ignore[union-attr]
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
     with pytest.raises(
@@ -425,3 +500,7 @@ def test_real_chain_step7_prethreshold_step4_none_rejected(tmp_path: Path) -> No
     assert caught.value.detail.classification == "persistence_result_contract"
     assert len(calls) == 0
     assert (state_path.read_bytes(), events_path.read_bytes()) == before  # type: ignore[union-attr]
+    # rejection leaves the six-event history intact (no step-7 event appended)
+    after = load_events(events_path)  # type: ignore[arg-type]
+    assert [event.step_id for event in after] == [f"step-{i}" for i in range(1, 7)]
+    assert all(event.event_type == "step_succeeded" for event in after)
