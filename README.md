@@ -3559,3 +3559,50 @@ Phase 175は以下のbehaviorを**一切**追加・変更しない:
 ### canonical B/C provenance（prerequisite #365 解決済み）
 
 Phase 175 の B/C（6-step success → `workflow_complete` / 6-step failure → `persisted_failure` の exact identity 保持）は、Issue #363 が指定する **canonical Phase-155 provenance**（直前 step-5 が `provider="openai"` / `output_text=""` / `request_id=None`）のまま実検証しています。prerequisite #365 のマージにより public Phase 146 の stop ルートはこの canonical provenance を受理するため、strict provenance の deviation はありません（詳細は PR 本文参照）。
+
+## Phase 176: Post-Runtime → Prepared Running-State Persistence Orchestration Boundary
+
+Phase 176は、**公開 Phase 175 の結果を、そのまま公開 Phase 147 の prepared-start persistence chain に合成する、Phase 175 に続く次の integration boundary** です。compatibility repair ではなく、既存の公開境界（Phase 175 と #367 で互換性修復済みの Phase 147）を直列接続します。**まだ workflow runner ではありません**。
+
+```text
+Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
+    ↓ Phase 175 post-runtime → persistence → classification → progression → approved preparation → prepared-step start
+    ↓ PreparedStepExecutionStart / exact stop object (workflow_complete / persisted_failure)
+    ↓ Phase 147 prepared-start persistence chain（147 → 139 → 132 → … → lower persistence chain）
+    ↓ RunningStatePersistenceResult / exact stop object
+```
+
+### 核心契約（stage ownership / committed terminal snapshot）
+
+- **Phase 175 は durable runtime-result commit point を所有する**: Phase 176 は Phase 175 stage の失敗・不正戻り値に対して pre-Phase175 への巻き戻しを行わない（既に durable commit 済みの finished runtime result を消さない）
+- **Phase 175 成功後の target bytes を post-Phase175 committed terminal snapshot とする**
+- Phase 147 は prepared route でのみ state target の変更が許可される。成功した state-only persistence が **新しい durable running-state commit point** になる（event bytes は不変・step-7 runtime event は追加しない）
+- Phase 147 失敗時は committed terminal bytes への復元のみ（pre-Phase175 running state へは戻さない）。復元失敗は `rollback_failure`
+- approval / employee は **Phase 175 の前に prevalidate しない**: 完了済み runtime result は approval が欠落・不正でも durable に persist/classify/progress され、検証は Phase 175 内部の責務
+- 各 stage ちょうど 1 回、retry・loop・bypass なし。`RunningStatePersistenceResult` または exact stop object で停止し、persist 済み step の実行・provider/model 呼び出し・tool 実行・schedule・自動継続はしない
+
+### エラー分類（11 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase175_contract` / `phase147_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
+
+- Phase 175 stage の既存 safe error（Phase 175 / 173 / 172 / 145 / 146 / 138 error type）は同一 object を identity で re-raise（Phase 147 呼び出し 0 回・write なし）
+- Phase 147 stage の既存 safe error（Phase 147 / 139 error type）は committed bytes 復元後に identity で re-raise
+- 予期しない例外は `dependency_error` に sanitize（detail-safe 固定メッセージ）、不正戻り値は `phase175_contract` / `phase147_contract`
+- 有効戻り値 + target mutation は `committed_mutation`、復元失敗は `rollback_failure`（両 target を 1 回ずつ試行、stage retry なし）
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_prepared_start_persistence_orchestration_boundary.py` — Phase 176 production（新規）
+2. `tests/test_runtime_result_to_prepared_start_persistence_orchestration_boundary.py` — 新規 +20 tests（focused 16 + real-default 4）
+3. `src/ai_office/engine/__init__.py` — Phase 176 public exports
+4. `README.md` — Phase 176 documentation
+5. `docs/architecture.md` — Phase 176 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 176は以下のbehaviorを**一切**追加・変更しない:
+
+- Phase 175 / 147 / 139 / 132 または下流 prepared-start persistence production、Phase 146 / 138 / 131、Phase 173 / 172 / 161 またはその下流チェーン、`terminal_history_contract.py`、`storage/running_state_persistence.py` を変更しない
+- 自動 next-step execution・persist 済み step の実行・provider / model 呼び出し・tool 実行・runtime-result persistence（新規 step 分）を行わない
+- retry・workflow loop・schedule・parallel・finalize・artifact persistence を行わない
+- CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない

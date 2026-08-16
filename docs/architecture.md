@@ -3345,3 +3345,83 @@ B/C（6-step success → `workflow_complete` / 6-step failure → `persisted_fai
 - Phase 173 / 146 または下流 production modules、`terminal_history_contract.py`
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - shared storage/runtime/provider code、CLI / GUI behavior、自動 next-step start・provider / tool 実行・schedule・parallel・finalize
+
+## Phase 176: Post-Runtime → Prepared Running-State Persistence Orchestration Boundary
+
+Phase 176は、Phase 175 の公開 result を受け取り、**公開 Phase 175 → 公開 Phase 147 をこの順でちょうど 1 回ずつ合成する**、Phase 175 に続く integration boundary である。compatibility repair ではなく、既存の公開境界の直列接続であり、**まだ workflow runner ではない**。
+
+```text
+Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
+    ↓ Phase 175 post-runtime → durable persistence → classification → progression → approval/preparation → prepared-step start
+    ↓ PreparedStepExecutionStart / exact stop object (workflow_complete / persisted_failure)
+    ↓ Phase 147 prepared-start persistence chain（147 → 139 → 132 → … → lower persistence chain）
+    ↓ RunningStatePersistenceResult / exact stop object
+```
+
+### stage ownership（Phase-175 no-destructive-outer-rollback）
+
+- Phase 175 が durable runtime-result commit point と自身の downstream compensation を所有するため、Phase 176 は **pre-Phase175 rollback を行わない**
+- Phase 175 stage が safe error を raise した場合は exact object identity で re-raise（Phase 147 呼び出し 0 回、target への write なし）
+- 予期しない例外は `dependency_error` に sanitize、不正戻り値は `phase175_contract`（いずれも Phase 147 呼び出し 0 回・write なし）
+- Phase 175 retry なし
+
+### committed terminal snapshot / Phase-147 ownership
+
+- 有効な Phase 175 結果を受け入れた時点の target bytes を post-Phase175 committed terminal snapshot とする
+- Phase 147 stop route は両 target を committed snapshot のまま要求（exact identity・mutation 不可）
+- Phase 147 prepared route は state target の変更のみ許可。成功した state-only persistence が **新しい durable running-state commit point** になり、state target は exact UTF-8 serialization（`phase175_result.running_state`）、event bytes は committed event bytes のまま、`state_bytes_written` は exact positive int == persisted byte length、public storage loader で running state を再現
+- Phase 147 の safe error は復元成功時のみ exact identity で re-raise、予期しない例外は sanitize、不正戻り値は `phase147_contract`、有効戻り値 + target mutation は `committed_mutation`（いずれも committed terminal bytes への復元のみ、pre-Phase175 へは戻さない）
+- committed への復元失敗は `rollback_failure`（両 target を 1 回ずつ試行、stage retry なし）
+
+### thin 契約（下流検証の非重複）
+
+- Phase 175 出力: stop は exact identity、runtime success は exact `PreparedStepExecutionStart`（ModelInvocationRequest の model / system・task instructions / allowed_tools、running `WorkflowExecutionState` の workflow / status / current step・index・employee / completed prefix / `last_failure_category is None`）、final-step success は exact `workflow_complete`（next 全 None・`last_step_succeeded`）、runtime failure は exact `persisted_failure`（failure category 一致）
+- Phase 147 出力: prepared は exact `RunningStatePersistenceResult`（positive int `state_bytes_written`）、stop は exact identity
+- approval / employee は Phase 175 前に prevalidate しない（Phase 175 内部の責務）。Phase 175 / 147 の terminal-history・persistence validator は重複実装しない
+
+### エラー分類（11 分類）
+
+| classification | 意味 |
+|---|---|
+| `result_type` | 入力 result が Phase-155 4 型以外（stop は workflow_complete / persisted_failure のみ） |
+| `workflow_definition` | workflow が exact `WorkflowDefinition` でない |
+| `state_target` / `event_target` | target が exact `Path` でない、または file でない |
+| `target_conflict` | state_path == events_path |
+| `configuration` | 依存関数が callable でない |
+| `phase175_contract` | Phase 175 の戻り値・stop identity の契約違反 |
+| `phase147_contract` | Phase 147 の戻り値・stop identity・persistence フィールドの契約違反 |
+| `dependency_error` | 予期しない例外（sanitize、detail-safe 固定メッセージ） |
+| `committed_mutation` | Phase 147 有効戻り値後の target mutation を検出 |
+| `rollback_failure` | 補償 restore 自体が失敗 |
+
+### 依存と no-bypass
+
+- orchestration は公開 Phase 175 / 公開 Phase 147 のみ。Phase 173 / 146 / 139 / 132 以下の lower boundary は直接 import / call しない（error type の import は Phase 175 / 147 が expose / re-raise する type のみ、call はしない）
+- import は公開 data / error type（`WorkflowDefinition`、`EmployeeDefinition`、`WorkflowProgressionDecision`、`PersistedExecutionOutcome`、`StepRuntimeExecutionSuccess/Failure`、`PreparedStepExecutionStart`、`ModelInvocationRequest`、`WorkflowExecutionState`、`RunningStatePersistenceResult`、`Path`）と両境界の public function + error class のみ
+- 依存注入は keyword-only の `phase175_function` / `phase147_function`（default は実公開関数の exact identity）
+- workflow loop・stage retry・alternate bypass path なし
+
+### real-default regression（4 cases）
+
+- A: 7-step step-6 success + valid approval/matching employee → exact `RunningStatePersistenceResult`。step-6 は実チェーンで durable commit、final state は step-7 running（completed prefix steps 1–6）、event bytes は six-event committed step-6 history のまま、step-7 runtime event / provider / tool 実行なし（canonical step-5 `provider="openai"` / `output_text=""` / `request_id=None` 維持）
+- B: 6-step success + `None` approval/employee → exact `workflow_complete` identity、committed terminal state/event bytes 不変
+- C: 6-step failure + `None` approval/employee → exact `persisted_failure` identity、committed terminal state/event bytes 不変
+- D: 7-step step-6 success + missing approval（employee は matching）→ Phase 175 が先に step-6 を durable commit、既存 safe approval error が identity で escape、Phase 147 呼び出し 0 回、committed step-6 bytes 維持、step 7 は persist / execute されない
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_prepared_start_persistence_orchestration_boundary.py` — Phase 176 production（新規）
+2. `tests/test_runtime_result_to_prepared_start_persistence_orchestration_boundary.py` — Phase 176 focused test（focused 16 + real-default A/B/C/D = 20 cases）
+3. `src/ai_office/engine/__init__.py` — Phase 176 public export（+4 symbols、アルファベット順）
+4. `README.md` — Phase 176 documentation
+5. `docs/architecture.md` — Phase 176 architecture documentation
+
+### canonical provenance（prerequisite #367 解決済み）
+
+実 A/B/C/D は、Issue #363 が指定する **canonical Phase-155 provenance**（直前 step-5 が `provider="openai"` / `output_text=""` / `request_id=None`）のまま public Phase 175 → public Phase 147 を合成して検証している。prerequisite #367 のマージにより public Phase 147 の prepared route は canonical immediate-None prepared start（step 7 以降）を受理するため、strict provenance の deviation はない。
+
+### 変更しないもの
+
+- Phase 175 / 147 / 139 / 132 または下流 prepared-start persistence production、Phase 146 / 138 / 131、Phase 173 / 172 / 161 またはその下流チェーン、`terminal_history_contract.py`、`storage/running_state_persistence.py`
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
+- shared storage/runtime/invocation/provider code、CLI / GUI behavior、自動 next-step execution・provider / tool 実行・schedule・parallel・finalize・artifact persistence
