@@ -1,6 +1,7 @@
 """Issue #373 regression: persisted terminal-success request_id=None (Phase 176).
 
-Real Phase 176 with a step-6 runtime success whose model invocation carries
+Real Phase 176 with its full default dependency chain (default Phase175 -> 147
+bindings) and a step-6 runtime success whose model invocation carries
 ``request_id=None`` (provider "openai") must complete end-to-end through the
 real persistence chain. The persisted succeeded terminal keeps request_id=None
 and provider "openai", and the classification chain (Phase 86 -> 79 -> 72)
@@ -23,9 +24,7 @@ from pathlib import Path
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
-    PreparedStepExecutionStart,
     WorkflowProgressionDecision,
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
     route_runtime_result_to_prepared_start_persistence_orchestration_boundary,
 )
 from ai_office.engine.next_step_preparation import NextStepPreparationApproval
@@ -43,7 +42,6 @@ from ai_office.storage import (
 )
 
 phase176 = route_runtime_result_to_prepared_start_persistence_orchestration_boundary
-real_phase147 = route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
 
 
 def workflow(steps: int = 7) -> WorkflowDefinition:
@@ -206,27 +204,11 @@ def test_issue373_seven_step_step6_success_none_request_id_exact_step7_running_s
     employee = employee_for(decision)
     state_path = values["state_path"]  # type: ignore[arg-type]
     events_path = values["events_path"]  # type: ignore[arg-type]
-    captured: list[object] = []
-
-    def capture_phase147(
-        res: object, workflow: object, emp: object, sp: object, ep: object
-    ) -> object:
-        captured.append(res)
-        return real_phase147(res, workflow, emp, sp, ep)
-
-    out = phase176(
-        result,
-        wf,
-        approval,
-        employee,
-        state_path,
-        events_path,
-        phase147_function=capture_phase147,  # type: ignore[arg-type]
-    )
+    # Full default dependency chain: Phase 176 runs with its real default
+    # Phase175 -> Phase147 bindings; no dependency is injected or captured.
+    out = phase176(result, wf, approval, employee, state_path, events_path)
     assert type(out) is RunningStatePersistenceResult
     assert type(out.state_bytes_written) is int and out.state_bytes_written > 0
-    assert len(captured) == 1
-    assert type(captured[0]) is PreparedStepExecutionStart
     final_state = load_workflow_execution_state(state_path)
     assert final_state.status == "running"
     assert final_state.current_step_id == "step-7"
