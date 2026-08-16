@@ -390,6 +390,7 @@ def test_phase147_workflow_complete_stop_identity_zero_phase139(
     values = canonical_running_setup(tmp_path, steps=6, current=6)
     stop = phase175_stop(values, success=True)
     wf = values["workflow"]
+    state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
     calls: dict[str, int] = {"phase139": 0}
 
@@ -410,6 +411,7 @@ def test_phase147_workflow_complete_stop_identity_zero_phase139(
     assert out.decision == "workflow_complete"
     assert out.reason == "last_step_succeeded"
     assert calls["phase139"] == 0
+    assert values["state_path"].read_bytes() == state_before  # type: ignore[union-attr]
     assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
 
 
@@ -419,6 +421,7 @@ def test_phase147_persisted_failure_stop_identity_zero_phase139(
     values = canonical_running_setup(tmp_path, steps=6, current=6)
     stop = phase175_stop(values, success=False)
     wf = values["workflow"]
+    state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
     calls: dict[str, int] = {"phase139": 0}
 
@@ -439,6 +442,7 @@ def test_phase147_persisted_failure_stop_identity_zero_phase139(
     assert out.outcome == "persisted_failure"
     assert out.failure_category == "api_error"
     assert calls["phase139"] == 0
+    assert values["state_path"].read_bytes() == state_before  # type: ignore[union-attr]
     assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
 
 

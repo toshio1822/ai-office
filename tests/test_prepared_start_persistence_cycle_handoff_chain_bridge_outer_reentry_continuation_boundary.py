@@ -1578,6 +1578,23 @@ def test_seven_step_immediate_none_request_id_is_accepted_and_delegates_once(
     assert state.read_bytes() == expected_state
     assert events.read_bytes() == before_events
     assert before_state != state.read_bytes()
+    # non-empty immediate predecessor request_id remains accepted and delegates once
+    state, events, _, _ = _seven_step_predecessor_targets(tmp_path)
+    _rewrite_event(events, 4, request_id="request-step-5")
+    rewritten_events = events.read_bytes()
+    expected_state = serialize_workflow_execution_state_json(value.running_state).encode()
+    calls.clear()
+
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
+
+    returned = invoke(value, supplied_workflow, supplied_employee, state, events, fake)
+    assert returned is expected
+    assert calls == [(value, supplied_workflow, supplied_employee, state, events)]
+    assert state.read_bytes() == expected_state
+    assert events.read_bytes() == rewritten_events
 
 
 def test_seven_step_immediate_none_request_id_narrowness_inline_subcases(
@@ -1666,6 +1683,50 @@ def test_seven_step_immediate_none_request_id_narrowness_inline_subcases(
 
     reject(
         lambda: invoke(start(), workflow(), employee(), state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
+    # (5) stop route semantics unchanged: workflow_complete with an immediate
+    #     predecessor request_id=None is still rejected at terminal_contract
+    #     (Phase 139 stop routes were not relaxed by this change)
+    result = WorkflowProgressionDecision(
+        "workflow_complete", "workflow", "five", 5, "e", None, None, None,
+        "last_step_succeeded",
+    )
+    state, events, before_state, _ = stop_targets(tmp_path, status="succeeded", index=5)
+    _rewrite_event(events, 3, request_id=None)
+    rewritten_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(result, workflow(), None, state, events, fake),
+        "terminal_contract",
+    )
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
+    # (6) stop route semantics unchanged: persisted_failure with an immediate
+    #     predecessor request_id=None is still rejected at terminal_contract
+    outcome = PersistedExecutionOutcome(
+        "persisted_failure", "workflow", "four", 4, "d", "api_error"
+    )
+    state, events, before_state, _ = stop_targets(tmp_path, status="failed", index=4)
+    _rewrite_event(events, 2, request_id=None)
+    rewritten_events = events.read_bytes()
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        return object()
+
+    reject(
+        lambda: invoke(outcome, workflow(), None, state, events, fake),
         "terminal_contract",
     )
     assert calls == 0

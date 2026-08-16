@@ -1861,6 +1861,23 @@ def test_seven_step_immediate_none_request_id_is_accepted_and_delegates_once(
     assert state.read_bytes() == expected_state
     assert events.read_bytes() == before_events
     assert before_state != state.read_bytes()
+    # non-empty immediate predecessor request_id remains accepted and delegates once
+    state, events, _, _ = _seven_step_predecessor_targets(tmp_path)
+    _rewrite_event(events, 4, request_id="request-step-5")
+    rewritten_events = events.read_bytes()
+    expected_state = serialize_workflow_execution_state_json(value.running_state).encode()
+    calls.clear()
+
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
+
+    returned = invoke(value, supplied_workflow, supplied_employee, state, events, fake)
+    assert returned is expected
+    assert calls == [(value, supplied_workflow, supplied_employee, state, events)]
+    assert state.read_bytes() == expected_state
+    assert events.read_bytes() == rewritten_events
 
 
 def test_seven_step_immediate_none_request_id_narrowness_inline_subcases(
@@ -1949,3 +1966,82 @@ def test_seven_step_immediate_none_request_id_narrowness_inline_subcases(
     )
     assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == (before_state, rewritten_events)
+    # (5) canonical immediate None + workflow_complete stop: exact identity, zero
+    #     Phase 139 calls, both state and events bytes unchanged
+    stop_state = WorkflowExecutionState(
+        "workflow",
+        "succeeded",
+        "seven",
+        7,
+        "g",
+        ("one", "two", "three", "four", "five", "six", "seven"),
+        None,
+    )
+    stop_events = [
+        _event(supplied_workflow, 1, provider="openai", request_id="request-step-1", output_text="output-step-1"),
+        _event(supplied_workflow, 2, provider="openai", request_id="request-step-2", output_text=""),
+        _event(supplied_workflow, 3, provider="openai", request_id="request-step-3", output_text=""),
+        _event(supplied_workflow, 4, provider="openai", request_id="request-step-4", output_text=""),
+        _event(supplied_workflow, 5, provider="openai", request_id="request-step-5", output_text=""),
+        _event(supplied_workflow, 6, provider="openai", request_id=None, output_text=""),
+        _event(supplied_workflow, 7, provider="openai", request_id="request-step-7", output_text="output-step-7"),
+    ]
+    stop_state_bytes = serialize_workflow_execution_state_json(stop_state).encode()
+    stop_event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode() for event in stop_events
+    )
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(stop_state_bytes)
+    events_path.write_bytes(stop_event_bytes)
+    completion = WorkflowProgressionDecision(
+        "workflow_complete", "workflow", "seven", 7, "g", None, None, None,
+        "last_step_succeeded",
+    )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 139 must not be called")
+
+    assert invoke(completion, supplied_workflow, None, state_path, events_path, fake) is completion
+    assert calls == 0
+    assert (state_path.read_bytes(), events_path.read_bytes()) == (stop_state_bytes, stop_event_bytes)
+    # (6) canonical immediate None + persisted_failure stop: exact identity, zero
+    #     Phase 139 calls, both state and events bytes unchanged
+    fail_state = WorkflowExecutionState(
+        "workflow",
+        "failed",
+        "six",
+        6,
+        "f",
+        ("one", "two", "three", "four", "five"),
+        "api_error",
+    )
+    fail_events = [
+        _event(supplied_workflow, 1, provider="openai", request_id="request-step-1", output_text="output-step-1"),
+        _event(supplied_workflow, 2, provider="openai", request_id="request-step-2", output_text=""),
+        _event(supplied_workflow, 3, provider="openai", request_id="request-step-3", output_text=""),
+        _event(supplied_workflow, 4, provider="openai", request_id="request-step-4", output_text=""),
+        _event(supplied_workflow, 5, provider="openai", request_id=None, output_text=""),
+        _event(supplied_workflow, 6, status="failed", provider="openai", request_id="request-step-6"),
+    ]
+    fail_state_bytes = serialize_workflow_execution_state_json(fail_state).encode()
+    fail_event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode() for event in fail_events
+    )
+    state_path.write_bytes(fail_state_bytes)
+    events_path.write_bytes(fail_event_bytes)
+    failure = PersistedExecutionOutcome(
+        "persisted_failure", "workflow", "six", 6, "f", "api_error"
+    )
+    calls = 0
+
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Phase 139 must not be called")
+
+    assert invoke(failure, supplied_workflow, None, state_path, events_path, fake) is failure
+    assert calls == 0
+    assert (state_path.read_bytes(), events_path.read_bytes()) == (fail_state_bytes, fail_event_bytes)
