@@ -155,7 +155,9 @@ def canonical_running_setup(
     }
 
 
-def runtime_success(wf: WorkflowDefinition, index: int) -> StepRuntimeExecutionSuccess:
+def runtime_success(
+    wf: WorkflowDefinition, index: int, request_id_none: bool = False
+) -> StepRuntimeExecutionSuccess:
     step = wf.steps[index - 1]
     return StepRuntimeExecutionSuccess(
         "w",
@@ -165,7 +167,7 @@ def runtime_success(wf: WorkflowDefinition, index: int) -> StepRuntimeExecutionS
         ModelInvocationSuccess(
             "openai",
             f"response-{step.id}",
-            f"request-{step.id}",
+            None if request_id_none else f"request-{step.id}",
             "completed",
             ("output",),
             "output",
@@ -277,11 +279,18 @@ def failure_transport(
     return transport
 
 
-def chain_inputs(tmp_path: Path) -> dict[str, object]:
-    """Run real Phase 176 (capture-only delegating Phase 147) -> step-7 inputs."""
+def chain_inputs(
+    tmp_path: Path, step6_request_id_none: bool = False
+) -> dict[str, object]:
+    """Run real Phase 176 (capture-only delegating Phase 147) -> step-7 inputs.
+
+    ``step6_request_id_none`` supplies the step-6 ``StepRuntimeExecutionSuccess``
+    with ``request_id=None`` at Phase 176 input time (real flow); Phase 161
+    persists the step-6 succeeded event as-is, with no post-hoc rewrite.
+    """
     values = canonical_running_setup(tmp_path, steps=7, current=6)
     wf = values["workflow"]  # type: ignore[arg-type]
-    result = runtime_success(wf, 6)
+    result = runtime_success(wf, 6, request_id_none=step6_request_id_none)
     decision = prepare_decision(wf, 6)
     approval = approval_for(decision)
     employee = employee_for(decision)
@@ -323,10 +332,14 @@ def chain_inputs(tmp_path: Path) -> dict[str, object]:
     step5 = events[4]
     assert step5.request_id is None
     assert step5.provider == "openai"
-    # - immediate step6 provenance (canonical): non-empty request_id / openai
+    # - immediate step6 provenance: provider openai; request_id per the real
+    #   flow flag (non-empty canonical, or None for the accumulated case)
     step6 = events[5]
     assert step6.provider == "openai"
-    assert isinstance(step6.request_id, str) and step6.request_id
+    if step6_request_id_none:
+        assert step6.request_id is None
+    else:
+        assert isinstance(step6.request_id, str) and step6.request_id
     # - actual Phase176 result.state_bytes_written == persisted running-state bytes
     assert out.state_bytes_written == len(state_path.read_bytes())
     inputs = {
@@ -440,17 +453,15 @@ def test_real_chain_step7_aged_step5_none_deterministic_failure(tmp_path: Path) 
 def test_real_chain_step7_accumulated_none_request_ids_transport_once(
     tmp_path: Path,
 ) -> None:
-    inputs = chain_inputs(tmp_path)
-    wf = inputs["workflow"]  # type: ignore[arg-type]
-    replace_event_line(
-        inputs,
-        5,
-        predecessor_event(wf.steps[5].id, 6, output_text="", request_id=None),
-    )
+    # Real flow: the step-6 StepRuntimeExecutionSuccess with request_id=None /
+    # provider="openai" is supplied at Phase 176 input time; Phase 161 persists
+    # the step-6 succeeded event as-is, so no persisted-history rewrite happens.
+    inputs = chain_inputs(tmp_path, step6_request_id_none=True)
     state_path = inputs["state_path"]
     events_path = inputs["events_path"]
     # Issue #371 minimum proofs (inline): accumulated None request IDs on the
-    # aged step-5 AND the immediate step-6 both remain None / provider="openai".
+    # aged step-5 AND the immediate step-6 both remain None / provider="openai"
+    # straight from real Phase 176 persistence (no replace_event_line rewrite).
     events = load_events(events_path)  # type: ignore[arg-type]
     assert [event.step_id for event in events] == [f"step-{i}" for i in range(1, 7)]
     assert all(event.event_type == "step_succeeded" for event in events)
