@@ -400,6 +400,26 @@ def _validate_phase155_terminal_event(
         _raise("terminal_contract")
 
 
+def _terminal_request_id_valid(state: WorkflowExecutionState, event: object) -> bool:
+    """Issue #373 terminal-success request-ID gate.
+
+    Existing built-in str request IDs keep their semantics; request_id=None
+    is accepted only for the exact persisted succeeded terminal event
+    (state.status == "succeeded", built-in int current_step_index >= 6,
+    provider exactly "openai").
+    """
+    if type(event.request_id) is str:
+        return True
+    return (
+        event.request_id is None
+        and state.status == "succeeded"
+        and type(state.current_step_index) is int
+        and state.current_step_index >= 6
+        and type(event.provider) is str
+        and event.provider == "openai"
+    )
+
+
 def _validate_terminal_event_types(
     state: WorkflowExecutionState, event: object
 ) -> None:
@@ -411,7 +431,7 @@ def _validate_terminal_event_types(
         _raise("terminal_contract")
     if type(event.next_status) is not str or type(event.provider) is not str:
         _raise("terminal_contract")
-    if type(event.request_id) is not str:
+    if not _terminal_request_id_valid(state, event):
         _raise("terminal_contract")
     if state.status == "succeeded":
         if type(event.response_id) is not str or type(event.output_text) is not str:

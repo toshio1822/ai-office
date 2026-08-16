@@ -289,11 +289,31 @@ def _valid_terminal_event_types(state: WorkflowExecutionState, event: object, wo
     return True
 
 
+def _terminal_request_id_valid(state: WorkflowExecutionState, event: object) -> bool:
+    """Issue #373 terminal-success request-ID gate.
+
+    Existing built-in str request IDs keep their semantics; request_id=None
+    is accepted only for the exact persisted succeeded terminal event
+    (state.status == "succeeded", built-in int current_step_index >= 6,
+    provider exactly "openai").
+    """
+    if type(event.request_id) is str:
+        return True
+    return (
+        event.request_id is None
+        and state.status == "succeeded"
+        and type(state.current_step_index) is int
+        and state.current_step_index >= 6
+        and type(event.provider) is str
+        and event.provider == "openai"
+    )
+
+
 def _valid_event_types(state: WorkflowExecutionState, event: object) -> bool:
     if not (type(event.event_type) is str and type(event.workflow_id) is str and type(event.step_id) is str
             and type(event.step_index) is int and type(event.employee_id) is str
             and type(event.previous_status) is str and type(event.next_status) is str
-            and type(event.provider) is str and type(event.request_id) is str):
+            and type(event.provider) is str and _terminal_request_id_valid(state, event)):
         return False
     if state.status == "succeeded":
         return (
