@@ -3626,3 +3626,52 @@ Phase 176は以下のbehaviorを**一切**追加・変更しない:
 - 自動 next-step execution・persist 済み step の実行・provider / model 呼び出し・tool 実行・runtime-result persistence（新規 step 分）を行わない
 - retry・workflow loop・schedule・parallel・finalize・artifact persistence を行わない
 - CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない
+
+## Phase 177: Post-Runtime → Persisted Running Execution Orchestration Boundary
+
+Phase 177は、**公開 Phase 176 の結果（durable running-state persistence）を、そのまま公開 Phase 155 の persisted-running execution chain に合成する、Phase 176 に続く次の integration boundary** です。compatibility repair ではなく、既存の公開境界（Phase 176 と #375 と同じ Phase-155 runtime/stop 入力ファミリーを受け付ける公開 Phase 155）を直列接続します。**workflow runner ではありません**。
+
+```text
+finished current-step Phase-155 result (StepRuntimeExecutionSuccess / Failure, または stop)
+    ↓ Phase 176 post-runtime → durable persistence → classification → progression → approval/preparation/start
+    ↓ capture-only delegating Phase-147 adapter（実 Phase 147 handoff から exact PreparedStepExecutionStart を capture）
+    ↓ RunningStatePersistenceResult / exact stop object（workflow_complete / persisted_failure）
+    ↓ Phase 155 persisted running execution chain（155 → 141 → 133 → 126 → … → lower chain）
+    ↓ StepRuntimeExecutionSuccess / StepRuntimeExecutionFailure / exact stop object
+```
+
+### 核心契約（stage ownership / committed running-state snapshot）
+
+- **Phase 176 は durable running-state commit point を所有する**: Phase 177 は Phase 176 stage の失敗・不正戻り値に対して pre-Phase176 への巻き戻しを行わない（既に durable commit 済みの finished runtime result と next running state を消さない）
+- **Phase 176 成功後の target bytes を post-Phase176 committed running-state snapshot とする**
+- Phase 155 は prepared route でのみちょうど 1 回呼ばれ、next-step runtime execution を実行する。Phase 155 の return 後に target mutation が発生した場合は committed snapshot に復元
+- stop 結果（workflow_complete / persisted_failure）は exact identity をそのまま返し、Phase 155 は zero calls
+- Phase 147 は capture-only delegating adapter 内でのみ呼ばれる（実 Phase 147 handoff を 1 回実行し、exact `PreparedStepExecutionStart` を capture）。lower boundary は直接呼ばない
+- approval / employee / resolved_tools / api_key / execution_approval / transport は **prevalidate しない**: Phase 176 が先に実行され、実行入力の拒否は Phase 155 の責務。Phase 176 所有の preparation 拒否では Phase 155 は zero calls
+- 各 stage ちょうど 1 回、retry・loop・bypass なし。ちょうど 1 回の next-step runtime result（成功 / 失敗）または exact stop object で停止し、その runtime result の再永続化・再進行・別ステップ準備・自動継続はしない
+
+### エラー分類（12 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase176_contract` / `phase155_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
+
+- Phase 176 stage の既存 safe error（Phase 176 / 175 / 173 / 172 / 145 / 146 / 138 / 147 / 139 error type）は同一 object を identity で re-raise（Phase 155 呼び出し 0 回・write なし）
+- Phase 155 stage の既存 safe error（Phase 155 / 141 error type）は committed snapshot への復元後に identity で re-raise
+- 予期しない例外は `dependency_error` に sanitize（detail-safe 固定メッセージ）、不正戻り値は `phase176_contract` / `phase155_contract`
+- 有効戻り値 + target mutation は `committed_mutation`、復元失敗は `rollback_failure`（両 target を 1 回ずつ試行、stage retry なし）
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_orchestration_boundary.py` — Phase 177 production（新規）
+2. `tests/test_runtime_result_to_persisted_running_execution_orchestration_boundary.py` — 新規 +20 tests（focused 16 + real-default 4）
+3. `src/ai_office/engine/__init__.py` — Phase 177 public exports
+4. `README.md` — Phase 177 documentation
+5. `docs/architecture.md` — Phase 177 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 177は以下のbehaviorを**一切**追加・変更しない:
+
+- Phase 176 / 175 / 173 / 172 / 161、Phase 147 / 139 / 132 または下流 prepared-start persistence production、Phase 155 / 141 / 133 / 126 または下流 runtime execution production、`terminal_history_contract.py`、`storage/running_state_persistence.py` を変更しない
+- 新しい runtime result の再永続化・2 回目の progression decision・別ステップの preparation / start / persistence cycle を行わない
+- retry・自動ループ / 継続・finalize・schedule・parallel・artifact persistence を行わない
+- CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない
