@@ -90,15 +90,16 @@ def predecessor_event(step_id: str, position: int, *, provider: object = "other"
     )
 
 
-def terminal_event(status: str, *, message: str = "safe failure") -> RuntimeStepEvent:
+def terminal_event(status: str, *, message: str = "safe failure", request_id: object = _SENTINEL, provider: object = "openai") -> RuntimeStepEvent:
+    resolved = "request-six" if request_id is _SENTINEL else request_id
     if status == "succeeded":
-        return RuntimeStepEvent("step_succeeded", "w", "six", 6, "s", "running", "succeeded", "openai",
-                                None, "response-six", "request-six", "output-six", None)
-    return RuntimeStepEvent("step_failed", "w", "six", 6, "s", "running", "failed", "openai",
-                            "api_error", None, "request-six", None, message)
+        return RuntimeStepEvent("step_succeeded", "w", "six", 6, "s", "running", "succeeded", provider,
+                                None, "response-six", resolved, "output-six", None)
+    return RuntimeStepEvent("step_failed", "w", "six", 6, "s", "running", "failed", provider,
+                            "api_error", None, resolved, None, message)
 
 
-def setup_six(tmp_path: Path, status: str, *, earlier_empty: tuple[int, ...] = (2,), message: str = "safe failure"):
+def setup_six(tmp_path: Path, status: str, *, earlier_empty: tuple[int, ...] = (2,), message: str = "safe failure", terminal_request_id: object = _SENTINEL, terminal_provider: object = "openai"):
     workflow = six_step_definition()
     state_model = WorkflowExecutionState(
         "w", status, "six", 6, "s",
@@ -110,7 +111,7 @@ def setup_six(tmp_path: Path, status: str, *, earlier_empty: tuple[int, ...] = (
         for position, step_id in enumerate(_SIX_STEP_IDS[:5], 1)
     ]
     events[4] = predecessor_event("five", 5, provider="openai", request_id=None, output_text="")
-    events.append(terminal_event(status, message=message))
+    events.append(terminal_event(status, message=message, request_id=terminal_request_id, provider=terminal_provider))
     state_bytes = serialize_workflow_execution_state_json(state_model).encode("utf-8")
     event_bytes = "".join(serialize_runtime_step_event_jsonl(event) for event in events).encode("utf-8")
     terminal_bytes = serialize_runtime_step_event_jsonl(events[-1]).encode("utf-8")
@@ -125,6 +126,32 @@ def six_step_outcome(status: str) -> PersistedExecutionOutcome:
         "persisted_success" if status == "succeeded" else "persisted_failure",
         "w", "six", 6, "s", None if status == "succeeded" else "api_error",
     )
+
+
+def five_index_terminal_setup(tmp_path: Path, *, request_id: object = _SENTINEL, provider: object = "openai"):
+    """Succeeded persisted terminal at step index 5 (pre-threshold for the Issue #373 gate)."""
+    workflow = six_step_definition()
+    state_model = WorkflowExecutionState(
+        "w", "succeeded", "five", 5, "f",
+        tuple(_SIX_STEP_IDS[:5]), None,
+    )
+    events = [
+        predecessor_event(step_id, position, output_text="" if position in (2,) else "output")
+        for position, step_id in enumerate(_SIX_STEP_IDS[:4], 1)
+    ]
+    events[3] = predecessor_event("four", 4, provider="openai", request_id=None, output_text="")
+    resolved = "request-five" if request_id is _SENTINEL else request_id
+    events.append(RuntimeStepEvent(
+        "step_succeeded", "w", "five", 5, "f", "running", "succeeded",
+        provider, None, "response-five", resolved, "output-five", None,
+    ))
+    state_bytes = serialize_workflow_execution_state_json(state_model).encode("utf-8")
+    event_bytes = "".join(serialize_runtime_step_event_jsonl(event) for event in events).encode("utf-8")
+    terminal_bytes = serialize_runtime_step_event_jsonl(events[-1]).encode("utf-8")
+    state, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    return state, events_path, WorkflowExecutionPersistenceResult(state, events_path, len(state_bytes), len(terminal_bytes)), workflow, state_bytes, event_bytes
 
 
 def test_phase155_succeeded_predecessor_empty_output_delegates_once(tmp_path: Path) -> None:
@@ -619,5 +646,75 @@ def test_malformed_returns_call_phase79_once_and_never_retry(tmp_path: Path, bad
     with pytest.raises(PersistedOutcomeClassificationRoutingPhaseBridgeCycleReentryContinuationCompatibilityError):
         route_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase79_function=phase79)
     assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_issue373_succeeded_terminal_none_request_id_openai_delegates_once(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = setup_six(
+        tmp_path, "succeeded", terminal_request_id=None, terminal_provider="openai"
+    )
+    expected = six_step_outcome("succeeded")
+    calls: list[tuple[object, ...]] = []
+
+    def phase79(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    returned = route_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase79_function=phase79)
+    assert returned is expected and calls == [(result, workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_issue373_succeeded_terminal_none_request_id_non_openai_rejected_before_dependency(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = setup_six(
+        tmp_path, "succeeded", terminal_request_id=None, terminal_provider="other"
+    )
+    calls = 0
+
+    def phase79(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        pytest.fail("Phase 79 must not be called")
+
+    with pytest.raises(PersistedOutcomeClassificationRoutingPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase79_function=phase79)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_issue373_pre_threshold_index_five_none_request_id_rejected_before_dependency(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = five_index_terminal_setup(
+        tmp_path, request_id=None, provider="openai"
+    )
+    calls = 0
+
+    def phase79(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        pytest.fail("Phase 79 must not be called")
+
+    with pytest.raises(PersistedOutcomeClassificationRoutingPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase79_function=phase79)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+
+def test_issue373_failed_terminal_none_request_id_rejected_before_dependency(tmp_path: Path) -> None:
+    state, events, result, workflow, before_state, before_events = setup_six(
+        tmp_path, "failed", terminal_request_id=None, terminal_provider="openai"
+    )
+    calls = 0
+
+    def phase79(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        pytest.fail("Phase 79 must not be called")
+
+    with pytest.raises(PersistedOutcomeClassificationRoutingPhaseBridgeCycleReentryContinuationCompatibilityError) as caught:
+        route_persisted_outcome_classification_routing_phase_bridge_cycle_reentry_continuation(result, workflow, state, events, phase79_function=phase79)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert calls == 0
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
