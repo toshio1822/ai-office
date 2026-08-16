@@ -51,7 +51,11 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.invocation import (
+    ModelInvocationFailure,
+    ModelInvocationRequest,
+    ModelInvocationSuccess,
+)
 from ai_office.runtime import (
     RuntimeStepEvent,
     StepRuntimeExecutionFailure,
@@ -343,21 +347,26 @@ def _valid_phase176_output(
         return False
     next_step = workflow.steps[index]
     expected_completed = tuple(step.id for step in workflow.steps[:index])
+    if type(request) is not ModelInvocationRequest:
+        return False
+    if type(running) is not WorkflowExecutionState:
+        return False
     try:
         state_bytes = state.read_bytes()
         loaded = load_workflow_execution_state(state)
+        expected = serialize_workflow_execution_state_json(running).encode("utf-8")
     except Exception:
         return False
-    expected = serialize_workflow_execution_state_json(running).encode("utf-8")
     return (
         type(employee) is EmployeeDefinition
-        and type(request) is ModelInvocationRequest
+        and result.workflow_id == workflow.id
+        and result.step_id == workflow.steps[index - 1].id
+        and result.employee_id == workflow.steps[index - 1].employee
         and request.model == employee.model
         and request.system_instructions == employee.instructions
         and request.task_instructions == next_step.instructions
         and type(request.allowed_tools) is tuple
         and request.allowed_tools == tuple(employee.allowed_tools)
-        and type(running) is WorkflowExecutionState
         and running.workflow_id == workflow.id
         and running.status == "running"
         and running.current_step_id == next_step.id
@@ -386,16 +395,21 @@ def _valid_phase176_event_history(
     Requires exactly ``result.step_index`` JSONL records, each an exact
     succeeded runtime event whose workflow / step / index / employee linkage
     matches the corresponding workflow step, with running→succeeded transition
-    and no failure category.  Phase 176's full terminal-history validator is
-    not duplicated here.
+    and no failure category.  The just-finished event must exactly match the
+    original runtime success (provider / response / request / output / no
+    message).  Phase 176's full terminal-history validator is not duplicated
+    here.
     """
+    invocation = result.invocation_result
+    if type(invocation) is not ModelInvocationSuccess:
+        return False
     try:
         lines = [
             line
             for line in events.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
     if len(lines) != result.step_index:
         return False
@@ -415,6 +429,14 @@ def _valid_phase176_event_history(
             or event.previous_status != "running"
             or event.next_status != "succeeded"
             or event.failure_category is not None
+        ):
+            return False
+        if position == result.step_index and (
+            event.provider != invocation.provider
+            or event.response_id != invocation.response_id
+            or event.request_id != invocation.request_id
+            or event.output_text != invocation.text
+            or event.message is not None
         ):
             return False
     return True
@@ -455,6 +477,9 @@ def _valid_workflow_complete(
     return (
         type(result.step_index) is int
         and result.step_index == len(workflow.steps)
+        and result.workflow_id == workflow.id
+        and result.step_id == workflow.steps[result.step_index - 1].id
+        and result.employee_id == workflow.steps[result.step_index - 1].employee
         and value.decision == "workflow_complete"
         and value.workflow_id == workflow.id
         and value.current_step_id == result.step_id
@@ -476,8 +501,17 @@ def _valid_persisted_failure(
     """Exact runtime-failure stop: persisted_failure with exact linkage / category."""
     if type(value) is not PersistedExecutionOutcome:
         return False
+    if type(result.invocation_result) is not ModelInvocationFailure:
+        return False
+    index = result.step_index
+    if type(index) is not int or not 1 <= index <= len(workflow.steps):
+        return False
+    current_step = workflow.steps[index - 1]
     return (
         value.outcome == "persisted_failure"
+        and result.workflow_id == workflow.id
+        and result.step_id == current_step.id
+        and result.employee_id == current_step.employee
         and value.workflow_id == workflow.id
         and value.current_step_id == result.step_id
         and type(value.current_step_index) is int
@@ -508,13 +542,16 @@ def _valid_phase155_output(
     running = start.running_state
     if type(running) is not WorkflowExecutionState or running.status != "running":
         return False
-    return is_valid_step_runtime_execution_result(
-        value,
-        workflow_id=workflow.id,
-        step_id=running.current_step_id,
-        step_index=running.current_step_index,
-        employee_id=running.current_employee_id,
-    )
+    try:
+        return is_valid_step_runtime_execution_result(
+            value,
+            workflow_id=workflow.id,
+            step_id=running.current_step_id,
+            step_index=running.current_step_index,
+            employee_id=running.current_employee_id,
+        )
+    except Exception:
+        return False
 
 
 def _capture_targets(state: Path, events: Path) -> tuple[bytes, bytes]:

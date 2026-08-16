@@ -218,18 +218,30 @@ def canonical_running_setup(
     }
 
 
-def terminal_history_bytes(wf: WorkflowDefinition, index: int) -> bytes:
+def terminal_history_bytes(
+    wf: WorkflowDefinition, index: int, request_id_none: bool = False
+) -> bytes:
     """Committed Phase-176 terminal history through ``index`` as JSONL bytes.
 
-    Mirrors ``canonical_running_setup`` provenance: the just-finished step
-    (``index``) and its immediate predecessor (``index - 1``) carry
-    output_text="" with request_id=None; indices 2..4 carry empty output;
-    index 1 is the normal predecessor.
+    The just-finished step (``index``) exactly matches the runtime result
+    invocation (provider / response / request / output / no message); its
+    immediate predecessor (``index - 1``) carries output_text="" with
+    request_id=None; indices 2..4 carry empty output; index 1 is the normal
+    predecessor.
     """
     events = []
     for position in range(1, index + 1):
         step = wf.steps[position - 1]
-        if position in (index - 1, index):
+        if position == index:
+            events.append(
+                predecessor_event(
+                    step.id,
+                    position,
+                    output_text="output",
+                    request_id=None if request_id_none else f"request-{step.id}",
+                )
+            )
+        elif position == index - 1:
             events.append(
                 predecessor_event(step.id, position, output_text="", request_id=None)
             )
@@ -637,7 +649,7 @@ def test_prepared_execution_success_route_exact_stage_order_and_contract(
         phase176_calls.append((res, wf_value, approval_value, employee_value, sp, ep))
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         return phase147_function(start, wf_value, employee_value, sp, ep)
@@ -694,7 +706,7 @@ def test_prepared_execution_success_route_exact_stage_order_and_contract(
     assert phase155_args[8] is execution_approval
     assert phase155_args[9] is transport
     assert Path(values["state_path"]).read_bytes() == state_bytes  # type: ignore[arg-type]
-    assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6)  # type: ignore[arg-type]
+    assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6, request_id_none=True)  # type: ignore[arg-type]
 
 
 def test_prepared_execution_failure_route_exact_return_contract(
@@ -726,7 +738,7 @@ def test_prepared_execution_failure_route_exact_return_contract(
     ) -> object:
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         return phase147_function(start, wf_value, employee_value, sp, ep)
@@ -1230,6 +1242,45 @@ def test_malformed_phase176_return_or_missing_capture_phase176_contract(
     assert Path(values["state_path"]).read_bytes() == state_bytes  # type: ignore[arg-type]
     assert Path(values["events_path"]).read_bytes() == wrong_transition_bytes  # type: ignore[arg-type]
 
+    # Malformed committed event history: invalid UTF-8 bytes must classify as
+    # phase176_contract (no leaked UnicodeDecodeError), Phase 155 zero calls,
+    # and the written bytes are not rolled back.
+    invalid_utf8_bytes = b"\xff\xfe invalid-utf8"
+
+    def invalid_utf8_phase176(
+        res: object,
+        wf_value: object,
+        approval_value: object,
+        employee_value: object,
+        sp: object,
+        ep: object,
+        **kwargs: object,
+    ) -> object:
+        Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
+        Path(ep).write_bytes(invalid_utf8_bytes)  # type: ignore[arg-type]
+        return RunningStatePersistenceResult(len(state_bytes))
+
+    assert_classification(
+        lambda: phase177(
+            result,
+            wf,
+            None,
+            employee,
+            values["state_path"],
+            values["events_path"],
+            None,
+            None,
+            None,
+            None,
+            phase176_function=invalid_utf8_phase176,  # type: ignore[arg-type]
+            phase155_function=phase155_stub,  # type: ignore[arg-type]
+        ),
+        "phase176_contract",
+    )
+    assert len(phase155_calls) == 0
+    assert Path(values["state_path"]).read_bytes() == state_bytes  # type: ignore[arg-type]
+    assert Path(values["events_path"]).read_bytes() == invalid_utf8_bytes  # type: ignore[arg-type]
+
 
 def test_capture_contract_narrowness_phase176_contract(tmp_path: Path) -> None:
     values = canonical_running_setup(tmp_path, steps=7, current=6)
@@ -1256,7 +1307,7 @@ def test_capture_contract_narrowness_phase176_contract(tmp_path: Path) -> None:
     ) -> object:
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         phase147_function(start, wf_value, employee_value, sp, ep)
@@ -1293,7 +1344,7 @@ def test_capture_contract_narrowness_phase176_contract(tmp_path: Path) -> None:
     ) -> object:
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         return phase147_function("not-a-start", wf_value, employee_value, sp, ep)
@@ -1317,6 +1368,57 @@ def test_capture_contract_narrowness_phase176_contract(tmp_path: Path) -> None:
         "phase176_contract",
     )
     assert len(phase155_calls) == 0
+
+    # Malformed exact captured starts: an exact PreparedStepExecutionStart
+    # whose request / running_state is not the exact type must classify as
+    # phase176_contract (no leaked AttributeError/TypeError), Phase 155 zero
+    # calls, and the written bytes are not rolled back.
+    malformed_captured_starts = [
+        replace(start, request="not-a-request"),
+        replace(start, running_state="not-a-state"),
+        replace(start, request=None),  # type: ignore[arg-type]
+    ]
+    for malformed_start in malformed_captured_starts:
+
+        def malformed_capture_phase176(
+            res: object,
+            wf_value: object,
+            approval_value: object,
+            employee_value: object,
+            sp: object,
+            ep: object,
+            **kwargs: object,
+        ) -> object:
+            Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
+            Path(ep).write_bytes(
+                terminal_history_bytes(wf, result.step_index, request_id_none=True)
+            )  # type: ignore[arg-type]
+            phase147_function = kwargs["phase147_function"]
+            return phase147_function(
+                malformed_start, wf_value, employee_value, sp, ep
+            )
+
+        assert_classification(
+            lambda: phase177(
+                result,
+                wf,
+                None,
+                employee,
+                values["state_path"],
+                values["events_path"],
+                None,
+                None,
+                None,
+                None,
+                phase176_function=malformed_capture_phase176,  # type: ignore[arg-type]
+                phase147_function=stub_phase147,  # type: ignore[arg-type]
+                phase155_function=phase155_stub,  # type: ignore[arg-type]
+            ),
+            "phase176_contract",
+        )
+        assert len(phase155_calls) == 0
+        assert Path(values["state_path"]).read_bytes() == state_bytes  # type: ignore[arg-type]
+        assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, result.step_index, request_id_none=True)  # type: ignore[arg-type]
 
     wrong_state = serialize_workflow_execution_state_json(
         replace(start.running_state, current_step_id="step-6", current_step_index=6)
@@ -1420,7 +1522,7 @@ def test_phase155_recognized_safe_error_identity_restored_to_committed(
     ) -> object:
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         return phase147_function(start, wf_value, employee_value, sp, ep)
@@ -1451,7 +1553,7 @@ def test_phase155_recognized_safe_error_identity_restored_to_committed(
         )
     assert exc.value is safe_error
     assert Path(values["state_path"]).read_bytes() == state_bytes  # type: ignore[arg-type]
-    assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6)  # type: ignore[arg-type]
+    assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6, request_id_none=True)  # type: ignore[arg-type]
 
 
 def test_phase155_unexpected_exception_restored_then_dependency_error(
@@ -1480,7 +1582,7 @@ def test_phase155_unexpected_exception_restored_then_dependency_error(
     ) -> object:
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         return phase147_function(start, wf_value, employee_value, sp, ep)
@@ -1511,7 +1613,7 @@ def test_phase155_unexpected_exception_restored_then_dependency_error(
     assert exc.value.detail.classification == "dependency_error"
     assert "phase155-secret" not in str(exc.value)
     assert Path(values["state_path"]).read_bytes() == state_bytes  # type: ignore[arg-type]
-    assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6)  # type: ignore[arg-type]
+    assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6, request_id_none=True)  # type: ignore[arg-type]
 
 
 def test_malformed_phase155_return_phase155_contract_restored(
@@ -1540,7 +1642,7 @@ def test_malformed_phase155_return_phase155_contract_restored(
     ) -> object:
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         return phase147_function(start, wf_value, employee_value, sp, ep)
@@ -1548,14 +1650,15 @@ def test_malformed_phase155_return_phase155_contract_restored(
     def stub_phase147(*args: object, **kwargs: object) -> object:
         return persistence
 
-    malformed_success = runtime_success(wf, 6, request_id_none=True)
-    malformed_failure = runtime_failure(wf, 6)
+    malformed_success = step7_success(wf)
+    malformed_failure = step7_failure(wf)
     malformed_returns = [
         None,
         "garbage",
         object(),
         RunningStatePersistenceResult(0),
-        # Malformed invocation results: identity intact, invocation broken.
+        # Malformed invocation results: step-7 identity intact, invocation
+        # broken (the captured start is the step-7 running state).
         replace(
             malformed_success,
             invocation_result=replace(
@@ -1611,6 +1714,12 @@ def test_malformed_phase155_return_phase155_contract_restored(
         replace(
             malformed_failure,
             invocation_result=replace(
+                malformed_failure.invocation_result, category=["unhashable"]  # type: ignore[arg-type]
+            ),
+        ),
+        replace(
+            malformed_failure,
+            invocation_result=replace(
                 malformed_failure.invocation_result, message=""
             ),
         ),
@@ -1651,7 +1760,7 @@ def test_malformed_phase155_return_phase155_contract_restored(
             )
         assert exc.value.detail.classification == "phase155_contract"
         assert Path(values["state_path"]).read_bytes() == state_bytes  # type: ignore[arg-type]
-        assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6)  # type: ignore[arg-type]
+        assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6, request_id_none=True)  # type: ignore[arg-type]
 
 
 def test_phase155_valid_return_with_unauthorized_mutation_committed_mutation(
@@ -1681,7 +1790,7 @@ def test_phase155_valid_return_with_unauthorized_mutation_committed_mutation(
     ) -> object:
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         return phase147_function(start, wf_value, employee_value, sp, ep)
@@ -1718,7 +1827,7 @@ def test_phase155_valid_return_with_unauthorized_mutation_committed_mutation(
             )
         assert exc.value.detail.classification == "committed_mutation"
         assert Path(values["state_path"]).read_bytes() == state_bytes  # type: ignore[arg-type]
-        assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6)  # type: ignore[arg-type]
+        assert Path(values["events_path"]).read_bytes() == terminal_history_bytes(wf, 6, request_id_none=True)  # type: ignore[arg-type]
 
 
 def test_preparation_execution_inputs_not_prevalidated_phase176_runs_first(
@@ -1747,7 +1856,7 @@ def test_preparation_execution_inputs_not_prevalidated_phase176_runs_first(
         phase176_calls.append((res, wf_value, approval_value, employee_value, sp, ep))
         Path(sp).write_bytes(state_bytes)  # type: ignore[arg-type]
         Path(ep).write_bytes(
-            terminal_history_bytes(wf, result.step_index)
+            terminal_history_bytes(wf, result.step_index, request_id_none=True)
         )  # type: ignore[arg-type]
         phase147_function = kwargs["phase147_function"]
         return phase147_function(start, wf_value, employee_value, sp, ep)
@@ -1824,7 +1933,7 @@ def test_rollback_failure_after_phase155_mutation_both_restorations_once(
     persistence = RunningStatePersistenceResult(len(state_bytes))
     state_path = Path(values["state_path"])  # type: ignore[arg-type]
     events_path = Path(values["events_path"])  # type: ignore[arg-type]
-    committed_events = terminal_history_bytes(wf, 6)
+    committed_events = terminal_history_bytes(wf, 6, request_id_none=True)
 
     def stub_phase176(
         res: object,
@@ -1836,7 +1945,7 @@ def test_rollback_failure_after_phase155_mutation_both_restorations_once(
         **kwargs: object,
     ) -> object:
         sp.write_bytes(state_bytes)  # type: ignore[arg-type]
-        ep.write_bytes(terminal_history_bytes(wf, result.step_index))
+        ep.write_bytes(terminal_history_bytes(wf, result.step_index, request_id_none=True))
         phase147_function = kwargs["phase147_function"]
         return phase147_function(start, wf_value, employee_value, sp, ep)
 
