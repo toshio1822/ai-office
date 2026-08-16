@@ -234,6 +234,39 @@ def test_issue373_six_step_step6_success_none_request_id_exact_workflow_complete
     result = runtime_success_none(wf, 6)
     state_path = values["state_path"]  # type: ignore[arg-type]
     events_path = values["events_path"]  # type: ignore[arg-type]
+    # Expected step-6 succeeded terminal bytes, built before the call from the
+    # 5-event prehistory and the input StepRuntimeExecutionSuccess.
+    expected_state = WorkflowExecutionState(
+        "w",
+        "succeeded",
+        "step-6",
+        6,
+        "e6",
+        tuple(step.id for step in wf.steps[:6]),
+        None,
+    )
+    expected_state_bytes = serialize_workflow_execution_state_json(
+        expected_state
+    ).encode("utf-8")
+    expected_terminal = RuntimeStepEvent(
+        "step_succeeded",
+        "w",
+        "step-6",
+        6,
+        "e6",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        "response-step-6",
+        None,
+        "output",
+        None,
+    )
+    expected_events_bytes = values["events_before"]  # type: ignore[arg-type]
+    expected_events_bytes += serialize_runtime_step_event_jsonl(
+        expected_terminal
+    ).encode("utf-8")
     out = phase176(result, wf, None, None, state_path, events_path)
     assert type(out) is WorkflowProgressionDecision
     assert out.decision == "workflow_complete"
@@ -245,6 +278,10 @@ def test_issue373_six_step_step6_success_none_request_id_exact_workflow_complete
     assert out.next_step_index is None
     assert out.next_employee_id is None
     assert out.reason == "last_step_succeeded"
+    # Exact byte preservation: the durable step-6 succeeded terminal must be
+    # exactly the expected bytes, with no rewriting after completion routing.
+    assert state_path.read_bytes() == expected_state_bytes
+    assert events_path.read_bytes() == expected_events_bytes
     final_state = load_workflow_execution_state(state_path)
     assert final_state.status == "succeeded"
     assert final_state.current_step_index == 6
