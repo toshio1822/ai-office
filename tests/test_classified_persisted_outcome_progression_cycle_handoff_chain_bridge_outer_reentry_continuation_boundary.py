@@ -1542,3 +1542,139 @@ def test_phase155_six_step_immediate_output_non_string_is_rejected_before_phase1
         ),
     )
     reject(data_set, "terminal_contract")
+
+
+def accumulated_workflow() -> WorkflowDefinition:
+    """Eight-step workflow exposing positions 5 and 6 as accumulated history."""
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{index}",
+                    "name": f"Step {index}",
+                    "employee": "e",
+                    "instructions": f"step-{index}",
+                }
+                for index in range(1, 9)
+            ],
+        }
+    )
+
+
+def accumulated_none_data_set(
+    tmp_path: Path,
+    status: str,
+    *,
+    five_provider: object = "openai",
+    six_provider: object = "openai",
+) -> dict[str, object]:
+    """Terminal step-7 targets with accumulated None request ids.
+
+    Positions 1-4 use the default non-openai predecessors; positions 5 and 6
+    carry accumulated None request ids with the openai provider by default.
+    """
+    data_set = values(
+        tmp_path,
+        definition=accumulated_workflow(),
+        index=7,
+        status=status,
+    )
+    replace_predecessor(
+        data_set,
+        5,
+        predecessor_event(
+            data_set["workflow"].steps[4],  # type: ignore[arg-type]
+            5,
+            provider=five_provider,
+            request_id=None,
+        ),
+    )
+    replace_predecessor(
+        data_set,
+        6,
+        predecessor_event(
+            data_set["workflow"].steps[5],  # type: ignore[arg-type]
+            6,
+            provider=six_provider,
+            request_id=None,
+        ),
+    )
+    return data_set
+
+
+def test_accumulated_none_request_id_positions_five_six_delegates_once(
+    tmp_path: Path,
+) -> None:
+    data_set = accumulated_none_data_set(tmp_path, "succeeded")
+    expected = expected_decision(data_set)
+    seen: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    assert call(data_set, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                data_set[key]
+                for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+    unchanged(data_set)
+
+
+def test_accumulated_none_request_id_positions_five_six_failure_stop_identity(
+    tmp_path: Path,
+) -> None:
+    data_set = accumulated_none_data_set(tmp_path, "failed")
+    set_before(data_set)
+    result = data_set["result"]
+    assert (
+        public_phase144(
+            result,
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+            phase136_function=lambda *_: None,
+        )
+        is result
+    )
+    unchanged(data_set)
+
+
+def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase136(
+    tmp_path: Path,
+) -> None:
+    data_set = accumulated_none_data_set(tmp_path, "succeeded", five_provider="other")
+    reject(data_set, "terminal_contract")
+
+
+def test_accumulated_none_position_four_remains_rejected_before_phase136(
+    tmp_path: Path,
+) -> None:
+    data_set = values(
+        tmp_path,
+        definition=accumulated_workflow(),
+        index=7,
+        status="succeeded",
+    )
+    replace_predecessor(
+        data_set,
+        4,
+        predecessor_event(
+            data_set["workflow"].steps[3],  # type: ignore[arg-type]
+            4,
+            provider="other",
+            request_id=None,
+        ),
+    )
+    reject(data_set, "terminal_contract")

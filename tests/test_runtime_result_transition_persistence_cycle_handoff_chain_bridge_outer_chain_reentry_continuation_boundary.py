@@ -1968,3 +1968,150 @@ def test_real_default_failure_persists_through_actual_phase30(
     _assert_real_default_persisted(
         values, result, state_before, events_before, success=False
     )
+
+
+def accumulated_workflow() -> WorkflowDefinition:
+    """Eight-step workflow exposing positions 5 and 6 as accumulated history."""
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{index}",
+                    "name": f"Step {index}",
+                    "employee": "e",
+                    "instructions": f"step-{index}",
+                }
+                for index in range(1, 9)
+            ],
+        }
+    )
+
+
+def setup_accumulated(
+    tmp_path: Path,
+    *,
+    five_provider: object = "openai",
+    six_provider: object = "openai",
+) -> dict[str, object]:
+    """Running step-7 state with six predecessors.
+
+    Positions 1-4 use the default non-openai predecessors; positions 5 and 6
+    carry accumulated None request ids with the openai provider by default.
+    """
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    wf = accumulated_workflow()
+    state = WorkflowExecutionState(
+        "w",
+        "running",
+        "step-7",
+        7,
+        "e",
+        tuple(step.id for step in wf.steps[:6]),
+        None,
+    )
+    lines = []
+    for position, step in enumerate(wf.steps[:6], 1):
+        if position >= 5:
+            provider = five_provider if position == 5 else six_provider
+            lines.append(
+                serialize_runtime_step_event_jsonl(
+                    predecessor_event(step.id, position, provider, request_id=None)
+                )
+            )
+        else:
+            lines.append(
+                serialize_runtime_step_event_jsonl(
+                    predecessor_event(step.id, position, "other")
+                )
+            )
+    events_path.write_text("".join(lines), encoding="utf-8")
+    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
+    result = StepRuntimeExecutionSuccess(
+        "w",
+        "step-7",
+        7,
+        "e",
+        ModelInvocationSuccess(
+            "openai", "response", "request", "completed", ("out",), "out"
+        ),
+    )
+    return {
+        "result": result,
+        "workflow": wf,
+        "state_path": state_path,
+        "events_path": events_path,
+    }
+
+
+def test_accumulated_none_request_id_positions_five_six_success_delegates_once(
+    tmp_path: Path,
+) -> None:
+    values = setup_accumulated(tmp_path)
+    seen: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        nonlocal expected
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(values, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                values[key]
+                for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+
+
+def test_accumulated_none_request_id_positions_five_six_failure_route_delegates_once(
+    tmp_path: Path,
+) -> None:
+    values = setup_accumulated(tmp_path)
+    values["result"] = StepRuntimeExecutionFailure(
+        "w",
+        "step-7",
+        7,
+        "e",
+        ModelInvocationFailure(
+            "openai", "api_error", "safe failure", "request", 500, None, None
+        ),
+    )
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(values, dependency) is expected
+
+
+def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase142(
+    tmp_path: Path,
+) -> None:
+    values = setup_accumulated(tmp_path, five_provider="other")
+    reject_unchanged(values, "runtime_contract")
+
+
+def test_accumulated_none_position_four_remains_rejected_before_phase142(
+    tmp_path: Path,
+) -> None:
+    values = setup_accumulated(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("step-4", 4, "other", request_id=None)
+    )
+    events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
+    reject_unchanged(values, "runtime_contract")

@@ -1149,3 +1149,155 @@ def test_stop_route_empty_predecessor_output_text_remains_rejected(tmp_path: Pat
     assert caught.value.detail.classification == "terminal_contract"
     assert calls == 0
     assert (data["state_path"].read_bytes(), data["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def accumulated_workflow() -> WorkflowDefinition:
+    """Eight-step workflow exposing positions 5 and 6 as accumulated history."""
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{index}",
+                    "name": f"Step {index}",
+                    "employee": "e",
+                    "instructions": f"step-{index}",
+                }
+                for index in range(1, 9)
+            ],
+        }
+    )
+
+
+def write_accumulated_targets(
+    tmp_path: Path,
+    status: str,
+    *,
+    five_provider: object = "openai",
+    six_provider: object = "openai",
+) -> tuple[Path, Path, bytes, bytes]:
+    """Terminal step-7 targets with six predecessors.
+
+    Positions 1-4 use the default non-openai predecessors; positions 5 and 6
+    carry accumulated None request ids with the openai provider by default.
+    """
+    wf = accumulated_workflow()
+    state = WorkflowExecutionState(
+        "w",
+        status,
+        "step-7",
+        7,
+        "e",
+        (
+            tuple(step.id for step in wf.steps[:7])
+            if status == "succeeded"
+            else tuple(step.id for step in wf.steps[:6])
+        ),
+        None if status == "succeeded" else "api_error",
+    )
+    predecessors = []
+    for index, step in enumerate(wf.steps[:6], 1):
+        provider = "other"
+        changes: dict[str, object] = {}
+        if index >= 5:
+            provider = five_provider if index == 5 else six_provider
+            changes["request_id"] = None
+        predecessors.append(
+            predecessor_event(step.id, index, "e", provider, **changes)
+        )
+    terminal_changes: dict[str, object] = {
+        "step_id": "step-7",
+        "step_index": 7,
+        "employee_id": "e",
+        "request_id": "request-step-7",
+    }
+    if status == "succeeded":
+        terminal_changes.update(
+            response_id="response-step-7", output_text="output-step-7"
+        )
+    terminal = terminal_event(status, **terminal_changes)
+    state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
+    event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+        for event in (*predecessors, terminal)
+    )
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    return state_path, events_path, state_bytes, event_bytes
+
+
+def accumulated_values(
+    tmp_path: Path,
+    status: str = "succeeded",
+    *,
+    five_provider: object = "openai",
+    six_provider: object = "openai",
+) -> dict[str, object]:
+    state, events, before_state, before_events = write_accumulated_targets(
+        tmp_path,
+        status,
+        five_provider=five_provider,
+        six_provider=six_provider,
+    )
+    return {
+        "result": persistence_result(state, events),
+        "workflow": accumulated_workflow(),
+        "state_path": state,
+        "events_path": events,
+        "before_state": before_state,
+        "before_events": before_events,
+    }
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_accumulated_none_request_id_positions_five_six_delegates_once(
+    tmp_path: Path, status: str
+) -> None:
+    data = accumulated_values(tmp_path, status)
+    expected = PersistedExecutionOutcome(
+        "persisted_success" if status == "succeeded" else "persisted_failure",
+        "w",
+        "step-7",
+        7,
+        "e",
+        None if status == "succeeded" else "api_error",
+    )
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        calls.append(args)
+        return expected
+
+    assert call(data, dependency) is expected
+    assert calls == [
+        (
+            data["result"],
+            data["workflow"],
+            data["state_path"],
+            data["events_path"],
+        )
+    ]
+    assert_unchanged(data)
+
+
+def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase128(
+    tmp_path: Path,
+) -> None:
+    data = accumulated_values(tmp_path, five_provider="other")
+    reject(data, "persistence_contract")
+
+
+def test_accumulated_none_position_four_remains_rejected_before_phase128(
+    tmp_path: Path,
+) -> None:
+    data = accumulated_values(tmp_path)
+    events = data["events_path"]
+    lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("step-4", 4, "e", "other", request_id=None)
+    ).encode()
+    events.write_bytes(b"".join(lines[:3]) + replacement + b"".join(lines[4:]))  # type: ignore[union-attr]
+    reject(data, "persistence_contract")
