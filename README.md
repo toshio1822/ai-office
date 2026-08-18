@@ -3810,3 +3810,54 @@ base **11,932** → Phase144 +2 / Phase172 +2 / real regression +0 → **11,936*
 7. `docs/architecture.md` — 同一の architecture/ownership 明確化
 
 8番目のファイルが必要になった場合は STOP して報告する。
+
+## Phase 178: Post-Runtime → Persisted Running Execution → Progression Orchestration Boundary
+
+Phase 178 は、**公開 Phase 177 の結果（post-runtime persisted running execution）を、そのまま公開 Phase 172 の post-runtime progression boundary に合成する、Phase 177 に続く次の integration boundary** です。compatibility repair ではなく、既存の公開境界（Phase 177 と Phase 172）を直列接続し、それぞれを**ちょうど 1 回ずつ**呼びます。**workflow runner ではありません**。
+
+```text
+finished current-step Phase-155 runtime result (StepRuntimeExecutionSuccess / Failure, または stop)
+    ↓ Phase 177 post-runtime → persisted running execution（Phase 176 → capture Phase 147 → Phase 155）
+    ↓ StepRuntimeExecutionSuccess / Failure / exact stop object（workflow_complete / persisted_failure）
+    ↓ Phase 172 post-runtime → persistence → classification → progression（Phase 161 → Phase 143 → Phase 144）
+    ↓ WorkflowProgressionDecision（prepare_next_step / workflow_complete）または PersistedExecutionOutcome（persisted_failure）
+```
+
+### 核心契約（stage ownership / thin durable proof / no outer rollback）
+
+- **Phase 177 は durable running-state commit point を所有する**: Phase 178 は Phase 177 stage の失敗・不正戻り値に対して pre-Phase177 への巻き戻しを行わない（post-Phase177 running snapshot を消さない）
+- **Phase 177 成功後の target bytes を post-Phase177 committed running snapshot とする**
+- **stop 入力（exact `workflow_complete` / `persisted_failure`）は Phase 172 を zero calls で素通り**: Phase 177 が exact identity で返した stop object をそのまま返し、target bytes が不変であることを確認するだけ（変更検知時は `phase177_contract` で fail、restore はしない）
+- **runtime ルートは Phase 177 出力を thin 検証した後に Phase 172 へ委譲**: Phase 177 出力は post-Phase177 running snapshot（status `running`・current step/index/employee が一致）と整合する exact `StepRuntimeExecutionSuccess` / `Failure` であること、committed history は `step_index - 1` 件の workflow-linked succeeded events であることを確認。Phase 177 の public runtime-result validator semantics（`is_valid_step_runtime_execution_result`）が authoritative
+- **Phase 172 呼び出しは 4 positional のみ**（`phase172_function(value, workflow, state_path, events_path)`。keyword-only はデフォルトに委譲）: `value` は Phase 177 の出力（実行済み step の runtime result）であり、入力 `result` ではない
+- **Phase 172 は durable terminal commit point を所有する**: Phase 178 は Phase 172 stage の失敗・不正戻り値に対して restore を行わない
+- **thin durable target proof**: Phase 172 実行後、post-Phase177 running event bytes が prefix として byte-for-byte 保存され、ちょうど 1 件の terminal event（`serialize_runtime_step_event_jsonl` と一致）だけが追加され、final state と terminal event が Phase 177 出力の step / workflow に正確にリンクしていることを確認（Phase 161 / 143 / 144 を full reimplement しない）
+- **progression proof**: success 非最終 → exact `prepare_next_step`（reason `next_step_available`・next は `workflow.steps[step_index]`）、success 最終 → exact `workflow_complete`（next 3 fields None・reason `last_step_succeeded`）、failure → exact `persisted_failure`（`failure_category == invocation.category`）
+- 各 stage ちょうど 1 回、retry・loop・bypass・自動継続なし。返された decision / outcome を超える finalize はしない
+
+### エラー分類（9 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase177_contract` / `phase172_contract` / `dependency_error`
+
+- Phase 177 stage の既存 safe error（Phase 176 / 175 / 173 / 172 / 145 / 146 / 138 / 147 / 139 / 155 / 141 error type + Phase 177 CompatibilityError）は同一 object を identity で re-raise（Phase 172 呼び出し 0 回・write なし）
+- Phase 172 stage の既存 safe error（Phase 161 / 143 / 144 error type + Phase 172 CompatibilityError）は同一 object を identity で re-raise（no outer rollback）
+- 予期しない例外は `dependency_error` に sanitize（detail-safe 固定メッセージ）、不正戻り値・不正 durable target は `phase177_contract` / `phase172_contract`
+- stop 入力の narrowing: `prepare_next_step` decision / `persisted_success` outcome は `result_type` で reject（stop 入力は exact `workflow_complete` / `persisted_failure` のみ）
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_orchestration_boundary.py` — Phase 178 production（新規）
+2. `tests/test_runtime_result_to_persisted_running_execution_progression_orchestration_boundary.py` — 新規 +20 tests（focused 16 + real-default 4）
+3. `src/ai_office/engine/__init__.py` — Phase 178 public exports
+4. `README.md` — 本節
+5. `docs/architecture.md` — Phase 178 architecture documentation
+
+### 非機能範囲（State explicitly）
+
+Phase 178 は以下の behavior を**一切**追加・変更しない:
+
+- Phase 177 / 176 / 175 / 173 / 172 / 161 / 143 / 144 / 155 / 147 / 139 / 141 / 138 / 146 / 145 の production を変更しない（public function + error class のみ import）
+- Phase 161 / 143 / 144 を full reimplement しない。provider-response parser を追加しない
+- 新しい runtime result の再永続化・2 回目の progression decision・別ステップの preparation / start / persistence cycle を行わない
+- retry・自動ループ / 継続・finalize・schedule・parallel・artifact persistence を行わない
+- CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない（synthetic transport のみ）
