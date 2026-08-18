@@ -1264,6 +1264,8 @@ def test_malformed_phase177_runtime_return_snapshot_history_contract(
     # Subcase 4: running snapshot with wrong workflow id.
     def wrong_workflow_id(*args: object, **kwargs: object) -> object:
         state_bytes, event_bytes = running_snapshot_bytes(wf8, 6)
+        Path(state_path).write_bytes(state_bytes)  # type: ignore[arg-type]
+        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
         loaded = load_workflow_execution_state(
             Path(state_path)  # type: ignore[arg-type]
         )
@@ -1272,7 +1274,6 @@ def test_malformed_phase177_runtime_return_snapshot_history_contract(
                 replace(loaded, workflow_id="other")
             ).encode("utf-8")
         )
-        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
         return runtime_success(wf8, 7)
 
     assert_classification(
@@ -1297,6 +1298,8 @@ def test_malformed_phase177_runtime_return_snapshot_history_contract(
     # Subcase 5: running snapshot with wrong completed step-id prefix.
     def wrong_completed_prefix(*args: object, **kwargs: object) -> object:
         state_bytes, event_bytes = running_snapshot_bytes(wf8, 6)
+        Path(state_path).write_bytes(state_bytes)  # type: ignore[arg-type]
+        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
         loaded = load_workflow_execution_state(
             Path(state_path)  # type: ignore[arg-type]
         )
@@ -1305,7 +1308,6 @@ def test_malformed_phase177_runtime_return_snapshot_history_contract(
                 replace(loaded, completed_step_ids=("s1",))
             ).encode("utf-8")
         )
-        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
         return runtime_success(wf8, 7)
 
     assert_classification(
@@ -1330,6 +1332,8 @@ def test_malformed_phase177_runtime_return_snapshot_history_contract(
     # Subcase 6: running snapshot carries a non-None failure category.
     def running_with_failure_category(*args: object, **kwargs: object) -> object:
         state_bytes, event_bytes = running_snapshot_bytes(wf8, 6)
+        Path(state_path).write_bytes(state_bytes)  # type: ignore[arg-type]
+        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
         loaded = load_workflow_execution_state(
             Path(state_path)  # type: ignore[arg-type]
         )
@@ -1338,7 +1342,6 @@ def test_malformed_phase177_runtime_return_snapshot_history_contract(
                 replace(loaded, last_failure_category="api_error")
             ).encode("utf-8")
         )
-        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
         return runtime_success(wf8, 7)
 
     assert_classification(
