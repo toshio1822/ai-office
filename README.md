@@ -3861,3 +3861,49 @@ Phase 178 は以下の behavior を**一切**追加・変更しない:
 - 新しい runtime result の再永続化・2 回目の progression decision・別ステップの preparation / start / persistence cycle を行わない
 - retry・自動ループ / 継続・finalize・schedule・parallel・artifact persistence を行わない
 - CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない（synthetic transport のみ）
+
+## Phase 179 prerequisite（Issue #386）: Preserve Accumulated Aged None Request-ID through Approved-Preparation Entry Layers
+
+Issue #386 は、Issue #380 / #383 で保存した accumulated aged-None request-ID の証明を、**approved-preparation エントリ層**（Phase 145 outer-chain / Phase 137 outer）まで延長する Phase 179 前提修復です。実 Phase 177 → 実 Phase 172 が生成する step-8 の `prepare_next_step` decision は、step-5 / step-6 に `request_id=None`（provider=`"openai"`）の predecessor 履歴を伴います。従来この証明は **approved-preparation エントリ層** で非 immediate predecessor の None request-ID が `terminal_contract` で reject され、次の phase へ渡せませんでした。
+
+### 正確な最終ルール
+
+- **prepare route 限定**: 新フラグ `allow_accumulated_openai_none`（デフォルト False）は **prepare route のみ** 有効（`allow_accumulated_openai_none=not stop`）。`workflow_complete` / `persisted_failure` の stop route では `not stop == False` のため aged None を新規に許容しない（immediate-None-only semantics 維持）
+- **accumulated rule**: `allow_accumulated_openai_none and event.request_id is None and position >= 5 and _exact_string(event.provider, "openai") and state.current_step_index >= 7` のときのみ None request-ID を許容
+  - provider が正確に `"openai"` であること（non-openai provider の None は従来どおり reject）
+  - position >= 5（位置4以前の None は依然 reject）
+  - `current_step_index >= 7`
+- **immediate None は従来どおり**: 直前1件（`position == len(prior_steps)`・index >= 6）の None 許容は維持
+- **対象は 2 production のみ**: Phase 145（outer-chain）と Phase 137（outer）。Phase 130 以下・Phase 161 / 143 / 144 / 136 etc. は変更しない
+
+### 対象2境界（production 修正）
+
+1. `progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 145
+2. `progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137
+
+### テスト
+
+- **focused テスト 各2件 × 2ファイル（計+4）**: accumulated openai None（position 5+6・provider openai）prepare route で委譲1回 + 狭さ（non-openai None reject・position 4 Nothing reject）
+- **新規実回帰テスト**: `tests/test_phase178_phase145_accumulated_request_id_none_approved_preparation_compatibility.py`（+4件: A/B/C/D。A: real Phase 178 public boundary を synthetic successful transport で実行し step5/6 request_id=None + provider=openai の accumulated 状態から exact prepare_next_step(step8) を生成、その exact result を real Phase 145 デフォルト chain（real Phase 137 → Phase 130/lower）に渡し exact PreparedWorkflowStep(step8) を得る・transport はた度1回・step8 start/persist/execute ゼロ・terminal bytes unchanged。B: non-contiguous accumulated 対照（position5 None/openai・position6 非空 request_id）で real Phase 145 チェーンが step-8 まで成功。C: inline strict prepare 否定的（position4 None reject・position5 None + non-openai reject・target bytes unchanged）。D: stop route の exact identity + bytes unchanged 維持（canonical workflow_complete / persisted_failure）+ aged-None stop reject（stop 意味論を拡張しない））
+
+### collect 不変条件
+
+base **11,956**（Phase 178 完了時）→ focused +4 + 実回帰 +4 → **11,964**
+
+### 変更ファイル（正確に7ファイル）
+
+1. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 145 production
+2. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137 production
+3. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 145 focused +2
+4. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137 focused +2
+5. `tests/test_phase178_phase145_accumulated_request_id_none_approved_preparation_compatibility.py` — 新規実回帰 +4
+6. `README.md` — 本節
+7. `docs/architecture.md` — 本 prerequisite のアーキテクチャ文書
+
+### 非機能範囲（State explicitly）
+
+- **Phase 179 本体は実装しない**（本変更は prerequisite のみ）
+- 8番目の production 変更・3境界目以降の production 修正・`__init__.py` export 追加は行わない
+- stop route の aged None 許容・position 4 以前の None 許容・non-openai の None 許容は行わない
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化は行わない
+- provider / network / paid API 呼び出しは行わない（synthetic transport のみ）
