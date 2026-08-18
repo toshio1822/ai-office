@@ -3678,7 +3678,12 @@ Phase 177は以下のbehaviorを**一切**追加・変更しない:
 
 ## Phase 178 prerequisite（Issue #380）: Accumulated Aged None Request-ID Preservation across Persistence / Classification / Progression Entry Layers
 
-Issue #380は、Phase 178（Issue #377）の前提として、**7つの境界で「蓄積された aged None request-ID」を persistence / classification / progression の各 entry 層を横断して保存できる**ようにする prerequisite です。accumulated aged None の許容は**ルート別に限定**され、境界時点の current / terminal index が **7以上**（predecessor 履歴が6件以上 = `last_position >= 6`）かつ **predecessor position >= 5** の None request-ID を、classification route（Phase 143 / 135）と `persisted_success` progression route（Phase 144 / 136）でのみ許容します。stop route（`workflow_complete` / `persisted_failure`）は aged None を新規に許容せず、既存の immediate-None-only semantics を維持します。
+Issue #380は、Phase 178（Issue #377）の前提として、**7つの境界すべて**が accumulated aged-None compatibility の対象ですが、**適用ルートは境界ごとに限定**されます。accumulated aged None の許容は、境界時点の current / terminal index が **7以上**（predecessor 履歴が6件以上 = `last_position >= 6`）かつ **predecessor position >= 5** の None request-ID に対して、以下のルートでのみ適用されます:
+
+- **Phase 161 / 142 / 134**: runtime persistence route
+- **Phase 143 / 135**: `WorkflowExecutionPersistenceResult` classification route
+- **Phase 144 / 136**: `PersistedExecutionOutcome`（`persisted_success`）progression route
+- **`workflow_complete` / `persisted_failure` stop route**: aged None を新規に許容しない（既存の immediate-None-only semantics を維持）
 
 ### 核心契約
 
