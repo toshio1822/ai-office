@@ -3726,3 +3726,44 @@ base **11,936**（Issue #383 完了時）→ Phase 178 focused 16 + real-default
 5. `docs/architecture.md` — 本節
 
 5ファイルを超える変更が必要になった場合は STOP して報告する。
+
+## Phase 179 prerequisite（Issue #386）: Preserve Accumulated Aged None Request-ID through Approved-Preparation Entry Layers
+
+Issue #386 は、Issue #380 / #383 の accumulated aged-None request-ID 保存を **approved-preparation エントリ層**（Phase 145 outer-chain / Phase 137 outer）まで延長する。実 Phase 177 → 実 Phase 172 が生成する step-8 の `prepare_next_step` decision は step-5 / step-6 の `request_id=None`（provider=`"openai"`）証明を伴い、これを Phase 145 → Phase 137 → Phase 130/lower が破壊せずに次へ渡す。
+
+### 最終ルール
+
+- 新フラグ `allow_accumulated_openai_none`（デフォルト False）。**prepare route のみ** 有効（`allow_accumulated_openai_none=not stop`）。stop route（`workflow_complete` / `persisted_failure`）では `False` のため aged None を新規に許容しない
+- accumulated 許容条件（両 boundary の `_valid_predecessor` 共通）: `allow_accumulated_openai_none and event.request_id is None and position >= 5 and _exact_string(event.provider, "openai") and state.current_step_index >= 7`
+  - provider は正確に `"openai"`（non-openai の None は従来どおり reject）
+  - position >= 5（位置4以前の None は依然 reject）
+  - `current_step_index >= 7`
+- immediate None（`position == len(prior_steps)`・index >= 6）は従来どおり
+- 対象は **2 production のみ**: Phase 145（outer-chain）・Phase 137（outer）。Phase 130 以下・Phase 161 / 143 / 144 / 136 は変更しない
+- フラグは route → `_check_terminal` → `_valid_history` → `_valid_predecessor` の順で thread される
+
+### 対象2境界（production 修正）
+
+1. `progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 145
+2. `progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137
+
+### テスト
+
+- focused 各2件 × 2ファイル（計+4）: accumulated openai None prepare route で委譲1回 + 狭さ（non-openai / position 4 reject）
+- 新規実回帰 `tests/test_phase179_prereq_accumulated_prep_entry_real_regression.py`（+4）: real A 実チェーンで step-8 準備・B stop route strict・C position 4 reject・D non-openai reject
+
+### collect 不変条件
+
+base **11,956** → focused +4 + 実回帰 +4 → **11,964**
+
+### 変更ファイル（正確に7ファイル）
+
+1. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 145 production
+2. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137 production
+3. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — focused +2
+4. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — focused +2
+5. `tests/test_phase179_prereq_accumulated_prep_entry_real_regression.py` — 新規実回帰 +4
+6. `README.md` — 本節
+7. `docs/architecture.md` — 本節
+
+7ファイルを超える変更が必要になった場合は STOP して報告する。

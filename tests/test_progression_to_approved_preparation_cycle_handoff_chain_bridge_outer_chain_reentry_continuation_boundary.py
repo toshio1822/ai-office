@@ -1432,3 +1432,122 @@ def test_prepare_index_five_immediate_predecessor_none_request_id_rejected(
     assert invoke(failed, forbidden_failed) is failed["result"]
     assert calls == 0
     unchanged(failed)
+
+
+def _accumulated_workflow(steps: int = 9) -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{position}",
+                    "name": f"Step {position}",
+                    "employee": f"e{position}",
+                    "instructions": f"step-{position}",
+                }
+                for position in range(1, steps + 1)
+            ],
+        }
+    )
+
+
+def _accumulated_value(
+    tmp_path: Path,
+    *,
+    index: int,
+    none_positions: tuple[int, ...] = (5, 6),
+    none_provider: object = "openai",
+) -> dict[str, object]:
+    """prepare route at `index` with accumulated openai None predecessors."""
+    supplied_workflow = _accumulated_workflow()
+    step = supplied_workflow.steps[index - 1]
+    immediate = index - 1
+    predecessors = tuple(
+        predecessor_event(
+            prior,
+            position,
+            provider=(
+                "openai"
+                if position in none_positions or position == immediate
+                else "other"
+            ),
+            request_id=None if position in none_positions else "request",
+        )
+        for position, prior in enumerate(supplied_workflow.steps[: index - 1], 1)
+    )
+    state = WorkflowExecutionState(
+        "w",
+        "succeeded",
+        step.id,
+        index,
+        step.employee,
+        tuple(item.id for item in supplied_workflow.steps[:index]),
+        None,
+    )
+    terminal = terminal_event(step, index, provider="openai")
+    state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
+    event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+        for event in (*predecessors, terminal)
+    )
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    result = progression(supplied_workflow, index)
+    return {
+        "result": result,
+        "workflow": supplied_workflow,
+        "approval": approval(result),
+        "employee": employee(result),
+        "state_path": state_path,
+        "events_path": events_path,
+        "before_state": state_bytes,
+        "before_events": event_bytes,
+    }
+
+
+def test_prepare_accumulated_openai_none_request_id_delegates_once(tmp_path: Path) -> None:
+    # Issue #386: accumulated aged None request-id predecessors (readable
+    # positions 5 and 6) that are openai survive the phase 145 prepare route.
+    value = _accumulated_value(tmp_path, index=8)
+    expected = prepared(value["workflow"], value["result"], employee(value["result"]))
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert invoke(value, fake) is expected
+    assert calls == 1
+    unchanged(value)
+
+
+def test_prepare_accumulated_openai_none_request_id_narrowness(tmp_path: Path) -> None:
+    # The accumulated-openai-None relaxation is only enabled on the prepare
+    # route (not stop) and only for openai providers at accumulated positions.
+    value = _accumulated_value(tmp_path, index=8)
+
+    # (a) accumulated position with provider != openai remains rejected.
+    rewrite_event(value["events_path"], 4, provider="anthropic")
+    value["before_events"] = value["events_path"].read_bytes()
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+    # restore baseline
+    rewrite_event(value["events_path"], 4, provider="openai")
+    value["before_events"] = value["events_path"].read_bytes()
+
+    # (b) a single aged non-openai None even at the terminal-adjacent position
+    # is rejected (relaxation is openai-only, position >= 5 only).
+    rewrite_event(value["events_path"], 5, provider="anthropic")
+    value["before_events"] = value["events_path"].read_bytes()
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+    rewrite_event(value["events_path"], 5, provider="openai")
+    value["before_events"] = value["events_path"].read_bytes()
+
+    # (c) accumulated None at position 4 (below threshold) remains rejected.
+    rewrite_event(value["events_path"], 3, request_id=None)
+    value["before_events"] = value["events_path"].read_bytes()
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))

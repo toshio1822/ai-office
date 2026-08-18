@@ -1405,3 +1405,109 @@ def test_prepared_return_allowed_tool_names_requires_exact_tuple_and_values(
     assert caught.value.detail.classification == "prepared_contract"
     assert calls == 1
     unchanged(data_set)
+
+
+def _accumulated_value137(
+    tmp_path: Path,
+    *,
+    index: int,
+    none_positions: tuple[int, ...] = (5, 6),
+) -> dict[str, object]:
+    """prepare route at `index` with accumulated openai None predecessors."""
+    supplied_workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{position}",
+                    "name": f"Step {position}",
+                    "employee": f"e{position}",
+                    "instructions": f"step-{position}",
+                }
+                for position in range(1, 10)
+            ],
+        }
+    )
+    step = supplied_workflow.steps[index - 1]
+    immediate = index - 1
+    predecessors = tuple(
+        predecessor_event(
+            prior,
+            position,
+            provider=(
+                "openai"
+                if position in none_positions or position == immediate
+                else "other"
+            ),
+            request_id=None if position in none_positions else "request",
+        )
+        for position, prior in enumerate(supplied_workflow.steps[: index - 1], 1)
+    )
+    state = WorkflowExecutionState(
+        "w",
+        "succeeded",
+        step.id,
+        index,
+        step.employee,
+        tuple(item.id for item in supplied_workflow.steps[:index]),
+        None,
+    )
+    terminal = terminal_event(step, index, provider="openai")
+    state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
+    event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+        for event in (*predecessors, terminal)
+    )
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    result = progression(supplied_workflow, index)
+    return {
+        "result": result,
+        "workflow": supplied_workflow,
+        "approval": approval(result),
+        "employee": employee(result),
+        "state_path": state_path,
+        "events_path": events_path,
+        "before_state": state_bytes,
+        "before_events": event_bytes,
+    }
+
+
+def test_prepare_accumulated_openai_none_request_id_delegates_once137(tmp_path: Path) -> None:
+    # Issue #386: accumulated aged None request-id predecessors (positions 5
+    # and 6) that are openai survive the phase 137 prepare route.
+    value = _accumulated_value137(tmp_path, index=8)
+    expected = prepared(value["workflow"], value["result"], employee(value["result"]))
+    calls = 0
+
+    def fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal calls
+        calls += 1
+        return expected
+
+    assert invoke(value, fake) is expected
+    assert calls == 1
+    unchanged(value)
+
+
+def test_prepare_accumulated_openai_none_request_id_narrowness137(tmp_path: Path) -> None:
+    # The accumulated-openai-None relaxation is only for openai at aged
+    # positions; non-openai or below-threshold remains rejected.
+    value = _accumulated_value137(tmp_path, index=8)
+
+    # (a) accumulated position with provider != openai remains rejected.
+    rewrite_event(value["events_path"], 4, provider="anthropic")
+    value["before_events"] = value["events_path"].read_bytes()
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+
+    # restore baseline
+    rewrite_event(value["events_path"], 4, provider="openai")
+    value["before_events"] = value["events_path"].read_bytes()
+
+    # (b) aged None at position 4 (below threshold) remains rejected.
+    rewrite_event(value["events_path"], 3, request_id=None)
+    value["before_events"] = value["events_path"].read_bytes()
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))

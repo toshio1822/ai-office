@@ -139,6 +139,7 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=True,
+        allow_accumulated_openai_none=not stop,
     )
     _require_unchanged(state_path, events_path, original, "terminal_contract")
 
@@ -350,6 +351,7 @@ def _check_terminal(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    allow_accumulated_openai_none: bool = False,
 ) -> None:
     try:
         loaded = load_workflow_execution_history(
@@ -372,6 +374,7 @@ def _check_terminal(
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=allow_empty_predecessor_output,
+        allow_accumulated_openai_none=allow_accumulated_openai_none,
     ):
         _fail("terminal_contract")
 
@@ -388,6 +391,7 @@ def _valid_history(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    allow_accumulated_openai_none: bool = False,
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple:
         return False
@@ -430,6 +434,7 @@ def _valid_history(
             allow_none_immediate_predecessor_request=(
                 index >= 6 and position == len(prior_steps)
             ),
+            allow_accumulated_openai_none=allow_accumulated_openai_none,
         ):
             return False
     return _valid_terminal_event(
@@ -476,6 +481,7 @@ def _valid_predecessor(
     require_openai: bool,
     allow_empty_output: bool = False,
     allow_none_immediate_predecessor_request: bool = False,
+    allow_accumulated_openai_none: bool = False,
 ) -> bool:
     return (
         type(event) is RuntimeStepEvent
@@ -496,6 +502,13 @@ def _valid_predecessor(
             or (
                 allow_none_immediate_predecessor_request
                 and event.request_id is None
+            )
+            or (
+                allow_accumulated_openai_none
+                and event.request_id is None
+                and position >= 5
+                and _exact_string(event.provider, "openai")
+                and state.current_step_index >= 7
             )
         )
         and type(event.output_text) is str
