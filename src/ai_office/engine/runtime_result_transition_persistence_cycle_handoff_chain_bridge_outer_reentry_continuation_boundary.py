@@ -390,16 +390,22 @@ def _check_predecessor_history(
     prefix = workflow.steps[: state.current_step_index - 1]
     if type(events) is not tuple or len(events) != len(prefix):
         _fail("runtime_contract")
+    last_position = len(prefix)
     for position, (event, step) in enumerate(zip(events, prefix, strict=True), 1):
+        allow_none = position == last_position or (
+            last_position >= 6 and position >= 5
+        )
         if not _valid_predecessor_event(
             event,
             step,
             position,
             state,
-            require_openai=position == len(prefix),
+            require_openai=position == last_position,
             allow_empty_output=True,
-            allow_none_request_id=position == len(prefix),
+            allow_none_request_id=allow_none,
         ):
+            _fail("runtime_contract")
+        if allow_none and event.request_id is None and event.provider != "openai":
             _fail("runtime_contract")
 
 

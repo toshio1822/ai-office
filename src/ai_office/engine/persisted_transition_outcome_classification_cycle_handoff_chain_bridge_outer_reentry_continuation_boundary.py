@@ -327,6 +327,7 @@ def _valid_history(
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
     allow_immediate_none_request_id: bool = False,
+    allow_accumulated_none_request_id: bool = False,
 ) -> bool:
     index = state.current_step_index
     result_identity_valid = result is None or (
@@ -358,17 +359,25 @@ def _valid_history(
     if any(type(event) is not RuntimeStepEvent for event in history):
         return False
     for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
+        last_position = len(prior_steps)
+        allow_none = (
+            allow_immediate_none_request_id and position == last_position
+        ) or (
+            allow_accumulated_none_request_id
+            and last_position >= 6
+            and position >= 5
+        )
         if not _valid_predecessor(
             event,
             step,
             position,
             state,
-            require_openai=require_immediate_openai and position == len(prior_steps),
+            require_openai=require_immediate_openai and position == last_position,
             allow_empty_output=allow_empty_predecessor_output,
-            allow_none_request_id=(
-                allow_immediate_none_request_id and position == len(prior_steps)
-            ),
+            allow_none_request_id=allow_none,
         ):
+            return False
+        if allow_none and event.request_id is None and event.provider != "openai":
             return False
     return _valid_terminal_event(
         history[-1],
@@ -514,6 +523,7 @@ def _check_persistence(
         allow_empty_success_output=True,
         allow_empty_predecessor_output=True,
         allow_immediate_none_request_id=True,
+        allow_accumulated_none_request_id=True,
     ):
         _fail("persistence_contract")
     try:

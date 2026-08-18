@@ -1597,3 +1597,208 @@ def test_persisted_running_state_contract_is_revalidated_before_phase134(
             lambda _targets: SimpleNamespace(state=corrupted, events=loaded_events),
         )
     reject_unchanged(values, "runtime_contract")
+
+
+def accumulated_workflow() -> WorkflowDefinition:
+    """Eight-step workflow exposing positions 5 and 6 as accumulated history."""
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{index}",
+                    "name": f"Step {index}",
+                    "employee": "e",
+                    "instructions": f"step-{index}",
+                }
+                for index in range(1, 9)
+            ],
+        }
+    )
+
+
+def setup_accumulated(
+    tmp_path: Path,
+    *,
+    five_provider: object = "openai",
+    six_provider: object = "openai",
+    current: int = 7,
+    six_request_id: object = None,
+) -> dict[str, object]:
+    """Running step-``current`` state with ``current-1`` predecessors.
+
+    Positions 1-4 use the default non-openai predecessors; position 5 and
+    the immediate predecessor (``current-1``) carry accumulated None request
+    ids with the openai provider by default.  For ``current=8`` the
+    non-contiguous Issue #380 case 2 is built: step 5 None, step 6 a
+    non-empty request id, immediate step 7 None.
+    """
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    wf = accumulated_workflow()
+    state = WorkflowExecutionState(
+        "w",
+        "running",
+        f"step-{current}",
+        current,
+        "e",
+        tuple(step.id for step in wf.steps[: current - 1]),
+        None,
+    )
+    lines = []
+    for position, step in enumerate(wf.steps[: current - 1], 1):
+        if position == 5:
+            lines.append(
+                serialize_runtime_step_event_jsonl(
+                    predecessor_event(step.id, position, five_provider, request_id=None)
+                )
+            )
+        elif position == 6 and current == 8:
+            lines.append(
+                serialize_runtime_step_event_jsonl(
+                    predecessor_event(
+                        step.id, position, six_provider, request_id=six_request_id
+                    )
+                )
+            )
+        elif position >= 5:
+            provider = six_provider
+            lines.append(
+                serialize_runtime_step_event_jsonl(
+                    predecessor_event(step.id, position, provider, request_id=None)
+                )
+            )
+        else:
+            lines.append(
+                serialize_runtime_step_event_jsonl(
+                    predecessor_event(step.id, position, "other")
+                )
+            )
+    events_path.write_text("".join(lines), encoding="utf-8")
+    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
+    result = StepRuntimeExecutionSuccess(
+        "w",
+        f"step-{current}",
+        current,
+        "e",
+        ModelInvocationSuccess(
+            "openai", "response", "request", "completed", ("out",), "out"
+        ),
+    )
+    return {
+        "result": result,
+        "workflow": wf,
+        "state_path": state_path,
+        "events_path": events_path,
+    }
+
+
+def test_accumulated_none_request_id_positions_five_six_success_delegates_once(
+    tmp_path: Path,
+) -> None:
+    values = setup_accumulated(tmp_path)
+    seen: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        nonlocal expected
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(values, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                values[key]
+                for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+
+
+def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
+    tmp_path: Path,
+) -> None:
+    """Issue #380 case 2: step8 with step5=None, step6 non-empty, step7=None.
+
+    The non-contiguous accumulated None provenance (step 5 None, step 6 a
+    non-empty request id, immediate step 7 None, all openai) delegates
+    exactly once; the failure route over the same provenance delegates
+    exactly once as an inline subcase.
+    """
+    values = setup_accumulated(
+        tmp_path, current=8, six_request_id="req-6"
+    )
+    seen: list[tuple[object, ...]] = []
+    expected: object = None
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        nonlocal expected
+        expected = persist_fake(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(values, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                values[key]
+                for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+
+    failure_values = setup_accumulated(
+        tmp_path / "failure", current=8, six_request_id="req-6"
+    )
+    failure_values["result"] = StepRuntimeExecutionFailure(
+        "w",
+        "step-8",
+        8,
+        "e",
+        ModelInvocationFailure(
+            "openai", "api_error", "safe failure", "request", 500, None, None
+        ),
+    )
+    failed_seen: list[tuple[object, ...]] = []
+    failed_expected: object = None
+
+    def failure_dependency(*args: object) -> object:
+        failed_seen.append(args)
+        nonlocal failed_expected
+        failed_expected = persist_fake(*args)  # type: ignore[arg-type]
+        return failed_expected
+
+    assert call(failure_values, failure_dependency) is failed_expected
+    assert len(failed_seen) == 1
+
+
+def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase134(
+    tmp_path: Path,
+) -> None:
+    values = setup_accumulated(tmp_path, five_provider="other")
+    reject_unchanged(values, "runtime_contract")
+
+
+def test_accumulated_none_position_four_remains_rejected_before_phase134(
+    tmp_path: Path,
+) -> None:
+    values = setup_accumulated(tmp_path)
+    events = values["events_path"]
+    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    replacement = serialize_runtime_step_event_jsonl(
+        predecessor_event("step-4", 4, "other", request_id=None)
+    )
+    events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
+    reject_unchanged(values, "runtime_contract")

@@ -3675,3 +3675,73 @@ Phase 177は以下のbehaviorを**一切**追加・変更しない:
 - 新しい runtime result の再永続化・2 回目の progression decision・別ステップの preparation / start / persistence cycle を行わない
 - retry・自動ループ / 継続・finalize・schedule・parallel・artifact persistence を行わない
 - CLI / GUI behavior・credentials・provider / network / paid API 呼び出しは行わない
+
+## Phase 178 prerequisite（Issue #380）: Accumulated Aged None Request-ID Preservation across Persistence / Classification / Progression Entry Layers
+
+Issue #380は、Phase 178（Issue #377）の前提として、**7つの境界すべて**が accumulated aged-None compatibility の対象ですが、**適用ルートは境界ごとに限定**されます。accumulated aged None の許容は、境界時点の current / terminal index が **7以上**（predecessor 履歴が6件以上 = `last_position >= 6`）かつ **predecessor position >= 5** の None request-ID に対して、以下のルートでのみ適用されます:
+
+- **Phase 161 / 142 / 134**: runtime persistence route
+- **Phase 143 / 135**: `WorkflowExecutionPersistenceResult` classification route
+- **Phase 144 / 136**: `PersistedExecutionOutcome`（`persisted_success`）progression route
+- **`workflow_complete` / `persisted_failure` stop route**: aged None を新規に許容しない（既存の immediate-None-only semantics を維持）
+
+### 核心契約
+
+- **accumulated rule**: 境界時点の current / terminal index が **7以上**（`last_position >= 6`）で、**predecessor position >= 5** の None request-ID を許容。`request_id=None` のときは **provider が正確に `"openai"`** であること（新ガード: `if allow_none and event.request_id is None and event.provider != "openai": return False`。non-openai provider の None は従来どおり reject）
+- **immediate None は従来どおり**: 直前1件（`position == last_position`）の None 許容は全ルートで維持（`allow_immediate_none_request_id`）
+- **許容は新フラグで限定**: `allow_accumulated_none_request_id`（デフォルト False）が有効なのは classification route と `persisted_success` progression route のみ。旧説明のような「`allow_immediate_none_request_id` と独立して常に許容」ではない
+- 位置4以前の None request-ID は、`last_position >= 6` でも**依然として reject**（対象外をピン留め）
+
+### ルート別の適用
+
+- **Phase 161 / 142 / 134（runtime persistence chain）**: 実行中（running）persistence route の `_check_predecessor_history` で bounded accumulated provenance を許容（`allow_none = position == last_position or (last_position >= 6 and position >= 5)`）。stop route（`WorkflowProgressionDecision` / `PersistedExecutionOutcome`）はこの検証より手前で return するため accumulated 許容は適用されず、immediate None のみ
+- **Phase 143 / 135（persisted classification chain）**: `WorkflowExecutionPersistenceResult` 由来の classification route（`_check_persistence` → `_valid_history`）でのみ `allow_accumulated_none_request_id=True` を有効化
+- **Phase 144 / 136（classified progression chain）**: `PersistedExecutionOutcome` かつ `outcome == "persisted_success"` の progression route でのみ `allow_accumulated_none_request_id=True` を有効化。`persisted_failure` / `workflow_complete` の stop route は対象外
+
+### 対象7境界（production 修正）
+
+1. `runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 161
+2. `runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 142
+3. `runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 134
+4. `persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 143
+5. `persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 135
+6. `classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 144
+7. `classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 136
+
+### テスト
+
+- **focused テスト 各4件 × 7ファイル（計+28）**（各モジュールは collected 4件を維持。failure-route / stop の追加検証は collected 数を増やさない inline subcase）:
+  1. accumulated None（position 5+6・provider openai）success ルートで委譲1回
+  2. **Issue #380 case 2（step8 non-contiguous provenance）**: step5=None / step6=non-empty request ID / step7=None の直後、step8 の境界で delegates ちょうど1回（`test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once`）
+  3. position 5 の None + non-openai provider → reject（新ガード）
+  4. position 4 の None は依然 reject（`last_position >= 6` でも対象外）をピン留め
+- **新規回帰テスト**: `tests/test_phase177_phase172_accumulated_request_id_none_persistence_classification_progression_compatibility.py`（+4件: real A/B/C/D。8-step の step-7 で蓄積 None を実チェーン経由で検証）
+- 8-step 用の accumulated セットアップヘルパーを各テストファイルに追加（既存ヘルパーが4〜6ステップのため position 5+6 / step8 に届かない）
+- collect 合計: **11,932**（base 11,900 + focused +28 + 新規回帰 +4）
+
+### 変更ファイル（正確に17ファイル）
+
+1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 161 production
+2. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 142 production
+3. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 134 production
+4. `src/ai_office/engine/persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 143 production
+5. `src/ai_office/engine/persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 135 production
+6. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 144 production
+7. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 136 production
+8. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — focused +4
+9. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — focused +4
+10. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — focused +4
+11. `tests/test_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — focused +4
+12. `tests/test_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — focused +4
+13. `tests/test_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — focused +4
+14. `tests/test_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — focused +4
+15. `tests/test_phase177_phase172_accumulated_request_id_none_persistence_classification_progression_compatibility.py` — 新規回帰（+4）
+16. `README.md` — 本節
+17. `docs/architecture.md` — 本 prerequisite のアーキテクチャ文書
+
+### 非機能範囲（State explicitly）
+
+- Phase 178（Issue #377）本体は**実装しない**（本変更は prerequisite のみ）
+- 8番目の production 修正・7境界外の production 変更・`__init__.py` export 追加は行わない
+- 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化は行わない
+- 位置4以前の None 許容・non-openai の None 許容・provider / network / paid API 呼び出しは行わない

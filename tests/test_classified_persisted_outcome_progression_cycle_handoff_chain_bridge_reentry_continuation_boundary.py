@@ -1464,3 +1464,171 @@ def test_phase155_six_step_immediate_output_non_string_is_rejected_before_phase1
         b"".join(lines[:4]) + step5 + b"".join(lines[5:])
     )
     reject(data_set, "terminal_contract")
+
+
+def accumulated_workflow() -> WorkflowDefinition:
+    """Eight-step workflow exposing positions 5 and 6 as accumulated history."""
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {
+                    "id": f"step-{index}",
+                    "name": f"Step {index}",
+                    "employee": "e",
+                    "instructions": f"step-{index}",
+                }
+                for index in range(1, 9)
+            ],
+        }
+    )
+
+
+def accumulated_values(
+    tmp_path: Path,
+    *,
+    status: str = "succeeded",
+    five_provider: object = "openai",
+    six_provider: object = "openai",
+    current: int = 7,
+    six_request_id: object = None,
+) -> dict[str, object]:
+    """Terminal step-``current`` targets with accumulated None request ids.
+
+    Positions 1-4 keep the default non-openai predecessors; position 5 and
+    the immediate predecessor (``current-1``) carry accumulated None request
+    ids with the openai provider by default.  For ``current=8`` the
+    non-contiguous Issue #380 case 2 is built: step 5 None, step 6 a
+    non-empty request id, immediate step 7 None.
+    """
+    data_set = data(
+        tmp_path, definition=accumulated_workflow(), index=current, status=status
+    )
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    step5 = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            steps[4], 5, provider=five_provider, request_id=None
+        )
+    ).encode()
+    if current == 8:
+        step6 = serialize_runtime_step_event_jsonl(
+            predecessor_event(
+                steps[5], 6, provider=six_provider, request_id=six_request_id
+            )
+        ).encode()
+        step7 = serialize_runtime_step_event_jsonl(
+            predecessor_event(
+                steps[6], 7, provider=six_provider, request_id=None
+            )
+        ).encode()
+        data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+            b"".join(lines[:4]) + step5 + step6 + step7 + b"".join(lines[7:])
+        )
+    else:
+        step6 = serialize_runtime_step_event_jsonl(
+            predecessor_event(
+                steps[5], 6, provider=six_provider, request_id=None
+            )
+        ).encode()
+        data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+            b"".join(lines[:4]) + step5 + step6 + b"".join(lines[6:])
+        )
+    set_before(data_set)
+    return data_set
+
+
+def test_accumulated_none_request_id_positions_five_six_delegates_once(
+    tmp_path: Path,
+) -> None:
+    data_set = accumulated_values(tmp_path)
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert invoke(data_set, dependency) is decision
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0],
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        ),
+        strict=True,
+    ):
+        assert actual is expected
+    unchanged(data_set)
+
+
+def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
+    tmp_path: Path,
+) -> None:
+    """Issue #380 case 2: step8 with step5=None, step6 non-empty, step7=None.
+
+    The non-contiguous accumulated None provenance (step 5 None, step 6 a
+    non-empty request id, immediate step 7 None, all openai) progresses
+    exactly once; the persisted-failure stop over the same provenance
+    rejects the aged None as ``terminal_contract`` (inline subcase).
+    """
+    data_set = accumulated_values(tmp_path, current=8, six_request_id="req-6")
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert invoke(data_set, dependency) is decision
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    for actual, expected in zip(
+        calls[0],
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        ),
+        strict=True,
+    ):
+        assert actual is expected
+    unchanged(data_set)
+
+    failed = accumulated_values(
+        tmp_path / "failed", status="failed", current=8, six_request_id="req-6"
+    )
+    reject(failed, "terminal_contract")
+
+
+def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase129(
+    tmp_path: Path,
+) -> None:
+    data_set = accumulated_values(tmp_path, five_provider="other")
+    reject(data_set, "terminal_contract")
+
+
+def test_accumulated_none_position_four_remains_rejected_before_phase129(
+    tmp_path: Path,
+) -> None:
+    data_set = data(
+        tmp_path, definition=accumulated_workflow(), index=7, status="succeeded"
+    )
+    steps = data_set["workflow"].steps
+    lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
+    step4 = serialize_runtime_step_event_jsonl(
+        predecessor_event(
+            steps[3], 4, provider="other", request_id=None
+        )
+    ).encode()
+    data_set["events_path"].write_bytes(  # type: ignore[union-attr]
+        b"".join(lines[:3]) + step4 + b"".join(lines[4:])
+    )
+    reject(data_set, "terminal_contract")
