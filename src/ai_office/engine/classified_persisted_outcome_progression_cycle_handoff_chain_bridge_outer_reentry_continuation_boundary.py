@@ -83,8 +83,17 @@ def route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_ou
     phase136_function: Phase136Function = (
         route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary
     ),
+    _allow_accumulated_none_request_id_for_active_failure: bool = False,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Route one exact Phase 143 result through public Phase 136 once."""
+    """Route one exact Phase 143 result through public Phase 136 once.
+
+    ``persisted_success`` keeps the Issue #380 bounded accumulated aged-None
+    compatibility.  ``persisted_failure`` keeps the strict immediate-None-only
+    stop semantics unless the private route-provenance control is True: the
+    active Phase 172 runtime-failure path alone may enable it so a just-
+    produced ``persisted_failure`` may carry the same bounded accumulated
+    aged-None predecessor provenance without broadening any direct stop.
+    """
     _check_inputs(result, workflow, state_path, events_path, phase136_function)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
@@ -130,7 +139,13 @@ def route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_ou
         ),
         allow_accumulated_none_request_id=(
             type(result) is PersistedExecutionOutcome
-            and result.outcome == "persisted_success"
+            and (
+                result.outcome == "persisted_success"
+                or (
+                    result.outcome == "persisted_failure"
+                    and _allow_accumulated_none_request_id_for_active_failure is True
+                )
+            )
         ),
     )
     _require_unchanged(state_path, events_path, original, "terminal_contract")

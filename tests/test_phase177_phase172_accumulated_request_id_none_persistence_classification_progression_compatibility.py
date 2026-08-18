@@ -62,6 +62,7 @@ from ai_office.engine import (
 )
 from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError,
+    route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
 )
 from ai_office.engine.next_step_preparation import NextStepPreparationApproval
 from ai_office.invocation import (
@@ -663,17 +664,21 @@ def test_real_b_seven_step_step7_success_workflow_complete(tmp_path: Path) -> No
 
 
 def test_real_c_eight_step_step7_failure_persisted_failure(tmp_path: Path) -> None:
-    """Real persisted_failure stop keeps immediate-None-only semantics.
+    """Exact Issue #377 C accumulated failure now succeeds via real Phase172.
 
-    Step 5 carries a non-empty request ID (aged None is rejected by the
-    persisted_failure stop); step 6 is the immediate predecessor with
-    request_id=None, which the stop still permits.  An inline subcase then
-    proves the corrected boundary: an aged step-5 None in an otherwise-exact
-    persisted_failure snapshot is rejected (terminal_contract) instead of
-    being silently accepted.
+    Step 5 and step 6 both carry ``request_id=None`` (``openai``); step 7
+    fails deterministically through the real Phase177 → Phase172 default path.
+    The exact built-in default Phase 144 receives the private active-failure
+    opt-in, so the accumulated aged-None provenance is accepted and the exact
+    ``PersistedExecutionOutcome(persisted_failure)`` is returned.
+
+    An inline subcase then proves direct strictness is retained: calling the
+    default Phase 144 directly (no active-failure opt-in) with the same aged
+    step-5 None snapshot still rejects as ``terminal_contract``.
     """
+    # Main: exact Issue #377 C accumulated failure via real Phase172.
     values = canonical_running_setup(
-        tmp_path / "c", steps=8, current=6, five_request_id="req-5"
+        tmp_path / "c", steps=8, current=6, five_request_id=None
     )
     wf = values["workflow"]  # type: ignore[arg-type]
     state_path = values["state_path"]  # type: ignore[arg-type]
@@ -707,25 +712,41 @@ def test_real_c_eight_step_step7_failure_persisted_failure(tmp_path: Path) -> No
     ]
     assert final_events[-1].event_type == "step_failed"
     assert final_events[-1].failure_category == "api_error"
-    # Immediate step-6 None preserved; step-5 request ID kept non-empty.
-    assert final_events[4].request_id == "req-5"
+    # Accumulated aged-None provenance preserved byte-exact: step 5 and 6.
+    assert final_events[4].request_id is None
+    assert final_events[4].provider == "openai"
     assert final_events[5].request_id is None
+    assert final_events[5].provider == "openai"
     # No retry or further execution: exactly one transport call.
     assert len(calls) == 1
 
-    # Inline subcase: an aged step-5 None in an otherwise-exact
-    # persisted_failure snapshot is rejected by the stop (terminal_contract),
-    # never silently accepted.
-    values_aged = canonical_running_setup(tmp_path / "c-aged", steps=8, current=6)
-    wf_aged = values_aged["workflow"]  # type: ignore[arg-type]
-    state_path_aged = values_aged["state_path"]  # type: ignore[arg-type]
-    events_path_aged = values_aged["events_path"]  # type: ignore[arg-type]
-    calls_aged: list[OpenAIResponsesAuthenticatedHttpRequest] = []
-    step7_aged = run_phase177_failure(values_aged, calls_aged)
+    # Inline subcase: the same aged step-5 None / step-6 None snapshot passed
+    # directly to the default Phase 144 (no active-failure opt-in, so the
+    # direct/original persisted_failure stop is strict) still rejects with
+    # terminal_contract.
+    values_direct = canonical_running_setup(
+        tmp_path / "c-direct", steps=8, current=6, five_request_id=None
+    )
+    wf_direct = values_direct["workflow"]  # type: ignore[arg-type]
+    state_path_direct = values_direct["state_path"]  # type: ignore[arg-type]
+    events_path_direct = values_direct["events_path"]  # type: ignore[arg-type]
+    calls_direct: list[OpenAIResponsesAuthenticatedHttpRequest] = []
+    step7_direct = run_phase177_failure(values_direct, calls_direct)
+    outcome_direct = phase172(
+        step7_direct, wf_direct, state_path_direct, events_path_direct
+    )
+    assert type(outcome_direct) is PersistedExecutionOutcome
+    assert outcome_direct.outcome == "persisted_failure"
+    assert outcome_direct.failure_category == "api_error"
     with pytest.raises(
         ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError
     ) as exc:
-        phase172(step7_aged, wf_aged, state_path_aged, events_path_aged)
+        route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+            outcome_direct,
+            wf_direct,
+            state_path_direct,
+            events_path_direct,
+        )
     assert exc.value.detail.classification == "terminal_contract"
 
 
