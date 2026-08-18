@@ -1261,6 +1261,147 @@ def test_malformed_phase177_runtime_return_snapshot_history_contract(
     )
     assert phase172_calls == []
 
+    # Subcase 4: running snapshot with wrong workflow id.
+    def wrong_workflow_id(*args: object, **kwargs: object) -> object:
+        state_bytes, event_bytes = running_snapshot_bytes(wf8, 6)
+        loaded = load_workflow_execution_state(
+            Path(state_path)  # type: ignore[arg-type]
+        )
+        Path(state_path).write_bytes(  # type: ignore[arg-type]
+            serialize_workflow_execution_state_json(
+                replace(loaded, workflow_id="other")
+            ).encode("utf-8")
+        )
+        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
+        return runtime_success(wf8, 7)
+
+    assert_classification(
+        lambda: phase178(
+            result,
+            wf,
+            approval,
+            employee,
+            state_path,
+            events_path,
+            TOOLS,
+            api_key,
+            execution_approval,
+            transport,
+            phase177_function=wrong_workflow_id,  # type: ignore[arg-type]
+            phase172_function=phase172_stub,  # type: ignore[arg-type]
+        ),
+        "phase177_contract",
+    )
+    assert phase172_calls == []
+
+    # Subcase 5: running snapshot with wrong completed step-id prefix.
+    def wrong_completed_prefix(*args: object, **kwargs: object) -> object:
+        state_bytes, event_bytes = running_snapshot_bytes(wf8, 6)
+        loaded = load_workflow_execution_state(
+            Path(state_path)  # type: ignore[arg-type]
+        )
+        Path(state_path).write_bytes(  # type: ignore[arg-type]
+            serialize_workflow_execution_state_json(
+                replace(loaded, completed_step_ids=("s1",))
+            ).encode("utf-8")
+        )
+        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
+        return runtime_success(wf8, 7)
+
+    assert_classification(
+        lambda: phase178(
+            result,
+            wf,
+            approval,
+            employee,
+            state_path,
+            events_path,
+            TOOLS,
+            api_key,
+            execution_approval,
+            transport,
+            phase177_function=wrong_completed_prefix,  # type: ignore[arg-type]
+            phase172_function=phase172_stub,  # type: ignore[arg-type]
+        ),
+        "phase177_contract",
+    )
+    assert phase172_calls == []
+
+    # Subcase 6: running snapshot carries a non-None failure category.
+    def running_with_failure_category(*args: object, **kwargs: object) -> object:
+        state_bytes, event_bytes = running_snapshot_bytes(wf8, 6)
+        loaded = load_workflow_execution_state(
+            Path(state_path)  # type: ignore[arg-type]
+        )
+        Path(state_path).write_bytes(  # type: ignore[arg-type]
+            serialize_workflow_execution_state_json(
+                replace(loaded, last_failure_category="api_error")
+            ).encode("utf-8")
+        )
+        Path(events_path).write_bytes(event_bytes)  # type: ignore[arg-type]
+        return runtime_success(wf8, 7)
+
+    assert_classification(
+        lambda: phase178(
+            result,
+            wf,
+            approval,
+            employee,
+            state_path,
+            events_path,
+            TOOLS,
+            api_key,
+            execution_approval,
+            transport,
+            phase177_function=running_with_failure_category,  # type: ignore[arg-type]
+            phase172_function=phase172_stub,  # type: ignore[arg-type]
+        ),
+        "phase177_contract",
+    )
+    assert phase172_calls == []
+
+    # Subcase 7: correct count and ids, but a predecessor is not a
+    # succeeded terminal event.
+    def non_succeeded_predecessor(*args: object, **kwargs: object) -> object:
+        state_bytes, event_bytes = running_snapshot_bytes(wf8, 6)
+        Path(state_path).write_bytes(state_bytes)  # type: ignore[arg-type]
+        events = [
+            RuntimeStepEvent(**json.loads(line))
+            for line in event_bytes.decode("utf-8").splitlines()
+        ]
+        events[-1] = replace(
+            events[-1],
+            previous_status="running",
+            next_status="failed",
+            event_type="step_failed",
+            failure_category="api_error",
+        )
+        Path(events_path).write_bytes(  # type: ignore[arg-type]
+            "".join(
+                serialize_runtime_step_event_jsonl(event) for event in events
+            ).encode("utf-8")
+        )
+        return runtime_success(wf8, 7)
+
+    assert_classification(
+        lambda: phase178(
+            result,
+            wf,
+            approval,
+            employee,
+            state_path,
+            events_path,
+            TOOLS,
+            api_key,
+            execution_approval,
+            transport,
+            phase177_function=non_succeeded_predecessor,  # type: ignore[arg-type]
+            phase172_function=phase172_stub,  # type: ignore[arg-type]
+        ),
+        "phase177_contract",
+    )
+    assert phase172_calls == []
+
 
 def test_malformed_phase177_stop_identity_target_contract(tmp_path: Path) -> None:
     # Subcase 1: Phase177 returns a different stop object (identity mismatch).

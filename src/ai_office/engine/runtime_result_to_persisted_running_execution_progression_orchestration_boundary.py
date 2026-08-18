@@ -302,11 +302,14 @@ def _valid_phase177_runtime_output(
     The Phase-177 runtime output must be an exact
     ``StepRuntimeExecutionSuccess`` / ``StepRuntimeExecutionFailure`` whose
     identity matches the post-Phase177 running state (status ``running``
-    with the exact current step / index / employee), with committed
-    predecessor history of exactly ``step_index - 1`` workflow-linked
-    succeeded events.  Phase 177's public runtime-result validator semantics
-    remain authoritative for the invocation contract; no lower provider
-    parser is duplicated here.
+    with the exact workflow id and the exact current step / index /
+    employee, a completed-step-id prefix that is exactly
+    ``workflow.steps[: step_index - 1]``, and ``last_failure_category``
+    ``None``), with committed predecessor history of exactly
+    ``step_index - 1`` workflow-linked succeeded terminal events.  Phase
+    177's public runtime-result validator semantics remain authoritative
+    for the invocation contract; no lower provider parser is duplicated
+    here.
     """
     if type(value) not in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure):
         return None
@@ -339,6 +342,19 @@ def _valid_phase177_runtime_output(
         workflow.steps
     ):
         return None
+    # Thin running-snapshot contract: exact workflow id, an exact
+    # completed-step-id prefix (the step ids before the executed step), and
+    # no active failure category for a running state.
+    expected_completed = tuple(
+        step.id for step in workflow.steps[: value.step_index - 1]
+    )
+    if (
+        loaded.workflow_id != workflow.id
+        or type(loaded.completed_step_ids) is not tuple
+        or loaded.completed_step_ids != expected_completed
+        or loaded.last_failure_category is not None
+    ):
+        return None
     try:
         lines = [
             line
@@ -355,12 +371,18 @@ def _valid_phase177_runtime_output(
         except Exception:
             return None
         step = workflow.steps[position - 1]
+        # Each predecessor must be a workflow-linked succeeded terminal
+        # event for the exact workflow step at this position.
         if (
             event.workflow_id != workflow.id
             or event.step_id != step.id
             or type(event.step_index) is not int
             or event.step_index != position
             or event.employee_id != step.employee
+            or event.previous_status != "running"
+            or event.event_type != "step_succeeded"
+            or event.next_status != "succeeded"
+            or event.failure_category is not None
         ):
             return None
     return loaded, event_bytes
