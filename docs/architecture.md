@@ -3661,3 +3661,68 @@ base **11,932** → Phase144 +2 / Phase172 +2 / real regression +0 → **11,936*
 7. `docs/architecture.md` — 本節
 
 8番目のファイルが必要になった場合は STOP して報告する。
+
+## Phase 178: Post-Runtime → Persisted Running Execution → Progression Orchestration Boundary
+
+Phase 178 は、公開 Phase 177（post-runtime persisted running execution）と公開 Phase 172（post-runtime persistence → classification → progression）をこの順で**ちょうど 1 回ずつ**合成する最初の明示的な orchestration boundary です。compatibility repair ではなく、既存の公開境界を直列接続します。**workflow runner ではありません**。
+
+```text
+finished current-step Phase-155 runtime result (StepRuntimeExecutionSuccess / Failure, または stop)
+    ↓ Phase 177 post-runtime → persisted running execution
+    ↓ StepRuntimeExecutionSuccess / Failure / exact stop object
+    ↓ Phase 172 post-runtime → persistence → classification → progression
+    ↓ WorkflowProgressionDecision / PersistedExecutionOutcome
+```
+
+### stage ownership
+
+- **Phase 177 は durable running-state commit point を所有する**: Phase 178 は Phase 177 stage の失敗・不正戻り値に対して pre-Phase177 への巻き戻しを行わない。post-Phase177 committed running snapshot（status `running`・current step/index/employee・`step_index - 1` 件の succeeded events）を次の stage の基準とする
+- **stop 入力の narrowing**: 入力が exact `WorkflowProgressionDecision` のときは `decision == "workflow_complete"` のみ、exact `PersistedExecutionOutcome` のときは `outcome == "persisted_failure"` のみを stop 入力として受け入れる。`prepare_next_step` / `persisted_success` は `result_type` で reject
+- **stop ルート**: Phase 177 が exact identity で返した stop object をそのまま返す。target bytes 不変を `_require_unchanged` で確認し、変更されていれば `phase177_contract` で fail（restore はしない）。Phase 172 は zero calls
+- **runtime ルート**: Phase 177 出力 `value` を `_valid_phase177_runtime_output` で thin 検証（exact runtime-result type・post-Phase177 running snapshot との step/index/employee 一致・`is_valid_step_runtime_execution_result` による invocation contract 検証・history が `step_index - 1` 件の workflow-linked succeeded events）。不正なら `phase177_contract`
+- **Phase 172 呼び出しは 4 positional のみ**: `phase172_function(value, workflow, state_path, events_path)`。`value` は Phase 177 の出力（実行済み step の runtime result）であり入力 `result` ではない。keyword-only はデフォルトに委譲
+- **Phase 172 は durable terminal commit point を所有する**: Phase 178 は Phase 172 stage の失敗・不正戻り値に対して restore を行わない（injected / partial durable commit を跨ぐため）
+- **thin durable proof**（`_valid_phase172_output`）: post-Phase177 running event bytes が prefix として byte-for-byte 保存され、ちょうど 1 件の terminal event（`serialize_runtime_step_event_jsonl(terminal)` と byte 一致）だけが追加され、final state（success → `succeeded` + completed に current 追加 + `last_failure_category is None` / failure → `failed` + completed 不変 + `last_failure_category == invocation.category`）と terminal event（previous_status `running`・provider `openai`・request_id == invocation.request_id・success/failure details）が Phase 177 出力に正確にリンクしていることを確認。Phase 161 / 143 / 144 の full validator は再実装しない
+- **progression proof**: success 非最終 → exact `prepare_next_step`（reason `next_step_available`・next は `workflow.steps[step_index]`）、success 最終 → exact `workflow_complete`（next 3 fields None・reason `last_step_succeeded`）、failure → exact `persisted_failure`（`failure_category == invocation.category`）。exact type チェック（`type(x) is`）でサブクラス・attribute-compatible substitute を reject
+- 各 stage ちょうど 1 回、retry・loop・bypass・自動継続なし。返された decision / outcome を超える finalize はしない。下位 route 関数の直接呼び出しなし（source audit で検証）
+
+### エラー分類（9 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase177_contract` / `phase172_contract` / `dependency_error`
+
+- **Phase 177 safe-error identity re-raise**（Phase 172 zero・write なし）: Phase 176 / 175 / 173 / 172 / 145 / 146 / 138 / 147 / 139 / 155 / 141 error type + `RuntimeResultToPersistedRunningExecutionOrchestrationBoundaryCompatibilityError`
+- **Phase 172 safe-error identity re-raise**（no outer rollback）: Phase 161 / 143 / 144 error type + `RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError`
+- 予期しない例外は `dependency_error` に sanitize（raw 詳細を public error text に含めない）。`_capture_targets` の OSError も `dependency_error`
+- 不正戻り値・不正 durable target は `phase177_contract` / `phase172_contract`（generic 文言のみ）
+
+### 入力ファミリー（exact type のみ）
+
+`StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure` / exact `workflow_complete` `WorkflowProgressionDecision` / exact `persisted_failure` `PersistedExecutionOutcome`。`WorkflowDefinition` / `Path` state・events / callable `phase177_function`・`phase172_function` も exact。`preparation_approval` / `employee` / `resolved_tools` / `api_key` / `execution_approval` / `transport` は prevalidate しない（Phase 177 / Phase 172 が authoritative）
+
+### 公開 API
+
+- `route_runtime_result_to_persisted_running_execution_progression_orchestration_boundary(result, workflow, preparation_approval, employee, state_path, events_path, resolved_tools, api_key, execution_approval, transport, *, phase177_function=route_runtime_result_to_persisted_running_execution_orchestration_boundary, phase172_function=route_runtime_result_to_progression_orchestration_boundary)`
+- `RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryFailureDetail`（frozen dataclass・`classification`）
+- `RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryError`（ValueError）
+- `RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError`（`__init__(classification)` で `detail` を保持）
+
+### テスト戦略
+
+- **focused 16**: public signature / default dependency identity / error hierarchy / exports / source audit（lower `route_` 直接呼び出しなし）・runtime-success / failure の exact stage order・canonical argument identity・exactly once（Phase 177 は 10 positional、Phase 172 は Phase 177 出力で 4 positional）・両 stop ルートの exact identity + target unchanged + Phase 172 zero・input-family / subclass / substitute rejection + target validation・non-callable configuration rejection・Phase 177 safe-error identity + Phase 172 zero + no rollback・Phase 177 unexpected sanitize・malformed Phase 177 runtime return / snapshot / history → `phase177_contract`・malformed stop identity / target mutation → `phase177_contract`・Phase 172 safe-error identity + no rollback・Phase 172 unexpected sanitize・malformed Phase 172 return / final durable target → `phase172_contract`・success 非最終 / 最終 / failure の exact durable target + progression linkage（no retry・no direct lower calls・no sensitive details）
+- **real-default 4**（real Phase 177 + synthetic transport → real Phase 172 を Phase 178 一回で実行）: A 8-step step-7 success → `prepare_next_step`（step-8 未準備・未実行）・B 7-step step-7 success → `workflow_complete`・C 8-step step-7 決定的 failure → `persisted_failure`（transport 1 回のみ）・D 両 stop ルート exact identity + bytes 不変 + Phase 172 zero
+- イベント件数の約束: Phase 177 実行後 `result.step_index - 1` 件（= 入力 result.step_index 件）、Phase 172 実行後 `result.step_index` 件
+- accumulated aged-None 互換: A-E リポジトリテスト（Issue #380 / #383）と同じ real チェーンを Phase 178 経由で再現し、step-5 / step-6 の None provenance が byte-exact 保存されることを確認
+
+### collect 不変条件
+
+base **11,936**（Issue #383 完了時）→ Phase 178 focused 16 + real-default 4 → **11,956**
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_orchestration_boundary.py` — Phase 178 production（新規）
+2. `tests/test_runtime_result_to_persisted_running_execution_progression_orchestration_boundary.py` — 新規 +20 tests
+3. `src/ai_office/engine/__init__.py` — Phase 178 public exports
+4. `README.md` — Phase 178 documentation
+5. `docs/architecture.md` — 本節
+
+5ファイルを超える変更が必要になった場合は STOP して報告する。

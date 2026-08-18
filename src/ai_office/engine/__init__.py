@@ -682,6 +682,12 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_orchestratio
     RuntimeResultToPersistedRunningExecutionOrchestrationBoundaryFailureDetail,
     route_runtime_result_to_persisted_running_execution_orchestration_boundary,
 )
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (  # noqa: E501
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError,
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryError,
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryFailureDetail,
+    route_runtime_result_to_persisted_running_execution_progression_orchestration_boundary,
+)
 from ai_office.engine.runtime_result_to_prepared_start_persistence_orchestration_boundary import (  # noqa: E501
     RuntimeResultToPreparedStartPersistenceOrchestrationBoundaryCompatibilityError,
     RuntimeResultToPreparedStartPersistenceOrchestrationBoundaryError,
@@ -1262,6 +1268,10 @@ __all__ = [
     "RuntimeResultToPersistedRunningExecutionOrchestrationBoundaryError",
     "RuntimeResultToPersistedRunningExecutionOrchestrationBoundaryFailureDetail",
     "route_runtime_result_to_persisted_running_execution_orchestration_boundary",
+    "RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError",
+    "RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryError",
+    "RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryFailureDetail",
+    "route_runtime_result_to_persisted_running_execution_progression_orchestration_boundary",
     "RuntimeResultToPreparedStartPersistenceOrchestrationBoundaryCompatibilityError",
     "RuntimeResultToPreparedStartPersistenceOrchestrationBoundaryError",
     "RuntimeResultToPreparedStartPersistenceOrchestrationBoundaryFailureDetail",
