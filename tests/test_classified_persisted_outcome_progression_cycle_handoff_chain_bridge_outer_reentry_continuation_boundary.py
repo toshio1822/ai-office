@@ -455,6 +455,7 @@ def test_public_signature_and_source_audit() -> None:
         "state_path",
         "events_path",
         "phase136_function",
+        "_allow_accumulated_none_request_id_for_active_failure",
     ]
     assert all(item.annotation is object for item in parameters[:4])
     assert [item.kind for item in parameters[:4]] == [
@@ -462,6 +463,9 @@ def test_public_signature_and_source_audit() -> None:
     ] * 4
     assert parameters[4].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters[4].default is public_phase136
+    assert parameters[5].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters[5].annotation is bool
+    assert parameters[5].default is False
     source = Path(
         "src/ai_office/engine/"
         "classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py"
@@ -1716,3 +1720,170 @@ def test_accumulated_none_position_four_remains_rejected_before_phase136(
         ),
     )
     reject(data_set, "terminal_contract")
+
+
+def test_active_failure_opt_in_accepts_bounded_accumulated_failure_provenance(
+    tmp_path: Path,
+) -> None:
+    """Issue #383: the private active-failure opt-in accepts the exact
+    Issue #377 C mismatch: terminal failed step-7 with step5=None and
+    step6=None (both ``openai``) returns the exact same persisted_failure
+    object with Phase 136 zero-call and bytes unchanged.
+    """
+    data_set = accumulated_none_data_set(tmp_path, "failed")
+    result = data_set["result"]
+    assert type(result) is PersistedExecutionOutcome
+    assert result.outcome == "persisted_failure"
+    calls: list[tuple[object, ...]] = []
+
+    def counting(*args: object) -> object:
+        calls.append(args)
+        return object()
+
+    out = public_phase144(
+        result,
+        data_set["workflow"],
+        data_set["state_path"],
+        data_set["events_path"],
+        phase136_function=counting,
+        _allow_accumulated_none_request_id_for_active_failure=True,
+    )
+    assert out is result  # exact same outcome object by identity
+    assert calls == []  # Phase 136 zero calls for persisted_failure
+    unchanged(data_set)
+
+
+def test_active_failure_opt_in_narrow_default_stays_strict(tmp_path: Path) -> None:
+    """Issue #383: the opt-in is private and narrow; every other route keeps
+    its existing strict semantics.
+    """
+    # 1. same aged persisted_failure with default False -> terminal_contract
+    strict = accumulated_none_data_set(tmp_path / "strict", "failed")
+    reject(strict, "terminal_contract")
+
+    # 2. predecessor step-4 None remains rejected even with the opt-in
+    data_p4 = values(
+        tmp_path / "p4",
+        definition=accumulated_workflow(),
+        index=7,
+        status="failed",
+    )
+    replace_predecessor(
+        data_p4,
+        4,
+        predecessor_event(
+            data_p4["workflow"].steps[3],  # type: ignore[arg-type]
+            4,
+            provider="openai",
+            request_id=None,
+        ),
+    )
+    with pytest.raises(PublicPhase144CompatibilityError) as caught_p4:
+        public_phase144(
+            data_p4["result"],
+            data_p4["workflow"],
+            data_p4["state_path"],
+            data_p4["events_path"],
+            phase136_function=lambda *_: object(),
+            _allow_accumulated_none_request_id_for_active_failure=True,
+        )
+    assert caught_p4.value.detail.classification == "terminal_contract"
+    unchanged(data_p4)
+
+    # 3. aged None with a non-OpenAI provider remains rejected even with opt-in
+    data_other = accumulated_none_data_set(
+        tmp_path / "other", "failed", five_provider="other"
+    )
+    with pytest.raises(PublicPhase144CompatibilityError) as caught_other:
+        public_phase144(
+            data_other["result"],
+            data_other["workflow"],
+            data_other["state_path"],
+            data_other["events_path"],
+            phase136_function=lambda *_: object(),
+            _allow_accumulated_none_request_id_for_active_failure=True,
+        )
+    assert caught_other.value.detail.classification == "terminal_contract"
+    unchanged(data_other)
+
+    # 4. empty / non-string request IDs remain invalid even with the opt-in
+    for bad_request_id in ("", 123):
+        data_bad = values(
+            tmp_path / f"bad-{type(bad_request_id).__name__}",
+            definition=accumulated_workflow(),
+            index=7,
+            status="failed",
+        )
+        replace_predecessor(
+            data_bad,
+            5,
+            predecessor_event(
+                data_bad["workflow"].steps[4],  # type: ignore[arg-type]
+                5,
+                provider="openai",
+                request_id=bad_request_id,
+            ),
+        )
+        with pytest.raises(PublicPhase144CompatibilityError) as caught_bad:
+            public_phase144(
+                data_bad["result"],
+                data_bad["workflow"],
+                data_bad["state_path"],
+                data_bad["events_path"],
+                phase136_function=lambda *_: object(),
+                _allow_accumulated_none_request_id_for_active_failure=True,
+            )
+        assert caught_bad.value.detail.classification == "terminal_contract"
+        unchanged(data_bad)
+
+    # 5. workflow_complete stop unchanged even with the opt-in supplied
+    complete_set, complete = stop_values(tmp_path / "complete", "complete")
+    complete_calls: list[tuple[object, ...]] = []
+
+    def complete_counting(*args: object) -> object:
+        complete_calls.append(args)
+        return object()
+
+    out_complete = public_phase144(
+        complete,
+        complete_set["workflow"],
+        complete_set["state_path"],
+        complete_set["events_path"],
+        phase136_function=complete_counting,
+        _allow_accumulated_none_request_id_for_active_failure=True,
+    )
+    assert out_complete is complete
+    assert complete_calls == []
+    unchanged(complete_set)
+
+    # 6. persisted_success Issue-#380 accumulated behavior unchanged with opt-in
+    success_set = accumulated_none_data_set(tmp_path / "success", "succeeded")
+    expected = expected_decision(success_set)
+    success_seen: list[tuple[object, ...]] = []
+
+    def success_counting(*args: object) -> object:
+        success_seen.append(args)
+        return expected
+
+    out_success = public_phase144(
+        success_set["result"],
+        success_set["workflow"],
+        success_set["state_path"],
+        success_set["events_path"],
+        phase136_function=success_counting,
+        _allow_accumulated_none_request_id_for_active_failure=True,
+    )
+    assert out_success is expected
+    assert len(success_seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            success_seen[0],
+            tuple(
+                success_set[key]
+                for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+    unchanged(success_set)

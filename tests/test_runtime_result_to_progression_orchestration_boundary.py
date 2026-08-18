@@ -1306,3 +1306,252 @@ def test_real_default_seven_step_step6_success_prepare_next_step(
         history.state
     ).encode("utf-8")
     assert values["events_path"].read_bytes() != events_before  # type: ignore[union-attr]
+
+
+def accumulated_setup(tmp_path: Path) -> dict[str, object]:
+    """Eight-step Phase-155-provenance running state at step 7.
+
+    Mirrors the exact real-chain bytes proven by Issue #377 C: step 5 carries
+    an aged ``request_id=None`` (``openai``) and step 6 (the immediate
+    predecessor) also carries ``request_id=None`` (``openai``); positions 2-4
+    keep their authorized empty outputs.  Position 1 keeps a normal
+    predecessor event.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    wf = workflow(8)
+    state = WorkflowExecutionState(
+        "w",
+        "running",
+        wf.steps[6].id,
+        7,
+        wf.steps[6].employee,
+        tuple(step.id for step in wf.steps[:6]),
+        None,
+    )
+    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
+    events = []
+    for index in range(1, 7):
+        if index in (5, 6):
+            events.append(
+                predecessor_event(
+                    wf.steps[index - 1].id,
+                    index,
+                    output_text="" if index == 5 else "output",
+                    request_id=None,
+                )
+            )
+        elif index in (2, 3, 4):
+            events.append(
+                predecessor_event(wf.steps[index - 1].id, index, output_text="")
+            )
+        else:
+            events.append(predecessor_event(wf.steps[index - 1].id, index))
+    events_path.write_text(
+        "".join(serialize_runtime_step_event_jsonl(event) for event in events),
+        encoding="utf-8",
+    )
+    return {
+        "workflow": wf,
+        "state_path": state_path,
+        "events_path": events_path,
+        "state_before": state_path.read_bytes(),
+        "events_before": events_path.read_bytes(),
+    }
+
+
+def test_exact_default_active_runtime_failure_uses_opt_in_and_succeeds(
+    tmp_path: Path,
+) -> None:
+    """Issue #383: the exact default Phase 144 receives the private active-
+    failure opt-in from the real Phase 172 route and accepts the exact
+    Issue #377 C accumulated failure provenance (step5=None + step6=None,
+    openai): exact persisted_failure returned, durable failed target
+    preserved, exactly one failed event appended, no retry, no Phase 136
+    /lower progression call.
+
+    Phase 144 must remain the exact built-in default here: wrapping it would
+    disable the opt-in (the route enables it only for the exact default
+    identity).
+    """
+    values = accumulated_setup(tmp_path)
+    wf = values["workflow"]
+    assert isinstance(wf, WorkflowDefinition)
+    result = runtime_failure(wf, 7)
+    order: list[str] = []
+    captured: dict[str, object] = {}
+    real_phase161 = (
+        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
+    )
+    real_phase143 = (
+        route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
+    )
+
+    def counting_phase161(
+        r: object, w: object, s: object, e: object
+    ) -> WorkflowExecutionPersistenceResult:
+        order.append("phase161")
+        return real_phase161(r, w, s, e)
+
+    def counting_phase143(
+        r: object, w: object, s: object, e: object
+    ) -> PersistedExecutionOutcome | WorkflowProgressionDecision:
+        order.append("phase143")
+        outcome = real_phase143(r, w, s, e)
+        captured["outcome"] = outcome
+        return outcome
+
+    out = route_runtime_result_to_progression_orchestration_boundary(
+        result,
+        wf,
+        values["state_path"],
+        values["events_path"],
+        phase161_function=counting_phase161,
+        phase143_function=counting_phase143,
+        # phase144_function intentionally left at the exact built-in default
+    )
+    assert order == ["phase161", "phase143"]
+    assert type(out) is PersistedExecutionOutcome
+    assert out is captured["outcome"]  # exact Phase-143 object by identity
+    assert out.outcome == "persisted_failure"
+    assert out.failure_category == "api_error"
+    assert out.workflow_id == "w"
+    assert out.current_step_id == "step-7"
+    assert out.current_step_index == 7
+    assert out.current_employee_id == "e7"
+
+    history = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"], values["events_path"]  # type: ignore[arg-type]
+        )
+    )
+    assert history.state.status == "failed"
+    assert history.state.current_step_id == "step-7"
+    assert history.state.current_step_index == 7
+    assert history.state.completed_step_ids == tuple(f"step-{i}" for i in range(1, 7))
+    assert history.state.last_failure_category == "api_error"
+    assert len(history.events) == 7
+    assert history.events[6].event_type == "step_failed"
+    assert history.events[6].step_id == "step-7"
+    assert history.events[6].provider == "openai"
+    # Accumulated None provenance preserved byte-exact (positions 5 and 6).
+    assert history.events[4].request_id is None
+    assert history.events[4].provider == "openai"
+    assert history.events[5].request_id is None
+    assert history.events[5].provider == "openai"
+    # Exactly one failed event appended; no retry / no further step.
+    loaded_before = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            values["state_path"], values["events_path"]  # type: ignore[arg-type]
+        )
+    )
+    del loaded_before
+
+
+def test_custom_injected_phase144_contract_remains_four_positional_args(
+    tmp_path: Path,
+) -> None:
+    """Issue #383: a custom injected Phase 144 dependency keeps the exact
+    four-positional-argument contract on the active runtime-failure route:
+    exactly one call, no new keyword argument, exact stage order
+    Phase161 -> Phase143 -> Phase144, canonical object identity.  A strict
+    four-argument function with no ``**kwargs`` would raise TypeError if any
+    keyword were forwarded; the route must therefore never forward the
+    private opt-in to custom dependencies.
+    """
+    values = accumulated_setup(tmp_path)
+    wf = values["workflow"]
+    assert isinstance(wf, WorkflowDefinition)
+    result = runtime_failure(wf, 7)
+    order: list[str] = []
+    captured: dict[str, object] = {}
+    real_phase161 = (
+        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
+    )
+    real_phase143 = (
+        route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
+    )
+
+    def phase161(
+        r: object, w: object, s: object, e: object
+    ) -> WorkflowExecutionPersistenceResult:
+        order.append("phase161")
+        assert r is result
+        assert w is wf
+        assert s is values["state_path"]
+        assert e is values["events_path"]
+        return real_phase161(r, w, s, e)
+
+    def phase143(
+        r: object, w: object, s: object, e: object
+    ) -> PersistedExecutionOutcome | WorkflowProgressionDecision:
+        order.append("phase143")
+        assert r is not None
+        outcome = real_phase143(r, w, s, e)
+        captured["outcome"] = outcome
+        return outcome
+
+    def strict_phase144(
+        r: object, w: object, s: object, e: object
+    ) -> object:
+        # Strict four positional arguments; no **kwargs.  If the route ever
+        # forwarded the private opt-in, this would raise TypeError.
+        order.append("phase144")
+        assert r is captured["outcome"]
+        assert w is wf
+        assert s is values["state_path"]
+        assert e is values["events_path"]
+        return r
+
+    out = route_runtime_result_to_progression_orchestration_boundary(
+        result,
+        wf,
+        values["state_path"],
+        values["events_path"],
+        phase161_function=phase161,
+        phase143_function=phase143,
+        phase144_function=strict_phase144,
+    )
+    assert order == ["phase161", "phase143", "phase144"]
+    assert out is captured["outcome"]
+    assert type(out) is PersistedExecutionOutcome
+    assert out.outcome == "persisted_failure"
+
+    # Inline subcase: a direct original persisted_failure stop remains
+    # Phase143 / Phase144 zero with the injected dependencies (bindings
+    # swapped for a stop input), exactly as the existing stop contract
+    # requires.  Snapshot the current post-commit targets first: the main
+    # flow above durably committed the failed step-7 state.
+    stop_state_before = values["state_path"].read_bytes()
+    stop_events_before = values["events_path"].read_bytes()
+    stop = failure_outcome(wf, 7)
+    stop_order: list[str] = []
+
+    def stop_phase161(
+        r: object, w: object, s: object, e: object
+    ) -> object:
+        stop_order.append("phase161")
+        assert r is stop
+        return stop
+
+    def stop_phase143(*_: object) -> object:
+        stop_order.append("phase143")
+        raise AssertionError("phase143 must not be called for a stop")
+
+    def stop_phase144(*_: object) -> object:
+        stop_order.append("phase144")
+        raise AssertionError("phase144 must not be called for a stop")
+
+    out_stop = route_runtime_result_to_progression_orchestration_boundary(
+        stop,
+        wf,
+        values["state_path"],
+        values["events_path"],
+        phase161_function=stop_phase161,
+        phase143_function=stop_phase143,
+        phase144_function=stop_phase144,
+    )
+    assert out_stop is stop
+    assert stop_order == ["phase161"]
+    assert values["state_path"].read_bytes() == stop_state_before
+    assert values["events_path"].read_bytes() == stop_events_before

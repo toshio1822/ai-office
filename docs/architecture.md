@@ -3540,14 +3540,14 @@ Issue #380は、Phase 178（Issue #377）の前提として、**7つの境界す
 
 - **accumulated rule**: 境界時点の current / terminal index が **7以上**（`last_position >= 6`）で、**predecessor position >= 5** の None request-ID を許容。`request_id=None` のときは **provider が正確に `"openai"`** であること（新ガード: `if allow_none and event.request_id is None and event.provider != "openai": return False`。non-openai provider の None は従来どおり reject）
 - **immediate None は従来どおり**: 直前1件（`position == last_position`）の None 許容は全ルートで維持（`allow_immediate_none_request_id`）
-- **許容は新フラグで限定**: `allow_accumulated_none_request_id`（デフォルト False）が有効なのは classification route と `persisted_success` progression route のみ。旧説明のような「`allow_immediate_none_request_id` と独立して常に許容」ではない
+- **許容は新フラグで限定**: `allow_accumulated_none_request_id`（デフォルト False）が有効なのは classification route と `persisted_success` progression route のみ。旧説明のような「`allow_immediate_none_request_id` と独立して常に許容」ではない。**唯一の例外**は Issue #383 の active runtime-failure 経路（Phase 172 が実際に生成した `persisted_failure` に限り、exact default Phase 144 が private opt-in を受けて同じ bounded accumulated rule を適用）。direct/original `persisted_failure` stop には一切適用しない
 - 位置4以前の None request-ID は、`last_position >= 6` でも**依然として reject**（対象外をピン留め）
 
 ### ルート別の適用
 
 - **Phase 161 / 142 / 134（runtime persistence chain）**: 実行中（running）persistence route の `_check_predecessor_history` で bounded accumulated provenance を許容（`allow_none = position == last_position or (last_position >= 6 and position >= 5)`）。stop route（`WorkflowProgressionDecision` / `PersistedExecutionOutcome`）はこの検証より手前で return するため accumulated 許容は適用されず、immediate None のみ
 - **Phase 143 / 135（persisted classification chain）**: `WorkflowExecutionPersistenceResult` 由来の classification route（`_check_persistence` → `_valid_history`）でのみ `allow_accumulated_none_request_id=True` を有効化
-- **Phase 144 / 136（classified progression chain）**: `PersistedExecutionOutcome` かつ `outcome == "persisted_success"` の progression route でのみ `allow_accumulated_none_request_id=True` を有効化。`persisted_failure` / `workflow_complete` の stop route は対象外
+- **Phase 144 / 136（classified progression chain）**: `PersistedExecutionOutcome` かつ `outcome == "persisted_success"` の progression route でのみ `allow_accumulated_none_request_id=True` を有効化。`persisted_failure` / `workflow_complete` の stop route は対象外。**Issue #383 の例外**: Phase 172 の active runtime-failure 経路（exact `StepRuntimeExecutionFailure` → 新規 `persisted_failure` classification）では、exact default Phase 144 のみ private opt-in `_allow_accumulated_none_request_id_for_active_failure=True` を受けて同一の bounded accumulated rule を適用する（direct stop は従来どおり strict・Phase136 は zero-call）
 
 ### 対象7境界（production 修正）
 
@@ -3596,3 +3596,68 @@ Issue #380は、Phase 178（Issue #377）の前提として、**7つの境界す
 - 8番目の production 修正・7境界外の production 変更・`__init__.py` export 追加は行わない
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化は行わない
 - 位置4以前の None 許容・non-openai の None 許容・provider / network / paid API 呼び出しは行わない
+
+## Phase 178 prerequisite（Issue #383）: Preserve Accumulated Aged None on Active Runtime-Failure Progression without Broadening Direct Stops
+
+Issue #383 は、Issue #380 の accumulated aged-None 保存を **active runtime-failure 経路**（Phase 172 → Phase 161 → Phase 143 → Phase 144）でも成立させる Phase 178 前提修復。direct/original の `persisted_failure` stop は一切 broaden しない。
+
+### 正確な最終ルール
+
+```text
+Phase144 persisted_success
+  → Issue #380 bounded rule で accumulated aged-None 許容（従来どおり）
+
+Phase172 active runtime failure
+  → Phase143 が新規に persisted_failure を分類
+  → exact default Phase144 のみ private active-failure opt-in を受ける
+  → 同一の bounded accumulated aged-None validation を適用
+  → exact persisted_failure を返す（Phase136 は zero-call・no retry）
+
+direct/original persisted_failure stop
+  → opt-in なし
+  → 既存の immediate-None-only strictness を維持（aged None は terminal_contract のまま）
+```
+
+### アーキテクチャ判断
+
+- **C2 仮説（最小 seam）**: Phase172 → Phase144 seam に private opt-in を追加。lower production 修正なし
+- **Phase144**: 公開関数に private keyword-only `_allow_accumulated_none_request_id_for_active_failure: bool = False`（`phase136_function` の後・デフォルト False・有効判定は `is True` のみ）。有効時は既存の bounded accumulated provenance rule（`last_position >= 6`・`position >= 5`・provider が正確に `"openai"`）を `persisted_failure` にも適用し exact outcome identity を返す。`_check_inputs` / `_check_terminal`（stop=True で phase136 を呼ばない）は不変
+- **Phase172**: `phase144_kwargs` は try ブロック外で組み立て、**exact** `StepRuntimeExecutionFailure` + `type(classified) is PersistedExecutionOutcome` + `classified.outcome == "persisted_failure"` + `phase144_function is` exact built-in default のときだけ opt-in を渡す。呼び出しはちょうど1回（既存 AST audit の `calls.count(...) == 1` を維持）。custom injected Phase144 には一切渡さず 4 positional args 契約を不変に保つ
+
+### custom injected Phase144 契約（不変）
+
+```text
+phase144_function(classified, workflow, state_path, events_path)
+```
+
+- 正確に4つの positional 引数・新しい keyword なし・ちょうど1回
+- stage order（Phase161 → Phase143 → Phase144）と injected-test 挙動は変更なし
+- signature introspection / exception retry / contextvars / globals / thread-local / function attributes / mutable module state / call-stack inspection は使わない
+
+### 明示的に変更しないこと
+
+- Phase136・Phase161・Phase143・Phase177 / 176 / 175 / 173・Phase155・`terminal_history_contract.py`・storage/runtime/invocation/provider/tool・`engine/__init__.py`・CLI / GUI
+- accumulated aged-None **terminal stop re-entry** は実装しない（Issue #377 D は matching-terminal-snapshot 契約のまま）
+- retry / loop / automatic continuation / finalize / schedule / parallelism / CLI-GUI 挙動は追加しない
+
+### テスト戦略
+
+- **Phase144 focused +2**: (a) opt-in 受容（exact persisted_failure identity・Phase136 zero-call・targets bytes unchanged）、(b) default strict / opt-in 狭さ（aged default → `terminal_contract`・position4 None 拒否・non-openai None 拒否・空/非文字列 request-id 拒否・`workflow_complete` 不変・`persisted_success` の Issue #380 挙動不変）
+- **Phase172 focused +2**: (a) exact default active runtime failure が opt-in 経由で成功（Phase161 → Phase143 → exact default Phase144 を1回・exact persisted_failure・durable failed target 保持・Phase136/lower 呼び出しなし）、(b) custom injected strict 4引数 Phase144 が TypeError なしで1回呼ばれる（stage order・identity・direct stop は Phase143/144 zero）
+- **real regression 更新（+0 collected）**: `test_real_c` を exact Issue #377 C（step5=None + step6=None・openai・step7 決定的 failure）に変更し実 Phase172 経由で `persisted_failure` を受容。inline subcase で **direct Phase144 default（opt-in なし）は aged step5 None を `terminal_contract` のまま reject** することを証明
+
+### collect 不変条件
+
+base **11,932** → Phase144 +2 / Phase172 +2 / real regression +0 → **11,936**
+
+### 変更ファイル（正確に7ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_progression_orchestration_boundary.py` — Phase172 routing provenance
+2. `tests/test_runtime_result_to_progression_orchestration_boundary.py` — Phase172 focused +2
+3. `src/ai_office/engine/classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase144 private opt-in
+4. `tests/test_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase144 focused +2
+5. `tests/test_phase177_phase172_accumulated_request_id_none_persistence_classification_progression_compatibility.py` — real-C を exact Issue #377 C に更新（+0）
+6. `README.md` — Issue #383 の documentation
+7. `docs/architecture.md` — 本節
+
+8番目のファイルが必要になった場合は STOP して報告する。

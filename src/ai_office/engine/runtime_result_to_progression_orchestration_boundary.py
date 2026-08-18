@@ -110,6 +110,17 @@ def route_runtime_result_to_progression_orchestration_boundary(
     validator. Once Phase 161 returns an exact persistence result, its
     post-call target bytes become the durable commit point; Phase 143 and
     Phase 144 may never cause a rollback to the pre-Phase161 running state.
+
+    Route provenance (Issue #383): when the original input is an exact
+    ``StepRuntimeExecutionFailure`` and Phase 143 newly classifies it as an
+    exact ``PersistedExecutionOutcome(persisted_failure)``, the exact built-in
+    default Phase 144 receives the private active-failure opt-in
+    (``_allow_accumulated_none_request_id_for_active_failure=True``) so the
+    accumulated aged-None provenance preserved by Issue #380 is accepted on
+    this active runtime-failure path only. A custom injected Phase 144
+    dependency is never given the opt-in; it keeps the exact four-positional
+    call contract. Direct/original ``persisted_failure`` stop inputs are not
+    broadened and Phase 136 remains zero-call for persisted_failure.
     """
     _check_inputs(
         result,
@@ -172,8 +183,24 @@ def route_runtime_result_to_progression_orchestration_boundary(
         _fail("phase143_contract")
     _require_unchanged(state_path, events_path, committed, "committed_mutation")
 
+    phase144_kwargs: dict[str, object] = {}
+    if (
+        type(result) is StepRuntimeExecutionFailure
+        and type(classified) is PersistedExecutionOutcome
+        and classified.outcome == "persisted_failure"
+        and phase144_function
+        is route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
+    ):
+        phase144_kwargs["_allow_accumulated_none_request_id_for_active_failure"] = True
+
     try:
-        progressed = phase144_function(classified, workflow, state_path, events_path)
+        progressed = phase144_function(
+            classified,
+            workflow,
+            state_path,
+            events_path,
+            **phase144_kwargs,
+        )
     except Phase144Error as error:
         _restore_if_changed(state_path, events_path, committed)
         raise error
