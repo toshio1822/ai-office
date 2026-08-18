@@ -3678,18 +3678,20 @@ Phase 177は以下のbehaviorを**一切**追加・変更しない:
 
 ## Phase 178 prerequisite（Issue #380）: Accumulated Aged None Request-ID Preservation across Persistence / Classification / Progression Entry Layers
 
-Issue #380は、Phase 178（Issue #377）の前提として、**7つの境界で「蓄積された aged None request-ID」を persistence / classification / progression の各 entry 層を横断して保存できる**ようにする prerequisite です。runtime-result persistence chain（Phase 161 → 142 → 134）、persisted classification chain（Phase 143 → 135）、classified progression chain（Phase 144 → 136）の各 entry 境界で、**その時点より前の履歴に既に6件以上が存在する場合（`last_position >= 6`）、位置5・6の None request-ID（provider=`"openai"`）を許容**します。
+Issue #380は、Phase 178（Issue #377）の前提として、**7つの境界で「蓄積された aged None request-ID」を persistence / classification / progression の各 entry 層を横断して保存できる**ようにする prerequisite です。accumulated aged None の許容は**ルート別に限定**され、境界時点の current / terminal index が **7以上**（predecessor 履歴が6件以上 = `last_position >= 6`）かつ **predecessor position >= 5** の None request-ID を、classification route（Phase 143 / 135）と `persisted_success` progression route（Phase 144 / 136）でのみ許容します。stop route（`workflow_complete` / `persisted_failure`）は aged None を新規に許容せず、既存の immediate-None-only semantics を維持します。
 
 ### 核心契約
 
-- **allow_none 判定**: `allow_none = position == last_position or (last_position >= 6 and position >= 5)`（`last_position` = 先行件数）
-  - 直前1件（immediate）の None 許容は従来どおり
-  - **新規**: 直前6件以上ある場合、位置5・6の None request-ID も許容（`allow_immediate_none_request_id` と独立）
-- **新ガード**: `if allow_none and event.request_id is None and event.provider != "openai": return False` — None request-ID は `provider="openai"` のときのみ許容。non-openai provider の None は従来どおり reject
+- **accumulated rule**: 境界時点の current / terminal index が **7以上**（`last_position >= 6`）で、**predecessor position >= 5** の None request-ID を許容。`request_id=None` のときは **provider が正確に `"openai"`** であること（新ガード: `if allow_none and event.request_id is None and event.provider != "openai": return False`。non-openai provider の None は従来どおり reject）
+- **immediate None は従来どおり**: 直前1件（`position == last_position`）の None 許容は全ルートで維持（`allow_immediate_none_request_id`）
+- **許容は新フラグで限定**: `allow_accumulated_none_request_id`（デフォルト False）が有効なのは classification route と `persisted_success` progression route のみ。旧説明のような「`allow_immediate_none_request_id` と独立して常に許容」ではない
 - 位置4以前の None request-ID は、`last_position >= 6` でも**依然として reject**（対象外をピン留め）
-- 適用箇所:
-  - Phase 161 / 142 / 134: `_check_predecessor_history`
-  - Phase 143 / 135 / 144 / 136: `_valid_history`（`allow_none = (allow_immediate_none_request_id and position == last_position) or (last_position >= 6 and position >= 5)`）
+
+### ルート別の適用
+
+- **Phase 161 / 142 / 134（runtime persistence chain）**: 実行中（running）persistence route の `_check_predecessor_history` で bounded accumulated provenance を許容（`allow_none = position == last_position or (last_position >= 6 and position >= 5)`）。stop route（`WorkflowProgressionDecision` / `PersistedExecutionOutcome`）はこの検証より手前で return するため accumulated 許容は適用されず、immediate None のみ
+- **Phase 143 / 135（persisted classification chain）**: `WorkflowExecutionPersistenceResult` 由来の classification route（`_check_persistence` → `_valid_history`）でのみ `allow_accumulated_none_request_id=True` を有効化
+- **Phase 144 / 136（classified progression chain）**: `PersistedExecutionOutcome` かつ `outcome == "persisted_success"` の progression route でのみ `allow_accumulated_none_request_id=True` を有効化。`persisted_failure` / `workflow_complete` の stop route は対象外
 
 ### 対象7境界（production 修正）
 
@@ -3703,13 +3705,13 @@ Issue #380は、Phase 178（Issue #377）の前提として、**7つの境界で
 
 ### テスト
 
-- **focused テスト +4件 × 7ファイル（計+28）**: 各境界で
-  (1) accumulated None（位置5+6・provider openai）success ルートで委譲1回
-  (2) 同 failure ルート（stop / 委譲1回）
-  (3) 位置5の None + non-openai provider → reject（新ガード）
-  (4) 位置4の None は依然 reject（`last_position >= 6` でも対象外）をピン留め
+- **focused テスト 各4件 × 7ファイル（計+28）**（各モジュールは collected 4件を維持。failure-route / stop の追加検証は collected 数を増やさない inline subcase）:
+  1. accumulated None（position 5+6・provider openai）success ルートで委譲1回
+  2. **Issue #380 case 2（step8 non-contiguous provenance）**: step5=None / step6=non-empty request ID / step7=None の直後、step8 の境界で delegates ちょうど1回（`test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once`）
+  3. position 5 の None + non-openai provider → reject（新ガード）
+  4. position 4 の None は依然 reject（`last_position >= 6` でも対象外）をピン留め
 - **新規回帰テスト**: `tests/test_phase177_phase172_accumulated_request_id_none_persistence_classification_progression_compatibility.py`（+4件: real A/B/C/D。8-step の step-7 で蓄積 None を実チェーン経由で検証）
-- 8-step `accumulated_workflow()` を各テストファイル末尾に追加（既存ヘルパーが4〜6ステップのため位置5+6に届かない）
+- 8-step 用の accumulated セットアップヘルパーを各テストファイルに追加（既存ヘルパーが4〜6ステップのため position 5+6 / step8 に届かない）
 - collect 合計: **11,932**（base 11,900 + focused +28 + 新規回帰 +4）
 
 ### 変更ファイル（正確に17ファイル）
