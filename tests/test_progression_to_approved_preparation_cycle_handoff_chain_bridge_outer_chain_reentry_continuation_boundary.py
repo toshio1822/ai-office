@@ -1508,46 +1508,191 @@ def _accumulated_value(
     }
 
 
-def test_prepare_accumulated_openai_none_request_id_delegates_once(tmp_path: Path) -> None:
-    # Issue #386: accumulated aged None request-id predecessors (readable
-    # positions 5 and 6) that are openai survive the phase 145 prepare route.
-    value = _accumulated_value(tmp_path, index=8)
-    expected = prepared(value["workflow"], value["result"], employee(value["result"]))
-    calls = 0
+def _accumulated_stop_value(
+    tmp_path: Path,
+    *,
+    fail: bool,
+    none_positions: tuple[int, ...] = (5, 6),
+) -> dict[str, object]:
+    """A stop-route durable snapshot (workflow_complete or persisted_failure)
+    with aged openai None predecessors at the requested positions."""
+    supplied_workflow = _accumulated_workflow()
+    index = 7 if fail else len(supplied_workflow.steps)
+    step = supplied_workflow.steps[index - 1]
+    immediate = index - 1
+    predecessors = tuple(
+        predecessor_event(
+            prior,
+            position,
+            provider=(
+                "openai"
+                if position in none_positions or position == immediate
+                else "other"
+            ),
+            request_id=None if position in none_positions else "request",
+        )
+        for position, prior in enumerate(supplied_workflow.steps[: index - 1], 1)
+    )
+    if fail:
+        state = WorkflowExecutionState(
+            "w",
+            "failed",
+            step.id,
+            index,
+            step.employee,
+            tuple(item.id for item in supplied_workflow.steps[: index - 1]),
+            "api_error",
+        )
+        terminal = terminal_event(step, index, status="failed", provider="openai")
+        result: object = PersistedExecutionOutcome(
+            "persisted_failure", "w", step.id, index, step.employee, "api_error"
+        )
+    else:
+        state = WorkflowExecutionState(
+            "w",
+            "succeeded",
+            step.id,
+            index,
+            step.employee,
+            tuple(item.id for item in supplied_workflow.steps[:index]),
+            None,
+        )
+        terminal = terminal_event(step, index, provider="openai")
+        result = WorkflowProgressionDecision(
+            "workflow_complete",
+            "w",
+            step.id,
+            index,
+            step.employee,
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        )
+    state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
+    event_bytes = b"".join(
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+        for event in (*predecessors, terminal)
+    )
+    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    return {
+        "result": result,
+        "workflow": supplied_workflow,
+        "approval": None,
+        "employee": None,
+        "state_path": state_path,
+        "events_path": events_path,
+        "before_state": state_bytes,
+        "before_events": event_bytes,
+    }
 
-    def fake(*_: object) -> PreparedWorkflowStep:
-        nonlocal calls
-        calls += 1
+
+def test_prepare_accumulated_openai_none_request_id_delegates_once(tmp_path: Path) -> None:
+    # Issue #386: the prepared step-8 accepts a prepare route where step 7 is
+    # the current succeeded step (index 7) and accumulated predecessors at
+    # positions 5 and 6 both carry request_id=None + provider=openai.  The
+    # dependency (the real Phase 137) is delegated exactly once with the
+    # canonical six positional arguments, returns the exact prepared step, and
+    # both durable targets are left byte-identical.
+    value = _accumulated_value(tmp_path, index=7)
+    result = value["result"]
+    # acceptance contract: current step 7 succeeded, positions 5/6 None+openai,
+    # prepare step 8.
+    assert type(result) is WorkflowProgressionDecision
+    assert result.current_step_index == 7
+    assert result.next_step_index == 8
+    events = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(value["state_path"], value["events_path"])
+    ).events
+    assert events[4].request_id is None and events[4].provider == "openai"
+    assert events[5].request_id is None and events[5].provider == "openai"
+
+    expected = prepared(value["workflow"], result, employee(result))
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake(*args: object, **kwargs: object) -> PreparedWorkflowStep:
+        calls.append((args, kwargs))
         return expected
 
     assert invoke(value, fake) is expected
-    assert calls == 1
+    # dependency delegated exactly once with the canonical six positional args
+    # (result, workflow, approval, employee, state_path, events_path).
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert len(args) == 6
+    assert args[0] is value["result"]
+    assert args[1] is value["workflow"]
+    assert args[2] is value["approval"]
+    assert args[3] is value["employee"]
+    assert args[4] is value["state_path"]
+    assert args[5] is value["events_path"]
+    assert kwargs == {}
     unchanged(value)
 
 
 def test_prepare_accumulated_openai_none_request_id_narrowness(tmp_path: Path) -> None:
     # The accumulated-openai-None relaxation is only enabled on the prepare
-    # route (not stop) and only for openai providers at accumulated positions.
-    value = _accumulated_value(tmp_path, index=8)
+    # route (not stop), only for exact request_id=None with provider=="openai"
+    # at aged positions (>= 5).  Every rejected case must leave the durable
+    # targets byte-identical and never call the dependency (zero-call).
+    value = _accumulated_value(tmp_path, index=7)
 
-    # (a) accumulated position with provider != openai remains rejected.
+    # (a) position 5 with provider != openai stays rejected.
     rewrite_event(value["events_path"], 4, provider="anthropic")
     value["before_events"] = value["events_path"].read_bytes()
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
-
-    # restore baseline
     rewrite_event(value["events_path"], 4, provider="openai")
     value["before_events"] = value["events_path"].read_bytes()
 
-    # (b) a single aged non-openai None even at the terminal-adjacent position
-    # is rejected (relaxation is openai-only, position >= 5 only).
-    rewrite_event(value["events_path"], 5, provider="anthropic")
+    # (b) position 5 with request_id="" stays rejected (neither None nor a
+    # non-empty string).
+    rewrite_event(value["events_path"], 4, request_id="")
     value["before_events"] = value["events_path"].read_bytes()
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
-    rewrite_event(value["events_path"], 5, provider="openai")
+    rewrite_event(value["events_path"], 4, request_id=None)
     value["before_events"] = value["events_path"].read_bytes()
 
-    # (c) accumulated None at position 4 (below threshold) remains rejected.
+    # (c) position 5 with a non-string / non-None request_id stays rejected.
+    rewrite_event(value["events_path"], 4, request_id=12345)
+    value["before_events"] = value["events_path"].read_bytes()
+    assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+    rewrite_event(value["events_path"], 4, request_id=None)
+    value["before_events"] = value["events_path"].read_bytes()
+
+    # (d) accumulated None at position 4 (below the aged threshold >= 5)
+    # remains rejected even with an openai provider.
     rewrite_event(value["events_path"], 3, request_id=None)
     value["before_events"] = value["events_path"].read_bytes()
     assert_rejected(value, "terminal_contract", lambda *_: pytest.fail("called"))
+    rewrite_event(value["events_path"], 3, request_id="request")
+    value["before_events"] = value["events_path"].read_bytes()
+
+    # (e) the pre-existing immediate-predecessor None (position 6 alone) is
+    # still accepted: it does not rely on the accumulated relaxation.
+    immediate_only = _accumulated_value(tmp_path, index=7, none_positions=(6,))
+    expected_immediate = prepared(
+        immediate_only["workflow"],
+        immediate_only["result"],
+        employee(immediate_only["result"]),
+    )
+    immediate_calls = 0
+
+    def immediate_fake(*_: object) -> PreparedWorkflowStep:
+        nonlocal immediate_calls
+        immediate_calls += 1
+        return expected_immediate
+
+    assert invoke(immediate_only, immediate_fake) is expected_immediate
+    assert immediate_calls == 1
+    unchanged(immediate_only)
+
+    # (f) the stop routes remain strict: an aged openai None at positions 5
+    # and 6 is still rejected on workflow_complete and persisted_failure
+    # (the relaxation is gated ``not stop``), with zero dependency calls.
+    complete = _accumulated_stop_value(tmp_path / "complete", fail=False)
+    assert_rejected(complete, "terminal_contract", lambda *_: pytest.fail("called"))
+    failed = _accumulated_stop_value(tmp_path / "failed", fail=True)
+    assert_rejected(failed, "terminal_contract", lambda *_: pytest.fail("called"))

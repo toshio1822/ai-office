@@ -3750,7 +3750,7 @@ Issue #386 は、Issue #380 / #383 の accumulated aged-None request-ID 保存�
 ### テスト
 
 - focused 各2件 × 2ファイル（計+4）: accumulated openai None prepare route で委譲1回 + 狭さ（non-openai / position 4 reject）
-- 新規実回帰 `tests/test_phase179_prereq_accumulated_prep_entry_real_regression.py`（+4）: real A 実チェーンで step-8 準備・B stop route strict・C position 4 reject・D non-openai reject
+- 新規実回帰 `tests/test_phase178_phase145_accumulated_request_id_none_approved_preparation_compatibility.py`（+4: A/B/C/D）: A は real Phase 178 public boundary（synthetic successful transport）→ exact prepare_next_step(step8) → real Phase 145 デフォルト chain（real Phase 137 → Phase 130/lower）で exact PreparedWorkflowStep(step8)。B は non-contiguous accumulated 対照で real チェーン成功。C は inline strict prepare 否定的（position4 None / position5 None+non-openai reject・bytes unchanged）。D は stop route の exact identity + bytes unchanged 維持（canonical workflow_complete / persisted_failure）+ aged-None stop reject（stop 意味論を拡張しない）
 
 ### collect 不変条件
 
@@ -3762,7 +3762,7 @@ base **11,956** → focused +4 + 実回帰 +4 → **11,964**
 2. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137 production
 3. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — focused +2
 4. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — focused +2
-5. `tests/test_phase179_prereq_accumulated_prep_entry_real_regression.py` — 新規実回帰 +4
+5. `tests/test_phase178_phase145_accumulated_request_id_none_approved_preparation_compatibility.py` — 新規実回帰 +4
 6. `README.md` — 本節
 7. `docs/architecture.md` — 本節
 

@@ -3884,7 +3884,7 @@ Issue #386 は、Issue #380 / #383 で保存した accumulated aged-None request
 ### テスト
 
 - **focused テスト 各2件 × 2ファイル（計+4）**: accumulated openai None（position 5+6・provider openai）prepare route で委譲1回 + 狭さ（non-openai None reject・position 4 Nothing reject）
-- **新規実回帰テスト**: `tests/test_phase179_prereq_accumulated_prep_entry_real_regression.py`（+4件: real A/B/C/D。実 Phase 177 → 実 Phase 172 → 実 Phase 145 → 実 Phase 137 → 実 Phase 130/lower チェーンで step-8 を準備、stop route の strict 維持、position 4 / non-openai の reject を検証）
+- **新規実回帰テスト**: `tests/test_phase178_phase145_accumulated_request_id_none_approved_preparation_compatibility.py`（+4件: A/B/C/D。A: real Phase 178 public boundary を synthetic successful transport で実行し step5/6 request_id=None + provider=openai の accumulated 状態から exact prepare_next_step(step8) を生成、その exact result を real Phase 145 デフォルト chain（real Phase 137 → Phase 130/lower）に渡し exact PreparedWorkflowStep(step8) を得る・transport はた度1回・step8 start/persist/execute ゼロ・terminal bytes unchanged。B: non-contiguous accumulated 対照（position5 None/openai・position6 非空 request_id）で real Phase 145 チェーンが step-8 まで成功。C: inline strict prepare 否定的（position4 None reject・position5 None + non-openai reject・target bytes unchanged）。D: stop route の exact identity + bytes unchanged 維持（canonical workflow_complete / persisted_failure）+ aged-None stop reject（stop 意味論を拡張しない））
 
 ### collect 不変条件
 
@@ -3896,7 +3896,7 @@ base **11,956**（Phase 178 完了時）→ focused +4 + 実回帰 +4 → **11,9
 2. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137 production
 3. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 145 focused +2
 4. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137 focused +2
-5. `tests/test_phase179_prereq_accumulated_prep_entry_real_regression.py` — 新規実回帰 +4
+5. `tests/test_phase178_phase145_accumulated_request_id_none_approved_preparation_compatibility.py` — 新規実回帰 +4
 6. `README.md` — 本節
 7. `docs/architecture.md` — 本 prerequisite のアーキテクチャ文書
 
