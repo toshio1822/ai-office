@@ -323,6 +323,7 @@ def _valid_history(
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool = False,
     allow_immediate_none_request_id: bool = False,
+    allow_accumulated_none_request_id: bool = False,
 ) -> bool:
     index = state.current_step_index
     result_identity_valid = result is None or (
@@ -357,7 +358,11 @@ def _valid_history(
         last_position = len(prior_steps)
         allow_none = (
             allow_immediate_none_request_id and position == last_position
-        ) or (last_position >= 6 and position >= 5)
+        ) or (
+            allow_accumulated_none_request_id
+            and last_position >= 6
+            and position >= 5
+        )
         if not _valid_predecessor(
             event,
             step,
@@ -514,6 +519,7 @@ def _check_persistence(
         allow_empty_success_output=True,
         allow_empty_predecessor_output=True,
         allow_immediate_none_request_id=True,
+        allow_accumulated_none_request_id=True,
     ):
         _fail("persistence_contract")
     try:

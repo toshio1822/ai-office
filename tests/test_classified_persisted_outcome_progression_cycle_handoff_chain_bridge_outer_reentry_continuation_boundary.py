@@ -1570,16 +1570,21 @@ def accumulated_none_data_set(
     *,
     five_provider: object = "openai",
     six_provider: object = "openai",
+    current: int = 7,
+    six_request_id: object = None,
 ) -> dict[str, object]:
-    """Terminal step-7 targets with accumulated None request ids.
+    """Terminal step-``current`` targets with accumulated None request ids.
 
-    Positions 1-4 use the default non-openai predecessors; positions 5 and 6
-    carry accumulated None request ids with the openai provider by default.
+    Positions 1-4 use the default non-openai predecessors; position 5 and
+    the immediate predecessor (``current-1``) carry accumulated None request
+    ids with the openai provider by default.  For ``current=8`` the
+    non-contiguous Issue #380 case 2 is built: step 5 None, step 6 a
+    non-empty request id, immediate step 7 None.
     """
     data_set = values(
         tmp_path,
         definition=accumulated_workflow(),
-        index=7,
+        index=current,
         status=status,
     )
     replace_predecessor(
@@ -1599,9 +1604,20 @@ def accumulated_none_data_set(
             data_set["workflow"].steps[5],  # type: ignore[arg-type]
             6,
             provider=six_provider,
-            request_id=None,
+            request_id=None if current == 7 else six_request_id,
         ),
     )
+    if current == 8:
+        replace_predecessor(
+            data_set,
+            7,
+            predecessor_event(
+                data_set["workflow"].steps[6],  # type: ignore[arg-type]
+                7,
+                provider=six_provider,
+                request_id=None,
+            ),
+        )
     return data_set
 
 
@@ -1632,23 +1648,45 @@ def test_accumulated_none_request_id_positions_five_six_delegates_once(
     unchanged(data_set)
 
 
-def test_accumulated_none_request_id_positions_five_six_failure_stop_identity(
+def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
     tmp_path: Path,
 ) -> None:
-    data_set = accumulated_none_data_set(tmp_path, "failed")
-    set_before(data_set)
-    result = data_set["result"]
-    assert (
-        public_phase144(
-            result,
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-            phase136_function=lambda *_: None,
+    """Issue #380 case 2: step8 with step5=None, step6 non-empty, step7=None.
+
+    The non-contiguous accumulated None provenance (step 5 None, step 6 a
+    non-empty request id, immediate step 7 None, all openai) progresses
+    exactly once; the persisted-failure stop over the same provenance
+    rejects the aged None as ``terminal_contract`` (inline subcase).
+    """
+    data_set = accumulated_none_data_set(
+        tmp_path, "succeeded", current=8, six_request_id="req-6"
+    )
+    expected = expected_decision(data_set)
+    seen: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    assert call(data_set, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                data_set[key]
+                for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
         )
-        is result
     )
     unchanged(data_set)
+
+    failed = accumulated_none_data_set(
+        tmp_path / "failed", "failed", current=8, six_request_id="req-6"
+    )
+    reject(failed, "terminal_contract")
 
 
 def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase136(

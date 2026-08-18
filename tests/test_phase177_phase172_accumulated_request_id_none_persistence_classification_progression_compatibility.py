@@ -45,6 +45,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from pydantic import SecretStr
 
 from ai_office.definitions.employee import EmployeeDefinition
@@ -58,6 +59,9 @@ from ai_office.engine import (
     route_runtime_result_to_persisted_running_execution_orchestration_boundary,
     route_runtime_result_to_prepared_start_persistence_orchestration_boundary,
     route_runtime_result_to_progression_orchestration_boundary,
+)
+from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError,
 )
 from ai_office.engine.next_step_preparation import NextStepPreparationApproval
 from ai_office.invocation import (
@@ -139,12 +143,14 @@ def predecessor_event(step_id: str, index: int, **changes: object) -> RuntimeSte
 
 
 def canonical_running_setup(
-    root: Path, steps: int = 8, current: int = 6
+    root: Path, steps: int = 8, current: int = 6, *, five_request_id: object = None
 ) -> dict[str, object]:
     """Canonical Phase-155 running state at ``current`` with events 1..current-1.
 
     Immediate predecessor (current-1): provider=openai, output_text="",
-    request_id=None. Earlier empty outputs for indices 2..4 (authorized).
+    request_id=None unless ``five_request_id`` (a non-empty built-in string)
+    is supplied, in which case that exact request_id is used. Earlier empty
+    outputs for indices 2..4 (authorized).
     """
     root.mkdir(parents=True, exist_ok=True)
     state_path, events_path = root / "state", root / "events"
@@ -162,11 +168,21 @@ def canonical_running_setup(
     events = []
     for index in range(1, current):
         if index == current - 1:
-            events.append(
-                predecessor_event(
-                    wf.steps[index - 1].id, index, output_text="", request_id=None
+            if five_request_id is None:
+                events.append(
+                    predecessor_event(
+                        wf.steps[index - 1].id, index, output_text="", request_id=None
+                    )
                 )
-            )
+            else:
+                events.append(
+                    predecessor_event(
+                        wf.steps[index - 1].id,
+                        index,
+                        output_text="",
+                        request_id=five_request_id,
+                    )
+                )
         elif index in (2, 3, 4):
             events.append(
                 predecessor_event(wf.steps[index - 1].id, index, output_text="")
@@ -647,7 +663,18 @@ def test_real_b_seven_step_step7_success_workflow_complete(tmp_path: Path) -> No
 
 
 def test_real_c_eight_step_step7_failure_persisted_failure(tmp_path: Path) -> None:
-    values = canonical_running_setup(tmp_path / "c", steps=8, current=6)
+    """Real persisted_failure stop keeps immediate-None-only semantics.
+
+    Step 5 carries a non-empty request ID (aged None is rejected by the
+    persisted_failure stop); step 6 is the immediate predecessor with
+    request_id=None, which the stop still permits.  An inline subcase then
+    proves the corrected boundary: an aged step-5 None in an otherwise-exact
+    persisted_failure snapshot is rejected (terminal_contract) instead of
+    being silently accepted.
+    """
+    values = canonical_running_setup(
+        tmp_path / "c", steps=8, current=6, five_request_id="req-5"
+    )
     wf = values["workflow"]  # type: ignore[arg-type]
     state_path = values["state_path"]  # type: ignore[arg-type]
     events_path = values["events_path"]  # type: ignore[arg-type]
@@ -680,10 +707,26 @@ def test_real_c_eight_step_step7_failure_persisted_failure(tmp_path: Path) -> No
     ]
     assert final_events[-1].event_type == "step_failed"
     assert final_events[-1].failure_category == "api_error"
-    assert final_events[4].request_id is None
+    # Immediate step-6 None preserved; step-5 request ID kept non-empty.
+    assert final_events[4].request_id == "req-5"
     assert final_events[5].request_id is None
     # No retry or further execution: exactly one transport call.
     assert len(calls) == 1
+
+    # Inline subcase: an aged step-5 None in an otherwise-exact
+    # persisted_failure snapshot is rejected by the stop (terminal_contract),
+    # never silently accepted.
+    values_aged = canonical_running_setup(tmp_path / "c-aged", steps=8, current=6)
+    wf_aged = values_aged["workflow"]  # type: ignore[arg-type]
+    state_path_aged = values_aged["state_path"]  # type: ignore[arg-type]
+    events_path_aged = values_aged["events_path"]  # type: ignore[arg-type]
+    calls_aged: list[OpenAIResponsesAuthenticatedHttpRequest] = []
+    step7_aged = run_phase177_failure(values_aged, calls_aged)
+    with pytest.raises(
+        ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError
+    ) as exc:
+        phase172(step7_aged, wf_aged, state_path_aged, events_path_aged)
+    assert exc.value.detail.classification == "terminal_contract"
 
 
 def test_real_d_stop_identity_matching_terminal_snapshots(tmp_path: Path) -> None:

@@ -128,6 +128,10 @@ def route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_ou
             and type(result.current_step_index) is int
             and result.current_step_index >= 6
         ),
+        allow_accumulated_none_request_id=(
+            type(result) is PersistedExecutionOutcome
+            and result.outcome == "persisted_success"
+        ),
     )
     _require_unchanged(state_path, events_path, original, "terminal_contract")
 
@@ -280,6 +284,7 @@ def _check_terminal(
     require_immediate_openai: bool,
     allow_empty_predecessor_output: bool,
     allow_immediate_none_request_id: bool,
+    allow_accumulated_none_request_id: bool,
 ) -> None:
     state, history = _load_history(workflow, state_path, events_path, "terminal_contract")
     expected_failure = (
@@ -303,6 +308,7 @@ def _check_terminal(
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=allow_empty_predecessor_output,
         allow_immediate_none_request_id=allow_immediate_none_request_id,
+        allow_accumulated_none_request_id=allow_accumulated_none_request_id,
     ):
         _fail("terminal_contract")
 
@@ -340,6 +346,7 @@ def _valid_history(
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
     allow_immediate_none_request_id: bool,
+    allow_accumulated_none_request_id: bool,
 ) -> bool:
     index = state.current_step_index
     result_identity_valid = (
@@ -377,7 +384,11 @@ def _valid_history(
         last_position = len(prior_steps)
         allow_none = (
             allow_immediate_none_request_id and position == last_position
-        ) or (last_position >= 6 and position >= 5)
+        ) or (
+            allow_accumulated_none_request_id
+            and last_position >= 6
+            and position >= 5
+        )
         if not _valid_predecessor(
             event,
             step,

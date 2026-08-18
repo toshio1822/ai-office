@@ -1315,42 +1315,55 @@ def write_accumulated_targets(
     *,
     five_provider: object = "openai",
     six_provider: object = "openai",
+    current: int = 7,
+    six_request_id: object = None,
 ) -> tuple[Path, Path, bytes, bytes]:
-    """Terminal step-7 targets with six predecessors.
+    """Terminal step-``current`` targets with ``current-1`` predecessors.
 
-    Positions 1-4 use the default non-openai predecessors; positions 5 and 6
-    carry accumulated None request ids with the openai provider by default.
+    Positions 1-4 use the default non-openai predecessors; position 5 and
+    the immediate predecessor (``current-1``) carry accumulated None request
+    ids with the openai provider by default.  For ``current=8`` the
+    non-contiguous Issue #380 case 2 is built: step 5 None, step 6 a
+    non-empty request id, immediate step 7 None.
     """
     wf = accumulated_workflow()
+    tmp_path.mkdir(parents=True, exist_ok=True)
     state = WorkflowExecutionState(
         "w",
         status,
-        "step-7",
-        7,
+        f"step-{current}",
+        current,
         "e",
         (
-            tuple(step.id for step in wf.steps[:7])
+            tuple(step.id for step in wf.steps[:current])
             if status == "succeeded"
-            else tuple(step.id for step in wf.steps[:6])
+            else tuple(step.id for step in wf.steps[: current - 1])
         ),
         None if status == "succeeded" else "api_error",
     )
     predecessors = []
-    for index, step in enumerate(wf.steps[:6], 1):
+    for index, step in enumerate(wf.steps[: current - 1], 1):
         provider = "other"
         changes: dict[str, object] = {}
-        if index >= 5:
-            provider = five_provider if index == 5 else six_provider
+        if index == 5:
+            provider = five_provider
+            changes["request_id"] = None
+        elif index == 6 and current == 8:
+            provider = six_provider
+            changes["request_id"] = six_request_id
+        elif index >= 5:
+            provider = six_provider
             changes["request_id"] = None
         predecessors.append(predecessor_event(step.id, index, provider, **changes))
     terminal_changes: dict[str, object] = {
-        "step_id": "step-7",
-        "step_index": 7,
-        "request_id": "request-step-7",
+        "step_id": f"step-{current}",
+        "step_index": current,
+        "request_id": f"request-step-{current}",
     }
     if status == "succeeded":
         terminal_changes.update(
-            response_id="response-step-7", output_text="output-step-7"
+            response_id=f"response-step-{current}",
+            output_text=f"output-step-{current}",
         )
     terminal = terminal_event(status, **terminal_changes)
     state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
@@ -1370,12 +1383,16 @@ def accumulated_values(
     *,
     five_provider: object = "openai",
     six_provider: object = "openai",
+    current: int = 7,
+    six_request_id: object = None,
 ) -> dict[str, object]:
     state, events, before_state, before_events = write_accumulated_targets(
         tmp_path,
         status,
         five_provider=five_provider,
         six_provider=six_provider,
+        current=current,
+        six_request_id=six_request_id,
     )
     return {
         "result": persistence_result(state, events),
@@ -1387,11 +1404,10 @@ def accumulated_values(
     }
 
 
-@pytest.mark.parametrize("status", ["succeeded", "failed"])
 def test_accumulated_none_request_id_positions_five_six_delegates_once(
-    tmp_path: Path, status: str
+    tmp_path: Path,
 ) -> None:
-    data = accumulated_values(tmp_path, status)
+    data = accumulated_values(tmp_path)
     expected = phase135_fake(
         data["result"], data["workflow"], data["state_path"], data["events_path"]
     )
@@ -1421,6 +1437,66 @@ def test_accumulated_none_request_id_positions_five_six_delegates_once(
         data["state_path"].read_bytes(),  # type: ignore[union-attr]
         data["events_path"].read_bytes(),  # type: ignore[union-attr]
     ) == rewritten
+
+
+def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
+    tmp_path: Path,
+) -> None:
+    """Issue #380 case 2: step8 with step5=None, step6 non-empty, step7=None.
+
+    The non-contiguous accumulated None provenance (step 5 None, step 6 a
+    non-empty request id, immediate step 7 None, all openai) classifies
+    exactly once; the failed terminal status over the same provenance
+    classifies exactly once as an inline subcase.
+    """
+    data = accumulated_values(tmp_path, current=8, six_request_id="req-6")
+    expected = phase135_fake(
+        data["result"], data["workflow"], data["state_path"], data["events_path"]
+    )
+    seen: list[tuple[object, ...]] = []
+    rewritten = (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    )
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    assert call(data, dependency) is expected
+    assert len(seen) == 1
+    assert all(
+        actual is wanted
+        for actual, wanted in zip(
+            seen[0],
+            tuple(
+                data[key] for key in ("result", "workflow", "state_path", "events_path")
+            ),
+            strict=True,
+        )
+    )
+    assert (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    ) == rewritten
+
+    failed = accumulated_values(
+        tmp_path / "failed", "failed", current=8, six_request_id="req-6"
+    )
+    failed_expected = phase135_fake(
+        failed["result"],
+        failed["workflow"],
+        failed["state_path"],
+        failed["events_path"],
+    )
+    failed_seen: list[tuple[object, ...]] = []
+
+    def failed_dependency(*args: object) -> object:
+        failed_seen.append(args)
+        return failed_expected
+
+    assert call(failed, failed_dependency) is failed_expected
+    assert len(failed_seen) == 1
 
 
 def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase135(
