@@ -3824,3 +3824,36 @@ base **11,964**（Issue #386 完了時）→ focused +20 → **11,984**
 5. `docs/architecture.md` — 本節
 
 5ファイルを超える変更・既存 production 修正が必要になった場合は STOP して報告する。
+
+## Phase 180 prerequisite（Issue #390）: Preserve Accumulated Aged None Request-ID through Prepared-Step-Start Entry Layers
+
+Phase 180 前提修復。Issue #386 で approved-preparation エントリ層まで保存した accumulated aged-None request-ID の証明（step-5 / step-6 の `request_id=None`・provider=`"openai"`）を、**prepared-step-start エントリ層**（Phase 146 outer-chain / Phase 138 outer）まで延長します。実 Phase 179 が生成する `PreparedWorkflowStep` を prepared-step start へ roll する際、従来この層が非 immediate predecessor の None request-ID を `terminal_contract` で reject していました。
+
+```text
+Phase 179 PreparedWorkflowStep（straight snapshot に step-5/step-6 request_id=None・openai の existed aged predecessor 履歴）
+    ↓ Phase 146 prepared-step-start outer-chain エントリ（prepare route）
+    ↓ Phase 138 prepared-step-start outer エントリ（prepare route）
+    ↓ （keyline allow_accumulated_openai_none=True で受容）
+    ↓ Phase 131 / lower への委譲 → exact prepared start
+    ↓ stop route（workflow_complete / persisted_failure）は本フラグなし → strict 維持
+```
+
+### 最終ルール（Issue #390）
+
+- **prepare route 限定**: `allow_accumulated_openai_none`（デフォルト False）を prepared-step-start の prepare 分岐に適用。stop route では False のまま（aged None を新規に許容しない）
+- **accumulated rule**: `allow_accumulated_openai_none and event.request_id is None and position >= 5 and _exact_string(event.provider, "openai") and state.current_step_index >= 7` のときのみ None request-ID を許容
+  - provider が正確に `"openai"`（non-openai の None は reject）・position >= 5（位置4以前は reject）・`current_step_index >= 7`
+- **immediate None は従来どおり**（`allow_missing_immediate_request_id`・index >= 6）
+- **対象は 2 production のみ**: Phase 146（outer-chain）と Phase 138（outer）。Phase 131 以下・Phase 179・共有 contract は変更しない
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 146 production
+2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 138 production
+3. `tests/test_phase180_prereq_accumulated_none_prepared_entry_real_regression.py` — 新規実回帰 +8
+4. `README.md` — Phase 180 prerequisite documentation
+5. `docs/architecture.md` — 本節
+
+### collect 不変条件
+
+base **11,984**（Phase 179 完了時）→ 実回帰 +8 → **11,992**

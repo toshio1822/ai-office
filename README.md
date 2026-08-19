@@ -3959,3 +3959,40 @@ Phase 179 は以下の behavior を**一切**追加・変更しない:
 ### collect 不変条件
 
 base **11,964**（Issue #386 完了時）→ focused +20 → **11,984**
+
+## Phase 180 prerequisite（Issue #390）: Preserve Accumulated Aged None Request-ID through Prepared-Step-Start Entry Layers
+
+Issue #390 は、Issue #386 で approved-preparation エントリ層（Phase 145 / Phase 137）まで延長した accumulated aged-None request-ID の証明を、**prepared-step-start エントリ層**（Phase 146 outer-chain / Phase 138 outer）まで延長する Phase 180 前提修復です。実 Phase 179 が生成する `PreparedWorkflowStep`（次の step の準備済み）は、straight の persisted snapshot に step-5 / step-6 の `request_id=None`（provider=`"openai"`）の aged predecessor 履歴を伴います。従来この証明は **prepared-step-start エントリ層** で非 immediate predecessor の None request-ID が `terminal_contract` で reject され、prepared-step start へ roll できませんでした。
+
+### 正確な最終ルール
+
+- **prepare route 限定**: 新フラグ `allow_accumulated_openai_none`（デフォルト False）は **prepare route のみ** 有効（`allow_accumulated_openai_none=True` を prepared-step-start の prepare 分岐に適用）。`workflow_complete` / `persisted_failure` の stop route では本フラグを渡さない（False のまま）ため aged None を新規に許容しない（immediate-None-only semantics 維持）
+- **accumulated rule**: `allow_accumulated_openai_none and event.request_id is None and position >= 5 and _exact_string(event.provider, "openai") and state.current_step_index >= 7` のときのみ None request-ID を許容
+  - provider が正確に `"openai"` であること（non-openai provider の None は従来どおり reject）
+  - position >= 5（位置4以前の None は依然 reject）
+  - `current_step_index >= 7`
+- **immediate None は従来どおり**: 直前1件（`allow_missing_immediate_request_id`・index >= 6）の None 許容は維持
+- **対象は 2 production のみ**: Phase 146（outer-chain）と Phase 138（outer）。Phase 131 以下・Phase 179・共有 contract は変更しない
+
+### 対象2境界（production 修正）
+
+1. `prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 146
+2. `prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 138
+
+### テスト
+
+- **新規実回帰テスト**: `tests/test_phase180_prereq_accumulated_none_prepared_entry_real_regression.py`（+8: A–H）。実 Phase 146 / Phase 138 prepared エントリが accumulated aged-None（step-5 / step-6・provider openai・`current_step_index >= 7`）を prepare route で受容し、委譲1回で exact prepared start を返す（bytes 不変）。non-contiguous（position 5 のみ None）も受容。strict 否定的（position 4 None / position 5 non-openai / current step 6）を保持。stop route の exact identity + bytes 不変維持、および aged-None stop reject（stop 意味論を拡張しない）
+
+### collect 不変条件
+
+base **11,984**（Phase 179 完了時）→ 実回帰 +8 → **11,992**
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 146 production
+2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 138 production
+3. `tests/test_phase180_prereq_accumulated_none_prepared_entry_real_regression.py` — 新規実回帰 +8
+4. `README.md` — 本節
+5. `docs/architecture.md` — Phase 180 prerequisite architecture documentation
+
+5ファイルを超える変更・3境界目以降の production 修正が必要になった場合は STOP して報告する。
