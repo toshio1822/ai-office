@@ -134,7 +134,7 @@ def _classification(fn, expected: str):
     assert "secret" not in str(exc.value)
 
 
-def test_01_public_api_error_hierarchy_defaults_signature_and_source_audit(tmp_path: Path):
+def test_01_public_api_error_hierarchy_defaults_signature_and_source_audit(tmp_path: Path, monkeypatch):
     sig = inspect.signature(phase180)
     params = list(sig.parameters.values())
     assert [p.name for p in params if p.kind is p.POSITIONAL_OR_KEYWORD and p.default is inspect.Parameter.empty] == [
@@ -150,12 +150,67 @@ def test_01_public_api_error_hierarchy_defaults_signature_and_source_audit(tmp_p
     assert source.count("phase179_function(") == 1
     assert source.count("phase146_function(") == 1
     assert "while " not in source and "route_prepared_start_persistence" not in source
-    # Invalid exact/subclass result models are rejected before either dependency.
+    # ---- input-domain inline matrix (kept within this single collected test) ----
     s = _case(tmp_path / "inputs")
+    p146 = []
+    def no_p146(*a, **k):
+        p146.append(1)
+        return None
+    # StepRuntimeExecutionSuccess subclass reject (exact-type check)
     class Sub(type(s["result"])):
         pass
-    _classification(lambda: _call(s, result=object()), "result_type")
-    _classification(lambda: _call(s, result=WorkflowProgressionDecision("prepare_next_step", "w", "step-6", 6, "e6", "step-7", 7, "e7", "next_step_available")), "result_type")
+    sub = Sub(s["result"].workflow_id, s["result"].step_id, s["result"].step_index,
+              s["result"].employee_id, s["result"].invocation_result)
+    _classification(lambda: _call(s, result=sub, phase146_function=no_p146), "result_type")
+    # substitute / unrelated result reject
+    _classification(lambda: _call(s, result=object(), phase146_function=no_p146), "result_type")
+    _classification(lambda: _call(s, result=WorkflowProgressionDecision("prepare_next_step", "w", "step-6", 6, "e6", "step-7", 7, "e7", "next_step_available"), phase146_function=no_p146), "result_type")
+    # invalid workflow
+    _classification(lambda: _call(s, workflow=object(), phase146_function=no_p146), "workflow_definition")
+    # invalid state/event target types
+    _classification(lambda: _call(s, state_path="not-a-path", phase146_function=no_p146), "state_target")
+    _classification(lambda: _call(s, events_path=12345, phase146_function=no_p146), "event_target")
+    # same state and events target
+    _classification(lambda: _call(s, events_path=s["state_path"], phase146_function=no_p146), "target_conflict")
+    # non-callable dependencies -> configuration
+    _classification(lambda: _call(s, phase179_function=None, phase146_function=no_p146), "configuration")
+    _classification(lambda: _call(s, phase146_function=object()), "configuration")
+    # state is_file OSError -> state_target (post-type-check, real Path)
+    real_is_file = Path.is_file
+    def bad_state_is_file(self):
+        if self == s["state_path"]:
+            raise OSError("boom state")
+        return real_is_file(self)
+    monkeypatch.setattr(Path, "is_file", bad_state_is_file)
+    _classification(lambda: _call(s, phase146_function=no_p146), "state_target")
+    monkeypatch.setattr(Path, "is_file", real_is_file)
+    # events is_file OSError -> event_target
+    def bad_events_is_file(self):
+        if self == s["events_path"]:
+            raise OSError("boom events")
+        return real_is_file(self)
+    monkeypatch.setattr(Path, "is_file", bad_events_is_file)
+    _classification(lambda: _call(s, phase146_function=no_p146), "event_target")
+    monkeypatch.setattr(Path, "is_file", real_is_file)
+    # state read_bytes OSError -> dependency_error (during pre-Phase179 capture)
+    real_read_bytes = Path.read_bytes
+    def bad_state_read(self):
+        if self == s["state_path"]:
+            raise OSError("secret state read")
+        return real_read_bytes(self)
+    monkeypatch.setattr(Path, "read_bytes", bad_state_read)
+    _classification(lambda: _call(s, phase146_function=no_p146), "dependency_error")
+    monkeypatch.setattr(Path, "read_bytes", real_read_bytes)
+    # events read_bytes OSError -> dependency_error
+    def bad_events_read(self):
+        if self == s["events_path"]:
+            raise OSError("secret events read")
+        return real_read_bytes(self)
+    monkeypatch.setattr(Path, "read_bytes", bad_events_read)
+    _classification(lambda: _call(s, phase146_function=no_p146), "dependency_error")
+    monkeypatch.setattr(Path, "read_bytes", real_read_bytes)
+    # Phase 146 zero-call on every input-domain reject above
+    assert p146 == []
 
 
 def test_02_phase179_exactly_once_twelve_positional_no_kwargs(tmp_path: Path):
@@ -249,6 +304,24 @@ def test_09_runtime_to_persisted_failure_stop_retains_phase179_bytes_and_zero_ph
     calls = []
     out = _call(s, phase179_function=lambda *a: out179, phase146_function=lambda *a: calls.append(1), result=s["result"])
     assert out is out179 and calls == [] and (s["state_path"].read_bytes(), s["events_path"].read_bytes()) == committed
+    # inline subcase: exact same stop but with a mismatched failure_category on the
+    # surfaced persisted_failure -> phase179_contract, Phase146 zero-call, and the
+    # Phase-179-owned durable bytes are NOT rolled back.
+    mismatched = PersistedExecutionOutcome(
+        "persisted_failure",
+        out179.workflow_id,
+        out179.current_step_id,
+        out179.current_step_index,
+        out179.current_employee_id,
+        "mismatched-category",  # differs from durable terminal last_failure_category
+    )
+    calls2 = []
+    _classification(
+        lambda: _call(s, phase179_function=lambda *a: mismatched, phase146_function=lambda *a: calls2.append(1), result=s["result"]),
+        "phase179_contract",
+    )
+    assert calls2 == []
+    assert (s["state_path"].read_bytes(), s["events_path"].read_bytes()) == committed
 
 
 def test_10_real_default_accumulated_none_phase179_to_phase146_step8_start(tmp_path: Path):

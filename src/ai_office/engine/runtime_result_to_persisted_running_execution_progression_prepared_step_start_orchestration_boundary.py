@@ -399,10 +399,16 @@ def _valid_phase179_stop(
                 and outcome.current_step_id == executed_step.id
                 and outcome.current_step_index == executed
                 and outcome.current_employee_id == executed_step.employee
+                and outcome.failure_category is not None
             ):
                 return False
             return _valid_stop_snapshot(
-                workflow, executed, "failed", state_path, events_path
+                workflow,
+                executed,
+                "failed",
+                state_path,
+                events_path,
+                failure_category=outcome.failure_category,
             )
     except Exception:
         return False
@@ -415,9 +421,17 @@ def _valid_stop_snapshot(
     status: Literal["succeeded", "failed"],
     state_path: Path,
     events_path: Path,
+    *,
+    failure_category: object = None,
 ) -> bool:
     """Thin proof that the durable snapshot already holds the Phase-179-owned
-    terminal for the one step Phase 179 executed."""
+    terminal for the one step Phase 179 executed.
+
+    On the ``failed`` route the surfaced ``failure_category`` must match, by
+    identity, both the durable state ``last_failure_category`` and the terminal
+    event ``failure_category`` -- exactly as public Phase 179's own thin
+    validation requires.
+    """
     try:
         loaded = load_workflow_execution_state(state_path)
         lines = [
@@ -448,6 +462,8 @@ def _valid_stop_snapshot(
     else:
         if loaded.last_failure_category is None:
             return False
+        if loaded.last_failure_category != failure_category:
+            return False
         if type(loaded.completed_step_ids) is not tuple:
             return False
         if loaded.completed_step_ids != tuple(
@@ -473,7 +489,10 @@ def _valid_stop_snapshot(
             terminal.event_type == "step_succeeded"
             and terminal.failure_category is None
         )
-    return terminal.event_type == "step_failed" and terminal.failure_category is not None
+    return (
+        terminal.event_type == "step_failed"
+        and terminal.failure_category == failure_category
+    )
 
 
 def _valid_phase179_prepared(
