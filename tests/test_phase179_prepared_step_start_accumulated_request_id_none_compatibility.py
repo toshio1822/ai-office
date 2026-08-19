@@ -38,6 +38,7 @@ Requirement-to-test mapping (Issue #390):
 # ruff: noqa: E501,E701,E702,F401,I001
 
 import importlib.util
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -619,11 +620,56 @@ def test_07_multiple_valid_accumulated_immediate_none_bounded(tmp_path: Path) ->
         )
     assert caught.value.detail.classification == "terminal_contract"
 
+    # (e) malformed completed-prefix stays strict: corrupt ONLY completed_step_ids
+    # in the state target (aged accumulated None stays valid) -> terminal_contract.
+    prefix = _write_prepared_scenario(
+        tmp_path / "prefix", current=7, none_positions=(5,)
+    )
+    state_payload = json.loads(prefix["state_path"].read_text())
+    state_payload["completed_step_ids"] = [
+        sid for i, sid in enumerate(state_payload["completed_step_ids"]) if i != 1
+    ]
+    prefix["state_path"].write_text(
+        json.dumps(state_payload, separators=(",", ":"))
+    )
+    before_state = prefix["state_path"].read_bytes()
+    before_events = prefix["events_path"].read_bytes()
+    with pytest.raises(Phase146Error) as caught:
+        real_phase146(
+            prefix["prepared"], prefix["workflow"], prefix["employee"],
+            prefix["state_path"], prefix["events_path"],
+            phase138_function=real_phase138,
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert prefix["state_path"].read_bytes() == before_state
+    assert prefix["events_path"].read_bytes() == before_events
+
+    # (f) malformed linkage stays strict: from the canonical real snapshot, corrupt
+    # ONLY one linkage item (a predecessor event's step_id) -> terminal_contract.
+    link = _canonical(tmp_path / "link", non_contiguous=False)
+    link_lines = link["events_path"].read_text().splitlines()
+    linkage_payload = json.loads(link_lines[0])  # step-1 predecessor
+    linkage_payload["step_id"] = "step-999"  # break event<->workflow-step linkage
+    link_lines[0] = json.dumps(linkage_payload, separators=(",", ":"))
+    link["events_path"].write_text("\n".join(link_lines) + "\n")
+    before_state = link["state_path"].read_bytes()
+    before_events = link["events_path"].read_bytes()
+    with pytest.raises(Phase146Error) as caught:
+        real_phase146(
+            link["prepared"], link["workflow"], link["emp8"],
+            link["state_path"], link["events_path"],
+        )
+    assert caught.value.detail.classification == "terminal_contract"
+    assert link["state_path"].read_bytes() == before_state
+    assert link["events_path"].read_bytes() == before_events
+
 
 # --- 8. unchanged stop / read-only / error behavior ------------------------
 def test_08_unchanged_stop_readonly_error_behavior(tmp_path: Path) -> None:
-    # (a) Phase146 stop routes are not broadened: a canonical valid
-    # workflow_complete stop returns exact identity and leaves targets unchanged.
+    # =================================================================
+    # Phase146 / Phase138 stop semantics are NOT broadened by Issue #390
+    # =================================================================
+    # (a) Phase146 canonical workflow_complete -> exact identity, targets unchanged.
     ok = tmp_path / "stopok"
     values = _write_terminal_stop(ok, steps=8, fail=False)
     sp, ep = values["state_path"], values["events_path"]
@@ -635,7 +681,19 @@ def test_08_unchanged_stop_readonly_error_behavior(tmp_path: Path) -> None:
     assert sp.read_bytes() == before_state
     assert ep.read_bytes() == before_events
 
-    # aged-None workflow_complete stop is still rejected (no broaden to stops).
+    # (b) Phase146 canonical persisted_failure -> exact identity, targets unchanged.
+    pf = tmp_path / "persisted"
+    values = _write_terminal_stop(pf, steps=8, fail=True)
+    sp, ep = values["state_path"], values["events_path"]
+    before_state, before_events = values["before_state"], values["before_events"]
+    failure = _failure(values["workflow"], 8)
+    out = real_phase146(failure, values["workflow"], None, sp, ep,
+                        phase138_function=lambda *a, **k: None)
+    assert out is failure
+    assert sp.read_bytes() == before_state
+    assert ep.read_bytes() == before_events
+
+    # (c) Phase146 aged-None workflow_complete still rejected (stop not broadened).
     d = tmp_path / "agedstop"
     values2 = _write_terminal_stop(d, steps=8, fail=False)
     sp2, ep2 = values2["state_path"], values2["events_path"]
@@ -649,8 +707,53 @@ def test_08_unchanged_stop_readonly_error_behavior(tmp_path: Path) -> None:
     assert sp2.read_bytes() == original_state2
     assert ep2.read_bytes() == injected
 
-    # (b) prepared-route safe dependency error is re-raised with exact
-    # identity and targets are left unchanged (Phase146).
+    # (d) Phase146 aged-None persisted_failure still rejected (stop not broadened).
+    d2 = tmp_path / "agedpf"
+    values3 = _write_terminal_stop(d2, steps=8, fail=True)
+    sp3, ep3 = values3["state_path"], values3["events_path"]
+    original_state3 = sp3.read_bytes()
+    injected3 = _inject_aged_none(ep3)
+    failure3 = _failure(values3["workflow"], 8)
+    with pytest.raises(Phase146Error) as caught:
+        real_phase146(failure3, values3["workflow"], None, sp3, ep3,
+                      phase138_function=lambda *a, **k: None)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert sp3.read_bytes() == original_state3
+    assert ep3.read_bytes() == injected3
+
+    # (e) Phase138 aged-None workflow_complete still rejected (not broadened).
+    p138 = tmp_path / "p138wc"
+    values4 = _write_terminal_stop(p138, steps=8, fail=False)
+    sp4, ep4 = values4["state_path"], values4["events_path"]
+    original_state4 = sp4.read_bytes()
+    injected4 = _inject_aged_none(ep4)
+    stop4 = _completion(values4["workflow"], 8)
+    with pytest.raises(Phase138Error) as caught:
+        real_phase138(stop4, values4["workflow"], None, sp4, ep4,
+                      phase131_function=lambda *a, **k: None)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert sp4.read_bytes() == original_state4
+    assert ep4.read_bytes() == injected4
+
+    # (f) Phase138 aged-None persisted_failure still rejected (not broadened).
+    p138b = tmp_path / "p138pf"
+    values5 = _write_terminal_stop(p138b, steps=8, fail=True)
+    sp5, ep5 = values5["state_path"], values5["events_path"]
+    original_state5 = sp5.read_bytes()
+    injected5 = _inject_aged_none(ep5)
+    failure5 = _failure(values5["workflow"], 8)
+    with pytest.raises(Phase138Error) as caught:
+        real_phase138(failure5, values5["workflow"], None, sp5, ep5,
+                      phase131_function=lambda *a, **k: None)
+    assert caught.value.detail.classification == "terminal_contract"
+    assert sp5.read_bytes() == original_state5
+    assert ep5.read_bytes() == injected5
+
+    # =================================================================
+    # prepared-route safe dependency error: exact identity
+    # =================================================================
+    # (g) Phase146 re-raises the exact Phase138 safe error with identity and
+    # leaves both targets unchanged.
     c2 = _canonical(tmp_path / "c2", non_contiguous=True)
     safe = Phase138Error("terminal_contract")
 
@@ -667,7 +770,8 @@ def test_08_unchanged_stop_readonly_error_behavior(tmp_path: Path) -> None:
     assert c2["state_path"].read_bytes() == c2["committed"][0]
     assert c2["events_path"].read_bytes() == c2["committed"][1]
 
-    # (c) Phase138 safe dependency error exact identity (no retry).
+    # (h) Phase138 re-raises the exact Phase131 safe error; dependency is called
+    # exactly once (no retry) and both targets are unchanged.
     c3 = _canonical(tmp_path / "c3", non_contiguous=True)
     calls: list = []
     safe131 = Phase131Error("terminal_contract")
@@ -687,23 +791,66 @@ def test_08_unchanged_stop_readonly_error_behavior(tmp_path: Path) -> None:
     assert c3["state_path"].read_bytes() == c3["committed"][0]
     assert c3["events_path"].read_bytes() == c3["committed"][1]
 
-    # (d) both-target protection + mutation compensation: a dependency that
-    # mutates the events target is compensated back to the original bytes and
-    # the call fails (Phase146).
-    c4 = _canonical(tmp_path / "c4", non_contiguous=True)
-    original_ep = c4["events_path"].read_bytes()
+    # =================================================================
+    # read-only / mutation compensation (prepared route, Phase146)
+    # =================================================================
+    # (i) state-target mutation is compensated back to original bytes (both
+    # targets restored), and the call fails.
+    c5 = _canonical(tmp_path / "c5", non_contiguous=True)
+    orig_state5 = c5["state_path"].read_bytes()
+    orig_events5 = c5["events_path"].read_bytes()
 
-    def mutating_dep(*args: object, **kwargs: object) -> object:
-        c4["events_path"].write_bytes(b"corrupted")
+    def mut_state_dep(*args: object, **kwargs: object) -> object:
+        c5["state_path"].write_bytes(b"corrupted-state")
+        return "bogus"
+
+    with pytest.raises(Phase146Error):
+        real_phase146(
+            c5["prepared"], c5["workflow"], c5["emp8"],
+            c5["state_path"], c5["events_path"],
+            phase138_function=mut_state_dep,
+        )
+    assert c5["state_path"].read_bytes() == orig_state5
+    assert c5["events_path"].read_bytes() == orig_events5
+
+    # (j) events-target mutation is compensated back to original bytes (both
+    # targets restored), and the call fails.
+    c4 = _canonical(tmp_path / "c4", non_contiguous=True)
+    orig_state4 = c4["state_path"].read_bytes()
+    orig_events4 = c4["events_path"].read_bytes()
+
+    def mut_events_dep(*args: object, **kwargs: object) -> object:
+        c4["events_path"].write_bytes(b"corrupted-events")
         return "bogus"
 
     with pytest.raises(Phase146Error):
         real_phase146(
             c4["prepared"], c4["workflow"], c4["emp8"],
             c4["state_path"], c4["events_path"],
-            phase138_function=mutating_dep,
+            phase138_function=mut_events_dep,
         )
-    assert c4["events_path"].read_bytes() == original_ep
+    assert c4["state_path"].read_bytes() == orig_state4
+    assert c4["events_path"].read_bytes() == orig_events4
+
+    # (k) both-target mutation is compensated back to original bytes (both
+    # restored), and the call fails.
+    c6 = _canonical(tmp_path / "c6", non_contiguous=True)
+    orig_state6 = c6["state_path"].read_bytes()
+    orig_events6 = c6["events_path"].read_bytes()
+
+    def mut_both_dep(*args: object, **kwargs: object) -> object:
+        c6["state_path"].write_bytes(b"corrupted")
+        c6["events_path"].write_bytes(b"corrupted")
+        return "bogus"
+
+    with pytest.raises(Phase146Error):
+        real_phase146(
+            c6["prepared"], c6["workflow"], c6["emp8"],
+            c6["state_path"], c6["events_path"],
+            phase138_function=mut_both_dep,
+        )
+    assert c6["state_path"].read_bytes() == orig_state6
+    assert c6["events_path"].read_bytes() == orig_events6
 
 
 # --------------------------------------------------------------------------
