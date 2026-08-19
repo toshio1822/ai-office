@@ -3925,7 +3925,7 @@ finished current-step Phase-178 runtime result (StepRuntimeExecutionSuccess / Fa
 - **Phase 178 を 10 positional でちょうど 1 回呼ぶ**（keyword-only はデフォルトへ委譲）: Phase 178 は自身の preparation / execution 入力について **authoritative**。Phase 179 は Phase 178 入力・第2ペアを **prevalidation しない**
 - **Phase 145 は prepare_next_step のときだけ呼ぶ（6 positional）**: 第2の `next_preparation_approval` / `next_employee`（第1ペアとは別物）をそのまま渡す
 - **stop ルート（original または runtime 経由の `workflow_complete` / `persisted_failure`）は Phase 145 zero-call**: exact identity で返し、target bytes 不変を確認するだけ
-- **Phase 178 出力の thin validation**: 型が decision / outcome であること、`result` / `workflow` / 永続 snapshot と整合すること（不整合は `phase178_contract`・write なし）
+- **Phase 178 出力の thin validation**: 型が decision / outcome であること、`result` / `workflow` / 永続 snapshot と整合すること（不整合は `phase178_contract`。Phase 179 自身は追加 write / pre-Phase178 rollback をしない）
 - **committed snapshot は post-Phase178 bytes**: 補償は pre-Phase178 へ巻き戻さない。Phase 145 が成功 target を不正変更した場合は **committed bytes のみ**へ restore
 - **Phase 145 safe error は identity re-raise**: 予期しない例外は `dependency_error` に sanitize、restore 失敗は `rollback_failure`、Phase 145 不正戻り値は `phase145_contract`
 - **no readvance**: Phase 145 は step を実行・永続化しない。返された `PreparedWorkflowStep` を超える finalize はしない。state / events は post-Phase178 committed のまま
@@ -3934,8 +3934,8 @@ finished current-step Phase-178 runtime result (StepRuntimeExecutionSuccess / Fa
 
 `result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase178_contract` / `phase145_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
 
-- Phase 178 stage の既存 safe error（`_SAFE_PHASE178_ERRORS`）は同一 object を identity で re-raise（Phase 145 呼び出し 0 回・write なし）
-- Phase 145 stage の safe error（Phase 145 CompatibilityError 等）は identity で re-raise（committed へ restore）
+- Phase 178 stage の既存 safe error（`_SAFE_PHASE178_ERRORS`）は同一 object を identity で re-raise（Phase 145 呼び出し 0 回・Phase 179 自身は追加 write / pre-Phase178 rollback なし）
+- Phase 145 stage の safe error（Phase 145・Phase 137 CompatibilityError 等）は identity で re-raise（committed へ restore。Phase 179 自身は追加 write をしない）
 - 予期しない例外は `dependency_error`、Phase 145 不正戻り値は `phase145_contract`、restore 不能は `rollback_failure`、committed 不変違反は `committed_mutation`
 - stop 入力の narrowing: `prepare_next_step` decision / `persisted_success` outcome は `result_type` で reject（stop は exact `workflow_complete` / `persisted_failure` のみ）
 

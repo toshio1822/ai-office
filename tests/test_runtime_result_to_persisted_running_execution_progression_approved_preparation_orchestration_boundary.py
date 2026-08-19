@@ -37,6 +37,13 @@ from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_br
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase145CompatibilityError,
 )
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase137CompatibilityError,
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178CompatibilityError,
+)
 from ai_office.invocation import (
     ModelInvocationRequest,
     ModelInvocationSuccess,
@@ -529,7 +536,9 @@ def _committed_ref(tmp_path: Path, sub: str) -> dict[str, object]:
 TEST_02_ARGS = None  # placeholder (unused)
 
 
-def test_01_public_export_default_dependencies_and_exact_signature() -> None:
+def test_01_public_export_default_dependencies_and_exact_signature(
+    tmp_path: Path,
+) -> None:
     sig = inspect.signature(phase179)
     params = list(sig.parameters.items())
     pos_or_kw = [
@@ -566,6 +575,78 @@ def test_01_public_export_default_dependencies_and_exact_signature() -> None:
     assert Phase179Error is not None
     assert RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError is not None
     assert RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryFailureDetail is not None
+
+    # --- inline matrix: subclasses / substitute models are rejected as
+    # result_type before Phase 178 runs ---
+    sp, ep = Path(tmp_path / "state"), Path(tmp_path / "events")
+    wf = workflow(8)
+    ok = runtime_success(wf, 6)
+    decision = prepare_decision(wf, 6)
+    approval = approval_for(decision)
+    employee = employee_for(decision)
+    api_key = OpenAIApiKey(value=SecretStr("synthetic"))
+
+    class SubSuccess(StepRuntimeExecutionSuccess):
+        pass
+
+    sub_result = SubSuccess(
+        ok.workflow_id, ok.step_id, ok.step_index, ok.employee_id, ok.invocation_result
+    )
+
+    def call(result_value: object = ok) -> object:
+        return phase179(
+            result_value,
+            wf,
+            approval,
+            employee,
+            sp,
+            ep,
+            TOOLS,
+            api_key,
+            object(),
+            None,
+            approval,
+            employee,
+        )
+
+    # exact subclass of the runtime success type is a substitute -> result_type
+    assert_classification(lambda: call(sub_result), "result_type")
+    # unrelated / substituted models -> result_type
+    assert_classification(lambda: call("NOT-A-RESULT"), "result_type")
+    assert_classification(lambda: call(object()), "result_type")
+    # a prepare_next_step decision as an original input is not a stop input
+    assert_classification(lambda: call(prepare_decision(wf, 6)), "result_type")
+    # a persisted_success outcome as an original input is not a stop input
+    assert_classification(
+        lambda: call(PersistedExecutionOutcome("persisted_success", "w", "step-6", 6, "e6", None)),
+        "result_type",
+    )
+
+    # --- inline matrix: invalid workflow / target / configuration inputs ---
+    assert_classification(
+        lambda: phase179(ok, "NOT-A-WORKFLOW", approval, employee, sp, ep, TOOLS, api_key, object(), None, approval, employee),
+        "workflow_definition",
+    )
+    assert_classification(
+        lambda: phase179(ok, wf, approval, employee, "NOT-A-PATH", ep, TOOLS, api_key, object(), None, approval, employee),
+        "state_target",
+    )
+    assert_classification(
+        lambda: phase179(ok, wf, approval, employee, sp, "NOT-A-PATH", TOOLS, api_key, object(), None, approval, employee),
+        "event_target",
+    )
+    assert_classification(
+        lambda: phase179(ok, wf, approval, employee, sp, sp, TOOLS, api_key, object(), None, approval, employee),
+        "target_conflict",
+    )
+    assert_classification(
+        lambda: phase179(ok, wf, approval, employee, sp, ep, TOOLS, api_key, object(), None, approval, employee, phase178_function="NOT-CALLABLE"),  # type: ignore[arg-type]
+        "configuration",
+    )
+    assert_classification(
+        lambda: phase179(ok, wf, approval, employee, sp, ep, TOOLS, api_key, object(), None, approval, employee, phase145_function="NOT-CALLABLE"),  # type: ignore[arg-type]
+        "configuration",
+    )
 
 
 def test_02_prepare_route_calls_phase178_once_ten_positional_no_kwargs(
@@ -936,40 +1017,85 @@ def test_10_real_default_accumulated_none_reaches_prepared_step8(
     assert len(calls) == 1
 
 
-def test_11_stub_phase178_composes_with_real_default_phase145(
+def test_11_non_contiguous_accumulated_provenance_real_default_prepares_step8(
     tmp_path: Path,
 ) -> None:
-    # A substituted Phase178 returning a real decision composes with the real
-    # default Phase145 to prepare step 8, and leaves committed bytes untouched.
-    ref = _committed_ref(tmp_path, "a")
-    sp, ep = Path(ref["state_path"]), Path(ref["events_path"])
-    committed = ref["committed"]
-    prepare = ref["decision"]
-    p178_calls: list[int] = []
+    # Non-contiguous accumulated provenance: step5 request_id=None (the aged
+    # predecessor generated by running_setup) and step6 request_id=non-empty.
+    # The real/default Phase179 chain (real Phase178 -> real Phase145) still
+    # prepares an exact PreparedWorkflowStep(step8) and leaves the
+    # post-Phase178 committed snapshot byte-for-byte unchanged.
 
-    def phase178_stub(*args: object, **kwargs: object) -> object:
-        p178_calls.append(1)
-        return prepare
+    def non_contiguous(root: Path) -> dict[str, object]:
+        values = running_setup(root, steps=8, current=6)
+        wf = values["workflow"]  # type: ignore[assignment]
+        result = runtime_success(wf, 6, request_id_none=False)
+        decision = prepare_decision(wf, 6)
+        next_decision = prepare_decision(wf, 7)
+        return {
+            "workflow": wf,
+            "result": result,
+            "approval": approval_for(decision),
+            "employee": employee_for(decision),
+            "next_approval": approval_for(next_decision),
+            "next_employee": employee_for(next_decision),
+            "state_path": values["state_path"],
+            "events_path": values["events_path"],
+            "api_key": OpenAIApiKey(value=SecretStr("synthetic")),
+            "execution_approval": execution_approval_for(values),
+        }
 
-    out = phase179(
+    # Reference committed snapshot: real Phase178 alone on an identical
+    # non-contiguous scenario leaves exactly the bytes Phase145 must not
+    # change.
+    ref = non_contiguous(tmp_path / "ref")
+    wf_ref = ref["workflow"]  # type: ignore[assignment]
+    sp_ref, ep_ref = Path(ref["state_path"]), Path(ref["events_path"])
+    ref_calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
+    ref_out = phase178(
         ref["result"],
-        ref["workflow"],
+        wf_ref,
         ref["approval"],
         ref["employee"],
-        sp,
-        ep,
+        sp_ref,
+        ep_ref,
         TOOLS,
         ref["api_key"],
         ref["execution_approval"],
-        None,
-        ref["next_approval"],
-        ref["next_employee"],
-        phase178_function=phase178_stub,  # type: ignore[arg-type]
+        success_transport(ref_calls),
     )
-    assert len(p178_calls) == 1
+    assert type(ref_out) is WorkflowProgressionDecision
+    assert ref_out.decision == "prepare_next_step" and ref_out.next_step_index == 8
+    committed = (sp_ref.read_bytes(), ep_ref.read_bytes())
+
+    # Full real/default Phase179 on the target scenario.
+    s = non_contiguous(tmp_path / "a")
+    wf = s["workflow"]  # type: ignore[assignment]
+    sp, ep = Path(s["state_path"]), Path(s["events_path"])
+    calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
+    out = phase179(
+        s["result"],
+        wf,
+        s["approval"],
+        s["employee"],
+        sp,
+        ep,
+        TOOLS,
+        s["api_key"],
+        s["execution_approval"],
+        success_transport(calls),
+        s["next_approval"],
+        s["next_employee"],
+    )
     assert type(out) is PreparedWorkflowStep
     assert out.step_id == "step-8" and out.step_index == 8
-    # committed bytes unchanged (phase145 prepared from, not mutated the targets)
+    assert out.employee_id == "e8"
+    final_events = loaded_events(tmp_path / "a")
+    assert len(final_events) == 7
+    assert final_events[4].request_id is None  # step5 aged None
+    assert final_events[5].request_id is not None  # step6 non-empty
+    assert len(calls) == 1
+    # valid Phase145 leaves the post-Phase178 committed snapshot unchanged
     assert sp.read_bytes() == committed[0]
     assert ep.read_bytes() == committed[1]
 
@@ -1066,6 +1192,81 @@ def test_14_malformed_substitute_phase178_output_phase178_contract_zero145(
 
     assert_classification(call, "phase178_contract")
     assert p145_calls == []
+
+    # (b) unexpected Phase178 error -> dependency_error, zero Phase145 calls, and
+    # no pre-Phase178 rollback (the original targets are left exactly as-is).
+    s_b = _scenario(tmp_path, "b")
+    wf_b = s_b["workflow"]
+    sp_b, ep_b = Path(s_b["state_path"]), Path(s_b["events_path"])
+    prepare_b = prepare_decision(wf_b, 7)
+    p145_b: list[int] = []
+    before_b = (sp_b.read_bytes(), ep_b.read_bytes())
+
+    def phase178_unexpected_stub(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("boom")
+
+    def phase145_b_stub(*args: object, **kwargs: object) -> object:
+        p145_b.append(1)
+        return None
+
+    def call_b() -> object:
+        return phase179(
+            s_b["result"],
+            wf_b,
+            s_b["approval"],
+            s_b["employee"],
+            sp_b,
+            ep_b,
+            TOOLS,
+            s_b["api_key"],
+            s_b["execution_approval"],
+            None,
+            approval_for(prepare_b),
+            employee_for(prepare_b),
+            phase178_function=phase178_unexpected_stub,  # type: ignore[arg-type]
+            phase145_function=phase145_b_stub,  # type: ignore[arg-type]
+        )
+
+    assert_classification(call_b, "dependency_error")
+    assert p145_b == []
+    assert sp_b.read_bytes() == before_b[0]
+    assert ep_b.read_bytes() == before_b[1]
+
+    # (c) exact lower-phase safe-error identity propagates from Phase178: the
+    # Phase178CompatibilityError raised by phase178 is re-raised by identity.
+    s_c = _scenario(tmp_path, "c")
+    wf_c = s_c["workflow"]
+    sp_c, ep_c = Path(s_c["state_path"]), Path(s_c["events_path"])
+    prepare_c = prepare_decision(wf_c, 7)
+    sentinel_c = Phase178CompatibilityError("phase178_contract")
+    p145_c: list[int] = []
+
+    def phase178_sentinel_stub(*args: object, **kwargs: object) -> object:
+        raise sentinel_c
+
+    def phase145_c_stub(*args: object, **kwargs: object) -> object:
+        p145_c.append(1)
+        return None
+
+    with pytest.raises(Phase178CompatibilityError) as exc:
+        phase179(
+            s_c["result"],
+            wf_c,
+            s_c["approval"],
+            s_c["employee"],
+            sp_c,
+            ep_c,
+            TOOLS,
+            s_c["api_key"],
+            s_c["execution_approval"],
+            None,
+            approval_for(prepare_c),
+            employee_for(prepare_c),
+            phase178_function=phase178_sentinel_stub,  # type: ignore[arg-type]
+            phase145_function=phase145_c_stub,  # type: ignore[arg-type]
+        )
+    assert exc.value is sentinel_c
+    assert p145_c == []
 
 
 def test_15_phase178_output_identity_mismatch_phase178_contract(
@@ -1226,6 +1427,39 @@ def test_18_phase145_safe_error_identity_preserved_and_targets_restored(
     assert sp.read_bytes() == committed[0]
     assert ep.read_bytes() == committed[1]
 
+    # Phase137 identity: a safe Phase137 error surfaced through Phase145 is
+    # re-raised by exact identity after restoring the committed snapshot, even
+    # though the stub polluted both targets first.
+    s137 = _scenario(tmp_path, "target137")
+    wf137 = s137["workflow"]
+    sp137, ep137 = Path(s137["state_path"]), Path(s137["events_path"])
+    prepare137 = prepare_decision(wf137, 7)
+    sentinel137 = Phase137CompatibilityError("terminal_contract")
+
+    def phase145_stub137(*args: object, **kwargs: object) -> object:
+        sp137.write_bytes(b"BAD-STATE")
+        ep137.write_bytes(b"BAD-EVENTS")
+        raise sentinel137
+
+    with pytest.raises(Phase137Error) as exc:
+        phase179(
+            s137["result"],
+            wf137,
+            s137["approval"],
+            s137["employee"],
+            sp137,
+            ep137,
+            TOOLS,
+            s137["api_key"],
+            s137["execution_approval"],
+            success_transport([]),
+            approval_for(prepare137),
+            employee_for(prepare137),
+            phase145_function=phase145_stub137,  # type: ignore[arg-type]
+        )
+    assert exc.value is sentinel137
+    assert sp137.read_bytes() == committed[0]
+    assert ep137.read_bytes() == committed[1]
 
 def test_19_unexpected_phase145_error_sanitized_and_rollback_failure(
     tmp_path: Path,
@@ -1296,6 +1530,36 @@ def test_19_unexpected_phase145_error_sanitized_and_rollback_failure(
     with pytest.raises(Phase179Error) as exc:
         call_b()
     assert exc.value.detail.classification == "rollback_failure"
+
+    # (c) target read OSError -> dependency_error.  A chmod-000 state target makes
+    # the post-Phase178 committed-snapshot capture read fail during the routine
+    # Phase179 run.
+    s3 = _scenario(tmp_path, "target_c")
+    wf3 = s3["workflow"]
+    sp3, ep3 = Path(s3["state_path"]), Path(s3["events_path"])
+    prepare3 = prepare_decision(wf3, 7)
+    sp3.chmod(0)
+    try:
+
+        def call_c() -> object:
+            return phase179(
+                s3["result"],
+                wf3,
+                s3["approval"],
+                s3["employee"],
+                sp3,
+                ep3,
+                TOOLS,
+                s3["api_key"],
+                s3["execution_approval"],
+                success_transport([]),
+                approval_for(prepare3),
+                employee_for(prepare3),
+            )
+
+        assert_classification(call_c, "dependency_error")
+    finally:
+        sp3.chmod(0o600)
 
 
 def test_20_no_readvance_invariant_after_prepared_step_return(tmp_path: Path) -> None:

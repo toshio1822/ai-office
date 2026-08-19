@@ -45,6 +45,9 @@ from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_br
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
     route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
+)
 from ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary import (
     RuntimeResultToApprovedPreparationOrchestrationBoundaryError as Phase173Error,
 )
@@ -268,7 +271,10 @@ def route_runtime_result_to_persisted_running_execution_progression_approved_pre
             state_path,
             events_path,
         )
-    except Phase145Error as error:
+    except (Phase145Error, Phase137Error) as error:
+        # Phase 145 and the safe Phase 137 errors it surfaces are both safe
+        # public errors: exact identity re-raise after restoring only the
+        # post-Phase178 committed snapshot (never pre-Phase178 bytes).
         _restore_if_changed(state_path, events_path, committed)
         raise error
     except Exception:
