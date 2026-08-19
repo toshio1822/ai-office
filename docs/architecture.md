@@ -3857,3 +3857,44 @@ Phase 179 PreparedWorkflowStep（straight snapshot に step-5/step-6 request_id=
 ### collect 不変条件
 
 base **11,984**（Phase 179 完了時）→ 実回帰 +8 → **11,992**
+
+## Phase 180: Post-Runtime → Persisted Running Execution → Prepared-Step-Start Orchestration Boundary
+
+Phase 180 は、公開 Phase 179（post-runtime → persisted running execution → progression → approved-preparation）と公開 Phase 146（prepared-step-start outer-chain）を直列接続する integration boundary である。Phase 179 が返した exact `PreparedWorkflowStep`（次の step の準備済み）を、公開 Phase 146 に渡して exact `PreparedStepExecutionStart` を 1 つ得る。**ワークフロー runner ではなく**、proposed immutable value のみを返し、その running state を永続化しない。
+
+### 分離・所有権
+
+- `employee` は Phase178/177 が prepare/start/persist/execute した step（例 step7）に属する
+- `next_employee` は Phase179/145 が prepare した次の step（例 step8）に属する。exact `PreparedWorkflowStep` は **`next_employee`** 所有
+- Phase 180 は **同じ `next_employee`** を Phase 146 に渡す。第1の `employee` を silent reuse せず、第3の employee 引数を導入しない
+
+### 呼び出し契約
+
+- **Phase 179**: 全受理入力に対して 12 positional・kwargs なしでちょうど 1 回。第1〜第12引数は canonical Phase179 call shape。operational/approval/employee 入力（`next_employee` 含む）は prevalidation しない
+- **Phase 146**: exact `PreparedWorkflowStep` のときだけ 5 positional `(prepared, workflow, next_employee, state_path, events_path)` でちょうど 1 回
+- **stop ルート**（`workflow_complete` / `persisted_failure`）: exact Phase 179 stop object を identity で返し、Phase 146 は zero-call。`next_employee` 検証も行わない
+
+### stage ownership / thin durable proof
+
+- **Phase 179 stage**: Phase 180 は追加 write せず、Phase 179 が正当に durable ownership を越えた後の pre-Phase179 bytes へ絶対に巻き戻さない。認識済み safe Phase179 error は同一 object を identity で re-raise（Phase 146 zero-call・rollback なし）、予期しない例外は `dependency_error` に sanitize
+- **thin 出力契約**: exact Phase179 出力が original input・workflow・`next_employee`（exact prepared のときのみ）・post-Phase179 durable snapshot と整合することを薄く証明（停止4分岐: original stop / runtime→prepared / runtime→workflow_complete / runtime→persisted_failure）。不整合は `phase179_contract` で Phase 146 zero-call・rollback なし
+- **Phase 146 stage**: `prepared` 入力の直後に post-Phase179 committed bytes を capture。exact `PreparedStepExecutionStart` を thin 検証し、real targets が committed bytes と byte-for-byte 一致することを要求。safe error / mutation / 不正戻り値の補償は **post-Phase179 committed bytes のみ**。restore 不能は `rollback_failure`
+
+### エラー分類（11 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase179_contract` / `phase146_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
+
+### no readvance
+
+- 返された `PreparedStepExecutionStart` の running state は**永続化しない**。prepared step は**実行しない**
+- Phase 147 / それ以下の prepared-start persistence へ進入しない
+- retry・loop・自動継続・finalize・schedule・parallel・artifact persistence を行わない
+- CLI / GUI behavior・provider / network / paid API 呼び出しは行わない（synthetic transport のみ）
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py` — Phase 180 production（新規）
+2. `tests/test_runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py` — 新規 +20 focused tests
+3. `src/ai_office/engine/__init__.py` — Phase 180 public exports
+4. `README.md` — Phase 180 documentation
+5. `docs/architecture.md` — 本節
