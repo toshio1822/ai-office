@@ -3850,7 +3850,7 @@ Phase 179 PreparedWorkflowStep（straight snapshot に step-5/step-6 request_id=
 
 1. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 146 production
 2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 138 production
-3. `tests/test_phase180_prereq_accumulated_none_prepared_entry_real_regression.py` — 新規実回帰 +8
+3. `tests/test_phase179_prepared_step_start_accumulated_request_id_none_compatibility.py` — 新規実回帰 +8
 4. `README.md` — Phase 180 prerequisite documentation
 5. `docs/architecture.md` — 本節
 

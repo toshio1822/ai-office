@@ -3981,7 +3981,7 @@ Issue #390 は、Issue #386 で approved-preparation エントリ層（Phase 145
 
 ### テスト
 
-- **新規実回帰テスト**: `tests/test_phase180_prereq_accumulated_none_prepared_entry_real_regression.py`（+8: A–H）。実 Phase 146 / Phase 138 prepared エントリが accumulated aged-None（step-5 / step-6・provider openai・`current_step_index >= 7`）を prepare route で受容し、委譲1回で exact prepared start を返す（bytes 不変）。non-contiguous（position 5 のみ None）も受容。strict 否定的（position 4 None / position 5 non-openai / current step 6）を保持。stop route の exact identity + bytes 不変維持、および aged-None stop reject（stop 意味論を拡張しない）
+- **新規実回帰テスト**: `tests/test_phase179_prepared_step_start_accumulated_request_id_none_compatibility.py`（+8）。実 Phase 179 で canonical step-8 `PreparedWorkflowStep` を生成し、実 Phase 146 / 実 Phase 138 → 不変の Phase 131 以下へ通し、exact `PreparedStepExecutionStart`(step 8) を返す（post-Phase179 committed bytes 不変・step 8 persistence/execution 0・synthetic transport の step 7 execution exactly once）。accumulated aged-None（step-5 / step-6・provider openai・`current_step_index >= 7`）を prepare route で受容。non-contiguous（position 5 のみ None）も受容。strict 否定的（position 4 None / position 5 non-openai / `request_id=""` / wrong-type / current step 6）を保持。stop route の exact identity + bytes 不変維持、および aged-None stop reject（stop 意味論を拡張しない）
 
 ### collect 不変条件
 
@@ -3991,7 +3991,7 @@ base **11,984**（Phase 179 完了時）→ 実回帰 +8 → **11,992**
 
 1. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 146 production
 2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 138 production
-3. `tests/test_phase180_prereq_accumulated_none_prepared_entry_real_regression.py` — 新規実回帰 +8
+3. `tests/test_phase179_prepared_step_start_accumulated_request_id_none_compatibility.py` — 新規実回帰 +8
 4. `README.md` — 本節
 5. `docs/architecture.md` — Phase 180 prerequisite architecture documentation
 
