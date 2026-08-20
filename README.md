@@ -4059,3 +4059,18 @@ already established by the prior entry layers:
   Phase 181 itself are unchanged. No provider/tool execution, retry, automatic
   continuation, or step execution is added; validation uses synthetic transport
   only.
+
+
+## Phase 181: Post-Runtime → Persisted Running Execution → Prepared-Start Persistence Orchestration Boundary
+
+Phase 181 composes public Phase 180 → public Phase 147 only. Only the exact
+`PreparedStepExecutionStart` returned by Phase 180 enters Phase 147; exact
+`workflow_complete` and `persisted_failure` stop objects return directly with
+Phase 147 zero-call. The Phase-180-produced start belongs to `next_employee`,
+which is passed unchanged to Phase 147. Phase 180's prior durable work is never
+rolled back. Phase 147 success establishes the new durable running-state commit,
+and Phase 147 failure compensation restores only the post-Phase-180 committed
+predecessor snapshot. Phase 181 stops after the exact
+`RunningStatePersistenceResult`; it does not execute the persisted step and adds
+no retry, automatic continuation, finalize, schedule, loop, parallel, CLI, or
+GUI behavior.

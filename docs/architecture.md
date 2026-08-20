@@ -3924,3 +3924,22 @@ types remain strict. The rule is not used by `workflow_complete` or
 139 → Phase 132 layering remains exact and canonical five-argument delegation
 is unchanged. No provider/tool execution, retry, automatic continuation, or
 step execution is added. The repair is validated with synthetic transport only.
+
+
+## Phase 181: Post-Runtime → Prepared-Start Persistence Orchestration Boundary
+
+Phase 181 is the explicit public Phase 180 → public Phase 147 composition.
+Phase 180 is invoked once with its canonical twelve positional arguments. Only
+an exact `PreparedStepExecutionStart` proceeds to Phase 147, which is invoked
+once with five positional arguments and the unchanged Phase-180 `next_employee`.
+Exact `workflow_complete` and `persisted_failure` outputs return directly with
+Phase 147 zero-call. Phase 180's durable ownership is never rolled back; after a
+valid start, Phase 147 failures compensate only to the post-Phase-180 committed
+predecessor bytes. A valid Phase 147 result is the new durable running-state
+commit, and Phase 181 stops there without executing the persisted step. No retry,
+automatic continuation, finalization, scheduling, looping, parallelism, CLI, or
+GUI behavior is added.
+
+The Phase 181 focused regression module contains exactly 20 collected tests.
+The implementation changes only the new Phase 181 module, its public engine
+exports, the focused tests, README, and this architecture section.
