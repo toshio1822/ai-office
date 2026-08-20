@@ -32,9 +32,11 @@ from ai_office.engine import (
 )
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase147Error,
+    _valid_history as phase147_valid_history,
 )
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase139Error,
+    _valid_history as phase139_valid_history,
 )
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError as Phase132Error,
@@ -404,7 +406,6 @@ def test_04_phase147_bounded_accumulated_rule(tmp_path: Path) -> None:
         ("non-openai", _scenario(tmp_path / "non-openai", none_positions=(5,), non_openai_positions=(5,))),
         ("empty", _scenario(tmp_path / "empty", empty_positions=(5,))),
         ("wrong-type", _scenario(tmp_path / "wrong-type", wrong_type_positions=(5,))),
-        ("lower-index", _scenario(tmp_path / "lower-index", prepared_index=7, current=6, none_positions=(4,))),
     ):
         calls: list[tuple] = []
         with pytest.raises(Phase147Error) as error:
@@ -415,6 +416,36 @@ def test_04_phase147_bounded_accumulated_rule(tmp_path: Path) -> None:
             )
         assert error.value.detail.classification == "terminal_contract", label
         assert calls == []
+
+    # Pin the accumulated threshold independently of immediate-predecessor
+    # compatibility: position 5 None is false at persisted index 6 and true
+    # at persisted index 7 when immediate None is disabled.
+    lower = _scenario(tmp_path / "lower-index", prepared_index=7, current=6, none_positions=(5,))
+    lower_loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(lower["state_path"], lower["events_path"])
+    )
+    assert not phase147_valid_history(
+        lower["workflow"], lower_loaded.state, lower_loaded.events,
+        "succeeded", None, None,
+        require_immediate_openai=True,
+        allow_empty_success_output=True,
+        allow_empty_predecessor_output=True,
+        allow_immediate_none_request_id=False,
+        allow_accumulated_openai_none=True,
+    )
+    threshold = _scenario(tmp_path / "threshold", prepared_index=8, current=7, none_positions=(5,))
+    threshold_loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(threshold["state_path"], threshold["events_path"])
+    )
+    assert phase147_valid_history(
+        threshold["workflow"], threshold_loaded.state, threshold_loaded.events,
+        "succeeded", None, None,
+        require_immediate_openai=True,
+        allow_empty_success_output=True,
+        allow_empty_predecessor_output=True,
+        allow_immediate_none_request_id=False,
+        allow_accumulated_openai_none=True,
+    )
 
     immediate = _scenario(tmp_path / "immediate", prepared_index=7, current=6, none_positions=(5,))
     calls = []
@@ -446,7 +477,6 @@ def test_05_phase139_bounded_accumulated_rule(tmp_path: Path) -> None:
         ("non-openai", _scenario(tmp_path / "non-openai", none_positions=(5,), non_openai_positions=(5,))),
         ("empty", _scenario(tmp_path / "empty", empty_positions=(5,))),
         ("wrong-type", _scenario(tmp_path / "wrong-type", wrong_type_positions=(5,))),
-        ("lower-index", _scenario(tmp_path / "lower-index", prepared_index=7, current=6, none_positions=(4,))),
     ):
         with pytest.raises(Phase139Error) as error:
             phase139(
@@ -455,6 +485,37 @@ def test_05_phase139_bounded_accumulated_rule(tmp_path: Path) -> None:
                 phase132_function=lambda *args, **kwargs: pytest.fail("Phase132 must not run"),
             )
         assert error.value.detail.classification == "terminal_contract", label
+
+    # Pin the accumulated threshold independently of immediate-predecessor
+    # compatibility: position 5 None is false at persisted index 6 and true
+    # at persisted index 7 when immediate None is disabled.
+    lower = _scenario(tmp_path / "lower-index", prepared_index=7, current=6, none_positions=(5,))
+    lower_loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(lower["state_path"], lower["events_path"])
+    )
+    assert not phase139_valid_history(
+        lower["workflow"], lower_loaded.state, lower_loaded.events,
+        "succeeded", None,
+        require_immediate_openai=True,
+        allow_empty_success_output=True,
+        allow_empty_predecessor_output=True,
+        allow_immediate_none_request_id=False,
+        allow_accumulated_openai_none=True,
+    )
+    threshold = _scenario(tmp_path / "threshold", prepared_index=8, current=7, none_positions=(5,))
+    threshold_loaded = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(threshold["state_path"], threshold["events_path"])
+    )
+    assert phase139_valid_history(
+        threshold["workflow"], threshold_loaded.state, threshold_loaded.events,
+        "succeeded", None,
+        require_immediate_openai=True,
+        allow_empty_success_output=True,
+        allow_empty_predecessor_output=True,
+        allow_immediate_none_request_id=False,
+        allow_accumulated_openai_none=True,
+    )
+
     immediate = _scenario(tmp_path / "immediate", prepared_index=7, current=6, none_positions=(5,))
     calls = []
     phase139(
@@ -594,3 +655,44 @@ def test_08_unchanged_stop_readonly_error_behavior(tmp_path: Path) -> None:
     assert caught.value is safe132
     assert len(lower_attempts) == 1
     _assert_unchanged(lower)
+
+    # Persistence-contract strictness: malformed dependency results and invalid
+    # persisted state are rejected once, then both targets are restored.
+    phase147_case = _canonical(tmp_path / "phase147-persistence-contract")
+    phase147_before = phase147_case["committed"]
+    phase147_calls = 0
+
+    def malformed_phase147(*args: object, **kwargs: object) -> object:
+        nonlocal phase147_calls
+        phase147_calls += 1
+        phase147_case["state_path"].write_bytes(b"invalid persisted state")
+        return object()
+
+    with pytest.raises(Phase147Error) as caught:
+        phase147(
+            phase147_case["start"], phase147_case["workflow"], phase147_case["employee"],
+            phase147_case["state_path"], phase147_case["events_path"],
+            phase139_function=malformed_phase147,
+        )
+    assert caught.value.detail.classification == "persistence_contract"
+    assert phase147_calls == 1
+    assert (phase147_case["state_path"].read_bytes(), phase147_case["events_path"].read_bytes()) == phase147_before
+
+    phase139_case = _scenario(tmp_path / "phase139-persistence-contract", none_positions=(5,))
+    phase139_calls = 0
+
+    def malformed_phase139(*args: object, **kwargs: object) -> object:
+        nonlocal phase139_calls
+        phase139_calls += 1
+        phase139_case["state_path"].write_bytes(b"invalid persisted state")
+        return object()
+
+    with pytest.raises(Phase139Error) as caught:
+        phase139(
+            phase139_case["start"], phase139_case["workflow"], phase139_case["employee"],
+            phase139_case["state_path"], phase139_case["events_path"],
+            phase132_function=malformed_phase139,
+        )
+    assert caught.value.detail.classification == "persistence_contract"
+    assert phase139_calls == 1
+    _assert_unchanged(phase139_case)
