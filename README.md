@@ -3996,3 +3996,46 @@ base **11,984**（Phase 179 完了時）→ 実回帰 +8 → **11,992**
 5. `docs/architecture.md` — Phase 180 prerequisite architecture documentation
 
 5ファイルを超える変更・3境界目以降の production 修正が必要になった場合は STOP して報告する。
+
+## Phase 180: Post-Runtime → Persisted Running Execution → Prepared-Step-Start Orchestration Boundary
+
+Phase 180 は、**公開 Phase 179 と公開 Phase 146 を直列接続する integration boundary** です。既存の公開 Phase 179（post-runtime → persisted running execution → progression → approved-preparation）をそのまま呼び、その返した exact `PreparedWorkflowStep` を公開 Phase 146（prepared-step-start）に渡して exact `PreparedStepExecutionStart` を 1 つ得ます。**Phase 175 の substitute ではなく**、Phase 179 の resultado を起点に 1 段だけ prepared-step start へ延長します。
+
+```text
+original runtime result / exact stop input
+    ↓ Phase 179（12 positional、ちょうど1回）
+    → PreparedWorkflowStep（次の step の準備済み）
+        ↓ Phase 146（5 positional、ちょうど1回）… next_employee を渡す
+        ↓ PreparedStepExecutionStart（proposed immutable value のみ）
+    → workflow_complete
+        ↓ exact stop return（Phase 146 zero-call）
+    → persisted_failure
+        ↓ exact stop return（Phase 146 zero-call）
+```
+
+### 核心契約
+
+- **Phase 179 を 12 positional・kwargs なしでちょうど 1 回呼ぶ**: 最初の 12 引数は canonical Phase179 call shape。operational/approval/employee 入力（`next_employee` 含む）は **prevalidation しない**（Phase 179 が authoritative）
+- **Phase 146 は exact `PreparedWorkflowStep` のときだけ 5 positional でちょうど 1 回呼ぶ**: `(prepared, workflow, next_employee, state_path, events_path)`。**同じ `next_employee`** を渡す。第1の `employee` を silent reuse しない、第3の employee を導入しない
+- **stop ルート（`workflow_complete` / `persisted_failure`）は Phase 146 zero-call**: exact Phase 179 stop object を identity で返し、target bytes 不変を確認するだけ
+- **employee 所有権の分離**: `employee` は Phase178/177 が prepare/persist/execute した step（例 step7）に属し、`next_employee` は Phase179/145 が prepare した次の step（例 step8）に属する。Phase 180 は **`next_employee`** を Phase 146 に渡す
+- **Phase 179 stage は追加 write / pre-Phase179 rollback をしない**: 認識済み safe Phase179 error は同一 object を identity で re-raise（Phase 146 zero-call・rollback なし）。予期しない例外は `dependency_error` に sanitize
+- **committed snapshot は post-Phase179 bytes**: Phase 146 の mutation / 安全エラー / 不正戻り値の補償は **post-Phase179 committed bytes のみ**へ restore。pre-Phase179 へ巻き戻さない
+- **戻り値は proposed のみ**: Phase 180 は返された `PreparedStepExecutionStart` の running state を**永続化せず**、prepared step を**実行しない**。retry / loop / 自動継続 / finalize / schedule / parallel を一切行わない
+- **Issue #390 の accumulated aged-None 互換を再利用**: Phase 146 / Phase 138 の stop-route 意味論を拡張しない（stop は `next_employee` 検証を行わない）
+
+### エラー分類（11 分類）
+
+`result_type` / `workflow_definition` / `state_target` / `event_target` / `target_conflict` / `configuration` / `phase179_contract` / `phase146_contract` / `dependency_error` / `committed_mutation` / `rollback_failure`
+
+### 変更ファイル（正確に5ファイル）
+
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py` — Phase 180 production（新規）
+2. `tests/test_runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py` — 新規 +20 focused tests
+3. `src/ai_office/engine/__init__.py` — Phase 180 public exports
+4. `README.md` — 本節
+5. `docs/architecture.md` — Phase 180 architecture documentation
+
+### collect 不変条件
+
+base **11,992**（Issue #390 完了時）→ focused +20 → **12,012**
