@@ -337,6 +337,7 @@ def _check_predecessor(
         allow_immediate_none_request_id=(
             start.running_state.current_step_index - 1 >= 6
         ),
+        allow_accumulated_openai_none=True,
     ):
         _fail("terminal_contract")
     previous_index = start.running_state.current_step_index - 1
@@ -403,6 +404,7 @@ def _valid_history(
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
     allow_immediate_none_request_id: bool = False,
+    allow_accumulated_openai_none: bool = False,
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
         return False
@@ -435,7 +437,18 @@ def _valid_history(
             require_openai=require_immediate_openai and position == len(prior_steps),
             allow_empty_output=allow_empty_predecessor_output,
             allow_none_request_id=(
-                allow_immediate_none_request_id and position == len(prior_steps)
+                (
+                    allow_immediate_none_request_id and position == len(prior_steps)
+                )
+                or (
+                    allow_accumulated_openai_none
+                    and event.request_id is None
+                    and position >= 5
+                    and type(event.provider) is str
+                    and event.provider == "openai"
+                    and type(state.current_step_index) is int
+                    and state.current_step_index >= 7
+                )
             ),
         ):
             return False

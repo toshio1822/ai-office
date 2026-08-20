@@ -4039,3 +4039,23 @@ original runtime result / exact stop input
 ### collect 不変条件
 
 base **11,992**（Issue #390 完了時）→ focused +20 → **12,012**
+
+## Issue #394: Phase 181 prerequisite compatibility repair
+
+Issue #394 is a narrow prerequisite repair, not the Phase 181 implementation. The
+real Phase 180 path can age a previously valid built-in OpenAI
+`request_id=None` predecessor behind later successful steps. The prepared-start
+persistence routes of Phase 147 and Phase 139 now preserve the bounded rule
+already established by the prior entry layers:
+
+- `request_id is None` is additionally accepted only when `position >= 5`,
+  `provider == "openai"` as an exact built-in string, and persisted
+  `current_step_index >= 7`.
+- Positions 1–4, non-OpenAI providers, empty strings, and wrong request-ID types
+  remain strict. Existing immediate-predecessor `None` compatibility remains.
+- The expansion is limited to the PreparedStepExecutionStart route. Stop routes
+  remain unchanged and read-only.
+- Phase 132 and lower persistence, the shared terminal-history contract, and
+  Phase 181 itself are unchanged. No provider/tool execution, retry, automatic
+  continuation, or step execution is added; validation uses synthetic transport
+  only.
