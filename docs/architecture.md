@@ -3898,3 +3898,29 @@ Phase 180 は、公開 Phase 179（post-runtime → persisted running execution 
 3. `src/ai_office/engine/__init__.py` — Phase 180 public exports
 4. `README.md` — Phase 180 documentation
 5. `docs/architecture.md` — 本節
+
+## Issue #394: Phase 181 prerequisite compatibility repair
+
+Issue #394 is a prerequisite compatibility repair and does not implement Phase
+181. The canonical public Phase 180 path can produce an exact
+`PreparedStepExecutionStart(step 8)` while the durable succeeded step-7 history
+contains an aged predecessor at position 5 with the exact built-in OpenAI
+`request_id=None`. Phase 147 and Phase 139 now accept that provenance on their
+prepared/start persistence routes using the same bounded rule as the earlier
+entry layers:
+
+```text
+request_id is None
+AND position >= 5
+AND provider == "openai" (exact built-in string)
+AND persisted current_step_index >= 7
+```
+
+The existing immediate-predecessor `None` compatibility remains unchanged.
+Positions 1–4, non-OpenAI providers, empty request IDs, and wrong request-ID
+types remain strict. The rule is not used by `workflow_complete` or
+`persisted_failure` stop routes. Phase 132, Phase 125 and lower persistence, and
+`terminal_history_contract.py` remain unchanged; the public Phase 147 → Phase
+139 → Phase 132 layering remains exact and canonical five-argument delegation
+is unchanged. No provider/tool execution, retry, automatic continuation, or
+step execution is added. The repair is validated with synthetic transport only.
