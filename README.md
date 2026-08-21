@@ -4074,3 +4074,21 @@ predecessor snapshot. Phase 181 stops after the exact
 `RunningStatePersistenceResult`; it does not execute the persisted step and adds
 no retry, automatic continuation, finalize, schedule, loop, parallel, CLI, or
 GUI behavior.
+
+## Phase 182: Post-Runtime → Persisted Running Execution → One Runtime Result
+
+Phase 182 composes public Phase 181 with public Phase 155. It captures the
+exact `PreparedStepExecutionStart` transparently from Phase 181's real public
+Phase-147 handoff and never reconstructs a replacement start. Phase 181's
+first execution context remains distinct from the explicit second
+`next_resolved_tools` / `next_api_key` / `next_execution_approval` /
+`next_transport` context used by Phase 155.
+
+Phase 181's durable running-state commit is never rolled back to a
+pre-Phase-181 snapshot. Phase 155 is read-only relative to that committed
+running snapshot; its failures or target mutations compensate only to the
+post-Phase-181 committed bytes. `workflow_complete` and `persisted_failure`
+stop outputs bypass Phase 155. For a prepared route, Phase 182 returns the
+exact one-step runtime result and stops: it does not persist or progress that
+result, retry, loop, automatically continue, finalize, schedule, parallelize,
+or add CLI/GUI behavior.
