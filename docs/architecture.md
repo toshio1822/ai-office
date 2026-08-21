@@ -3943,3 +3943,27 @@ GUI behavior is added.
 The Phase 181 focused regression module contains exactly 20 collected tests.
 The implementation changes only the new Phase 181 module, its public engine
 exports, the focused tests, README, and this architecture section.
+
+## Phase 182: Post-Runtime → Persisted Running Execution → One Runtime Result
+
+Phase 182 is the explicit public Phase 181 → public Phase 155 composition. It
+uses one capture-only delegating adapter at Phase 181's public Phase-147
+dependency: the adapter records the exact `PreparedStepExecutionStart` by
+identity, delegates the canonical five arguments unchanged, and returns the
+Phase-147 result unchanged. No start is reconstructed after Phase 181.
+
+The first execution context belongs to the step executed inside Phase 181.
+Phase 182 exposes a separate explicit `next_resolved_tools`, `next_api_key`,
+`next_execution_approval`, and `next_transport` context for the newly persisted
+step. Those values are passed only to Phase 155 after the durable running-state
+commit. Phase 181 errors and malformed outputs never restore pre-Phase-181
+bytes. Phase 155 is read-only relative to the post-Phase-181 committed running
+snapshot; safe errors, unexpected errors, malformed results, and mutations
+compensate only to that snapshot, with no retry.
+
+Exact `workflow_complete` and `persisted_failure` outputs bypass Phase 155.
+Otherwise Phase 155 executes exactly once and Phase 182 returns the exact
+`StepRuntimeExecutionSuccess` or `StepRuntimeExecutionFailure`, then stops.
+The returned runtime result is not persisted or progressed. Retry, looping,
+automatic continuation, finalization, scheduling, parallelism, CLI, and GUI
+behavior are outside this boundary.
