@@ -3967,3 +3967,54 @@ Otherwise Phase 155 executes exactly once and Phase 182 returns the exact
 The returned runtime result is not persisted or progressed. Retry, looping,
 automatic continuation, finalization, scheduling, parallelism, CLI, and GUI
 behavior are outside this boundary.
+
+## Phase 183: Post-Runtime → Persisted Running Execution → Progression
+
+Phase 183 is the explicit public composition of Phase 182 and Phase 172. It is
+an orchestration boundary, not a workflow runner:
+
+```text
+exact original runtime result / stop input
+    ↓ Phase 182: persisted continuation and one runtime result
+exact StepRuntimeExecutionSuccess / Failure, or exact stop
+    ↓ Phase 172: runtime-result persistence → classification → progression
+exact prepare_next_step / workflow_complete / persisted_failure
+    ↓ STOP
+```
+
+Phase 182 is called exactly once with its canonical sixteen positional
+arguments. If and only if it returns an exact runtime result, Phase 172 is
+called exactly once with four positional arguments: the returned runtime result,
+workflow, state path, and events path. Phase-182 `workflow_complete` and
+`persisted_failure` outputs are exact identity stop routes and make zero Phase
+172 calls. Phase 183 performs no outer rollback or compensating write: Phase 182
+owns its post-Phase-181 running commit, while Phase 172 owns runtime-result
+persistence, classification, progression, and its terminal effects.
+
+The thin Phase-182 proof requires the second continuation result to be exactly
+two steps after the original result, linked to the workflow and running state,
+with the exact succeeded predecessor history and existing runtime-result
+validator semantics. Runtime-to-stop results are linked to a durable terminal
+snapshot. `workflow_complete` is accepted only for the workflow's final step;
+stop events are exact `RuntimeStepEvent` values with canonical workflow-linked
+status, provider, request/output/message, and failure fields. This prevents
+corrupted terminal or predecessor history from being treated as a valid stop.
+
+The thin Phase-172 proof requires the pre-Phase-172 event bytes to remain an
+exact prefix and exactly one canonical terminal event to be appended. Final
+state and progression are linked to the Phase-182 runtime result: success gives
+`prepare_next_step` for the immediate next step or `workflow_complete` at the
+final step; failure gives `persisted_failure` with the exact failure category.
+For a nine-step workflow, step 8 therefore returns `prepare_next_step(step 9)`
+and Phase 183 stops without any step-9 preparation, start, persistence, or
+execution.
+
+The boundary adds no retry, loop, automatic continuation, second progression,
+finalize, schedule, parallel execution, provider/network/paid API call, CLI,
+or GUI behavior. The exactly 20 collected focused tests cover the public API,
+call shape and identity, strict inputs, stop zero-call semantics, safe and
+unexpected errors, durable target proofs, malformed outputs, canonical
+8-step success/failure, and the 9-step stop decision. Synthetic transports are
+used exclusively. The exact Phase-183 change set is the new boundary module,
+its 20-test module, public engine exports, README documentation, and this
+architecture section.
