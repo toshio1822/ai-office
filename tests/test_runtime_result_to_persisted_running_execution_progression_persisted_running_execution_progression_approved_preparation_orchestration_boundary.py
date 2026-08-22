@@ -26,6 +26,12 @@ from ai_office.engine.next_step_preparation import NextStepPreparationApproval
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178Error,
+)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase183Error,
 )
@@ -257,6 +263,27 @@ def test_05_original_workflow_complete_is_exact_identity_and_phase145_zero(tmp_p
     assert out is stop and calls == []
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before
 
+    owned_state = before[0] + b"phase183-owned-state"
+    owned_events = before[1] + b"phase183-owned-events"
+    calls = []
+
+    def mutating_phase183(*args: object) -> object:
+        values["state_path"].write_bytes(owned_state)
+        values["events_path"].write_bytes(owned_events)
+        return stop
+
+    with pytest.raises(Phase184Error) as caught:
+        phase184(
+            stop, values["workflow"], None, None, values["state_path"], values["events_path"],
+            None, None, None, None, None, None, None, None, None, None, None, None,
+            phase183_function=mutating_phase183,
+            phase145_function=lambda *args: calls.append(args),
+        )
+    assert caught.value.detail.classification == "phase183_contract"
+    assert calls == []
+    assert values["state_path"].read_bytes() == owned_state
+    assert values["events_path"].read_bytes() == owned_events
+
 
 def test_06_original_persisted_failure_is_exact_identity_and_phase145_zero(tmp_path: Path) -> None:
     h = _harness()
@@ -271,6 +298,27 @@ def test_06_original_persisted_failure_is_exact_identity_and_phase145_zero(tmp_p
     )
     assert out is stop and calls == []
     assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before
+
+    owned_state = before[0] + b"phase183-owned-state"
+    owned_events = before[1] + b"phase183-owned-events"
+    calls = []
+
+    def mutating_phase183(*args: object) -> object:
+        values["state_path"].write_bytes(owned_state)
+        values["events_path"].write_bytes(owned_events)
+        return stop
+
+    with pytest.raises(Phase184Error) as caught:
+        phase184(
+            stop, values["workflow"], None, None, values["state_path"], values["events_path"],
+            None, None, None, None, None, None, None, None, None, None, None, None,
+            phase183_function=mutating_phase183,
+            phase145_function=lambda *args: calls.append(args),
+        )
+    assert caught.value.detail.classification == "phase183_contract"
+    assert calls == []
+    assert values["state_path"].read_bytes() == owned_state
+    assert values["events_path"].read_bytes() == owned_events
 
 
 def test_07_runtime_first_continuation_workflow_complete_bypasses_phase145(tmp_path: Path) -> None:
@@ -359,6 +407,34 @@ def test_13_phase183_safe_error_identity_zero_phase145_and_no_outer_rollback(tmp
     with pytest.raises(Phase183Error) as caught:
         _call(case, phase183_function=dependency, phase145_function=lambda *args: calls.append(args))
     assert caught.value is safe and calls == [] and case["state_path"].read_bytes() == before + b"owned"
+
+    for label, safe_error in (
+        ("phase178", Phase178Error("dependency_error")),
+        ("phase137", Phase137Error("dependency_error")),
+    ):
+        error_case = _scenario(tmp_path / label)
+        error_before = error_case["state_path"].read_bytes()
+        error_owned = error_before + b"owned-by-safe-error"
+        error_calls: list[object] = []
+
+        def safe_dependency(
+            *args: object,
+            error_case=error_case,
+            error_owned=error_owned,
+            safe_error=safe_error,
+        ) -> object:
+            error_case["state_path"].write_bytes(error_owned)
+            raise safe_error
+
+        with pytest.raises(type(safe_error)) as error_caught:
+            _call(
+                error_case,
+                phase183_function=safe_dependency,
+                phase145_function=lambda *args: error_calls.append(args),
+            )
+        assert error_caught.value is safe_error
+        assert error_calls == []
+        assert error_case["state_path"].read_bytes() == error_owned
 
 
 def test_14_unexpected_phase183_error_is_sanitized_without_outer_rollback(tmp_path: Path) -> None:

@@ -61,6 +61,9 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase182Error,
 )
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178Error,
+)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase181Error,
 )
@@ -127,10 +130,12 @@ _SAFE_PHASE183_ERRORS = (
     Phase181Error,
     Phase180Error,
     Phase179Error,
+    Phase178Error,
     Phase176Error,
     Phase175Error,
     Phase173Error,
     Phase172Error,
+    Phase137Error,
     Phase145Error,
     Phase146Error,
     Phase138Error,
@@ -229,7 +234,7 @@ def route_runtime_result_to_persisted_running_execution_progression_persisted_ru
 
     # The Phase-183 preparation/execution inputs and the later Phase-145
     # step approval/employee pair are deliberately not prevalidated.  Phase
-    # 178 remains authoritative for its own inputs, and a valid Phase-183
+    # 183 remains authoritative for its own inputs, and a valid Phase-183
     # durable result must not be blocked merely because the later step's
     # approval/employee is absent, stale, or invalid.
     _check_targets(state_path, events_path)
@@ -261,12 +266,15 @@ def route_runtime_result_to_persisted_running_execution_progression_persisted_ru
         _fail("dependency_error")
 
     if type(result) in (WorkflowProgressionDecision, PersistedExecutionOutcome):
-        # Original stop input: exact identity + byte-for-byte unchanged.
+        # Original stop input: exact identity + byte-for-byte unchanged.  A
+        # target mutation belongs to Phase 183's ownership boundary and must
+        # be detected without restoring its post-call bytes.
         if progressed is not result:
             _fail("phase183_contract")
-        _require_unchanged(
-            state_path, events_path, pre_phase183, "phase183_contract"
-        )
+        if _changed(state_path, pre_phase183[0]) or _changed(
+            events_path, pre_phase183[1]
+        ):
+            _fail("phase183_contract")
         return progressed
 
     if type(progressed) not in (
