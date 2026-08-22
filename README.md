@@ -4092,3 +4092,48 @@ stop outputs bypass Phase 155. For a prepared route, Phase 182 returns the
 exact one-step runtime result and stops: it does not persist or progress that
 result, retry, loop, automatically continue, finalize, schedule, parallelize,
 or add CLI/GUI behavior.
+
+## Phase 183: Post-Runtime → Persisted Running Execution → Progression
+
+Phase 183 composes the public Phase 182 one-step runtime boundary with the
+public Phase 172 runtime-result persistence/classification/progression boundary:
+
+```text
+original runtime result / exact stop input
+    ↓ Phase 182 (one persisted continuation step, or exact stop)
+StepRuntimeExecutionSuccess / StepRuntimeExecutionFailure
+    ↓ Phase 172 (persist → classify → progress)
+WorkflowProgressionDecision / PersistedExecutionOutcome
+    ↓ STOP
+```
+
+The Phase-182 call uses its canonical sixteen positional arguments exactly once.
+Only an exact Phase-182 runtime result enters Phase 172, using exactly four
+positional arguments exactly once. An exact `workflow_complete` or
+`persisted_failure` returned by Phase 182 is returned by identity; Phase 172 is
+not called. Phase 183 does not add rollback or write compensation around either
+owned boundary: Phase 182's running snapshot and Phase 172's terminal effects
+remain owned by those phases.
+
+For the canonical eight-step path, step 7 and step 8 execute once through Phase
+182, then Phase 172 persists step 8 and returns `workflow_complete` or
+`persisted_failure`. For a nine-step workflow, Phase 172 returns
+`prepare_next_step(step 9)` and Phase 183 stops without preparing, starting,
+persisting, or executing step 9. There is no retry, loop, automatic
+continuation, second progression, finalize, schedule, parallel execution,
+provider/network call, CLI, or GUI behavior.
+
+The boundary validates exact result/stop types, workflow and step linkage,
+post-Phase-182 running history, and the byte-preserving Phase-172 terminal
+append. Stop validation requires a final-step `workflow_complete` and canonical
+workflow-linked events; malformed state/event evidence is classified as
+`phase182_contract` or `phase172_contract`. Its local safe error family exposes
+only the fixed classifications `result_type`, `workflow_definition`,
+`state_target`, `event_target`, `target_conflict`, `configuration`,
+`phase182_contract`, `phase172_contract`, and `dependency_error`.
+
+Requirement coverage is kept in the focused 20-test module: public API and
+source audit; exact call shapes and identity; strict input and safe-error
+handling; stop zero-call routes; durable snapshot/event linkage; malformed
+output rejection; canonical eight-step success/failure; and nine-step
+prepare-decision stop behavior. Synthetic transports are used exclusively.
