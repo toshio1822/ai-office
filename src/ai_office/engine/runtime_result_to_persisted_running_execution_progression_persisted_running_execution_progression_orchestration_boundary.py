@@ -367,7 +367,9 @@ def _valid_phase182_runtime_output(
             event = RuntimeStepEvent(**json.loads(line))
         except Exception:
             return False
-        if not _valid_succeeded_event(event, workflow, position):
+        if not _valid_succeeded_event(
+            event, workflow, position, immediate_position=index - 1
+        ):
             return False
     return True
 
@@ -460,7 +462,9 @@ def _valid_terminal_snapshot(
         for position, line in enumerate(lines, start=1):
             event = RuntimeStepEvent(**json.loads(line))
             if position < index:
-                valid = _valid_succeeded_event(event, workflow, position)
+                valid = _valid_succeeded_event(
+                    event, workflow, position, immediate_position=index - 1
+                )
             else:
                 valid = _valid_terminal_event(
                     event, workflow, position, status, failure_category
@@ -473,7 +477,11 @@ def _valid_terminal_snapshot(
 
 
 def _valid_succeeded_event(
-    event: object, workflow: WorkflowDefinition, position: int
+    event: object,
+    workflow: WorkflowDefinition,
+    position: int,
+    *,
+    immediate_position: int,
 ) -> bool:
     if type(event) is not RuntimeStepEvent:
         return False
@@ -487,17 +495,39 @@ def _valid_succeeded_event(
         and event.employee_id == step.employee
         and event.previous_status == "running"
         and event.next_status == "succeeded"
-        and event.provider == "openai"
+        and _valid_predecessor_provenance(event, position, immediate_position)
         and event.failure_category is None
         and type(event.response_id) is str
         and event.response_id != ""
-        and (
-            event.request_id is None
-            or (type(event.request_id) is str and event.request_id != "")
-        )
         and type(event.output_text) is str
         and event.message is None
     )
+
+
+def _valid_predecessor_provenance(
+    event: RuntimeStepEvent, position: int, immediate_position: int
+) -> bool:
+    """Match the existing Phase 161 / Phase 155 predecessor contract.
+
+    A non-empty request ID permits any non-empty provider for an older
+    predecessor.  Missing request IDs are only the accumulated compatibility
+    case from step 5 onward, and only with the exact ``openai`` provider.
+    The immediate predecessor keeps the existing exact-``openai`` provider
+    requirement for both request-ID forms.
+    """
+    provider_valid = type(event.provider) is str and event.provider != ""
+    if position == immediate_position:
+        provider_valid = provider_valid and event.provider == "openai"
+    if event.request_id is None:
+        return (
+            provider_valid
+            and (
+                position == immediate_position
+                or (immediate_position >= 6 and position >= 5)
+            )
+            and event.provider == "openai"
+        )
+    return provider_valid and type(event.request_id) is str and event.request_id != ""
 
 
 def _valid_terminal_event(

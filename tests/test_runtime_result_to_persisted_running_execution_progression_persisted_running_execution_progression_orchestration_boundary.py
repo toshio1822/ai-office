@@ -26,8 +26,12 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
 )
-from ai_office.runtime import StepRuntimeExecutionFailure, StepRuntimeExecutionSuccess
-from ai_office.storage import load_workflow_execution_state
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    StepRuntimeExecutionFailure,
+    StepRuntimeExecutionSuccess,
+)
+from ai_office.storage import load_workflow_execution_state, serialize_runtime_step_event_jsonl
 
 _HARNESS_PATH = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary.py"
@@ -181,6 +185,99 @@ def test_04_phase182_runtime_result_is_linked_to_post_phase182_running_snapshot(
         "phase182_contract",
     )
     assert phase172_calls == []
+
+    # Phase 183 must reuse the Phase 161 / Phase 155 predecessor provenance
+    # contract rather than requiring every older event to be OpenAI.
+    def establish_phase182(case: dict[str, object]) -> object:
+        return phase182(
+            *_args(
+                case,
+                transport=case["h"].success_transport([]),  # type: ignore[index]
+                next_transport=case["h"].success_transport([]),  # type: ignore[index]
+            )
+        )
+
+    def rewrite_event(case: dict[str, object], position: int, **changes: object) -> None:
+        events = _events(case["events_path"])  # type: ignore[arg-type]
+        events[position - 1].update(changes)
+        case["events_path"].write_text(  # type: ignore[index]
+            "".join(
+                serialize_runtime_step_event_jsonl(RuntimeStepEvent(**event))
+                for event in events
+            ),
+            encoding="utf-8",
+        )
+
+    older_non_openai = _case(tmp_path / "older-non-openai")
+    older_result = establish_phase182(older_non_openai)
+    rewrite_event(older_non_openai, 2, provider="other", request_id="older-request")
+    older_out = phase183(
+        *_args(older_non_openai),
+        phase182_function=lambda *args: older_result,
+        phase172_function=phase172,
+    )
+    assert type(older_out) is WorkflowProgressionDecision
+    assert older_out.decision == "workflow_complete"
+
+    immediate_none = _case(tmp_path / "immediate-none")
+    immediate_result = establish_phase182(immediate_none)
+    rewrite_event(immediate_none, 7, provider="openai", request_id=None)
+    immediate_out = phase183(
+        *_args(immediate_none),
+        phase182_function=lambda *args: immediate_result,
+        phase172_function=phase172,
+    )
+    assert type(immediate_out) is WorkflowProgressionDecision
+    assert immediate_out.decision == "workflow_complete"
+
+    immediate_non_openai = _case(tmp_path / "immediate-non-openai")
+    immediate_non_openai_result = establish_phase182(immediate_non_openai)
+    rewrite_event(
+        immediate_non_openai,
+        7,
+        provider="other",
+        request_id="immediate-request",
+    )
+    calls: list[object] = []
+    _classification(
+        lambda: phase183(
+            *_args(immediate_non_openai),
+            phase182_function=lambda *args: immediate_non_openai_result,
+            phase172_function=lambda *args: calls.append(args),
+        ),
+        "phase182_contract",
+    )
+    assert calls == []
+
+    for position in range(1, 5):
+        incompatible = _case(tmp_path / f"early-none-{position}")
+        incompatible_result = establish_phase182(incompatible)
+        rewrite_event(incompatible, position, provider="openai", request_id=None)
+        calls: list[object] = []
+        _classification(
+            lambda: phase183(
+                *_args(incompatible),
+                phase182_function=lambda *args: incompatible_result,
+                phase172_function=lambda *args: calls.append(args),
+            ),
+            "phase182_contract",
+        )
+        assert calls == []
+
+    for position in (5, 6, 7):
+        incompatible = _case(tmp_path / f"aged-none-non-openai-{position}")
+        incompatible_result = establish_phase182(incompatible)
+        rewrite_event(incompatible, position, provider="other", request_id=None)
+        calls: list[object] = []
+        _classification(
+            lambda: phase183(
+                *_args(incompatible),
+                phase182_function=lambda *args: incompatible_result,
+                phase172_function=lambda *args: calls.append(args),
+            ),
+            "phase182_contract",
+        )
+        assert calls == []
 
 
 def test_05_original_workflow_complete_exact_identity_unchanged_phase172_zero(
