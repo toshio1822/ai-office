@@ -4169,3 +4169,19 @@ exact post-Phase-183 state/event snapshot. It stops at the exact
 `PreparedWorkflowStep(step 9)` and does not start, persist, or execute step 9.
 No retry, loop, automatic continuation, finalization, scheduling, parallelism,
 provider/network call, CLI, or GUI behavior is added.
+
+## Phase 185: Post-Runtime → Persisted Running Execution → Prepared-Step-Start
+
+Phase 185 composes only public Phase 184 followed by public Phase 146. The
+exact `PreparedWorkflowStep(step 9)` from Phase 184 is the only value that
+enters Phase 146, together with the same `following_employee` that owns step 9.
+`workflow_complete` and `persisted_failure` are exact identity stop routes and
+make zero Phase 146 calls. The accumulated provenance compatibility for aged
+OpenAI `request_id=None` values established by Issue #390 is reused through
+Phase 146/138; it is not reimplemented here.
+
+After Phase 184 commits, Phase 185 compensates a Phase 146 mutation or failure
+only to the post-Phase-184 state/event snapshot. It returns the proposed exact
+`PreparedStepExecutionStart(step 9)` and stops: step 9 running state is not
+persisted, step 9 is not executed, and no retry, loop, or automatic continuation
+is added.
