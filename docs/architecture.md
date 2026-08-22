@@ -4018,3 +4018,41 @@ unexpected errors, durable target proofs, malformed outputs, canonical
 used exclusively. The exact Phase-183 change set is the new boundary module,
 its 20-test module, public engine exports, README documentation, and this
 architecture section.
+
+## Phase 184: Post-Runtime → Persisted Running Execution → Approved Preparation
+
+Phase 184 is the explicit public composition of Phase 183 followed by public
+Phase 145. It extends the canonical Phase-183 sixteen-positional call shape
+with only a separate following-step preparation approval and employee:
+
+```text
+original runtime result / exact stop input
+    ↓ Phase 183
+prepare_next_step(step 9)
+    ↓ Phase 145(following_preparation_approval, following_employee)
+PreparedWorkflowStep(step 9) → STOP
+
+workflow_complete / persisted_failure
+    ↓
+exact stop object by identity; Phase 145 call count = 0
+```
+
+The step-7 preparation/execution context, the step-8 `next_*` context already
+owned by Phase 183, and the step-9 following approval/employee context are
+distinct. Phase 145 receives the following pair only; Phase 184 does not
+reuse either earlier pair or create approvals. The following pair is not
+prevalidated before Phase 183 because it is irrelevant on exact stop routes
+and Phase 183 must retain ownership of its durable work.
+
+The accumulated aged `request_id=None` compatibility established by Issue
+#386 is reused through the public Phase 183 → Phase 145 path, not duplicated
+or broadened in Phase 184. After Phase 183 commits, Phase 184 captures the
+exact state/event bytes. Phase 145 mutation, unexpected failure, safe failure,
+or malformed output is compensated only to that post-Phase-183 snapshot;
+pre-Phase-183 bytes are never restored. A successful result is returned as
+the exact `PreparedWorkflowStep(step 9)` and its targets remain unchanged.
+
+Phase 184 does not enter Phase 146 or any start/persistence/execution boundary,
+and it never starts, persists, or executes step 9. Retry, loop, automatic
+continuation, finalization, scheduling, parallelism, provider/network/paid API
+calls, CLI, and GUI behavior remain outside this boundary.
