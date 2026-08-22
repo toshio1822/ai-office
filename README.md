@@ -4137,3 +4137,35 @@ source audit; exact call shapes and identity; strict input and safe-error
 handling; stop zero-call routes; durable snapshot/event linkage; malformed
 output rejection; canonical eight-step success/failure; and nine-step
 prepare-decision stop behavior. Synthetic transports are used exclusively.
+
+## Phase 184: Post-Runtime → Persisted Running Execution → Approved Preparation
+
+Phase 184 composes the public Phase 183 boundary with the existing public
+Phase 145 approved-preparation boundary. It preserves Phase 183's canonical
+sixteen positional inputs and adds only the distinct
+`following_preparation_approval` / `following_employee` pair for the step
+identified by Phase 183 as following:
+
+```text
+runtime result / exact stop input
+    ↓ Phase 183
+prepare_next_step(step 9) ──→ Phase 145(following approval, following employee)
+                                  ↓
+                              PreparedWorkflowStep(step 9) → STOP
+workflow_complete / persisted_failure ──→ exact identity stop
+```
+
+Phase 145 is called exactly once only for an exact `prepare_next_step`
+decision. Phase 183 `workflow_complete` and `persisted_failure` outputs return
+directly with zero Phase 145 calls, and the following pair is not validated on
+those routes. The first step-7 context, the second step-8 `next_*` context,
+and the new step-9 following approval/employee context have distinct
+ownership; Phase 145 receives the following pair only.
+
+The bounded accumulated provenance compatibility established by Issue #386 is
+reused rather than reimplemented. Phase 183 owns its durable writes. If Phase
+145 mutates or fails after that commit, Phase 184 compensates only to the
+exact post-Phase-183 state/event snapshot. It stops at the exact
+`PreparedWorkflowStep(step 9)` and does not start, persist, or execute step 9.
+No retry, loop, automatic continuation, finalization, scheduling, parallelism,
+provider/network call, CLI, or GUI behavior is added.
