@@ -6,6 +6,7 @@ import importlib.util
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,6 +32,7 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reent
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase184Error,
 )
+from ai_office.runtime import StepRuntimeExecutionFailure, StepRuntimeExecutionSuccess
 
 _HARNESS_PATH = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_approved_preparation_orchestration_boundary.py"
@@ -497,17 +499,99 @@ def test_19_unexpected_phase146_rollback_failure_attempts_both_targets_once(tmp_
     assert case["events_path"].read_bytes() == committed[1] + b"mutated-events"
 
 
-def test_20_invalid_inputs_are_rejected_before_dependency_calls(tmp_path: Path) -> None:
+def test_20_invalid_inputs_are_rejected_before_dependency_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     case = _case(tmp_path / "inputs")
-    calls = []
-    def dependency(*args: object) -> object:
-        calls.append(args)
-        return _prepared(case)
+    phase184_calls: list[object] = []
+    phase146_calls: list[object] = []
+
+    def phase184_dependency(*args: object) -> object:
+        phase184_calls.append(args)
+        return object()
+
+    def phase146_dependency(*args: object) -> object:
+        phase146_calls.append(args)
+        return object()
+
+    def reject(expected: str, **overrides: object) -> None:
+        call_overrides = {
+            "phase184_function": phase184_dependency,
+            "phase146_function": phase146_dependency,
+        }
+        call_overrides.update(overrides)
+        _classification(lambda: _call(case, **call_overrides), expected)
+        assert phase184_calls == [] and phase146_calls == []
+
     invalid_prepare = WorkflowProgressionDecision(
         "prepare_next_step", "w", "step-6", 6, "e6", "step-7", 7, "e7", "next_step_available"
     )
-    _classification(lambda: _call(case, result=invalid_prepare, phase184_function=dependency), "result_type")
-    _classification(lambda: _call(case, workflow=object(), phase184_function=dependency), "workflow_definition")
-    _classification(lambda: _call(case, state_path=case["events_path"], phase184_function=dependency), "target_conflict")
-    _classification(lambda: _call(case, phase184_function=object()), "configuration")
-    assert calls == []
+    reject("result_type", result=invalid_prepare)
+
+    class RuntimeSuccessSubclass(StepRuntimeExecutionSuccess):
+        pass
+
+    class RuntimeFailureSubclass(StepRuntimeExecutionFailure):
+        pass
+
+    class CompleteStopSubclass(WorkflowProgressionDecision):
+        pass
+
+    class FailedStopSubclass(PersistedExecutionOutcome):
+        pass
+
+    runtime_failure = StepRuntimeExecutionFailure(
+        case["result"].workflow_id,  # type: ignore[union-attr]
+        case["result"].step_id,  # type: ignore[union-attr]
+        case["result"].step_index,  # type: ignore[union-attr]
+        case["result"].employee_id,  # type: ignore[union-attr]
+        object(),
+    )
+    complete_stop = WorkflowProgressionDecision(
+        "workflow_complete", "w", "step-6", 6, "e6", None, None, None, "last_step_succeeded"
+    )
+    failed_stop = PersistedExecutionOutcome(
+        "persisted_failure", "w", "step-6", 6, "e6", "invalid_request"
+    )
+    for value in (
+        RuntimeSuccessSubclass(**vars(case["result"])),  # type: ignore[arg-type]
+        RuntimeFailureSubclass(**vars(runtime_failure)),
+        CompleteStopSubclass(**vars(complete_stop)),
+        FailedStopSubclass(**vars(failed_stop)),
+        SimpleNamespace(**vars(case["result"])),
+        SimpleNamespace(**vars(runtime_failure)),
+        SimpleNamespace(**vars(complete_stop)),
+        SimpleNamespace(**vars(failed_stop)),
+    ):
+        reject("result_type", result=value)
+
+    reject("workflow_definition", workflow=object())
+    reject("state_target", state_path=object())
+    reject("event_target", events_path=object())
+    reject("target_conflict", state_path=case["events_path"])
+    reject("configuration", phase146_function=object())
+
+    original_is_file = Path.is_file
+    for target, classification in (
+        (case["state_path"], "state_target"),
+        (case["events_path"], "event_target"),
+    ):
+        def failing_is_file(path: Path, target: object = target) -> bool:
+            if path == target:
+                raise OSError("is_file")
+            return original_is_file(path)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "is_file", failing_is_file)
+            reject(classification)
+
+    original_read_bytes = Path.read_bytes
+    for target in (case["state_path"], case["events_path"]):
+        def failing_read_bytes(path: Path, target: object = target) -> bytes:
+            if path == target:
+                raise OSError("read_bytes")
+            return original_read_bytes(path)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "read_bytes", failing_read_bytes)
+            reject("dependency_error")
