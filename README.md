@@ -4185,3 +4185,20 @@ only to the post-Phase-184 state/event snapshot. It returns the proposed exact
 `PreparedStepExecutionStart(step 9)` and stops: step 9 running state is not
 persisted, step 9 is not executed, and no retry, loop, or automatic continuation
 is added.
+
+## Phase 186: Post-Runtime → Persisted Running Execution → Prepared-Start Persistence
+
+Phase 186 composes only public Phase 185 followed by public Phase 147. Exact
+`workflow_complete` and `persisted_failure` outputs from Phase 185 are returned
+by identity with zero Phase 147 calls. Only an exact
+`PreparedStepExecutionStart(step 9)` enters Phase 147, with the unchanged
+`following_employee` that owns step 9. A successful Phase 147 call returns the
+exact `RunningStatePersistenceResult` after persisting step 9 as `running`, with
+steps 1–8 completed and no step 9 event.
+
+Phase 185 owns all prior durable work. Phase 186 never prevalidates its
+operational inputs or restores its pre-call bytes. Once Phase 185 returns a
+valid prepared start, Phase 147 failures or invalid mutations compensate only
+to the post-Phase-185 snapshot. Phase 186 stops there: it does not execute step
+9 and adds no retry, loop, automatic continuation, finalization, scheduling,
+parallelism, provider/network/paid API, CLI, or GUI behavior.
