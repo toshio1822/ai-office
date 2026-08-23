@@ -223,6 +223,20 @@ def test_05_following_operational_inputs_are_not_prevalidated(tmp_path: Path) ->
 
 def test_06_original_workflow_complete_stop_mutation_is_phase184_contract_and_unrolled(tmp_path: Path) -> None:
     _, stop = _terminal_stop(tmp_path / "original-complete", failed=False)
+    normal_case = _case(tmp_path / "original-complete-normal")
+    normal_before = (normal_case["state_path"].read_bytes(), normal_case["events_path"].read_bytes())
+    normal_phase184_calls: list[object] = []
+    normal_phase146_calls: list[object] = []
+    normal_out = _call(
+        normal_case,
+        result=stop,
+        phase184_function=lambda *args: (normal_phase184_calls.append(args) or stop),
+        phase146_function=lambda *args: normal_phase146_calls.append(args),
+    )
+    assert normal_out is stop
+    assert len(normal_phase184_calls) == 1 and normal_phase146_calls == []
+    assert (normal_case["state_path"].read_bytes(), normal_case["events_path"].read_bytes()) == normal_before
+
     for mode in ("state", "events", "both"):
         case = _case(tmp_path / f"original-complete-{mode}")
         before = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
@@ -248,6 +262,20 @@ def test_06_original_workflow_complete_stop_mutation_is_phase184_contract_and_un
 
 def test_07_original_persisted_failure_stop_mutation_is_phase184_contract_and_unrolled(tmp_path: Path) -> None:
     _, stop = _terminal_stop(tmp_path / "original-failure", failed=True)
+    normal_case = _case(tmp_path / "original-failure-normal")
+    normal_before = (normal_case["state_path"].read_bytes(), normal_case["events_path"].read_bytes())
+    normal_phase184_calls: list[object] = []
+    normal_phase146_calls: list[object] = []
+    normal_out = _call(
+        normal_case,
+        result=stop,
+        phase184_function=lambda *args: (normal_phase184_calls.append(args) or stop),
+        phase146_function=lambda *args: normal_phase146_calls.append(args),
+    )
+    assert normal_out is stop
+    assert len(normal_phase184_calls) == 1 and normal_phase146_calls == []
+    assert (normal_case["state_path"].read_bytes(), normal_case["events_path"].read_bytes()) == normal_before
+
     for mode in ("state", "events", "both"):
         case = _case(tmp_path / f"original-failure-{mode}")
         before = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
@@ -569,6 +597,7 @@ def test_20_invalid_inputs_are_rejected_before_dependency_calls(
     reject("state_target", state_path=object())
     reject("event_target", events_path=object())
     reject("target_conflict", state_path=case["events_path"])
+    reject("configuration", phase184_function=object())
     reject("configuration", phase146_function=object())
 
     original_is_file = Path.is_file
