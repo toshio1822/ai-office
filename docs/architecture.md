@@ -4072,3 +4072,36 @@ only to the post-Phase-184 state/event snapshot. It returns the proposed exact
 `PreparedStepExecutionStart(step 9)` and stops: step 9 running state is not
 persisted, step 9 is not executed, and no retry, loop, or automatic continuation
 is added.
+
+## Phase 186: Post-Runtime → Persisted Running Execution → Prepared-Start Persistence
+
+Phase 186 is the explicit public Phase 185 → public Phase 147 composition:
+
+```text
+initial runtime result / exact stop
+        ↓
+      Phase 185
+        ├─ workflow_complete ───────────────→ exact stop
+        ├─ persisted_failure ───────────────→ exact stop
+        └─ PreparedStepExecutionStart(step 9)
+                         ↓
+                       Phase 147
+                         ↓
+              RunningStatePersistenceResult
+              persisted state: step 9 / running
+                         ↓
+                        STOP
+```
+
+Phase 185 is called once with its exact eighteen positional arguments. Its
+terminal outputs are returned directly and Phase 147 is zero-call; Phase 147
+is called once with the exact prepared start, workflow, step-9 owner
+(`following_employee`), and the two persistence targets. Phase 185 owns all
+bytes before its result is received. After a valid prepared start, Phase 186
+compensates Phase 147 failures or invalid mutations only to the exact
+post-Phase-185 state/event snapshot. It never invokes Phase 139 directly,
+Phase 155, step-9 execution, retry, loop, automatic continuation, finalization,
+scheduling, parallelism, provider/network/paid APIs, CLI, or GUI behavior.
+
+The focused Phase 186 regression module contains exactly 20 collected tests and
+uses synthetic transports only.
