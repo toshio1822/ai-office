@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
@@ -64,6 +64,24 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
 from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
 )
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase183Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase182Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase181Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryError as Phase180Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase179Error,
+)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryCompatibilityError as Phase184CompatibilityError,
     RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase184Error,
@@ -73,7 +91,7 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
     route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.invocation import ModelInvocationFailureCategory, ModelInvocationRequest
 from ai_office.runtime import (
     RuntimeStepEvent,
     StepRuntimeExecutionFailure,
@@ -107,6 +125,7 @@ Phase147Function = Callable[
     RunningStatePersistenceResult | WorkflowProgressionDecision | PersistedExecutionOutcome,
 ]
 _PATH_TYPE = type(Path())
+_FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 
 # Phase 185 deliberately exposes this exact safe public family from its own
 # Phase-184 / Phase-146 chain.  Phase 186 preserves identity and does not
@@ -115,6 +134,12 @@ _SAFE_PHASE185_ERRORS = (
     Phase185Error,
     Phase184Error,
     Phase184CompatibilityError,
+    Phase183Error,
+    Phase182Error,
+    Phase181Error,
+    Phase180Error,
+    Phase179Error,
+    Phase178Error,
     Phase176Error,
     Phase175Error,
     Phase173Error,
@@ -194,7 +219,7 @@ def route_runtime_result_to_persisted_running_execution_progression_persisted_ru
 
     Phase 185 owns the prior post-runtime durable progression and produces an
     exact prepared start or an exact stop.  Only the prepared-start branch
-    enters Phase 147, with the unchanged ``next_employee``.  Phase 186 stops
+    enters Phase 147, with the unchanged ``following_employee``.  Phase 186 stops
     after one durable running-state result and never executes that step.
     """
     _check_inputs(
@@ -423,6 +448,7 @@ def _valid_phase185_stop(
             and value.current_step_index == current
             and value.current_employee_id == step.employee
             and type(value.failure_category) is str
+            and value.failure_category in _FAILURE_CATEGORIES
             and _valid_terminal_snapshot(
                 workflow,
                 current,

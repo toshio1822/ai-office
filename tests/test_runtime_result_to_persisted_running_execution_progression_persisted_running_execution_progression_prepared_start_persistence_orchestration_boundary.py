@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,24 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_oute
 )
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase139Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase183Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase182Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase181Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryError as Phase180Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase179Error,
 )
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryCompatibilityError as Phase185Error,
@@ -344,18 +363,33 @@ def test_10_phase185_owned_operational_inputs_are_not_prevalidated_before_depend
 
 
 def test_11_phase185_safe_error_identity_has_no_pre_phase185_rollback(tmp_path: Path) -> None:
-    case, _ = _prepared_case(tmp_path / "safe")
-    before = case["state_path"].read_bytes()
-    safe = Phase185Error("safe")
+    for error_type in (
+        Phase185Error,
+        Phase183Error,
+        Phase182Error,
+        Phase181Error,
+        Phase180Error,
+        Phase179Error,
+        Phase178Error,
+    ):
+        case, _ = _prepared_case(tmp_path / error_type.__name__)
+        before = case["state_path"].read_bytes()
+        safe = error_type("safe")
+        phase147_calls: list[object] = []
 
-    def dependency(*args: object) -> object:
-        case["state_path"].write_bytes(before + b"owned")
-        raise safe
+        def dependency(*args: object, before=before, safe=safe) -> object:
+            case["state_path"].write_bytes(before + b"owned")
+            raise safe
 
-    with pytest.raises(Phase185Error) as caught:
-        _call(case, phase185_function=dependency, phase147_function=lambda *args: pytest.fail("Phase147 called"))
-    assert caught.value is safe
-    assert case["state_path"].read_bytes() == before + b"owned"
+        with pytest.raises(error_type) as caught:
+            _call(
+                case,
+                phase185_function=dependency,
+                phase147_function=lambda *args: phase147_calls.append(args),
+            )
+        assert caught.value is safe
+        assert phase147_calls == []
+        assert case["state_path"].read_bytes() == before + b"owned"
 
 
 def test_12_unexpected_phase185_error_is_sanitized_without_rollback(tmp_path: Path) -> None:
@@ -401,6 +435,34 @@ def test_14_provenance_narrowness_reuses_phase147_and_phase139_contracts(tmp_pat
             _call(case, phase185_function=lambda *args, start=start: start)
         assert caught.value.detail.classification == "terminal_contract"
         assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == before
+
+    unknown_case, original_stop = _terminal_case(tmp_path / "unknown-category", failed=True)
+    unknown_case["result"] = _terminal_harness().runtime_failure(
+        unknown_case["workflow"], 5
+    )
+    unknown_stop = replace(original_stop, failure_category="unknown")
+    unknown_case["state_path"].write_bytes(
+        unknown_case["state_path"].read_bytes().replace(b'"api_error"', b'"unknown"')
+    )
+    _rewrite_event(unknown_case["events_path"], 6, failure_category="unknown")
+    unknown_bytes = (
+        unknown_case["state_path"].read_bytes(),
+        unknown_case["events_path"].read_bytes(),
+    )
+    phase147_calls: list[object] = []
+    _classification(
+        lambda: _stop_call(
+            unknown_case,
+            phase185_function=lambda *args: unknown_stop,
+            phase147_function=lambda *args: phase147_calls.append(args),
+        ),
+        "phase185_contract",
+    )
+    assert phase147_calls == []
+    assert (
+        unknown_case["state_path"].read_bytes(),
+        unknown_case["events_path"].read_bytes(),
+    ) == unknown_bytes
 
 
 def test_15_phase147_and_phase139_safe_errors_restore_post_phase185_bytes(tmp_path: Path) -> None:
