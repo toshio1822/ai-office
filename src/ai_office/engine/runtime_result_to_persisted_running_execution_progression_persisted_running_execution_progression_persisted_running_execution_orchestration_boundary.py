@@ -22,14 +22,82 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_oute
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
-    _SAFE_PHASE185_ERRORS,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase186CompatibilityError,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryError as Phase186Error,
     route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary,
 )
+from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
+)
+from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
+)
+from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
+)
+from ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary import (
+    RuntimeResultToApprovedPreparationOrchestrationBoundaryError as Phase173Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase177CompatibilityError,
+)
+from ai_office.engine.runtime_result_to_prepared_start_persistence_orchestration_boundary import (
+    RuntimeResultToPreparedStartPersistenceOrchestrationBoundaryError as Phase176Error,
+)
+from ai_office.engine.runtime_result_to_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPreparedStepStartOrchestrationBoundaryError as Phase175Error,
+)
+from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
+    RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError as Phase172CompatibilityError,
+    RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase181Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryError as Phase180Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase183Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase182Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryCompatibilityError as Phase184CompatibilityError,
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase184Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryCompatibilityError as Phase185Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase179Error,
+)
+from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146Error,
+)
+from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase138Error,
+)
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
+)
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
+)
+from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase139Error,
+)
+from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147Error,
+)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory, ModelInvocationRequest
 from ai_office.runtime import (
+    RuntimeStepEvent,
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
@@ -62,9 +130,39 @@ Phase155Function = Callable[..., object]
 _PATH_TYPE = type(Path())
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 
-# Phase 186 deliberately re-raises this exact lower safe family.  Reuse the
-# public module's declared family rather than broadening or sanitizing it.
-_SAFE_PHASE186_ERRORS = (Phase186Error, Phase186CompatibilityError, *_SAFE_PHASE185_ERRORS)
+# Phase 186 deliberately re-raises this exact public safe family.  Keep the
+# family explicit here: private lower-module constants must not cross the
+# Phase-187 module boundary.
+_SAFE_PHASE186_ERRORS = (
+    Phase186Error,
+    Phase186CompatibilityError,
+    Phase185Error,
+    Phase184Error,
+    Phase184CompatibilityError,
+    Phase183Error,
+    Phase182Error,
+    Phase181Error,
+    Phase180Error,
+    Phase179Error,
+    Phase178Error,
+    Phase176Error,
+    Phase175Error,
+    Phase173Error,
+    Phase172Error,
+    Phase172CompatibilityError,
+    Phase145Error,
+    Phase137Error,
+    Phase146Error,
+    Phase138Error,
+    Phase147Error,
+    Phase139Error,
+    Phase155Error,
+    Phase141Error,
+    Phase177CompatibilityError,
+    Phase161Error,
+    Phase143Error,
+    Phase144Error,
+)
 _SAFE_PHASE155_ERRORS = (Phase155Error, Phase141Error)
 
 
@@ -403,11 +501,57 @@ def _valid_running_output(
             and request.task_instructions == step.instructions
             and request.allowed_tools == tuple(employee.allowed_tools)
             and loaded == running
-            and type(history.events) is tuple
-            and len(history.events) == 8
+            and _valid_running_history(workflow, history.events)
         )
     except Exception:
         return False
+
+
+def _valid_running_history(
+    workflow: WorkflowDefinition,
+    events: object,
+) -> bool:
+    """Thinly validate the committed step-1..8 history without lower helpers."""
+    if type(events) is not tuple or len(events) != 8:
+        return False
+    immediate_position = 8
+    for position, event in enumerate(events, start=1):
+        if type(event) is not RuntimeStepEvent:
+            return False
+        step = workflow.steps[position - 1]
+        provider_valid = type(event.provider) is str and bool(event.provider)
+        if position == immediate_position:
+            provider_valid = provider_valid and event.provider == "openai"
+        if event.request_id is None:
+            provenance_valid = (
+                provider_valid
+                and event.provider == "openai"
+                and (position == immediate_position or position >= 5)
+            )
+        else:
+            provenance_valid = (
+                provider_valid
+                and type(event.request_id) is str
+                and bool(event.request_id)
+            )
+        if not (
+            event.event_type == "step_succeeded"
+            and event.workflow_id == workflow.id
+            and event.step_id == step.id
+            and type(event.step_index) is int
+            and event.step_index == position
+            and event.employee_id == step.employee
+            and event.previous_status == "running"
+            and event.next_status == "succeeded"
+            and provenance_valid
+            and event.failure_category is None
+            and type(event.response_id) is str
+            and bool(event.response_id)
+            and type(event.output_text) is str
+            and event.message is None
+        ):
+            return False
+    return True
 
 
 def _valid_runtime(value: object, start: object, workflow: WorkflowDefinition) -> bool:
