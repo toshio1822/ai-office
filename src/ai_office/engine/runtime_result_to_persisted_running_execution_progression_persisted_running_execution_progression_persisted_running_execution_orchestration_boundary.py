@@ -411,22 +411,29 @@ def _valid_stop(
         )
     if type(result) not in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure):
         return False
+    if type(value) not in (WorkflowProgressionDecision, PersistedExecutionOutcome):
+        return False
     try:
         loaded = load_workflow_execution_state(state)
         history = load_workflow_execution_history(
             WorkflowExecutionPersistenceTargets(state, events)
         )
         index = value.current_step_index
-        if type(index) is not int or index not in (result.step_index + 1, result.step_index + 2):
+        if (
+            type(index) is not int
+            or type(result.step_index) is not int
+            or index not in (result.step_index + 1, result.step_index + 2)
+            or not 1 <= index <= len(workflow.steps)
+        ):
             return False
         step = workflow.steps[index - 1]
         identity = (
             value.workflow_id == workflow.id == result.workflow_id
             and value.current_step_id == step.id
+            and value.current_step_index == index
             and value.current_employee_id == step.employee
             and type(history.events) is tuple
             and type(loaded) is WorkflowExecutionState
-            and loaded.current_step_index == index
         )
         if type(value) is WorkflowProgressionDecision:
             return bool(
@@ -439,15 +446,89 @@ def _valid_stop(
                 and value.next_employee_id is None
                 and value.reason == "last_step_succeeded"
                 and loaded.status == "succeeded"
+                and _valid_terminal_snapshot(
+                    workflow, index, "succeeded", state, events
+                )
             )
         return bool(
             identity
-            and type(value) is PersistedExecutionOutcome
             and value.outcome == "persisted_failure"
             and type(value.failure_category) is str
             and value.failure_category in _FAILURE_CATEGORIES
             and loaded.status == "failed"
             and loaded.last_failure_category == value.failure_category
+            and _valid_terminal_snapshot(
+                workflow,
+                index,
+                "failed",
+                state,
+                events,
+                failure_category=value.failure_category,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _valid_terminal_snapshot(
+    workflow: WorkflowDefinition,
+    executed: int,
+    status: Literal["succeeded", "failed"],
+    state: Path,
+    events: Path,
+    *,
+    failure_category: object = None,
+) -> bool:
+    """Thinly validate the terminal snapshot owned by Phase 186."""
+    try:
+        if not 1 <= executed <= len(workflow.steps):
+            return False
+        loaded = load_workflow_execution_state(state)
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state, events)
+        )
+        if type(loaded) is not WorkflowExecutionState or type(history.events) is not tuple:
+            return False
+        if len(history.events) != executed:
+            return False
+        step = workflow.steps[executed - 1]
+        expected_completed = (
+            tuple(item.id for item in workflow.steps[:executed])
+            if status == "succeeded"
+            else tuple(item.id for item in workflow.steps[: executed - 1])
+        )
+        if not (
+            loaded.workflow_id == workflow.id
+            and loaded.status == status
+            and loaded.current_step_id == step.id
+            and loaded.current_step_index == executed
+            and loaded.current_employee_id == step.employee
+            and loaded.completed_step_ids == expected_completed
+        ):
+            return False
+        if status == "succeeded":
+            if loaded.last_failure_category is not None:
+                return False
+        elif loaded.last_failure_category != failure_category:
+            return False
+        terminal = history.events[-1]
+        if not (
+            type(terminal) is RuntimeStepEvent
+            and terminal.workflow_id == workflow.id
+            and terminal.step_id == step.id
+            and terminal.step_index == executed
+            and terminal.employee_id == step.employee
+            and terminal.next_status == status
+        ):
+            return False
+        if status == "succeeded":
+            return (
+                terminal.event_type == "step_succeeded"
+                and terminal.failure_category is None
+            )
+        return (
+            terminal.event_type == "step_failed"
+            and terminal.failure_category == failure_category
         )
     except Exception:
         return False

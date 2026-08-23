@@ -17,6 +17,7 @@ from ai_office.engine import (
     PreparedStepExecutionStart,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase186CompatibilityError,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryError as Phase186Error,
+    route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary as phase186,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase187Error,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryError,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryFailureDetail,
@@ -137,10 +138,13 @@ def _following_execution_approval(case: dict[str, object]) -> object:
 
 
 def _contexts(case: dict[str, object]) -> dict[str, object]:
+    following_execution_approval = case.get("following_execution_approval")
+    if following_execution_approval is None and len(case["workflow"].steps) >= 9:
+        following_execution_approval = _following_execution_approval(case)
     return {
         "first_tools": case["tools"], "next_tools": case["tools"], "following_tools": case["tools"],
         "first_api": case["api_key"], "next_api": case["api_key"], "following_api": case["api_key"],
-        "first_execution_approval": case["execution_approval"], "next_execution_approval": case["next_execution_approval"], "following_execution_approval": case.get("following_execution_approval", _following_execution_approval(case)),
+        "first_execution_approval": case["execution_approval"], "next_execution_approval": case["next_execution_approval"], "following_execution_approval": following_execution_approval,
     }
 
 
@@ -292,12 +296,119 @@ def _call_stop(case, stop, calls):
 
 
 def test_09_runtime_phase186_stops_zero_calls_and_keeps_bytes(tmp_path: Path) -> None:
-    for failed in (False, True):
-        case, _ = _prepared(tmp_path / str(failed)); calls=[]
-        stop = _terminal().failure_outcome(case["workflow"], 8) if failed else _terminal().complete_decision(case["workflow"], 9)
-        before=(case["state_path"].read_bytes(),case["events_path"].read_bytes())
-        assert _call_stop(case, stop, calls) is stop
-        assert calls == [] and before == (case["state_path"].read_bytes(),case["events_path"].read_bytes())
+    for label, steps, failed in (("complete", 7, False), ("failure", 8, True)):
+        case = _case(tmp_path / label, steps=steps)
+        terminal = _terminal()
+        args = _args(case, _contexts(case))
+        args[0] = terminal.runtime_failure(case["workflow"], 6) if failed else terminal.runtime_success(case["workflow"], 6)
+        capture_calls, phase155_calls, produced, durable = [], [], [], []
+        source = terminal.terminal_setup(
+            tmp_path / f"{label}-source", steps=steps, fail=failed
+        )
+        stop = terminal.failure_outcome(case["workflow"], steps) if failed else terminal.complete_decision(case["workflow"], steps)
+
+        def p186(*phase186_args, **kwargs):
+            def p185(*phase185_args):
+                case["state_path"].write_bytes(source["state_path"].read_bytes())
+                case["events_path"].write_bytes(source["events_path"].read_bytes())
+                return stop
+
+            value = phase186(
+                *phase186_args,
+                phase185_function=p185,
+                phase147_function=kwargs["phase147_function"],
+            )
+            produced.append(value)
+            durable.extend((case["state_path"].read_bytes(), case["events_path"].read_bytes()))
+            return value
+
+        before = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
+        out = phase187(
+            *args,
+            phase186_function=p186,
+            phase147_function=lambda *call_args: capture_calls.append(call_args),
+            phase155_function=lambda *call_args: phase155_calls.append(call_args),
+        )
+        assert len(produced) == 1 and produced[0] is stop and out is stop
+        assert (type(out) is PersistedExecutionOutcome) is failed
+        assert (type(out) is WorkflowProgressionDecision) is not failed
+        assert out.current_step_index == steps
+        assert capture_calls == [] and phase155_calls == []
+        assert len(durable) == 2 and tuple(durable) != before
+        assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == tuple(durable)
+
+    for label, failed in (("complete", False), ("failure", True)):
+        steps = 8 if failed else 7
+        for mode in (
+            "completed",
+            "current-step-id",
+            "current-employee",
+            "terminal-step-id",
+            "terminal-step-index",
+            "event-count",
+        ):
+            case = _case(tmp_path / f"runtime-stop-{label}-{mode}", steps=steps)
+            terminal = _terminal()
+            source = terminal.terminal_setup(
+                tmp_path / f"runtime-stop-{label}-{mode}-source",
+                steps=steps,
+                fail=failed,
+            )
+            runtime = terminal.runtime_failure(case["workflow"], 6) if failed else terminal.runtime_success(case["workflow"], 6)
+            stop = terminal.failure_outcome(case["workflow"], steps) if failed else terminal.complete_decision(case["workflow"], steps)
+            original = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
+            owned = []
+
+            def p186(*phase186_args, mode=mode, **kwargs):
+                def p185(*phase185_args):
+                    case["state_path"].write_bytes(source["state_path"].read_bytes())
+                    case["events_path"].write_bytes(source["events_path"].read_bytes())
+                    return stop
+
+                value = phase186(
+                    *phase186_args,
+                    phase185_function=p185,
+                    phase147_function=kwargs["phase147_function"],
+                )
+                if mode == "completed":
+                    snapshot = json.loads(case["state_path"].read_text())
+                    snapshot["completed_step_ids"] = snapshot["completed_step_ids"][:-1]
+                    case["state_path"].write_text(json.dumps(snapshot))
+                elif mode == "current-step-id":
+                    snapshot = json.loads(case["state_path"].read_text())
+                    snapshot["current_step_id"] = "wrong-step"
+                    case["state_path"].write_text(json.dumps(snapshot))
+                elif mode == "current-employee":
+                    snapshot = json.loads(case["state_path"].read_text())
+                    snapshot["current_employee_id"] = "wrong-employee"
+                    case["state_path"].write_text(json.dumps(snapshot))
+                elif mode in ("terminal-step-id", "terminal-step-index"):
+                    lines = [json.loads(line) for line in case["events_path"].read_text().splitlines()]
+                    key = "step_id" if mode == "terminal-step-id" else "step_index"
+                    lines[-1][key] = "wrong-step" if key == "step_id" else 99
+                    case["events_path"].write_text("".join(json.dumps(line) + "\n" for line in lines))
+                else:
+                    lines = case["events_path"].read_text().splitlines()
+                    case["events_path"].write_text("\n".join(lines[:-1]) + "\n")
+                owned.extend((case["state_path"].read_bytes(), case["events_path"].read_bytes()))
+                return value
+
+            args = _args(case, _contexts(case))
+            args[0] = runtime
+            phase147_calls, phase155_calls = [], []
+            _err(
+                lambda: phase187(
+                    *args,
+                    phase186_function=p186,
+                    phase147_function=lambda *call_args: phase147_calls.append(call_args),
+                    phase155_function=lambda *call_args: phase155_calls.append(call_args),
+                ),
+                "phase186_contract",
+            )
+            assert len(owned) == 2
+            assert phase147_calls == [] and phase155_calls == []
+            assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == tuple(owned)
+            assert tuple(owned) != original
 
 
 def test_10_real_default_step9_success_failure_and_bytes(tmp_path: Path) -> None:
@@ -385,7 +496,7 @@ def test_14_malformed_capture_or_phase186_output_is_contract_error(tmp_path: Pat
         case, start = _prepared(tmp_path / f"malformed-{index}")
         before = (case["phase186_state_bytes"], case["phase186_event_bytes"])
         phase155_calls = []
-        def p186(*args, mode=mode, **kwargs):
+        def p186_malformed(*args, mode=mode, **kwargs):
             capture = kwargs["phase147_function"]
             if mode == "missing":
                 return RunningStatePersistenceResult(len(case["state_path"].read_bytes()))
@@ -412,11 +523,10 @@ def test_14_malformed_capture_or_phase186_output_is_contract_error(tmp_path: Pat
                 lines[0]["step_id"] = "wrong"
                 case["events_path"].write_text("".join(json.dumps(line) + "\n" for line in lines))
             return RunningStatePersistenceResult(len(case["state_path"].read_bytes()))
-        _err(lambda: _call(case, phase186_function=p186, phase147_function=lambda *args: _phase147_running(case, args[0]), phase155_function=lambda *args: phase155_calls.append(args)), "phase186_contract")
+        _err(lambda: _call(case, phase186_function=p186_malformed, phase147_function=lambda *args: _phase147_running(case, args[0]), phase155_function=lambda *args: phase155_calls.append(args)), "phase186_contract")
         assert phase155_calls == []
         after = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
         assert after == before if mode == "missing" else after != before
-
 
 def test_15_phase155_safe_error_restores_committed_bytes(tmp_path: Path) -> None:
     for index, safe_type in enumerate((Phase155Error, Phase141Error)):
