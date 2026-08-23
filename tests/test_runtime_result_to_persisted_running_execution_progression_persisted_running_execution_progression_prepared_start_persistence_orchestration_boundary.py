@@ -46,6 +46,10 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase179Error,
 )
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryCompatibilityError as Phase184CompatibilityError,
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase184Error,
+)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryCompatibilityError as Phase185Error,
     route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary as phase185,
@@ -365,6 +369,8 @@ def test_10_phase185_owned_operational_inputs_are_not_prevalidated_before_depend
 def test_11_phase185_safe_error_identity_has_no_pre_phase185_rollback(tmp_path: Path) -> None:
     for error_type in (
         Phase185Error,
+        Phase184Error,
+        Phase184CompatibilityError,
         Phase183Error,
         Phase182Error,
         Phase181Error,
