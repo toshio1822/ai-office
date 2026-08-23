@@ -4105,3 +4105,29 @@ scheduling, parallelism, provider/network/paid APIs, CLI, or GUI behavior.
 
 The focused Phase 186 regression module contains exactly 20 collected tests and
 uses synthetic transports only.
+
+## Phase 187: Post-Runtime → Persisted Running Execution → Step-9 Runtime Result
+
+Phase 187 composes the public Phase 186 boundary with a capture-only Phase 147
+adapter and public Phase 155:
+
+```text
+runtime result / exact stop
+        ↓
+      Phase 186 (18 positional + phase147_function keyword)
+        ├─ workflow_complete / persisted_failure → exact identity stop
+        └─ RunningStatePersistenceResult
+             ↓ capture exact PreparedStepExecutionStart(step 9)
+             ↓ public Phase 155 (10 positional, no kwargs)
+             └─ exact StepRuntimeExecutionSuccess / Failure → STOP
+```
+
+The capture adapter delegates the canonical five positional Phase 147 call
+once, returns its exact result unchanged, and never reconstructs or copies the
+prepared start. Phase 155 receives only the step-9 following employee,
+tools, API key, execution approval, and transport. The step-9 runtime result is
+not persisted, classified, progressed, retried, or automatically continued;
+state and events remain the committed Phase 186 snapshot. Original and Phase
+186-generated terminal stops make zero capture and Phase 155 calls. No direct
+Phase 141 call, provider/network/paid API, retry, loop, finalization,
+scheduling, parallelism, CLI, or GUI behavior is added.

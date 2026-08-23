@@ -4202,3 +4202,15 @@ valid prepared start, Phase 147 failures or invalid mutations compensate only
 to the post-Phase-185 snapshot. Phase 186 stops there: it does not execute step
 9 and adds no retry, loop, automatic continuation, finalization, scheduling,
 parallelism, provider/network/paid API, CLI, or GUI behavior.
+
+## Phase 187: Post-Runtime → Persisted Running Execution → Step-9 Runtime Result
+
+Phase 187 composes public Phase 186 with a capture-only public Phase 147
+adapter and then public Phase 155. Phase 186 receives its exact eighteen
+positional arguments and only the `phase147_function` keyword. The adapter
+preserves the exact `PreparedStepExecutionStart(step 9)` identity and calls
+Phase 147 in its canonical five-argument form. Terminal outputs are returned
+unchanged with zero capture and Phase 155 calls. A valid running persistence
+result invokes Phase 155 exactly once with only the step-9 following context and
+then stops at the exact step-9 runtime success or failure. The step-9 result is
+not persisted, classified, progressed, retried, or automatically continued.
