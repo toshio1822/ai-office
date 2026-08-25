@@ -4131,3 +4131,43 @@ state and events remain the committed Phase 186 snapshot. Original and Phase
 186-generated terminal stops make zero capture and Phase 155 calls. No direct
 Phase 141 call, provider/network/paid API, retry, loop, finalization,
 scheduling, parallelism, CLI, or GUI behavior is added.
+
+## Phase 188: Post-Runtime → Step-9 Persistence and Progression
+
+Phase 188 is the explicit public composition of Phase 187 and Phase 172:
+
+```text
+initial runtime result / exact stop
+        ↓
+      Phase 187 (22 positional arguments, exactly once)
+        ├─ workflow_complete / persisted_failure → exact identity stop
+        └─ exact StepRuntimeExecutionSuccess/Failure(step 9)
+                              ↓
+                    Phase 172 (4 positional arguments, exactly once)
+                              ↓
+      workflow_complete / persisted_failure / prepare_next_step(step 10)
+                              ↓ STOP
+```
+
+The first 22 arguments preserve Phase 187's canonical order and are passed
+without keyword arguments. Only an exact step-9 runtime result is handed to
+Phase 172, also without keyword arguments, as the exact four positional values
+`(result, workflow, state_path, events_path)`. The exact Phase-172 progression
+object is returned unchanged. Original and Phase-187-generated terminal stops
+bypass Phase 172 and preserve Phase 187-owned state/event bytes.
+
+Phase 188 does not duplicate persistence, classification, progression, or
+provenance rules and does not call Phase 161, 143, 144, or 145 directly. Phase
+172 remains the owner of step-9 persistence and the bounded provenance contract:
+aged OpenAI `request_id=None` and older non-OpenAI events with a non-empty
+request ID remain valid, while early or non-OpenAI `None` values remain invalid.
+The boundary stops after Phase 172: `prepare_next_step(step 10)` is returned for
+a ten-step workflow without preparing, starting, persisting, or executing step
+10.
+
+The focused Phase-188 module contains exactly 20 tests for API and source audit,
+canonical call shapes and identity, stop zero-call routes, nine-/ten-step
+success and failure, provenance, safe/unexpected errors, malformed outputs,
+durable snapshots, and no-readvance. Synthetic transports are used exclusively;
+retry, looping, automatic continuation, finalization, scheduling, parallelism,
+provider/network/paid API, CLI, and GUI behavior are outside this boundary.

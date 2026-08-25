@@ -4214,3 +4214,46 @@ unchanged with zero capture and Phase 155 calls. A valid running persistence
 result invokes Phase 155 exactly once with only the step-9 following context and
 then stops at the exact step-9 runtime success or failure. The step-9 result is
 not persisted, classified, progressed, retried, or automatically continued.
+
+## Phase 188: Post-Runtime → Step-9 Persistence and Progression
+
+Phase 188 composes the public Phase 187 step-9 runtime boundary with the
+public Phase 172 runtime-result persistence/classification/progression boundary:
+
+```text
+initial runtime result / exact stop
+        ↓
+      Phase 187 (22 positional arguments, exactly once)
+        ├─ workflow_complete / persisted_failure → exact identity stop
+        └─ exact StepRuntimeExecutionSuccess/Failure(step 9)
+                              ↓
+                    Phase 172 (4 positional arguments, exactly once)
+                              ↓
+      workflow_complete / persisted_failure / prepare_next_step(step 10)
+                              ↓ STOP
+```
+
+The first 22 arguments retain Phase 187's canonical positional order. Phase 187
+is called once without keyword arguments. Only an exact step-9 runtime result
+enters Phase 172, which is called once as `(result, workflow, state_path,
+events_path)` without keyword arguments. The exact Phase-172 progression object
+is returned unchanged. Original and Phase-187-generated terminal stops bypass
+Phase 172 and are returned by identity; Phase 187-owned durable bytes are not
+rolled back.
+
+Phase 188 does not reimplement persistence, classification, or progression and
+does not call Phase 161, 143, 144, or 145 directly. Phase 172 remains the sole
+owner of step-9 durable persistence and its bounded provenance rules: aged
+OpenAI `request_id=None` and older non-OpenAI events with a non-empty request ID
+remain valid, while early or non-OpenAI `None` values remain rejected. The
+boundary stops at Phase 172's result: a ten-step workflow may return
+`prepare_next_step(step 10)`, but step 10 is never prepared, started, persisted,
+or executed.
+
+The Phase-188 focused module contains exactly 20 tests covering the public API,
+exact call shapes and identities, stop zero-call behavior, real nine-/ten-step
+success and failure, provenance compatibility, safe and unexpected errors,
+malformed outputs, durable snapshots, and no-readvance/source audits. Synthetic
+transports are used exclusively. No retry, loop, automatic continuation,
+finalization, scheduling, parallelism, provider/network/paid API, CLI, or GUI
+behavior is added.
