@@ -75,7 +75,7 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryError as Phase186Error,
 )
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
-    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryError as Phase185Error,
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryCompatibilityError as Phase185Error,
 )
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase183Error,
@@ -285,7 +285,9 @@ def route_runtime_result_to_persisted_running_execution_progression_persisted_ru
             _fail("phase187_contract")
         return value
 
-    if not _valid_phase187_runtime(value, workflow, state_path, events_path):
+    if not _valid_phase187_runtime(
+        result, value, workflow, state_path, events_path
+    ):
         _fail("phase187_contract")
     committed = _capture_targets(state_path, events_path)
 
@@ -383,19 +385,34 @@ def _valid_workflow(workflow: WorkflowDefinition) -> bool:
 
 
 def _valid_phase187_runtime(
+    initial: object,
     value: object,
     workflow: WorkflowDefinition,
     state: Path,
     events: Path,
 ) -> bool:
     if (
-        type(value) not in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
+        type(initial) is not StepRuntimeExecutionSuccess
+        or type(value) not in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
         or len(workflow.steps) < 9
+    ):
+        return False
+    initial_index = initial.step_index
+    if type(initial_index) is not int or not 1 <= initial_index <= len(workflow.steps):
+        return False
+    initial_step = workflow.steps[initial_index - 1]
+    if not is_valid_step_runtime_execution_result(
+        initial,
+        workflow_id=workflow.id,
+        step_id=initial_step.id,
+        step_index=initial_index,
+        employee_id=initial_step.employee,
     ):
         return False
     step = workflow.steps[8]
     if (
         type(value.step_index) is not int
+        or value.step_index != initial_index + 3
         or value.step_index != 9
         or value.workflow_id != workflow.id
         or value.step_id != step.id
@@ -433,17 +450,33 @@ def _valid_phase187_runtime(
         return False
 
 
-def _valid_running_history(workflow: WorkflowDefinition, events: object) -> bool:
+def _valid_running_history(
+    workflow: WorkflowDefinition,
+    events: object,
+) -> bool:
+    """Thinly validate the committed step-1..8 history without lower helpers."""
     if type(events) is not tuple or len(events) != 8:
         return False
+    immediate_position = 8
     for position, event in enumerate(events, start=1):
         if type(event) is not RuntimeStepEvent:
             return False
         step = workflow.steps[position - 1]
         provider_valid = type(event.provider) is str and bool(event.provider)
-        request_id_valid = event.request_id is None or (
-            type(event.request_id) is str and bool(event.request_id)
-        )
+        if position == immediate_position:
+            provider_valid = provider_valid and event.provider == "openai"
+        if event.request_id is None:
+            provenance_valid = (
+                provider_valid
+                and event.provider == "openai"
+                and (position == immediate_position or position >= 5)
+            )
+        else:
+            provenance_valid = (
+                provider_valid
+                and type(event.request_id) is str
+                and bool(event.request_id)
+            )
         if not (
             event.event_type == "step_succeeded"
             and event.workflow_id == workflow.id
@@ -453,8 +486,7 @@ def _valid_running_history(workflow: WorkflowDefinition, events: object) -> bool
             and event.employee_id == step.employee
             and event.previous_status == "running"
             and event.next_status == "succeeded"
-            and provider_valid
-            and request_id_valid
+            and provenance_valid
             and event.failure_category is None
             and type(event.response_id) is str
             and bool(event.response_id)

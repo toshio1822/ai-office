@@ -31,14 +31,78 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
     route_runtime_result_to_progression_orchestration_boundary as phase172,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161Error,
+from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
 )
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase187CompatibilityError,
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryError as Phase187Error,
     route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary as phase187,
 )
-from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
-    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryError as Phase187Error,
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase186CompatibilityError,
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryError as Phase186Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryCompatibilityError as Phase185Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryCompatibilityError as Phase184CompatibilityError,
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase184Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase183Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase182Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase181Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryError as Phase180Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase179Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178Error,
+)
+from ai_office.engine.runtime_result_to_prepared_start_persistence_orchestration_boundary import (
+    RuntimeResultToPreparedStartPersistenceOrchestrationBoundaryError as Phase176Error,
+)
+from ai_office.engine.runtime_result_to_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPreparedStepStartOrchestrationBoundaryError as Phase175Error,
+)
+from ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary import (
+    RuntimeResultToApprovedPreparationOrchestrationBoundaryError as Phase173Error,
+)
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
+)
+from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
+)
+from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146Error,
+)
+from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase138Error,
+)
+from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147Error,
+)
+from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase139Error,
+)
+from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155Error,
+)
+from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase141Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase177Error,
 )
 from ai_office.runtime import RuntimeStepEvent, StepRuntimeExecutionFailure, StepRuntimeExecutionSuccess
 from ai_office.storage import load_workflow_execution_state, serialize_runtime_step_event_jsonl
@@ -296,6 +360,7 @@ def test_11_provenance_compatibility_is_narrow_and_reuses_phase172(tmp_path: Pat
         case = _case(tmp_path / label)
         position = 5 if label in ("aged-openai-none", "non-openai-none") else 2
         calls: list[object] = []
+        phase172_calls: list[object] = []
 
         def phase187_after_step9(*args: object) -> object:
             value = phase187(*args)
@@ -315,20 +380,54 @@ def test_11_provenance_compatibility_is_narrow_and_reuses_phase172(tmp_path: Pat
             )
             assert type(out) is PersistedExecutionOutcome and len(calls) == 1
         else:
-            with pytest.raises(Phase161Error) as caught:
-                _call(
+            _err(
+                lambda: _call(
                     case,
                     phase187_function=phase187_after_step9,
+                    phase172_function=lambda *args: phase172_calls.append(args),
                     following_transport=case["h"].failure_transport(calls),  # type: ignore[attr-defined]
-                )
-            assert caught.value.detail.classification == "runtime_contract"
-            assert len(calls) == 1
+                ),
+                "phase187_contract",
+            )
+            assert len(calls) == 1 and phase172_calls == []
+
+
+_PHASE187_SAFE_ERRORS = (
+    Phase187Error,
+    Phase187CompatibilityError,
+    Phase186Error,
+    Phase186CompatibilityError,
+    Phase185Error,
+    Phase184Error,
+    Phase184CompatibilityError,
+    Phase183Error,
+    Phase182Error,
+    Phase181Error,
+    Phase180Error,
+    Phase179Error,
+    Phase178Error,
+    Phase176Error,
+    Phase175Error,
+    Phase173Error,
+    Phase172Error,
+    Phase172CompatibilityError,
+    Phase145Error,
+    Phase137Error,
+    Phase146Error,
+    Phase138Error,
+    Phase147Error,
+    Phase139Error,
+    Phase155Error,
+    Phase141Error,
+    Phase177Error,
+    Phase161Error,
+    Phase143Error,
+    Phase144Error,
+)
 
 
 def test_12_recognized_phase187_safe_errors_preserve_identity_zero_phase172_and_no_rollback(tmp_path: Path) -> None:
-    impl = _load(Path(phase188.__code__.co_filename), "phase188_impl_for_safe_errors")
-    safe_types = tuple(impl._SAFE_PHASE187_ERRORS)
-    for index, safe_type in enumerate(safe_types):
+    for index, safe_type in enumerate(_PHASE187_SAFE_ERRORS):
         case = _case(tmp_path / str(index))
         before = case["state_path"].read_bytes()
         error = safe_type("safe")
@@ -372,6 +471,38 @@ def test_14_malformed_substitute_and_wrong_step_phase187_outputs_are_contract_er
         phase172_calls: list[object] = []
         _err(lambda value=value: _call(case, phase187_function=lambda *a, value=value: value, phase172_function=lambda *a: phase172_calls.append(a)), "phase187_contract")
         assert phase172_calls == []
+
+    for index, mode in enumerate(("initial-failure", "wrong-initial-index")):
+        case = _case(tmp_path / f"initial-linkage-{index}")
+        valid = _h()._runtime(case)
+        initial = (
+            _terminal().runtime_failure(case["workflow"], 6)
+            if mode == "initial-failure"
+            else replace(case["result"], step_index=5)
+        )
+        before = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
+        phase172_calls: list[object] = []
+
+        def p187(*args: object) -> object:
+            case["state_path"].write_bytes(before[0] + b"phase187-owned")
+            case["events_path"].write_bytes(before[1] + b"phase187-owned")
+            return valid
+
+        args = _args(case)
+        args[0] = initial
+        _err(
+            lambda: phase188(
+                *args,
+                phase187_function=p187,
+                phase172_function=lambda *a: phase172_calls.append(a),
+            ),
+            "phase187_contract",
+        )
+        assert phase172_calls == []
+        assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == (
+            before[0] + b"phase187-owned",
+            before[1] + b"phase187-owned",
+        )
 
 
 def test_15_inconsistent_post_phase187_snapshot_is_contract_error_and_phase187_bytes_remain(tmp_path: Path) -> None:
