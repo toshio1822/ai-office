@@ -70,6 +70,13 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryCompatibilityError as Phase184CompatibilityError,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase184Error,
 )
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase186CompatibilityError,
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryError as Phase186Error,
+)
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryError as Phase185Error,
+)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase183Error,
 )
@@ -125,6 +132,9 @@ _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 _SAFE_PHASE187_ERRORS = (
     Phase187Error,
     Phase187CompatibilityError,
+    Phase186Error,
+    Phase186CompatibilityError,
+    Phase185Error,
     Phase184Error,
     Phase184CompatibilityError,
     Phase183Error,
@@ -464,44 +474,65 @@ def _valid_phase187_stop(
 ) -> bool:
     if type(result) not in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure):
         return False
-    if type(value) is WorkflowProgressionDecision:
-        if not (
-            value.decision == "workflow_complete"
-            and value.workflow_id == workflow.id == result.workflow_id
-            and value.current_step_index == 9
-            and value.current_step_id == workflow.steps[8].id
-            and value.current_employee_id == workflow.steps[8].employee
-            and value.next_step_id is None
-            and value.next_step_index is None
-            and value.next_employee_id is None
-            and value.reason == "last_step_succeeded"
-            and len(workflow.steps) == 9
+    if type(value) not in (WorkflowProgressionDecision, PersistedExecutionOutcome):
+        return False
+    try:
+        original_index = result.step_index
+        current_index = value.current_step_index
+        if (
+            type(original_index) is not int
+            or type(current_index) is not int
+            or current_index not in (original_index + 1, original_index + 2)
+            or not 1 <= original_index < current_index <= len(workflow.steps)
         ):
             return False
-        return _valid_terminal_snapshot(workflow, state, events, "succeeded", None)
-    if type(value) is PersistedExecutionOutcome:
-        if not (
-            value.outcome == "persisted_failure"
-            and value.workflow_id == workflow.id == result.workflow_id
-            and value.current_step_index == 9
-            and value.current_step_id == workflow.steps[8].id
-            and value.current_employee_id == workflow.steps[8].employee
+        step = workflow.steps[current_index - 1]
+        identity = (
+            value.workflow_id == workflow.id == result.workflow_id
+            and value.current_step_id == step.id
+            and value.current_step_index == current_index
+            and value.current_employee_id == step.employee
+        )
+        if type(value) is WorkflowProgressionDecision:
+            return bool(
+                identity
+                and type(result) is StepRuntimeExecutionSuccess
+                and value.decision == "workflow_complete"
+                and current_index == len(workflow.steps)
+                and value.next_step_id is None
+                and value.next_step_index is None
+                and value.next_employee_id is None
+                and value.reason == "last_step_succeeded"
+                and _valid_terminal_snapshot(
+                    workflow, current_index, "succeeded", state, events
+                )
+            )
+        return bool(
+            identity
+            and value.outcome == "persisted_failure"
             and type(value.failure_category) is str
             and value.failure_category in _FAILURE_CATEGORIES
-        ):
-            return False
-        return _valid_terminal_snapshot(
-            workflow, state, events, "failed", value.failure_category
+            and _valid_terminal_snapshot(
+                workflow,
+                current_index,
+                "failed",
+                state,
+                events,
+                failure_category=value.failure_category,
+            )
         )
-    return False
+    except Exception:
+        return False
 
 
 def _valid_terminal_snapshot(
     workflow: WorkflowDefinition,
+    executed: int,
+    status: Literal["succeeded", "failed"],
     state: Path,
     events: Path,
-    status: Literal["succeeded", "failed"],
-    failure_category: object,
+    *,
+    failure_category: object = None,
 ) -> bool:
     try:
         loaded = load_workflow_execution_state(state)
@@ -510,19 +541,19 @@ def _valid_terminal_snapshot(
         )
         if type(loaded) is not WorkflowExecutionState or type(history.events) is not tuple:
             return False
-        if len(history.events) != 9:
+        if len(history.events) != executed:
             return False
-        step = workflow.steps[8]
+        step = workflow.steps[executed - 1]
         expected_completed = (
-            tuple(item.id for item in workflow.steps[:9])
+            tuple(item.id for item in workflow.steps[:executed])
             if status == "succeeded"
-            else tuple(item.id for item in workflow.steps[:8])
+            else tuple(item.id for item in workflow.steps[: executed - 1])
         )
         if not (
             loaded.workflow_id == workflow.id
             and loaded.status == status
             and loaded.current_step_id == step.id
-            and loaded.current_step_index == 9
+            and loaded.current_step_index == executed
             and loaded.current_employee_id == step.employee
             and loaded.completed_step_ids == expected_completed
         ):
@@ -542,7 +573,7 @@ def _valid_terminal_snapshot(
                 and event.employee_id == expected_step.employee
                 and event.previous_status == "running"
             )
-            if position < 9:
+            if position < executed:
                 if not (
                     base
                     and event.event_type == "step_succeeded"

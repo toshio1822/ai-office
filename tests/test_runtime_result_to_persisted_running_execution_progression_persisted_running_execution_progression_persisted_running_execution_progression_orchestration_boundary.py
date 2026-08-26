@@ -37,6 +37,9 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
     route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary as phase187,
 )
+from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
+    RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryError as Phase187Error,
+)
 from ai_office.runtime import RuntimeStepEvent, StepRuntimeExecutionFailure, StepRuntimeExecutionSuccess
 from ai_office.storage import load_workflow_execution_state, serialize_runtime_step_event_jsonl
 
@@ -205,9 +208,9 @@ def test_05_original_persisted_failure_identity_phase172_zero_targets_unchanged(
 
 
 def test_06_phase187_generated_workflow_complete_is_exact_stop_and_keeps_phase187_bytes(tmp_path: Path) -> None:
-    case = _case(tmp_path / "generated-complete")
-    source = _terminal().terminal_setup(tmp_path / "source", steps=9)
-    stop = _terminal().complete_decision(source["workflow"], 9)
+    case = _case(tmp_path / "generated-complete", steps=7)
+    source = _terminal().terminal_setup(tmp_path / "source", steps=7)
+    stop = _terminal().complete_decision(source["workflow"], 7)
     before = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
     phase172_calls: list[object] = []
 
@@ -223,9 +226,9 @@ def test_06_phase187_generated_workflow_complete_is_exact_stop_and_keeps_phase18
 
 
 def test_07_phase187_generated_persisted_failure_is_exact_stop_and_keeps_phase187_bytes(tmp_path: Path) -> None:
-    case = _case(tmp_path / "generated-failure")
-    source = _terminal().terminal_setup(tmp_path / "source", steps=9, fail=True)
-    stop = _terminal().failure_outcome(source["workflow"], 9)
+    case = _case(tmp_path / "generated-failure", steps=8)
+    source = _terminal().terminal_setup(tmp_path / "source", steps=8, fail=True)
+    stop = _terminal().failure_outcome(source["workflow"], 8)
     phase172_calls: list[object] = []
 
     def p187(*args: object) -> object:
