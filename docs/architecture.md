@@ -4171,3 +4171,33 @@ success and failure, provenance, safe/unexpected errors, malformed outputs,
 durable snapshots, and no-readvance. Synthetic transports are used exclusively;
 retry, looping, automatic continuation, finalization, scheduling, parallelism,
 provider/network/paid API, CLI, and GUI behavior are outside this boundary.
+
+## Phase 190: One-Step Approved Workflow Continuation Cycle
+
+Phase 190 is the reusable public one-step continuation boundary exposed as
+`route_approved_workflow_continuation_cycle`. For an exact
+`prepare_next_step` decision, it composes only the public stages in this order,
+with one current-next-step context:
+
+```text
+Phase 145 → Phase 146 → Phase 147 → Phase 155 → Phase 172 → STOP
+approved    start       running     one runtime  persist/classify/
+preparation             persistence execution    progress
+```
+
+Each stage is called at most once. Exact `workflow_complete` and
+`persisted_failure` inputs are identity-preserving terminal stops with zero
+calls to all five stages; their operational context is not validated. If
+Phase 172 returns another `prepare_next_step`, the caller must invoke Phase 190
+again with a new context. The boundary never loops, retries, recurses, or
+automatically continues.
+
+Before a valid Phase-147 result, Phase 145/146 errors, malformed output, or
+unauthorized target mutation are compensated to the prior terminal snapshot.
+After Phase 147 establishes the durable running commit, Phase 155 errors or
+malformed/mutating output are compensated only to that running snapshot, never
+to the earlier terminal state. Phase 172 owns the next runtime-result durable
+commit; once it is invoked, Phase 190 performs no destructive outer rollback.
+Scheduling, parallelism, finalization, provider/network/paid API, CLI, and GUI
+behavior remain outside the boundary. The focused Phase-190 suite contains
+exactly 20 tests and uses synthetic transports exclusively.
