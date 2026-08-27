@@ -64,10 +64,14 @@ from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_br
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
 )
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
+    RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError as Phase172CompatibilityError,
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172BoundaryError,
 )
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     route_runtime_result_to_progression_orchestration_boundary,
+)
+from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161ChainError,
 )
 from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
@@ -141,19 +145,19 @@ class ApprovedWorkflowContinuationCycleCompatibilityError(
 # boundaries.  They are aliases, not another error family.
 ApprovedWorkflowContinuationCycleFailure = ApprovedWorkflowContinuationCycleError
 
-# Immediate public boundaries deliberately surface their own error family (or
-# the safe family of the public boundary immediately below them).  Keep the
-# tuple explicit so arbitrary provider/filesystem exceptions are never exposed.
-_SAFE_DEPENDENCY_ERRORS = (
-    Phase145BoundaryError,
-    Phase137Error,
-    Phase146BoundaryError,
-    Phase138Error,
-    Phase147BoundaryError,
-    Phase139Error,
-    Phase155BoundaryError,
-    Phase141Error,
+# Each immediate public boundary has an intentionally independent safe-error
+# family. An error from another stage must be sanitized as a Phase-190
+# dependency error rather than preserved by identity.
+_SAFE_PHASE145_ERRORS = (Phase145BoundaryError, Phase137Error)
+_SAFE_PHASE146_ERRORS = (Phase146BoundaryError, Phase138Error)
+_SAFE_PHASE147_ERRORS = (Phase147BoundaryError, Phase139Error)
+_SAFE_PHASE155_ERRORS = (Phase155BoundaryError, Phase141Error)
+# This is the Phase-188 precedent for the real Phase-172 public surface. The
+# Phase-161 outer-chain error is required because it is the default first seam.
+_SAFE_PHASE172_ERRORS = (
     Phase172BoundaryError,
+    Phase172CompatibilityError,
+    Phase161ChainError,
     Phase161Error,
     Phase143Error,
     Phase144Error,
@@ -225,16 +229,18 @@ def route_approved_workflow_continuation_cycle(
             state_path,
             events_path,
         )
-    except _SAFE_DEPENDENCY_ERRORS as error:
+    except _SAFE_PHASE145_ERRORS as error:
         _restore_or_fail(state_path, events_path, original)
         raise error
     except Exception:
         _restore_or_fail(state_path, events_path, original)
         _fail("dependency_error")
+    prepared_valid = _valid_prepared(prepared, result, workflow, employee)
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
-        _fail("committed_mutation")
-    _check_prepared(prepared, result, workflow, employee)
+        _fail("committed_mutation" if prepared_valid else "phase145_contract")
+    if not prepared_valid:
+        _fail("phase145_contract")
     assert type(prepared) is PreparedWorkflowStep
 
     try:
@@ -245,16 +251,24 @@ def route_approved_workflow_continuation_cycle(
             state_path,
             events_path,
         )
-    except _SAFE_DEPENDENCY_ERRORS as error:
+    except _SAFE_PHASE146_ERRORS as error:
         _restore_or_fail(state_path, events_path, original)
         raise error
     except Exception:
         _restore_or_fail(state_path, events_path, original)
         _fail("dependency_error")
+    prepared_start_valid = _valid_prepared_start(
+        prepared_start, prepared, workflow, employee
+    )
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
-        _fail("committed_mutation")
-    _check_prepared_start(prepared_start, prepared, workflow, employee)
+        _fail(
+            "committed_mutation"
+            if prepared_start_valid
+            else "phase146_contract"
+        )
+    if not prepared_start_valid:
+        _fail("phase146_contract")
     assert type(prepared_start) is PreparedStepExecutionStart
 
     pre_persistence = _capture_targets(state_path, events_path)
@@ -266,7 +280,7 @@ def route_approved_workflow_continuation_cycle(
             state_path,
             events_path,
         )
-    except _SAFE_DEPENDENCY_ERRORS as error:
+    except _SAFE_PHASE147_ERRORS as error:
         _restore_or_fail(state_path, events_path, original)
         raise error
     except Exception:
@@ -296,16 +310,22 @@ def route_approved_workflow_continuation_cycle(
             execution_approval,
             transport,
         )
-    except _SAFE_DEPENDENCY_ERRORS as error:
+    except _SAFE_PHASE155_ERRORS as error:
         _restore_or_fail(state_path, events_path, running_snapshot)
         raise error
     except Exception:
         _restore_or_fail(state_path, events_path, running_snapshot)
         _fail("dependency_error")
+    runtime_result_valid = _valid_runtime_result(
+        runtime_result, prepared_start, workflow
+    )
     if _changed(state_path, events_path, running_snapshot):
         _restore_or_fail(state_path, events_path, running_snapshot)
-        _fail("committed_mutation")
-    _check_runtime_result(runtime_result, prepared_start, workflow)
+        _fail(
+            "committed_mutation" if runtime_result_valid else "phase155_contract"
+        )
+    if not runtime_result_valid:
+        _fail("phase155_contract")
     assert type(runtime_result) in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
 
     # Phase 172 owns the next durable terminal commit.  In particular, no
@@ -318,7 +338,7 @@ def route_approved_workflow_continuation_cycle(
             state_path,
             events_path,
         )
-    except _SAFE_DEPENDENCY_ERRORS as error:
+    except _SAFE_PHASE172_ERRORS as error:
         raise error
     except Exception:
         _fail("dependency_error")
@@ -452,6 +472,19 @@ def _check_prepare_decision(
         _fail("result_type")
 
 
+def _valid_prepared(
+    value: object,
+    decision: WorkflowProgressionDecision,
+    workflow: WorkflowDefinition,
+    employee: object,
+) -> bool:
+    try:
+        _check_prepared(value, decision, workflow, employee)
+    except ApprovedWorkflowContinuationCycleCompatibilityError:
+        return False
+    return True
+
+
 def _check_prepared(
     value: object,
     decision: WorkflowProgressionDecision,
@@ -479,6 +512,19 @@ def _check_prepared(
         and value.allowed_tool_names == tuple(employee.allowed_tools)
     ):
         _fail("phase145_contract")
+
+
+def _valid_prepared_start(
+    value: object,
+    prepared: PreparedWorkflowStep,
+    workflow: WorkflowDefinition,
+    employee: object,
+) -> bool:
+    try:
+        _check_prepared_start(value, prepared, workflow, employee)
+    except ApprovedWorkflowContinuationCycleCompatibilityError:
+        return False
+    return True
 
 
 def _check_prepared_start(
@@ -562,6 +608,18 @@ def _check_persisted_running(
     ):
         _restore_or_fail(state_path, events_path, original)
         _fail("phase147_contract")
+
+
+def _valid_runtime_result(
+    value: object,
+    prepared_start: PreparedStepExecutionStart,
+    workflow: WorkflowDefinition,
+) -> bool:
+    try:
+        _check_runtime_result(value, prepared_start, workflow)
+    except ApprovedWorkflowContinuationCycleCompatibilityError:
+        return False
+    return True
 
 
 def _check_runtime_result(
@@ -778,7 +836,11 @@ def _restore_or_fail(
     events_path: Path,
     original: tuple[bytes, bytes],
 ) -> None:
-    if not _changed(state_path, events_path, original):
+    try:
+        changed = _changed(state_path, events_path, original)
+    except (OSError, ValueError):
+        changed = True
+    if not changed:
         return
     failed = False
     # Once rollback is required, make exactly one restoration attempt for each

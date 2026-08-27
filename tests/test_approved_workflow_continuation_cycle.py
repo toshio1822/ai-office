@@ -57,10 +57,16 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reent
     PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase146Error,
 )
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146BoundaryError,
+)
+from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as real146,
 )
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase147Error,
+)
+from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147BoundaryError,
 )
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as real147,
@@ -68,13 +74,42 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_oute
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase155Error,
 )
+
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155BoundaryError,
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as real155,
 )
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
+    RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError as Phase172CompatibilityError,
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
     route_runtime_result_to_progression_orchestration_boundary as real172,
+)
+from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161ChainError,
+)
+from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
+)
+from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
+)
+from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
+    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
+)
+
+# Independently enumerate the public safe families expected at each immediate
+# seam. These test oracles intentionally do not import production tuples.
+PHASE145_SAFE_ERRORS = (Phase145BoundaryError, Phase145Error)
+PHASE146_SAFE_ERRORS = (Phase146BoundaryError, Phase146Error)
+PHASE147_SAFE_ERRORS = (Phase147BoundaryError, Phase147Error)
+PHASE155_SAFE_ERRORS = (Phase155BoundaryError, Phase155Error)
+PHASE172_SAFE_ERRORS = (
+    Phase172Error,
+    Phase172CompatibilityError,
+    Phase161ChainError,
+    Phase161Error,
+    Phase143Error,
+    Phase144Error,
 )
 
 
@@ -378,57 +413,73 @@ def test_05_prepare_configuration_rejects_before_phase145(tmp_path: Path) -> Non
 
 def test_06_phase145_safe_unexpected_malformed_mutation_prior_snapshot_matrix(tmp_path: Path) -> None:
     v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); contexts(v, 9); v["before"]
-    for mode in ("safe", "unexpected", "malformed", "mutation"):
-        vv = setup(tmp_path / mode); w = vv["workflow"]; assert isinstance(w, WorkflowDefinition); args = contexts(vv, 9); safe = Phase145Error("safe")
-        def p(*a, mode=mode, vv=vv):
-            if mode == "safe": raise safe
+    for safe_type in PHASE145_SAFE_ERRORS:
+        vv = setup(tmp_path / f"safe-{safe_type.__name__}"); w = vv["workflow"]; assert isinstance(w, WorkflowDefinition); args = contexts(vv, 9); safe = safe_type("safe")
+        def p_safe(*a, safe=safe): raise safe
+        with pytest.raises(safe_type) as caught:
+            phase190(*args, phase145_function=p_safe)
+        assert caught.value is safe and (vv["state_path"].read_bytes(), vv["events_path"].read_bytes()) == vv["before"]
+    vv = setup(tmp_path / "unrelated"); w = vv["workflow"]; assert isinstance(w, WorkflowDefinition); args = contexts(vv, 9); unrelated = Phase146Error("unrelated")
+    def p_unrelated(*a, unrelated=unrelated): raise unrelated
+    err(lambda: phase190(*args, phase145_function=p_unrelated), "dependency_error")
+    assert (vv["state_path"].read_bytes(), vv["events_path"].read_bytes()) == vv["before"]
+    valid_prepared = prepared(w, 10)
+    for mode in ("unexpected", "malformed", "mutation", "malformed_mutation"):
+        vv = setup(tmp_path / mode); w = vv["workflow"]; assert isinstance(w, WorkflowDefinition); args = contexts(vv, 9)
+        def p(*a, mode=mode, vv=vv, valid_prepared=valid_prepared):
             if mode == "unexpected": raise RuntimeError("secret")
-            if mode == "mutation": vv["state_path"].write_bytes(b"changed")
-            return object()
-        if mode == "safe":
-            with pytest.raises(Phase145Error) as caught:
-                phase190(*args, phase145_function=p)
-            assert caught.value is safe
-        else:
-            err(lambda args=args: phase190(*args, phase145_function=p), "committed_mutation" if mode == "mutation" else "phase145_contract" if mode == "malformed" else "dependency_error")
+            if mode in ("mutation", "malformed_mutation"): vv["state_path"].write_bytes(b"changed")
+            return valid_prepared if mode == "mutation" else object()
+        expected = "committed_mutation" if mode == "mutation" else "phase145_contract" if mode == "malformed_mutation" else "dependency_error" if mode == "unexpected" else "phase145_contract"
+        err(lambda args=args: phase190(*args, phase145_function=p), expected)
+        assert (vv["state_path"].read_bytes(), vv["events_path"].read_bytes()) == vv["before"]
 
 
 # The following three tests deliberately keep all matrix cases inline so the
 # suite has exactly fifteen focused tests, rather than one collected case per
 # mutation/error combination.
 def test_07_phase146_safe_unexpected_malformed_mutation_prior_snapshot_matrix(tmp_path: Path) -> None:
-    v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); contexts(v, 9)
-    for mode in ("safe", "unexpected", "malformed", "mutation"):
-        vv = setup(tmp_path / mode); w = vv["workflow"]; assert isinstance(w, WorkflowDefinition); args = contexts(vv, 9); safe = Phase146Error("safe")
-        def p146(*a, mode=mode, vv=vv):
-            if mode == "safe": raise safe
+    v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10)
+    for safe_type in PHASE146_SAFE_ERRORS:
+        vv = setup(tmp_path / f"safe-{safe_type.__name__}"); args = contexts(vv, 9); safe = safe_type("safe")
+        def p146_safe(*a, safe=safe): raise safe
+        with pytest.raises(safe_type) as caught:
+            phase190(*args, phase145_function=lambda *a, p=p: p, phase146_function=p146_safe)
+        assert caught.value is safe and (vv["state_path"].read_bytes(), vv["events_path"].read_bytes()) == vv["before"]
+    vv = setup(tmp_path / "unrelated"); args = contexts(vv, 9); unrelated = Phase145BoundaryError("unrelated")
+    def p146_unrelated(*a, unrelated=unrelated): raise unrelated
+    err(lambda: phase190(*args, phase145_function=lambda *a, p=p: p, phase146_function=p146_unrelated), "dependency_error")
+    assert (vv["state_path"].read_bytes(), vv["events_path"].read_bytes()) == vv["before"]
+    for mode in ("unexpected", "malformed", "mutation", "malformed_mutation"):
+        vv = setup(tmp_path / mode); w = vv["workflow"]; assert isinstance(w, WorkflowDefinition); args = contexts(vv, 9); valid_start = started(w, 10)
+        def p146(*a, mode=mode, vv=vv, valid_start=valid_start):
             if mode == "unexpected": raise RuntimeError("secret")
-            if mode == "mutation": vv["events_path"].write_bytes(b"changed")
-            return object()
-        if mode == "safe":
-            with pytest.raises(Phase146Error) as caught:
-                phase190(*args, phase145_function=lambda *a: p, phase146_function=p146)
-            assert caught.value is safe
-        else:
-            err(lambda args=args: phase190(*args, phase145_function=lambda *a: p, phase146_function=p146), "committed_mutation" if mode == "mutation" else "phase146_contract" if mode == "malformed" else "dependency_error")
-
+            if mode in ("mutation", "malformed_mutation"): vv["events_path"].write_bytes(b"changed")
+            return valid_start if mode == "mutation" else object()
+        expected = "committed_mutation" if mode == "mutation" else "phase146_contract" if mode in ("malformed", "malformed_mutation") else "dependency_error"
+        err(lambda args=args: phase190(*args, phase145_function=lambda *a, p=p: p, phase146_function=p146), expected)
+        assert (vv["state_path"].read_bytes(), vv["events_path"].read_bytes()) == vv["before"]
 
 def test_08_phase147_failure_malformed_or_unauthorized_restores_terminal_snapshot(tmp_path: Path) -> None:
-    for mode in ("safe", "unexpected", "malformed", "mutation"):
-        v = setup(tmp_path / mode); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); args = contexts(v, 9); safe = Phase147Error("safe")
-        def p147(*a, mode=mode, v=v):
-            if mode == "safe": raise safe
+    for safe_type in PHASE147_SAFE_ERRORS:
+        v = setup(tmp_path / f"safe-{safe_type.__name__}"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); args = contexts(v, 9); safe = safe_type("safe")
+        def p147_safe(*a, safe=safe): raise safe
+        with pytest.raises(safe_type) as caught:
+            phase190(*args, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147_safe)
+        assert caught.value is safe and (v["state_path"].read_bytes(), v["events_path"].read_bytes()) == v["before"]
+    v = setup(tmp_path / "unrelated"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); args = contexts(v, 9); unrelated = Phase146BoundaryError("unrelated")
+    def p147_unrelated(*a, unrelated=unrelated): raise unrelated
+    err(lambda: phase190(*args, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147_unrelated), "dependency_error")
+    assert (v["state_path"].read_bytes(), v["events_path"].read_bytes()) == v["before"]
+    for mode in ("unexpected", "malformed", "mutation"):
+        v = setup(tmp_path / mode); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); args = contexts(v, 9)
+        def p147(*a, mode=mode, v=v, st=st):
             if mode == "unexpected": raise RuntimeError("secret")
             if mode == "mutation": v["events_path"].write_bytes(b"changed")
             return object()
-        if mode == "safe":
-            with pytest.raises(Phase147Error) as caught:
-                phase190(*args, phase145_function=lambda *a: p, phase146_function=lambda *a: st, phase147_function=p147)
-            assert caught.value is safe
-        else:
-            err(lambda: phase190(*args, phase145_function=lambda *a: p, phase146_function=lambda *a: st, phase147_function=p147), "committed_mutation" if mode == "mutation" else "phase147_contract" if mode == "malformed" else "dependency_error")
+        expected = "committed_mutation" if mode == "mutation" else "dependency_error" if mode == "unexpected" else "phase147_contract"
+        err(lambda: phase190(*args, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147), expected)
         assert (v["state_path"].read_bytes(), v["events_path"].read_bytes()) == v["before"]
-
 
 def test_09_phase147_success_is_durable_state_only_commit(tmp_path: Path) -> None:
     v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); before_events = v["events_path"].read_bytes(); calls = []
@@ -442,31 +493,45 @@ def test_09_phase147_success_is_durable_state_only_commit(tmp_path: Path) -> Non
 
 
 def test_10_phase155_safe_error_preserves_running_snapshot_identity(tmp_path: Path) -> None:
-    v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); running_bytes = serialize_workflow_execution_state_json(st.running_state).encode()
-    def p147(*a): return write_running(v["state_path"], st)
-    safe = Phase155Error("safe")
-    def p155(*a): raise safe
-    with pytest.raises(Phase155Error) as caught: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a:p, phase146_function=lambda *a:st, phase147_function=p147, phase155_function=p155)
-    assert caught.value is safe and v["state_path"].read_bytes() == running_bytes
-
+    for safe_type in PHASE155_SAFE_ERRORS:
+        v = setup(tmp_path / f"safe-{safe_type.__name__}"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); safe = safe_type("safe")
+        running_bytes = serialize_workflow_execution_state_json(st.running_state).encode()
+        def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
+        def p155(*a, safe=safe): raise safe
+        with pytest.raises(safe_type) as caught:
+            phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155)
+        assert caught.value is safe and v["state_path"].read_bytes() == running_bytes and v["events_path"].read_bytes() == v["before"][1]
+    v = setup(tmp_path / "unrelated"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); unrelated = Phase147BoundaryError("unrelated")
+    def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
+    def p155_unrelated(*a, unrelated=unrelated): raise unrelated
+    err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155_unrelated), "dependency_error")
+    assert load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == v["before"][1]
 
 def test_11_phase155_unexpected_malformed_mutation_running_snapshot_no_phase172(tmp_path: Path) -> None:
-    for mode in ("unexpected", "malformed", "mutation"):
-        v = setup(tmp_path / mode); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); calls=[]
-        def p147(*a): return write_running(v["state_path"], st)
-        def p155(*a, mode=mode, v=v):
+    for mode in ("unexpected", "malformed", "mutation", "malformed_mutation"):
+        v = setup(tmp_path / mode); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); calls = []; valid_runtime = runtime(wf, 10)
+        def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
+        def p155(*a, mode=mode, v=v, valid_runtime=valid_runtime):
             if mode == "unexpected": raise RuntimeError("secret")
-            if mode == "mutation": v["state_path"].write_bytes(b"changed")
-            return object()
-        err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a:p, phase146_function=lambda *a:st, phase147_function=p147, phase155_function=p155, phase172_function=lambda *a:calls.append(a)), "committed_mutation" if mode=="mutation" else "dependency_error" if mode=="unexpected" else "phase155_contract")
-        assert calls == [] and load_workflow_execution_state(v["state_path"]) == st.running_state
-
+            if mode in ("mutation", "malformed_mutation"): v["state_path"].write_bytes(b"changed")
+            return valid_runtime if mode == "mutation" else object()
+        expected = "committed_mutation" if mode == "mutation" else "phase155_contract" if mode in ("malformed", "malformed_mutation") else "dependency_error"
+        err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155, phase172_function=lambda *a: calls.append(a)), expected)
+        assert calls == [] and load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == v["before"][1]
 
 def test_12_phase172_safe_error_identity_no_outer_rollback(tmp_path: Path) -> None:
-    v=setup(tmp_path); wf=v["workflow"]; assert isinstance(wf,WorkflowDefinition); st=started(wf,10); p=prepared(wf,10); write_running(v["state_path"],st); running=v["state_path"].read_bytes(); safe=Phase172Error("safe")
-    with pytest.raises(Phase172Error) as caught: phase190(decision(wf,9),wf,None,employee(wf,10),v["state_path"],v["events_path"],(),None,None,None,phase145_function=lambda *a:p,phase146_function=lambda *a:st,phase147_function=lambda *a:RunningStatePersistenceResult(len(running)),phase155_function=lambda *a:runtime(wf,10),phase172_function=lambda *a:(_ for _ in ()).throw(safe))
-    assert caught.value is safe and v["state_path"].read_bytes()==running
-
+    for safe_type in PHASE172_SAFE_ERRORS:
+        v = setup(tmp_path / f"safe-{safe_type.__name__}"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); safe = safe_type("safe")
+        def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
+        def p172(*a, safe=safe): raise safe
+        with pytest.raises(safe_type) as caught:
+            phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=lambda *a: runtime(wf, 10), phase172_function=p172)
+        assert caught.value is safe and load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == v["before"][1]
+    v = setup(tmp_path / "unrelated"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); unrelated = Phase155BoundaryError("unrelated")
+    def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
+    def p172_unrelated(*a, unrelated=unrelated): raise unrelated
+    err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=lambda *a: runtime(wf, 10), phase172_function=p172_unrelated), "dependency_error")
+    assert load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == v["before"][1]
 
 def test_13_phase172_unexpected_or_malformed_detail_safe_no_outer_rollback(tmp_path: Path) -> None:
     for mode in ("unexpected", "malformed", "valid_without_persistence"):
@@ -482,27 +547,69 @@ def test_13_phase172_unexpected_or_malformed_detail_safe_no_outer_rollback(tmp_p
 
 def test_14_step_index_independent_linkage_and_wrong_outputs_rejected(tmp_path: Path) -> None:
     for index in (10, 11):
-        v=setup(tmp_path/str(index),current=index-1,count=12); wf=v["workflow"]; assert isinstance(wf,WorkflowDefinition); next_emp=employee(wf,index); p=prepared(wf,index); st=started(wf,index); rt=runtime(wf,index); final=complete(wf) if index==12 else decision(wf,index)
-        out=phase190(decision(wf,index-1),wf,None,next_emp,v["state_path"],v["events_path"],(),None,None,None,phase145_function=lambda *a,p=p:p,phase146_function=lambda *a,st=st:st,phase147_function=lambda *a, v=v,st=st:write_running(v["state_path"],st),phase155_function=lambda *a,rt=rt:rt,phase172_function=lambda *a,final=final, v=v, rt=rt:write_terminal(v, rt, final)); assert out is final
-        for bad in (replace(p, step_index=index+1), replace(st, running_state=replace(st.running_state,current_step_index=index+1)), replace(rt, step_index=index+1)):
-            vv=setup(tmp_path/f"bad-{index}-{type(bad).__name__}",current=index-1,count=12); err(lambda bad=bad,vv=vv: phase190(decision(wf,index-1),wf,None,next_emp,vv["state_path"],vv["events_path"],(),None,None,None,phase145_function=lambda *a:bad,phase146_function=lambda *a:bad,phase147_function=lambda *a:bad,phase155_function=lambda *a:bad,phase172_function=lambda *a:bad), "phase145_contract")
+        wf = workflow(12); current = index - 1; next_emp = employee(wf, index); valid_p = prepared(wf, index); valid_st = started(wf, index); valid_rt = runtime(wf, index); valid_final = complete(wf) if index == 12 else decision(wf, index)
+        cases = (
+            ("phase145", replace(valid_p, step_index=index + 1), "phase145_contract"),
+            ("phase146", replace(valid_st, running_state=replace(valid_st.running_state, current_step_index=index + 1)), "phase146_contract"),
+            ("phase147", RunningStatePersistenceResult(0), "phase147_contract"),
+            ("phase155", replace(valid_rt, step_index=index + 1), "phase155_contract"),
+            ("phase172", replace(valid_final, current_employee_id="wrong-employee"), "phase172_contract"),
+        )
+        for seam, bad, classification in cases:
+            v = setup(tmp_path / f"{index}-{seam}", current=current, count=12); calls = []
+            def p145(*a, bad=bad, seam=seam, valid_p=valid_p): return bad if seam == "phase145" else valid_p
+            def p146(*a, bad=bad, seam=seam, valid_st=valid_st): return bad if seam == "phase146" else valid_st
+            def p147(*a, bad=bad, seam=seam, v=v, valid_st=valid_st):
+                if seam == "phase147": return bad
+                return write_running(v["state_path"], valid_st)
+            def p155(*a, bad=bad, seam=seam, valid_rt=valid_rt): return bad if seam == "phase155" else valid_rt
+            def p172(*a, bad=bad, seam=seam, v=v, valid_rt=valid_rt, valid_final=valid_final):
+                return bad if seam == "phase172" else write_terminal(v, valid_rt, valid_final)
+            err(lambda: phase190(decision(wf, current), wf, None, next_emp, v["state_path"], v["events_path"], (), None, None, None, phase145_function=p145, phase146_function=p146, phase147_function=p147, phase155_function=p155, phase172_function=p172), classification)
+            assert calls == []
 
     class StringSubclass(str):
         pass
 
-    v=setup(tmp_path / "phase172-string-subclass", current=9, count=12); wf=v["workflow"]; assert isinstance(wf,WorkflowDefinition); p=prepared(wf,10); st=started(wf,10); rt=runtime(wf,10); valid=decision(wf,10)
-    bad=replace(valid, decision=StringSubclass("prepare_next_step"), reason=StringSubclass("next_step_available"))
-    err(lambda: phase190(decision(wf,9), wf, None, employee(wf,10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a:p, phase146_function=lambda *a:st, phase147_function=lambda *a:write_running(v["state_path"],st), phase155_function=lambda *a:rt, phase172_function=lambda *a:write_terminal(v,rt,bad)), "phase172_contract")
+    v = setup(tmp_path / "phase172-string-subclass", current=9, count=12); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); rt = runtime(wf, 10); valid = decision(wf, 10)
+    bad = replace(valid, decision=StringSubclass("prepare_next_step"), reason=StringSubclass("next_step_available"))
+    err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a: p, phase146_function=lambda *a: st, phase147_function=lambda *a: write_running(v["state_path"], st), phase155_function=lambda *a: rt, phase172_function=lambda *a: write_terminal(v, rt, bad)), "phase172_contract")
 
 
-def test_15_rollback_failure_matrix_both_targets_once_no_retry(tmp_path: Path) -> None:
-    v=setup(tmp_path); wf=v["workflow"]; assert isinstance(wf,WorkflowDefinition); v["state_path"].write_bytes; calls=[]
-    def p145(*a): v["state_path"].write_bytes(b"changed"); v["events_path"].write_bytes(b"changed"); raise RuntimeError("secret")
-    def phase_write(data): calls.append(data); raise OSError("rollback")
-    # Use a replacement path object to exercise the local rollback helper in a
-    # controlled way; regular Path methods cannot be monkey-patched.
-    err(lambda: phase190(decision(wf,9),wf,None,employee(wf,10),v["state_path"],v["events_path"],(),None,None,None,phase145_function=p145), "dependency_error")
-    assert calls == []
+def test_15_rollback_failure_matrix_both_targets_once_no_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[Path] = []
+
+    def fail_write_bytes(path: Path, data: bytes) -> int:
+        del data
+        attempts.append(path)
+        raise OSError("rollback")
+
+    for stage in ("pre", "post"):
+        v = setup(tmp_path / stage); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); stage_calls = []
+        attempts.clear()
+        fstate = v["state_path"]; fevents = v["events_path"]
+        assert isinstance(fstate, Path) and isinstance(fevents, Path)
+        def p145(*a):
+            stage_calls.append("145")
+            if stage == "pre":
+                fstate.write_text("changed"); fevents.write_text("changed"); raise RuntimeError("secret")
+            return p
+        def run():
+            if stage == "pre":
+                phase190(decision(wf, 9), wf, None, employee(wf, 10), fstate, fevents, (), None, None, None, phase145_function=p145)
+            else:
+                running_bytes = serialize_workflow_execution_state_json(st.running_state).encode()
+                def p146(*a): stage_calls.append("146"); return st
+                def p147(*a):
+                    stage_calls.append("147"); fstate.write_text(running_bytes.decode()); return RunningStatePersistenceResult(len(running_bytes))
+                def p155(*a):
+                    stage_calls.append("155"); fstate.write_text("changed"); fevents.write_text("changed"); raise RuntimeError("secret")
+                phase190(decision(wf, 9), wf, None, employee(wf, 10), fstate, fevents, (), None, None, None, phase145_function=p145, phase146_function=p146, phase147_function=p147, phase155_function=p155)
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "write_bytes", fail_write_bytes)
+            err(run, "rollback_failure")
+        assert stage_calls == ["145"] if stage == "pre" else ["145", "146", "147", "155"]
+        assert attempts == [fstate, fevents]
 
 
 # Real-default tests exercise real policies with an injected deterministic
