@@ -54,6 +54,12 @@ from ai_office.engine.approved_next_step_reentry import (
     ApprovedNextStepReentryFailureDetail,
     prepare_approved_next_step_reentry,
 )
+from ai_office.engine.approved_workflow_continuation_cycle import (
+    ApprovedWorkflowContinuationCycleCompatibilityError,
+    ApprovedWorkflowContinuationCycleError,
+    ApprovedWorkflowContinuationCycleFailureDetail,
+    route_approved_workflow_continuation_cycle,
+)
 from ai_office.engine.classified_outcome_cycle_closure_continuation_boundary import (
     ClassifiedOutcomeCycleClosureContinuationCompatibilityError,
     ClassifiedOutcomeCycleClosureContinuationError,
@@ -843,6 +849,10 @@ from .persisted_terminal_outcome_classification_routing_phase_bridge_reentry imp
 )
 
 __all__ = [
+    "ApprovedWorkflowContinuationCycleCompatibilityError",
+    "ApprovedWorkflowContinuationCycleError",
+    "ApprovedWorkflowContinuationCycleFailureDetail",
+    "route_approved_workflow_continuation_cycle",
     "ApprovedNextStepCycleContinuationCompatibilityError",
     "ApprovedNextStepCycleContinuationError",
     "ApprovedNextStepCycleContinuationFailureDetail",

@@ -4257,3 +4257,38 @@ malformed outputs, durable snapshots, and no-readvance/source audits. Synthetic
 transports are used exclusively. No retry, loop, automatic continuation,
 finalization, scheduling, parallelism, provider/network/paid API, CLI, or GUI
 behavior is added.
+
+## Phase 190: One-Step Approved Workflow Continuation Cycle
+
+Phase 190 provides the reusable public
+`route_approved_workflow_continuation_cycle` boundary. One call consumes one
+current `prepare_next_step` decision and one next-step context, then executes
+the exact stage order below at most once:
+
+```text
+WorkflowProgressionDecision(prepare_next_step)
+  → Phase 145 approved preparation
+  → Phase 146 prepared-step start
+  → Phase 147 running-state persistence
+  → Phase 155 one runtime execution
+  → Phase 172 runtime-result persistence/classification/progression
+  → exact next decision or persisted_failure → STOP
+```
+
+`workflow_complete` and `persisted_failure` inputs are exact identity terminal
+stops: all five stages receive zero calls and operational context is ignored.
+The preparation approval, employee, tools, credential, execution approval, and
+transport belong only to this one next step; a later `prepare_next_step` must
+be continued by a new explicit Phase-190 call.
+
+Phase 145 and 146 failures or malformed/mutating results compensate to the
+prior terminal snapshot. Phase 147 failures compensate to that same prior
+snapshot; after a valid Phase-147 running commit, Phase 155 failures or
+malformed/mutating results compensate only to the committed running snapshot.
+Phase 172 owns its runtime-result durable commit, so Phase 190 performs no
+destructive outer rollback after invoking it. No stage is retried, looped,
+recursively or automatically continued; scheduling, parallelism, finalization,
+provider/network/paid API, CLI, and GUI behavior remain outside this boundary.
+
+The focused Phase-190 regression module contains exactly 20 tests, and uses
+synthetic transports exclusively.
