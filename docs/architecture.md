@@ -4201,3 +4201,42 @@ commit; once it is invoked, Phase 190 performs no destructive outer rollback.
 Scheduling, parallelism, finalization, provider/network/paid API, CLI, and GUI
 behavior remain outside the boundary. The focused Phase-190 suite contains
 exactly 20 tests and uses synthetic transports exclusively.
+
+## Phase 192: Bounded Explicit-Context Workflow Runner
+
+Phase 192 adds the public bounded runner
+`route_bounded_approved_workflow_continuation` above Phase 190:
+
+```text
+prepare_next_step
+      ↓
+finite tuple of explicit ApprovedWorkflowContinuationContext values
+      ↓ one canonical Phase-190 call per consumed context
+prepare_next_step | workflow_complete | persisted_failure
+      ↓
+STOP
+```
+
+`ApprovedWorkflowContinuationContext` is an exact frozen dataclass containing
+the six caller-supplied values for one step: preparation approval, employee,
+resolved tools, API key, execution approval, and transport. The runner accepts
+only an exact built-in tuple and exact context instances. It preserves tuple
+order, consumes each context at most once, never manufactures or resolves a
+future context, and uses tuple length as the sole continuation bound. No retry,
+recursion, unbounded loop, parallelism, scheduler, finalizer, or provider/API
+behavior is introduced.
+
+Exact terminal inputs bypass operational validation and are returned by
+identity. For a prepare input, an empty tuple returns the same decision without
+calling Phase 190. A terminal result from Phase 190 stops immediately and is
+returned by identity; an exhausted tuple returns the exact current prepare
+decision. The runner performs only a thin result/linkage check at the Phase-190
+seam and does not duplicate Phase 190's state/event history policy.
+
+Durable state and event writes, rollback, compensation, and recognized safe
+errors remain owned by Phase 190 and its lower public boundaries. The runner
+does not snapshot or restore either target. Runner-owned input/seam failures
+use a local safe classification family, and unexpected errors from an injected
+Phase-190 substitute are sanitized without exposing exception details. The
+focused Phase-192 module contains exactly 20 tests; validation uses
+deterministic synthetic transports only.

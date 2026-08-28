@@ -4292,3 +4292,29 @@ provider/network/paid API, CLI, and GUI behavior remain outside this boundary.
 
 The focused Phase-190 regression module contains exactly 20 tests, and uses
 synthetic transports exclusively.
+
+## Phase 192: Bounded Explicit-Context Workflow Runner
+
+Phase 192 exposes `route_bounded_approved_workflow_continuation`, a bounded
+runner over the public Phase-190 cycle. The caller supplies an exact built-in
+tuple of frozen `ApprovedWorkflowContinuationContext` values; each tuple
+element contains only the six values needed by one Phase-190 call:
+preparation approval, employee, resolved tools, API key, execution approval,
+and transport. The runner performs no lookup, approval generation, transport
+creation, retry, recursion, or unbounded continuation.
+
+For an exact `prepare_next_step` input, one tuple element permits exactly one
+canonical ten-positional-argument Phase-190 call. Results are validated at the
+thin outer seam, terminal `workflow_complete` / `persisted_failure` results
+are returned by identity, and later contexts are not consumed. If the tuple
+is exhausted while the result is still `prepare_next_step`, that exact result
+is returned by identity. An empty tuple therefore performs no call and leaves
+durable targets untouched. Terminal inputs bypass all operational validation.
+
+The runner does not snapshot, roll back, compensate, or write state/events;
+Phase 190 and its lower public stages retain ownership of durable behavior and
+their recognized safe errors. Runner-owned input and seam failures expose only
+safe local classifications. The focused Phase-192 suite contains exactly 20
+tests and uses deterministic synthetic transports only. Retry, recursion,
+unbounded loops, parallel execution, scheduling, finalization,
+provider/network/paid API, CLI, and GUI behavior remain outside this phase.
