@@ -60,6 +60,13 @@ from ai_office.engine.approved_workflow_continuation_cycle import (
     ApprovedWorkflowContinuationCycleFailureDetail,
     route_approved_workflow_continuation_cycle,
 )
+from ai_office.engine.bounded_approved_workflow_runner import (
+    ApprovedWorkflowContinuationContext,
+    BoundedApprovedWorkflowRunnerCompatibilityError,
+    BoundedApprovedWorkflowRunnerError,
+    BoundedApprovedWorkflowRunnerFailureDetail,
+    route_bounded_approved_workflow_continuation,
+)
 from ai_office.engine.classified_outcome_cycle_closure_continuation_boundary import (
     ClassifiedOutcomeCycleClosureContinuationCompatibilityError,
     ClassifiedOutcomeCycleClosureContinuationError,
@@ -853,6 +860,11 @@ __all__ = [
     "ApprovedWorkflowContinuationCycleError",
     "ApprovedWorkflowContinuationCycleFailureDetail",
     "route_approved_workflow_continuation_cycle",
+    "ApprovedWorkflowContinuationContext",
+    "BoundedApprovedWorkflowRunnerCompatibilityError",
+    "BoundedApprovedWorkflowRunnerError",
+    "BoundedApprovedWorkflowRunnerFailureDetail",
+    "route_bounded_approved_workflow_continuation",
     "ApprovedNextStepCycleContinuationCompatibilityError",
     "ApprovedNextStepCycleContinuationError",
     "ApprovedNextStepCycleContinuationFailureDetail",
