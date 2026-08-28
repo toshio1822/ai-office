@@ -8,7 +8,6 @@ from typing import Literal, get_args
 
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine.approved_workflow_continuation_cycle import (
-    ApprovedWorkflowContinuationCycleError as Phase190Error,
     route_approved_workflow_continuation_cycle,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
@@ -101,8 +100,11 @@ def route_bounded_approved_workflow_continuation(
     for context in contexts:
         if _is_terminal(current):
             return current
-        assert type(current) is WorkflowProgressionDecision
-        assert current.decision == "prepare_next_step"
+        if not (
+            type(current) is WorkflowProgressionDecision
+            and _exact(_attribute(current, "decision"), "prepare_next_step")
+        ):
+            _fail("phase190_contract")
         try:
             next_result = phase190_function(
                 current,
@@ -116,8 +118,6 @@ def route_bounded_approved_workflow_continuation(
                 context.execution_approval,
                 context.transport,
             )
-        except Phase190Error:
-            raise
         except Exception:
             if phase190_function is route_approved_workflow_continuation_cycle:
                 raise
@@ -159,27 +159,35 @@ def _check_transition_result(
     workflow: WorkflowDefinition,
     previous: WorkflowProgressionDecision,
 ) -> None:
-    expected_index = previous.next_step_index
-    assert type(expected_index) is int
+    expected_index = _attribute(previous, "next_step_index")
+    if not (
+        type(expected_index) is int
+        and 1 <= expected_index <= len(workflow.steps)
+    ):
+        _fail("phase190_contract")
     step = workflow.steps[expected_index - 1]
-    if (
-        type(result) is WorkflowProgressionDecision
-        and result.decision == "workflow_complete"
+    discriminator = _attribute(result, "decision")
+    outcome = _attribute(result, "outcome")
+    if type(result) is WorkflowProgressionDecision and _exact(
+        discriminator, "workflow_complete"
     ):
         _check_complete_result(result, workflow)
-    elif (
-        type(result) is PersistedExecutionOutcome
-        and result.outcome == "persisted_failure"
+    elif type(result) is PersistedExecutionOutcome and _exact(
+        outcome, "persisted_failure"
     ):
         _check_failure_result(result, workflow)
-    else:
-        assert type(result) is WorkflowProgressionDecision
+    elif type(result) is WorkflowProgressionDecision:
         _check_prepare_result(result, workflow)
+    else:
+        _fail("phase190_contract")
+    current_index = _attribute(result, "current_step_index")
+    current_step_id = _attribute(result, "current_step_id")
+    current_employee_id = _attribute(result, "current_employee_id")
     if not (
-        type(result.current_step_index) is int
-        and result.current_step_index == expected_index
-        and _exact(result.current_step_id, step.id)
-        and _exact(result.current_employee_id, step.employee)
+        type(current_index) is int
+        and current_index == expected_index
+        and _exact(current_step_id, step.id)
+        and _exact(current_employee_id, step.employee)
     ):
         _fail("phase190_contract")
 
@@ -288,8 +296,17 @@ def _check_targets(state_path: object, events_path: object) -> None:
 def _check_contexts(contexts: object) -> None:
     if type(contexts) is not tuple:
         _fail("contexts_type")
+    required_fields = (
+        "preparation_approval",
+        "employee",
+        "resolved_tools",
+        "api_key",
+        "execution_approval",
+        "transport",
+    )
     if any(
         type(context) is not ApprovedWorkflowContinuationContext
+        or any(_attribute(context, field) is _MISSING for field in required_fields)
         for context in contexts
     ):
         _fail("context_type")

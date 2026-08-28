@@ -14,6 +14,7 @@ import pytest
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.approved_workflow_continuation_cycle import (
+    ApprovedWorkflowContinuationCycleError as Phase190BaseError,
     ApprovedWorkflowContinuationCycleCompatibilityError as Phase190Error,
     route_approved_workflow_continuation_cycle as phase190,
 )
@@ -328,11 +329,17 @@ def test_08_context_container_must_be_exact_tuple(tmp_path: Path) -> None:
 
 
 def test_09_context_members_must_be_exact_public_dataclass(tmp_path: Path) -> None:
-    wf = workflow(); state, events = targets(tmp_path); first = preparation(wf, 2)
+    wf = workflow(); state, events = targets(tmp_path); first = preparation(wf, 2); calls = []
     class ContextSubclass(ApprovedWorkflowContinuationContext):
         pass
+    malformed = object.__new__(ApprovedWorkflowContinuationContext)
+    def fake(*args: object) -> object:
+        calls.append(args)
+        return complete(wf)
     err(lambda: route_bounded_approved_workflow_continuation(first, wf, state, events, (object(),)), "context_type")
     err(lambda: route_bounded_approved_workflow_continuation(first, wf, state, events, (ContextSubclass(*astuple(context("x"))),)), "context_type")
+    err(lambda: route_bounded_approved_workflow_continuation(first, wf, state, events, (malformed,)), "context_type")
+    assert calls == []
 
 
 def test_10_non_callable_dependency_is_rejected_before_phase190(tmp_path: Path) -> None:
@@ -367,11 +374,17 @@ def test_11_real_default_first_context_failure_stops_without_retry(tmp_path: Pat
 
 
 def test_12_unexpected_dependency_error_is_sanitized_without_runner_rollback(tmp_path: Path) -> None:
-    wf = workflow(); state, events = targets(tmp_path); before = (state.read_bytes(), events.read_bytes()); first = preparation(wf, 2)
+    wf = workflow(); state, events = targets(tmp_path); before = (state.read_bytes(), events.read_bytes()); first = preparation(wf, 2); calls = []
     def fake(*args: object) -> object:
+        calls.append(args)
         state.write_bytes(b"phase190-owned")
-        raise RuntimeError("secret")
-    err(lambda: route_bounded_approved_workflow_continuation(*call_args(first, wf, state, events, (context("x"),)), phase190_function=fake), "dependency_error")
+        raise Phase190BaseError("secret")
+    with pytest.raises(RunnerError) as caught:
+        route_bounded_approved_workflow_continuation(*call_args(first, wf, state, events, (context("x"), context("later"))), phase190_function=fake)
+    assert caught.value.detail.classification == "dependency_error"
+    assert "secret" not in str(caught.value)
+    assert "secret" not in repr(caught.value.detail)
+    assert len(calls) == 1
     assert (state.read_bytes(), events.read_bytes()) == (b"phase190-owned", before[1])
 
 
@@ -390,6 +403,24 @@ def test_14_malformed_phase190_transition_is_rejected_before_next_context(tmp_pa
         calls.append(args)
         return preparation(wf, 2)
     err(lambda: route_bounded_approved_workflow_continuation(*call_args(first, wf, state, events, (context("first"), context("second"))), phase190_function=fake), "phase190_contract")
+    assert len(calls) == 1
+
+    calls.clear()
+    malformed_current = preparation(wf, 2)
+    object.__delattr__(malformed_current, "next_step_index")
+    def break_current(*args: object) -> object:
+        calls.append(args)
+        return complete(wf)
+    err(lambda: route_bounded_approved_workflow_continuation(*call_args(malformed_current, wf, state, events, (context("first"), context("second"))), phase190_function=break_current), "result_type")
+    assert len(calls) == 0
+
+    calls.clear()
+    initial = preparation(wf, 2)
+    def break_previous(*args: object) -> object:
+        calls.append(args)
+        object.__delattr__(args[0], "next_step_index")
+        return complete(wf)
+    err(lambda: route_bounded_approved_workflow_continuation(*call_args(initial, wf, state, events, (context("first"), context("second"))), phase190_function=break_previous), "phase190_contract")
     assert len(calls) == 1
 
 
