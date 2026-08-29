@@ -311,7 +311,7 @@ def _check_predecessor_history(
     events_path: Path,
 ) -> None:
     index = state.current_step_index
-    if type(index) is not int or not 3 <= index <= len(workflow.steps):
+    if type(index) is not int or not 1 <= index <= len(workflow.steps):
         _fail("runtime_contract")
     current = workflow.steps[index - 1]
     prefix = tuple(step.id for step in workflow.steps[: index - 1])
@@ -344,8 +344,8 @@ def _check_predecessor_history(
         and len(history.events) == len(prefix)
     ):
         _fail("runtime_contract")
-    for event, step in zip(
-        history.events, workflow.steps[: index - 1], strict=True
+    for position, (event, step) in enumerate(
+        zip(history.events, workflow.steps[: index - 1], strict=True), 1
     ):
         if not (
             type(event) is RuntimeStepEvent
@@ -360,6 +360,14 @@ def _check_predecessor_history(
             and _nonempty_string(event.provider)
             and event.failure_category is None
             and _nonempty_string(event.response_id)
+            and (
+                _nonempty_string(event.request_id)
+                or (
+                    event.request_id is None
+                    and position >= 5
+                    and _exact_string(event.provider, "openai")
+                )
+            )
             and type(event.output_text) is str
             and event.message is None
         ):

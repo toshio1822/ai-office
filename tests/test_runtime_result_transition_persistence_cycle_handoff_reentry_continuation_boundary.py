@@ -246,15 +246,27 @@ def test_production_module_references_only_the_public_phase113_dependency() -> N
 
 
 @pytest.mark.parametrize("result", [step_one_success(), step_one_failure()])
-def test_step_one_runtime_routes_reject_before_dependency(
+def test_step_one_runtime_routes_delegate_before_dependency(
     tmp_path: Path, result: object
 ) -> None:
     state, events = setup_one_step(tmp_path)
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
-    ) as caught:
-        call(result, two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
-    assert caught.value.detail.classification == "runtime_contract"
+    expected: object = None
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        expected = persist_fake_running(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(result, workflow(), state, events, dependency) is expected
+    assert len(calls) == 1
+    persisted = load_workflow_execution_state(state)
+    assert persisted.status == (
+        "succeeded" if type(result) is StepRuntimeExecutionSuccess else "failed"
+    )
+    assert persisted.current_step_index == 1
+    assert len(events.read_text().splitlines()) == 1
 @pytest.mark.parametrize("result", [continuation_success(), continuation_failure()])
 def test_valid_routes_delegate_once_and_return_exact_dependency_object(
     tmp_path: Path, result: object

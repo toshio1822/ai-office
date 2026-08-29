@@ -305,18 +305,35 @@ def test_workflow_subclass_is_rejected_before_phase120(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("index", [1, 2])
-def test_step_indices_one_and_two_are_rejected_before_phase120(tmp_path: Path, index: int) -> None:
-    state, events, result = setup_index(tmp_path, index)
-    calls = 0
+def test_step_indices_one_and_two_delegate_before_phase120(tmp_path: Path, index: int) -> None:
+    for kind in ("success", "failure"):
+        (tmp_path / kind).mkdir()
+        state, events, result = setup_index(tmp_path / kind, index)
+        if kind == "failure":
+            result = StepRuntimeExecutionFailure(
+                "w",
+                ("one", "two")[index - 1],
+                index,
+                "e",
+                ModelInvocationFailure(
+                    "openai", "api_error", "safe failure", "request", 500, None, None
+                ),
+            )
+        calls: list[tuple[object, ...]] = []
+        expected: object = None
 
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
+        def dependency(*args: object) -> object:
+            nonlocal expected
+            calls.append(args)
+            expected = persist_fake(*args)  # type: ignore[arg-type]
+            return expected
 
-    with pytest.raises(RuntimeResultTransitionPersistenceCycleHandoffChainReentryContinuationCompatibilityError) as caught:
-        call(result, workflow(), state, events, dependency)
-    assert caught.value.detail.classification == "runtime_contract" and calls == 0
+        assert call(result, workflow(), state, events, dependency) is expected
+        assert len(calls) == 1
+        persisted = load_workflow_execution_state(state)
+        assert persisted.status == ("succeeded" if kind == "success" else "failed")
+        assert persisted.current_step_index == index
+        assert len(events.read_text().splitlines()) == index
 
 
 @pytest.mark.parametrize("field,value", [("workflow_id", "other"), ("step_id", "other"), ("step_index", True), ("employee_id", "other")])

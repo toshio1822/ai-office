@@ -266,7 +266,10 @@ def _check_running_history(
     state_path: Path,
     events_path: Path,
 ) -> None:
-    if not 2 <= state.current_step_index <= len(workflow.steps):
+    if (
+        type(state.current_step_index) is not int
+        or not 1 <= state.current_step_index <= len(workflow.steps)
+    ):
         _fail("runtime_contract")
     step = workflow.steps[state.current_step_index - 1]
     prefix = tuple(item.id for item in workflow.steps[: state.current_step_index - 1])
@@ -290,8 +293,13 @@ def _check_running_history(
         _fail("runtime_contract")
     if history.state != state or len(history.events) != len(prefix):
         _fail("runtime_contract")
-    for event, expected in zip(
-        history.events, workflow.steps[: state.current_step_index - 1], strict=True
+    for position, (event, expected) in enumerate(
+        zip(
+            history.events,
+            workflow.steps[: state.current_step_index - 1],
+            strict=True,
+        ),
+        1,
     ):
         if not (
             event.event_type == "step_succeeded"
@@ -304,6 +312,15 @@ def _check_running_history(
             and event.failure_category is None
             and type(event.response_id) is str
             and event.response_id
+            and (
+                (type(event.request_id) is str and bool(event.request_id))
+                or (
+                    event.request_id is None
+                    and position >= 5
+                    and type(event.provider) is str
+                    and event.provider == "openai"
+                )
+            )
             and type(event.output_text) is str
             and event.message is None
         ):
