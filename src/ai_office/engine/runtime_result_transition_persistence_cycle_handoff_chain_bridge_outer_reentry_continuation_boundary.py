@@ -295,7 +295,7 @@ def _load_running_context(
         type(state) is WorkflowExecutionState
         and _exact_string(state.status, "running")
         and type(state.current_step_index) is int
-        and 5 <= state.current_step_index <= len(workflow.steps)
+        and 1 <= state.current_step_index <= len(workflow.steps)
         and _exact_string(state.workflow_id, workflow.id)
         and _exact_string(
             state.current_step_id,
@@ -392,8 +392,8 @@ def _check_predecessor_history(
         _fail("runtime_contract")
     last_position = len(prefix)
     for position, (event, step) in enumerate(zip(events, prefix, strict=True), 1):
-        allow_none = position == last_position or (
-            last_position >= 6 and position >= 5
+        allow_none = position >= 5 and (
+            position == last_position or last_position >= 6
         )
         if not _valid_predecessor_event(
             event,

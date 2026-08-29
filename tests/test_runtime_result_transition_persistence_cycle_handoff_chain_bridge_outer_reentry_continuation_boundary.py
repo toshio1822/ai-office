@@ -493,8 +493,34 @@ def test_valid_routes_delegate_canonical_identity_once_and_return_exact_object(
 def test_runtime_indices_below_five_are_rejected_before_phase134(
     tmp_path: Path, index: int
 ) -> None:
-    values = setup_index(tmp_path, index)
-    reject(values, "runtime_contract")
+    for kind in ("success", "failure"):
+        (tmp_path / kind).mkdir()
+        values = setup_index(tmp_path / kind, index)
+        if kind == "failure":
+            values["result"] = StepRuntimeExecutionFailure(
+                "w",
+                f"{('one', 'two', 'three', 'four', 'five')[index - 1]}",
+                index,
+                "e",
+                ModelInvocationFailure(
+                    "openai", "api_error", "safe failure", "request", 500, None, None
+                ),
+            )
+        seen: list[tuple[object, ...]] = []
+        expected: object = None
+
+        def dependency(*args: object) -> object:
+            nonlocal expected
+            seen.append(args)
+            expected = persist_fake(*args)  # type: ignore[arg-type]
+            return expected
+
+        assert call(values, dependency) is expected
+        assert len(seen) == 1
+        state = load_workflow_execution_state(values["state_path"])  # type: ignore[arg-type]
+        assert state.status == ("succeeded" if kind == "success" else "failed")
+        assert state.current_step_index == index
+        assert len(values["events_path"].read_text(encoding="utf-8").splitlines()) == index  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(
@@ -636,7 +662,7 @@ def test_predecessor_request_id_provenance_is_required(
     reject(values, "runtime_contract")
 
 
-def test_immediate_predecessor_none_request_id_nonempty_output_delegates_once(
+def test_immediate_predecessor_none_request_id_is_rejected_before_phase134(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path)
@@ -647,31 +673,10 @@ def test_immediate_predecessor_none_request_id_nonempty_output_delegates_once(
         predecessor_event("four", 4, "openai", request_id=None)
     )
     events.write_text("".join(lines[:3]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    seen: list[tuple[object, ...]] = []
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                values[key]
-                for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
+    reject_unchanged(values, "runtime_contract")
 
 
-def test_immediate_predecessor_none_request_id_empty_output_delegates_once(
+def test_immediate_predecessor_none_request_id_empty_output_is_rejected_before_phase134(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path)
@@ -682,14 +687,7 @@ def test_immediate_predecessor_none_request_id_empty_output_delegates_once(
         predecessor_event("four", 4, "openai", request_id=None, output_text="")
     )
     events.write_text("".join(lines[:3]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
+    reject_unchanged(values, "runtime_contract")
 
 
 def test_earlier_predecessor_none_request_id_is_rejected_before_phase134(

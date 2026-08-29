@@ -246,15 +246,27 @@ def test_production_module_references_only_the_public_phase113_dependency() -> N
 
 
 @pytest.mark.parametrize("result", [step_one_success(), step_one_failure()])
-def test_step_one_runtime_routes_reject_before_dependency(
+def test_step_one_runtime_routes_delegate_before_dependency(
     tmp_path: Path, result: object
 ) -> None:
     state, events = setup_one_step(tmp_path)
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
-    ) as caught:
-        call(result, two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
-    assert caught.value.detail.classification == "runtime_contract"
+    expected: object = None
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        expected = persist_fake_running(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert call(result, workflow(), state, events, dependency) is expected
+    assert len(calls) == 1
+    persisted = load_workflow_execution_state(state)
+    assert persisted.status == (
+        "succeeded" if type(result) is StepRuntimeExecutionSuccess else "failed"
+    )
+    assert persisted.current_step_index == 1
+    assert len(events.read_text().splitlines()) == 1
 @pytest.mark.parametrize("result", [continuation_success(), continuation_failure()])
 def test_valid_routes_delegate_once_and_return_exact_dependency_object(
     tmp_path: Path, result: object
@@ -388,7 +400,9 @@ def test_runtime_result_fields_are_revalidated(
     assert caught.value.detail.classification == "runtime_contract"
 
 
-def test_running_state_and_predecessor_history_are_revalidated(tmp_path: Path) -> None:
+def test_running_state_and_predecessor_history_are_revalidated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     state, events = setup(tmp_path)
     state.write_text(
         serialize_workflow_execution_state_json(
@@ -400,6 +414,172 @@ def test_running_state_and_predecessor_history_are_revalidated(tmp_path: Path) -
     ) as caught:
         call(success(), two_step_workflow(), state, events, lambda *_: pytest.fail("called"))
     assert caught.value.detail.classification == "runtime_contract"
+
+    def rewrite_predecessor(
+        events_path: Path,
+        position: int,
+        *,
+        provider: object = "openai",
+        request_id: object = "request",
+    ) -> None:
+        lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        event = replace(
+            predecessor_event_custom(f"s{position}", position, "output"),
+            provider=provider,
+            request_id=request_id,
+        )
+        lines[position - 1] = serialize_runtime_step_event_jsonl(event)
+        events_path.write_text("".join(lines), encoding="utf-8")
+
+    def reject_provenance(
+        label: str,
+        *,
+        position: int,
+        provider: object = "openai",
+        request_id: object = None,
+        history_events: tuple[RuntimeStepEvent, ...] | None = None,
+    ) -> None:
+        case_path = tmp_path / f"phase120-provenance-{label}"
+        case_path.mkdir()
+        state_path, events_path = setup_multi_history(
+            case_path, ("output", "output", "output", "output", "output")
+        )
+        if history_events is None:
+            rewrite_predecessor(
+                events_path,
+                position,
+                provider=provider,
+                request_id=request_id,
+            )
+        before = state_path.read_bytes(), events_path.read_bytes()
+        calls = 0
+
+        def dependency(*_: object) -> object:
+            nonlocal calls
+            calls += 1
+            return object()
+
+        def invoke_and_reject() -> None:
+            with pytest.raises(
+                RuntimeResultTransitionPersistenceCycleHandoffReentryContinuationCompatibilityError
+            ) as rejected:
+                call(
+                    running_success("s6", 6),
+                    multi_step_workflow(6),
+                    state_path,
+                    events_path,
+                    dependency,
+                )
+            assert rejected.value.detail.classification == "runtime_contract"
+
+        if history_events is None:
+            invoke_and_reject()
+        else:
+            persisted_state = load_workflow_execution_state(state_path)
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    "ai_office.engine.runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary.load_workflow_execution_history",
+                    lambda _targets: SimpleNamespace(
+                        state=persisted_state, events=history_events
+                    ),
+                )
+                invoke_and_reject()
+        assert calls == 0
+        assert (state_path.read_bytes(), events_path.read_bytes()) == before
+
+    # The public Phase 120 boundary must reject an immediate None request ID
+    # even when the provider is OpenAI at each newly exposed early position.
+    for position in (1, 2, 3, 4):
+        reject_provenance(f"openai-none-{position}", position=position)
+    reject_provenance("non-openai-none", position=5, provider="other")
+    reject_provenance("empty-request-id", position=5, request_id="")
+    for label, request_id in (("integer-request-id", 123), ("boolean-request-id", True)):
+        reject_provenance(label, position=5, request_id=request_id)
+
+    class StringChild(str):
+        pass
+
+    subclass_events = tuple(
+        replace(
+            predecessor_event_custom(f"s{position}", position, "output"),
+            request_id=StringChild("request"),
+        )
+        if position == 5
+        else predecessor_event_custom(f"s{position}", position, "output")
+        for position in range(1, 6)
+    )
+    reject_provenance(
+        "string-subclass-request-id",
+        position=5,
+        history_events=subclass_events,
+    )
+
+    # Position 5 is the existing bounded OpenAI-None compatibility seam.
+    for result_factory in (running_success, running_failure):
+        case_path = tmp_path / f"phase120-provenance-authorized-{result_factory.__name__}"
+        case_path.mkdir()
+        state_path, events_path = setup_multi_history(
+            case_path, ("output", "output", "output", "output", "output")
+        )
+        rewrite_predecessor(events_path, 5, request_id=None)
+        calls: list[tuple[object, ...]] = []
+        expected: object = None
+        result = result_factory("s6", 6)
+
+        def dependency(*args: object) -> object:
+            nonlocal expected
+            calls.append(args)
+            expected = persist_fake_running(*args)  # type: ignore[arg-type]
+            return expected
+
+        assert (
+            call(
+                result,
+                multi_step_workflow(6),
+                state_path,
+                events_path,
+                dependency,
+            )
+            is expected
+        )
+        assert len(calls) == 1
+        persisted = load_workflow_execution_state(state_path)
+        assert persisted.status == (
+            "succeeded" if type(result) is StepRuntimeExecutionSuccess else "failed"
+        )
+        assert persisted.current_step_index == 6
+        assert len(events_path.read_text(encoding="utf-8").splitlines()) == 6
+
+    # A non-OpenAI predecessor with a non-empty request ID remains accepted.
+    case_path = tmp_path / "phase120-provenance-non-openai-nonempty"
+    case_path.mkdir()
+    state_path, events_path = setup_multi_history(
+        case_path, ("output", "output", "output", "output", "output")
+    )
+    rewrite_predecessor(
+        events_path, 1, provider="other", request_id="request-s1"
+    )
+    calls = []
+    expected = None
+
+    def dependency(*args: object) -> object:
+        nonlocal expected
+        calls.append(args)
+        expected = persist_fake_running(*args)  # type: ignore[arg-type]
+        return expected
+
+    assert (
+        call(
+            running_success("s6", 6),
+            multi_step_workflow(6),
+            state_path,
+            events_path,
+            dependency,
+        )
+        is expected
+    )
+    assert len(calls) == 1
+    assert load_workflow_execution_state(state_path).status == "succeeded"
 
 
 @pytest.mark.parametrize("mode", ["missing", "duplicate", "reordered"])

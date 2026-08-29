@@ -18,7 +18,7 @@ Requirement-to-test mapping (Issue #328):
 - exact valid success/failure runtime routes with continuation index >= 6,
   canonical four-argument identity, exactly one Phase 142 call
   -> test_valid_routes_delegate_canonical_identity_once_and_return_exact_object
-- continuation indices 1-5 rejected before Phase 142
+- continuation indices 1-5 are accepted when their predecessor provenance is valid
   -> test_runtime_indices_below_six_are_rejected_before_phase142
 - exact result/workflow/step/runtime invocation types -> test_result_subclasses_and_substitutes_are_zero_call_rejected,
      test_workflow_subclass_and_attribute_compatible_substitute_are_zero_call_rejected,
@@ -331,7 +331,11 @@ def setup_index(tmp_path: Path, index: int) -> dict[str, object]:
     events_path.write_text(
         "".join(
             serialize_runtime_step_event_jsonl(
-                predecessor_event(step.id, position, "other")
+                predecessor_event(
+                    step.id,
+                    position,
+                    "openai" if position == index - 1 else "other",
+                )
             )
             for position, step in enumerate(workflow().steps[: index - 1], 1)
         ),
@@ -616,8 +620,42 @@ def test_valid_routes_delegate_canonical_identity_once_and_return_exact_object(
 def test_runtime_indices_below_six_are_rejected_before_phase142(
     tmp_path: Path, index: int
 ) -> None:
-    values = setup_index(tmp_path, index)
-    reject(values, "runtime_contract")
+    for kind in ("success", "failure"):
+        (tmp_path / kind).mkdir()
+        values = setup_index(tmp_path / kind, index)
+        if kind == "failure":
+            values["result"] = StepRuntimeExecutionFailure(
+                "w",
+                f"{('one', 'two', 'three', 'four', 'five', 'six')[index - 1]}",
+                index,
+                "e",
+                ModelInvocationFailure(
+                    "openai", "api_error", "safe failure", "request", 500, None, None
+                ),
+            )
+        seen: list[tuple[object, ...]] = []
+        expected: object = None
+
+        def dependency(*args: object) -> object:
+            nonlocal expected
+            seen.append(args)
+            expected = persist_fake(*args)  # type: ignore[arg-type]
+            return expected
+
+        assert call(values, dependency) is expected
+        assert len(seen) == 1
+        state = load_workflow_execution_state(values["state_path"])  # type: ignore[arg-type]
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(
+                values["state_path"], values["events_path"]  # type: ignore[arg-type]
+            )
+        )
+        assert state.status == ("succeeded" if kind == "success" else "failed")
+        assert state.current_step_index == index
+        assert len(history.events) == index
+        assert history.events[-1].event_type == (
+            "step_succeeded" if kind == "success" else "step_failed"
+        )
 
 
 @pytest.mark.parametrize(
