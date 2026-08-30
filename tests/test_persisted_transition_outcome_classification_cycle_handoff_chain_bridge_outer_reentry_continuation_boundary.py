@@ -528,37 +528,15 @@ def test_predecessor_empty_output_text_still_requires_request_id(
         predecessor_event("four", 4, "openai", output_text="", request_id=request_id)
     )
     events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
-    if request_id is None:
-        expected = expected_outcome()
-        seen: list[tuple[object, ...]] = []
-        rewritten = (
-            data["state_path"].read_bytes(),  # type: ignore[union-attr]
-            data["events_path"].read_bytes(),  # type: ignore[union-attr]
-        )
-
-        def dependency(*args: object) -> object:
-            seen.append(args)
-            return expected
-
-        assert call(data, dependency) is expected
-        assert len(seen) == 1
-        assert all(
-            actual is wanted
-            for actual, wanted in zip(
-                seen[0],
-                tuple(
-                    data[key]
-                    for key in ("result", "workflow", "state_path", "events_path")
-                ),
-                strict=True,
-            )
-        )
-        assert (
-            data["state_path"].read_bytes(),  # type: ignore[union-attr]
-            data["events_path"].read_bytes(),  # type: ignore[union-attr]
-        ) == rewritten
-    else:
-        reject(data, "persistence_contract")
+    before = (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    )
+    reject(data, "persistence_contract")
+    assert (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    ) == before
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
@@ -600,41 +578,19 @@ def test_predecessor_request_id_contract_is_strict(
         predecessor_event("four", 4, "openai", request_id=request_id)
     ).encode()
     events.write_bytes(b"".join(lines[:3]) + replacement + lines[4])  # type: ignore[union-attr]
-    if request_id is None:
-        expected = expected_outcome()
-        seen: list[tuple[object, ...]] = []
-        rewritten = (
-            data["state_path"].read_bytes(),  # type: ignore[union-attr]
-            data["events_path"].read_bytes(),  # type: ignore[union-attr]
-        )
-
-        def dependency(*args: object) -> object:
-            seen.append(args)
-            return expected
-
-        assert call(data, dependency) is expected
-        assert len(seen) == 1
-        assert all(
-            actual is wanted
-            for actual, wanted in zip(
-                seen[0],
-                tuple(
-                    data[key]
-                    for key in ("result", "workflow", "state_path", "events_path")
-                ),
-                strict=True,
-            )
-        )
-        assert (
-            data["state_path"].read_bytes(),  # type: ignore[union-attr]
-            data["events_path"].read_bytes(),  # type: ignore[union-attr]
-        ) == rewritten
-    else:
-        reject(data, "persistence_contract")
+    before = (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    )
+    reject(data, "persistence_contract")
+    assert (
+        data["state_path"].read_bytes(),  # type: ignore[union-attr]
+        data["events_path"].read_bytes(),  # type: ignore[union-attr]
+    ) == before
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_immediate_predecessor_none_request_id_empty_output_delegates(
+def test_immediate_predecessor_none_request_id_empty_output_is_rejected(
     tmp_path: Path, status: str
 ) -> None:
     data = values(tmp_path, status)
@@ -644,37 +600,19 @@ def test_immediate_predecessor_none_request_id_empty_output_delegates(
         predecessor_event("four", 4, "openai", output_text="", request_id=None)
     )
     events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
-    expected = expected_outcome(status)
-    seen: list[tuple[object, ...]] = []
-    rewritten = (
+    before = (
         data["state_path"].read_bytes(),  # type: ignore[union-attr]
         data["events_path"].read_bytes(),  # type: ignore[union-attr]
     )
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        return expected
-
-    assert call(data, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                data[key] for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
+    reject(data, "persistence_contract")
     assert (
         data["state_path"].read_bytes(),  # type: ignore[union-attr]
         data["events_path"].read_bytes(),  # type: ignore[union-attr]
-    ) == rewritten
+    ) == before
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_immediate_predecessor_none_request_id_nonempty_output_delegates(
+def test_immediate_predecessor_none_request_id_nonempty_output_is_rejected(
     tmp_path: Path, status: str
 ) -> None:
     data = values(tmp_path, status)
@@ -684,33 +622,15 @@ def test_immediate_predecessor_none_request_id_nonempty_output_delegates(
         predecessor_event("four", 4, "openai", request_id=None)
     )
     events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
-    expected = expected_outcome(status)
-    seen: list[tuple[object, ...]] = []
-    rewritten = (
+    before = (
         data["state_path"].read_bytes(),  # type: ignore[union-attr]
         data["events_path"].read_bytes(),  # type: ignore[union-attr]
     )
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        return expected
-
-    assert call(data, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                data[key] for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
+    reject(data, "persistence_contract")
     assert (
         data["state_path"].read_bytes(),  # type: ignore[union-attr]
         data["events_path"].read_bytes(),  # type: ignore[union-attr]
-    ) == rewritten
+    ) == before
 
 
 def test_earlier_predecessor_none_request_id_is_rejected_before_phase135(
@@ -1483,36 +1403,38 @@ def accumulated_values(
 def test_accumulated_none_request_id_positions_five_six_delegates_once(
     tmp_path: Path,
 ) -> None:
-    data = accumulated_values(tmp_path)
-    expected = phase135_fake(
-        data["result"], data["workflow"], data["state_path"], data["events_path"]
-    )
-    seen: list[tuple[object, ...]] = []
-    rewritten = (
-        data["state_path"].read_bytes(),  # type: ignore[union-attr]
-        data["events_path"].read_bytes(),  # type: ignore[union-attr]
-    )
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        return expected
-
-    assert call(data, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                data[key] for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
+    for current in (6, 7):
+        data = accumulated_values(tmp_path / f"current-{current}", current=current)
+        expected = phase135_fake(
+            data["result"], data["workflow"], data["state_path"], data["events_path"]
         )
-    )
-    assert (
-        data["state_path"].read_bytes(),  # type: ignore[union-attr]
-        data["events_path"].read_bytes(),  # type: ignore[union-attr]
-    ) == rewritten
+        seen: list[tuple[object, ...]] = []
+        rewritten = (
+            data["state_path"].read_bytes(),  # type: ignore[union-attr]
+            data["events_path"].read_bytes(),  # type: ignore[union-attr]
+        )
+
+        def dependency(*args: object) -> object:
+            seen.append(args)
+            return expected
+
+        assert call(data, dependency) is expected
+        assert len(seen) == 1
+        assert all(
+            actual is wanted
+            for actual, wanted in zip(
+                seen[0],
+                tuple(
+                    data[key]
+                    for key in ("result", "workflow", "state_path", "events_path")
+                ),
+                strict=True,
+            )
+        )
+        assert (
+            data["state_path"].read_bytes(),  # type: ignore[union-attr]
+            data["events_path"].read_bytes(),  # type: ignore[union-attr]
+        ) == rewritten
 
 
 def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
@@ -1589,7 +1511,7 @@ def test_accumulated_none_position_four_remains_rejected_before_phase135(
     events = data["events_path"]
     lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("step-4", 4, "other", request_id=None)
+        predecessor_event("step-4", 4, "openai", request_id=None)
     ).encode()
     events.write_bytes(b"".join(lines[:3]) + replacement + b"".join(lines[4:]))  # type: ignore[union-attr]
     reject(data, "persistence_contract")

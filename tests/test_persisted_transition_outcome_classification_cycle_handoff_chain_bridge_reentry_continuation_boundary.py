@@ -1113,65 +1113,35 @@ def test_predecessor_empty_output_text_still_requires_response_id(tmp_path: Path
 def test_predecessor_empty_output_text_still_requires_request_id(tmp_path: Path, request_id: object) -> None:
     data = values(tmp_path)
     _replace_predecessor(data, 3, predecessor_event("three", 3, "c", "openai", output_text="", request_id=request_id))
-    if request_id is None:
-        expected = expected_outcome()
-        calls: list[tuple[object, ...]] = []
-
-        def dependency(*args: object) -> object:
-            calls.append(args)
-            return expected
-
-        assert call(data, dependency) is expected
-        assert calls == [
-            (data["result"], data["workflow"], data["state_path"], data["events_path"])
-        ]
-        assert_unchanged(data)
-    else:
-        reject(data, "persistence_contract")
+    before = data["state_path"].read_bytes(), data["events_path"].read_bytes()  # type: ignore[union-attr]
+    reject(data, "persistence_contract")
+    assert (data["state_path"].read_bytes(), data["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_immediate_predecessor_none_request_id_empty_output_delegates(
+def test_immediate_predecessor_none_request_id_empty_output_is_rejected(
     tmp_path: Path, status: str
 ) -> None:
     data = values(tmp_path, status)
     _replace_predecessor(
         data, 3, predecessor_event("three", 3, "c", "openai", output_text="", request_id=None)
     )
-    expected = expected_outcome(status)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> object:
-        calls.append(args)
-        return expected
-
-    assert call(data, dependency) is expected
-    assert calls == [
-        (data["result"], data["workflow"], data["state_path"], data["events_path"])
-    ]
-    assert_unchanged(data)
+    before = data["state_path"].read_bytes(), data["events_path"].read_bytes()  # type: ignore[union-attr]
+    reject(data, "persistence_contract")
+    assert (data["state_path"].read_bytes(), data["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_immediate_predecessor_none_request_id_nonempty_output_delegates(
+def test_immediate_predecessor_none_request_id_nonempty_output_is_rejected(
     tmp_path: Path, status: str
 ) -> None:
     data = values(tmp_path, status)
     _replace_predecessor(
         data, 3, predecessor_event("three", 3, "c", "openai", request_id=None)
     )
-    expected = expected_outcome(status)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> object:
-        calls.append(args)
-        return expected
-
-    assert call(data, dependency) is expected
-    assert calls == [
-        (data["result"], data["workflow"], data["state_path"], data["events_path"])
-    ]
-    assert_unchanged(data)
+    before = data["state_path"].read_bytes(), data["events_path"].read_bytes()  # type: ignore[union-attr]
+    reject(data, "persistence_contract")
+    assert (data["state_path"].read_bytes(), data["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
 def test_earlier_predecessor_none_request_id_is_rejected_before_phase128(
@@ -1355,31 +1325,32 @@ def accumulated_values(
 def test_accumulated_none_request_id_positions_five_six_delegates_once(
     tmp_path: Path,
 ) -> None:
-    data = accumulated_values(tmp_path)
-    expected = PersistedExecutionOutcome(
-        "persisted_success",
-        "w",
-        "step-7",
-        7,
-        "e",
-        None,
-    )
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> object:
-        calls.append(args)
-        return expected
-
-    assert call(data, dependency) is expected
-    assert calls == [
-        (
-            data["result"],
-            data["workflow"],
-            data["state_path"],
-            data["events_path"],
+    for current in (6, 7):
+        data = accumulated_values(tmp_path / f"current-{current}", current=current)
+        expected = PersistedExecutionOutcome(
+            "persisted_success",
+            "w",
+            f"step-{current}",
+            current,
+            "e",
+            None,
         )
-    ]
-    assert_unchanged(data)
+        calls: list[tuple[object, ...]] = []
+
+        def dependency(*args: object) -> object:
+            calls.append(args)
+            return expected
+
+        assert call(data, dependency) is expected
+        assert calls == [
+            (
+                data["result"],
+                data["workflow"],
+                data["state_path"],
+                data["events_path"],
+            )
+        ]
+        assert_unchanged(data)
 
 
 def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
@@ -1461,7 +1432,7 @@ def test_accumulated_none_position_four_remains_rejected_before_phase128(
     events = data["events_path"]
     lines = events.read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
     replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("step-4", 4, "e", "other", request_id=None)
+        predecessor_event("step-4", 4, "e", "openai", request_id=None)
     ).encode()
     events.write_bytes(b"".join(lines[:3]) + replacement + b"".join(lines[4:]))  # type: ignore[union-attr]
     reject(data, "persistence_contract")

@@ -357,7 +357,9 @@ def _valid_history(
     for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
         last_position = len(prior_steps)
         allow_none = (
-            allow_immediate_none_request_id and position == last_position
+            allow_immediate_none_request_id
+            and position == last_position
+            and position >= 5
         ) or (
             allow_accumulated_none_request_id
             and last_position >= 6
