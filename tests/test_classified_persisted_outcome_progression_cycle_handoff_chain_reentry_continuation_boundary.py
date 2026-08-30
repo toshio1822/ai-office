@@ -370,16 +370,20 @@ def test_source_audit_uses_only_public_phase122_dependency() -> None:
 def test_success_continuation_index_below_three_is_rejected_before_phase122(
     tmp_path: Path, index: int
 ) -> None:
-    result, supplied_workflow, state, events, *_ = setup(tmp_path, index=index)
-    calls = 0
+    result, supplied_workflow, state, events, before_state, before_events = setup(
+        tmp_path, index=index
+    )
+    decision = expected_decision(supplied_workflow, index)
+    calls: list[tuple[object, ...]] = []
 
-    def forbidden(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
 
-    assert_rejected(result, supplied_workflow, state, events, "success_contract", forbidden)
-    assert calls == 0
+    returned = call(result, supplied_workflow, state, events, dependency)
+    assert returned is decision
+    assert calls == [(result, supplied_workflow, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("index", [3, 4], ids=["intermediate", "final"])

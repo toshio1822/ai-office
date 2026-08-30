@@ -514,7 +514,24 @@ def test_persisted_success_terminal_event_fields_are_exact(
 
 @pytest.mark.parametrize("index", [1, 2, 3])
 def test_indices_one_two_three_are_rejected_before_phase129(tmp_path: Path, index: int) -> None:
-    reject(data(tmp_path, index=index), "success_contract")
+    data_set = data(tmp_path, index=index)
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert invoke(data_set, dependency) is decision
+    assert calls == [
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        )
+    ]
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize(

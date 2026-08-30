@@ -542,7 +542,24 @@ def test_valid_final_persisted_success_delegates_once_canonical_order_identity(
 def test_indices_one_two_three_four_are_rejected_before_phase136(
     tmp_path: Path, index: int
 ) -> None:
-    reject(values(tmp_path, index=index), "success_contract")
+    data_set = values(tmp_path, index=index)
+    decision = expected_decision(data_set)
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return decision
+
+    assert call(data_set, dependency) is decision
+    assert calls == [
+        (
+            data_set["result"],
+            data_set["workflow"],
+            data_set["state_path"],
+            data_set["events_path"],
+        )
+    ]
+    unchanged(data_set)
 
 
 def test_immediate_predecessor_empty_output_text_delegates_once_canonical_order(

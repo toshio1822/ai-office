@@ -198,7 +198,6 @@ def _check_success(
         not _exact_string(result.outcome, "persisted_success")
         or result.failure_category is not None
         or not _valid_common_identity(result, workflow)
-        or result.current_step_index < 3
     ):
         _fail("success_contract")
 

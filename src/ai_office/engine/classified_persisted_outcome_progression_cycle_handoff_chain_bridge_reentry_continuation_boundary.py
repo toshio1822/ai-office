@@ -222,7 +222,6 @@ def _check_success(result: PersistedExecutionOutcome, workflow: WorkflowDefiniti
         not _exact_string(result.outcome, "persisted_success")
         or result.failure_category is not None
         or not _valid_common_identity(result, workflow)
-        or result.current_step_index < 4
     ):
         _fail("success_contract")
 
@@ -296,7 +295,7 @@ def _check_terminal(
         result.failure_category if type(result) is PersistedExecutionOutcome else None
     )
     minimum_index = (
-        4
+        1
         if type(result) is PersistedExecutionOutcome
         and result.outcome == "persisted_success"
         else 1
@@ -530,8 +529,7 @@ def _check_progression(
     ):
         _fail("progression_contract")
     if (
-        decision.current_step_index < 4
-        or decision.workflow_id != result.workflow_id
+        decision.workflow_id != result.workflow_id
         or decision.current_step_id != result.current_step_id
         or decision.current_step_index != result.current_step_index
         or decision.current_employee_id != result.current_employee_id

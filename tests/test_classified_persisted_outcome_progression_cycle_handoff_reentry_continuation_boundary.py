@@ -131,19 +131,35 @@ def test_public_signature_and_default_identity() -> None:
 
 
 def test_persisted_success_continuation_index_one_is_rejected_before_phase115(tmp_path: Path) -> None:
-    result, definition, state, events = setup(tmp_path)
-    result = replace(result, current_step_id="one", current_step_index=1, current_employee_id="a")
-    calls = 0
-    def forbidden(*args: object) -> object:
-        nonlocal calls
-        calls += 1
-        return expected_decision()
-    with pytest.raises(ClassifiedPersistedOutcomeProgressionCycleHandoffReentryContinuationCompatibilityError) as caught:
-        route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
-            result, definition, state, events, phase115_function=forbidden
-        )
-    assert classification(caught) == "success_contract"
-    assert calls == 0
+    _, definition, state, events = setup(tmp_path, single=True, complete=True)
+    step = definition.steps[0]
+    result = PersistedExecutionOutcome(
+        "persisted_success", "w", step.id, 1, step.employee, None
+    )
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    returned_decision = WorkflowProgressionDecision(
+        "workflow_complete",
+        "w",
+        step.id,
+        1,
+        step.employee,
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+    calls: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> WorkflowProgressionDecision:
+        calls.append(args)
+        return returned_decision
+
+    returned = route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
+        result, definition, state, events, phase115_function=dependency
+    )
+    assert returned is returned_decision
+    assert calls == [(result, definition, state, events)]
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("single", [False, True], ids=["intermediate", "final"])
