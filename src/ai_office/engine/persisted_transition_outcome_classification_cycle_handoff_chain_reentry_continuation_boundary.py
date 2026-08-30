@@ -300,7 +300,7 @@ def _check_persistence(
     )
     if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
         _fail("terminal_contract")
-    if type(state.current_step_index) is not int or not 3 <= state.current_step_index <= len(workflow.steps):
+    if type(state.current_step_index) is not int or not 1 <= state.current_step_index <= len(workflow.steps):
         _fail("persistence_contract")
     try:
         state_bytes = state_path.read_bytes()

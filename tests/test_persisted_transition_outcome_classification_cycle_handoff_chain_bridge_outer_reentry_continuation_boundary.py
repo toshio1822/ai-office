@@ -333,25 +333,101 @@ def test_public_signature_and_source_audit() -> None:
 def test_valid_classification_routes_call_phase135_once_canonically_and_preserve_identity(
     tmp_path: Path, status: str
 ) -> None:
-    data = values(tmp_path, status)
-    expected = expected_outcome(status)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> object:
-        calls.append(args)
-        assert tuple(args) == (
-            data["result"],
-            data["workflow"],
-            data["state_path"],
-            data["events_path"],
+    supplied_workflow = workflow()
+    for index in range(1, len(supplied_workflow.steps) + 1):
+        case_dir = tmp_path / f"step-{index}"
+        case_dir.mkdir()
+        current = supplied_workflow.steps[index - 1]
+        state_model = WorkflowExecutionState(
+            "w",
+            status,
+            current.id,
+            index,
+            current.employee,
+            tuple(
+                step.id
+                for step in supplied_workflow.steps[
+                    : index if status == "succeeded" else index - 1
+                ]
+            ),
+            None if status == "succeeded" else "api_error",
         )
-        return expected
+        predecessors = tuple(
+            predecessor_event(
+                step.id,
+                position,
+                "openai" if position == index - 1 else "other",
+            )
+            for position, step in enumerate(
+                supplied_workflow.steps[: index - 1], 1
+            )
+        )
+        terminal_changes: dict[str, object] = {
+            "step_id": current.id,
+            "step_index": index,
+            "employee_id": current.employee,
+            "request_id": f"request-{current.id}",
+        }
+        if status == "succeeded":
+            terminal_changes.update(
+                response_id=f"response-{current.id}",
+                output_text=f"output-{current.id}",
+            )
+        else:
+            terminal_changes.update(
+                failure_category="api_error",
+                response_id=None,
+                output_text=None,
+                message="safe failure",
+            )
+        terminal = terminal_event(status, **terminal_changes)
+        state_bytes = serialize_workflow_execution_state_json(state_model).encode()
+        event_bytes = b"".join(
+            serialize_runtime_step_event_jsonl(event).encode()
+            for event in (*predecessors, terminal)
+        )
+        terminal_bytes = serialize_runtime_step_event_jsonl(terminal).encode()
+        state_path, events_path = case_dir / "state", case_dir / "events"
+        state_path.write_bytes(state_bytes)
+        events_path.write_bytes(event_bytes)
+        data = {
+            "result": WorkflowExecutionPersistenceResult(
+                state_path, events_path, len(state_bytes), len(terminal_bytes)
+            ),
+            "workflow": supplied_workflow,
+            "state_path": state_path,
+            "events_path": events_path,
+            "before_state": state_bytes,
+            "before_events": event_bytes,
+        }
+        expected = PersistedExecutionOutcome(
+            "persisted_success" if status == "succeeded" else "persisted_failure",
+            "w",
+            current.id,
+            index,
+            current.employee,
+            None if status == "succeeded" else "api_error",
+        )
+        calls: list[tuple[object, ...]] = []
 
-    assert call(data, dependency) is expected
-    assert calls == [
-        (data["result"], data["workflow"], data["state_path"], data["events_path"])
-    ]
-    assert_unchanged(data)
+        def dependency(*args: object) -> object:
+            calls.append(args)
+            assert all(
+                actual is wanted
+                for actual, wanted in zip(
+                    args,
+                    tuple(
+                        data[key]
+                        for key in ("result", "workflow", "state_path", "events_path")
+                    ),
+                    strict=True,
+                )
+            )
+            return expected
+
+        assert call(data, dependency) is expected
+        assert len(calls) == 1
+        assert_unchanged(data)
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])

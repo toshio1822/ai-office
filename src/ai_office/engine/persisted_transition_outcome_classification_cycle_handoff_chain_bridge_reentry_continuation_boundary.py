@@ -139,7 +139,7 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
         _fail("dependency_error")
 
     try:
-        _check_outcome(value, state)
+        _check_outcome(value, state, workflow)
     except PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationCompatibilityError:
         _restore_if_changed(state_path, events_path, original)
         raise
@@ -514,7 +514,7 @@ def _check_persistence(
         state.status if state.status in {"succeeded", "failed"} else "succeeded",
         None,
         state.last_failure_category,
-        4,
+        1,
         require_immediate_openai=True,
         allow_empty_success_output=True,
         allow_empty_predecessor_output=True,
@@ -542,7 +542,9 @@ def _check_persistence(
     return state
 
 
-def _check_outcome(value: object, state: WorkflowExecutionState) -> None:
+def _check_outcome(
+    value: object, state: WorkflowExecutionState, workflow: WorkflowDefinition
+) -> None:
     if type(value) is not PersistedExecutionOutcome:
         _fail("outcome_contract")
     expected = "persisted_success" if state.status == "succeeded" else "persisted_failure"
@@ -558,7 +560,7 @@ def _check_outcome(value: object, state: WorkflowExecutionState) -> None:
         and _exact_string(value.workflow_id, state.workflow_id)
         and _exact_string(value.current_step_id, state.current_step_id)
         and type(value.current_step_index) is int
-        and value.current_step_index >= 4
+        and 1 <= value.current_step_index <= len(workflow.steps)
         and value.current_step_index == state.current_step_index
         and _exact_string(value.current_employee_id, state.current_employee_id)
         and valid_failure

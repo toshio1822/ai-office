@@ -309,16 +309,99 @@ def test_valid_classification_routes_call_phase128_once_canonically_and_preserve
 
 
 @pytest.mark.parametrize("index", [1, 2, 3])
-def test_continuation_indices_below_four_are_zero_call(tmp_path: Path, index: int) -> None:
-    selected = workflow().steps[index - 1]
-    state = WorkflowExecutionState("w", "succeeded", selected.id, index, selected.employee, tuple(step.id for step in workflow().steps[:index]), None)
-    predecessors = tuple(predecessor_event(step.id, position, step.employee) for position, step in enumerate(workflow().steps[: index - 1], 1))
-    terminal = RuntimeStepEvent("step_succeeded", "w", selected.id, index, selected.employee, "running", "succeeded", "openai", None, "response", "request", "output", None)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
-    state_path.write_bytes(serialize_workflow_execution_state_json(state).encode())
-    events_path.write_bytes(b"".join(serialize_runtime_step_event_jsonl(e).encode() for e in (*predecessors, terminal)))
-    data = {"result": WorkflowExecutionPersistenceResult(state_path, events_path, len(state_path.read_bytes()), len(serialize_runtime_step_event_jsonl(terminal).encode())), "workflow": workflow(), "state_path": state_path, "events_path": events_path}
-    reject(data, "persistence_contract")
+def test_early_continuation_indices_delegate_once(tmp_path: Path, index: int) -> None:
+    supplied_workflow = workflow()
+    for current_index in (index, len(supplied_workflow.steps)):
+        for status in ("succeeded", "failed"):
+            case_dir = tmp_path / f"step-{current_index}-{status}"
+            case_dir.mkdir()
+            selected = supplied_workflow.steps[current_index - 1]
+            state_model = WorkflowExecutionState(
+                "w",
+                status,
+                selected.id,
+                current_index,
+                selected.employee,
+                tuple(
+                    step.id
+                    for step in supplied_workflow.steps[
+                        : current_index if status == "succeeded" else current_index - 1
+                    ]
+                ),
+                None if status == "succeeded" else "api_error",
+            )
+            predecessors = tuple(
+                predecessor_event(
+                    step.id,
+                    position,
+                    step.employee,
+                    "openai" if position == current_index - 1 else "other",
+                )
+                for position, step in enumerate(
+                    supplied_workflow.steps[: current_index - 1], 1
+                )
+            )
+            terminal = terminal_event(
+                status,
+                step_id=selected.id,
+                step_index=current_index,
+                employee_id=selected.employee,
+                request_id=f"request-{selected.id}",
+                response_id=(
+                    f"response-{selected.id}" if status == "succeeded" else None
+                ),
+                output_text=(
+                    f"output-{selected.id}" if status == "succeeded" else None
+                ),
+                failure_category=(None if status == "succeeded" else "api_error"),
+                message=(None if status == "succeeded" else "safe failure"),
+            )
+            state_bytes = serialize_workflow_execution_state_json(state_model).encode()
+            event_bytes = b"".join(
+                serialize_runtime_step_event_jsonl(event).encode()
+                for event in (*predecessors, terminal)
+            )
+            terminal_bytes = serialize_runtime_step_event_jsonl(terminal).encode()
+            state_path, events_path = case_dir / "state", case_dir / "events"
+            state_path.write_bytes(state_bytes)
+            events_path.write_bytes(event_bytes)
+            data = {
+                "result": WorkflowExecutionPersistenceResult(
+                    state_path, events_path, len(state_bytes), len(terminal_bytes)
+                ),
+                "workflow": supplied_workflow,
+                "state_path": state_path,
+                "events_path": events_path,
+                "before_state": state_bytes,
+                "before_events": event_bytes,
+            }
+            expected = PersistedExecutionOutcome(
+                "persisted_success"
+                if status == "succeeded"
+                else "persisted_failure",
+                "w",
+                selected.id,
+                current_index,
+                selected.employee,
+                None if status == "succeeded" else "api_error",
+            )
+            calls: list[tuple[object, ...]] = []
+
+            def dependency(*args: object) -> object:
+                calls.append(args)
+                assert all(
+                    actual is wanted
+                    for actual, wanted in zip(
+                        args,
+                        (data["result"], data["workflow"], data["state_path"], data["events_path"]),
+                        strict=True,
+                    )
+                )
+                return expected
+
+            assert call(data, dependency) is expected
+            assert len(calls) == 1
+            assert_unchanged(data)
 
 
 @pytest.mark.parametrize("bad", [object(), SimpleNamespace(), WorkflowProgressionDecision("prepare_next_step", "w", "four", 4, "d", None, None, None, "next_step_available"), PersistedExecutionOutcome("persisted_success", "w", "four", 4, "d", None), StepRuntimeExecutionSuccess("w", "four", 4, "d", ModelInvocationSuccess("openai", "r", None, "completed", (), "")), StepRuntimeExecutionFailure("w", "four", 4, "d", ModelInvocationFailure("openai", "api_error", "safe", None, None, None, None)), RunningStatePersistenceResult(1), PreparedStepExecutionStart(SimpleNamespace(), SimpleNamespace())])

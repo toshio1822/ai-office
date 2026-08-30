@@ -146,7 +146,8 @@ def _capture(state: Path, events: Path) -> tuple[bytes, bytes]:
 def _persistence(result: WorkflowExecutionPersistenceResult, workflow: WorkflowDefinition, state_path: Path, events_path: Path):
     state, history = _load_compatible_terminal_history(workflow, state_path, events_path)
     state_bytes, event_bytes = _capture(state_path, events_path)
-    if type(state.current_step_index) is not int or state.current_step_index < 2:
+    if (type(state.current_step_index) is not int
+            or not 1 <= state.current_step_index <= len(workflow.steps)):
         _raise("persistence_contract")
     terminal_bytes = serialize_runtime_step_event_jsonl(history[-1]).encode()
     if (len(state_bytes) != result.state_bytes_written or len(event_bytes) < len(terminal_bytes)

@@ -248,21 +248,104 @@ def test_implementation_does_not_reference_phase_private_internals() -> None:
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
 def test_valid_routes_call_phase114_once_and_return_exact_object(tmp_path: Path, status: str) -> None:
-    state, events, result, workflow, before_state, before_events = _setup(tmp_path, status)
-    expected = PersistedExecutionOutcome(
-        "persisted_success" if status == "succeeded" else "persisted_failure",
-        "w", "two", 2, "b", None if status == "succeeded" else "api_error",
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "w",
+            "name": "W",
+            "description": "D",
+            "steps": [
+                {"id": "one", "name": "One", "employee": "a", "instructions": "x"},
+                {"id": "two", "name": "Two", "employee": "b", "instructions": "y"},
+            ],
+        }
     )
-    calls: list[tuple[object, ...]] = []
-    def fake(*args: object) -> object:
-        calls.append(args)
-        return expected
-    returned = route_persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary(
-        result, workflow, state, events, phase114_function=fake
-    )
-    assert returned is expected
-    assert calls == [(result, workflow, state, events)]
-    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    for index in range(1, len(workflow.steps) + 1):
+        current = workflow.steps[index - 1]
+        state_model = WorkflowExecutionState(
+            "w",
+            status,
+            current.id,
+            index,
+            current.employee,
+            tuple(
+                step.id
+                for step in workflow.steps[: index if status == "succeeded" else index - 1]
+            ),
+            None if status == "succeeded" else "api_error",
+        )
+        prior = tuple(
+            RuntimeStepEvent(
+                "step_succeeded",
+                "w",
+                step.id,
+                position,
+                step.employee,
+                "running",
+                "succeeded",
+                "openai",
+                None,
+                f"response-{step.id}",
+                f"request-{step.id}",
+                f"output-{step.id}",
+                None,
+            )
+            for position, step in enumerate(workflow.steps[: index - 1], 1)
+        )
+        terminal = RuntimeStepEvent(
+            "step_succeeded" if status == "succeeded" else "step_failed",
+            "w",
+            current.id,
+            index,
+            current.employee,
+            "running",
+            status,
+            "openai",
+            None if status == "succeeded" else "api_error",
+            f"response-{current.id}" if status == "succeeded" else None,
+            f"request-{current.id}",
+            f"output-{current.id}" if status == "succeeded" else None,
+            None if status == "succeeded" else "safe",
+        )
+        state_bytes = serialize_workflow_execution_state_json(state_model).encode()
+        event_bytes = "".join(
+            serialize_runtime_step_event_jsonl(event)
+            for event in (*prior, terminal)
+        ).encode()
+        state, events = tmp_path / f"state-{index}", tmp_path / f"events-{index}"
+        state.write_bytes(state_bytes)
+        events.write_bytes(event_bytes)
+        result = WorkflowExecutionPersistenceResult(
+            state,
+            events,
+            len(state_bytes),
+            len(serialize_runtime_step_event_jsonl(terminal).encode()),
+        )
+        expected = PersistedExecutionOutcome(
+            "persisted_success" if status == "succeeded" else "persisted_failure",
+            "w",
+            current.id,
+            index,
+            current.employee,
+            None if status == "succeeded" else "api_error",
+        )
+        calls: list[tuple[object, ...]] = []
+
+        def fake(*args: object) -> object:
+            calls.append(args)
+            assert all(
+                actual is wanted
+                for actual, wanted in zip(
+                    args, (result, workflow, state, events), strict=True
+                )
+            )
+            return expected
+
+        returned = route_persisted_transition_outcome_classification_cycle_handoff_reentry_continuation_boundary(
+            result, workflow, state, events, phase114_function=fake
+        )
+        assert returned is expected
+        assert len(calls) == 1
+        assert (state.read_bytes(), events.read_bytes()) == (state_bytes, event_bytes)
 
 
 @pytest.mark.parametrize("bad", [SimpleNamespace(), object()])

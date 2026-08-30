@@ -505,40 +505,85 @@ def test_positive_but_mismatched_persistence_byte_counts_are_rejected_before_pha
 
 
 @pytest.mark.parametrize("index", [1, 2])
-def test_current_step_index_must_be_at_least_three(tmp_path: Path, index: int) -> None:
+def test_early_current_step_indices_delegate_once(tmp_path: Path, index: int) -> None:
     supplied_workflow = workflow()
-    current = supplied_workflow.steps[index - 1]
-    state_model = WorkflowExecutionState(
-        "w", "succeeded", current.id, index, current.employee,
-        tuple(step.id for step in supplied_workflow.steps[:index]), None,
-    )
-    prior = tuple(
-        predecessor_event(step.id, position, step.employee)
-        for position, step in enumerate(supplied_workflow.steps[: index - 1], 1)
-    )
-    terminal = RuntimeStepEvent(
-        "step_succeeded", "w", current.id, index, current.employee,
-        "running", "succeeded", "openai", None, "response", "request", "output", None,
-    )
-    state_bytes = serialize_workflow_execution_state_json(state_model).encode("utf-8")
-    event_bytes = "".join(
-        serialize_runtime_step_event_jsonl(event) for event in (*prior, terminal)
-    ).encode("utf-8")
-    state, events = tmp_path / "state.json", tmp_path / "events.jsonl"
-    state.write_bytes(state_bytes)
-    events.write_bytes(event_bytes)
-    result = WorkflowExecutionPersistenceResult(
-        state, events, len(state_bytes), len(serialize_runtime_step_event_jsonl(terminal).encode("utf-8"))
-    )
-    calls = 0
+    for current_index in (index, len(supplied_workflow.steps)):
+        for status in ("succeeded", "failed"):
+            case_dir = tmp_path / f"step-{current_index}-{status}"
+            case_dir.mkdir()
+            current = supplied_workflow.steps[current_index - 1]
+            state_model = WorkflowExecutionState(
+                "w",
+                status,
+                current.id,
+                current_index,
+                current.employee,
+                tuple(
+                    step.id
+                    for step in supplied_workflow.steps[
+                        : current_index
+                        if status == "succeeded"
+                        else current_index - 1
+                    ]
+                ),
+                None if status == "succeeded" else "api_error",
+            )
+            prior = tuple(
+                predecessor_event(step.id, position, step.employee)
+                for position, step in enumerate(
+                    supplied_workflow.steps[: current_index - 1], 1
+                )
+            )
+            terminal = RuntimeStepEvent(
+                "step_succeeded" if status == "succeeded" else "step_failed",
+                "w",
+                current.id,
+                current_index,
+                current.employee,
+                "running",
+                status,
+                "openai",
+                None if status == "succeeded" else "api_error",
+                f"response-{current.id}" if status == "succeeded" else None,
+                f"request-{current.id}",
+                f"output-{current.id}" if status == "succeeded" else None,
+                None if status == "succeeded" else "safe failure",
+            )
+            state_bytes = serialize_workflow_execution_state_json(state_model).encode()
+            event_bytes = "".join(
+                serialize_runtime_step_event_jsonl(event)
+                for event in (*prior, terminal)
+            ).encode()
+            terminal_bytes = serialize_runtime_step_event_jsonl(terminal).encode()
+            state, events = case_dir / "state.json", case_dir / "events.jsonl"
+            state.write_bytes(state_bytes)
+            events.write_bytes(event_bytes)
+            result = WorkflowExecutionPersistenceResult(
+                state, events, len(state_bytes), len(terminal_bytes)
+            )
+            expected = replace(
+                expected_outcome(status),
+                current_step_id=current.id,
+                current_step_index=current_index,
+                current_employee_id=current.employee,
+            )
+            calls: list[tuple[object, ...]] = []
 
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return expected_outcome("succeeded")
+            def dependency(*args: object) -> object:
+                calls.append(args)
+                assert all(
+                    actual is wanted
+                    for actual, wanted in zip(
+                        args,
+                        (result, supplied_workflow, state, events),
+                        strict=True,
+                    )
+                )
+                return expected
 
-    assert_rejected(result, supplied_workflow, state, events, "persistence_contract", dependency)
-    assert calls == 0
+            assert call(result, supplied_workflow, state, events, dependency) is expected
+            assert len(calls) == 1
+            assert (state.read_bytes(), events.read_bytes()) == (state_bytes, event_bytes)
 
 
 @pytest.mark.parametrize(
