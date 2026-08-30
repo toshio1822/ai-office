@@ -543,23 +543,107 @@ def test_indices_one_two_three_four_are_rejected_before_phase136(
     tmp_path: Path, index: int
 ) -> None:
     data_set = values(tmp_path, index=index)
-    decision = expected_decision(data_set)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> WorkflowProgressionDecision:
-        calls.append(args)
-        return decision
-
-    assert call(data_set, dependency) is decision
-    assert calls == [
-        (
-            data_set["result"],
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-        )
-    ]
+    expected = expected_decision(data_set)
+    returned = public_phase144(
+        data_set["result"],
+        data_set["workflow"],
+        data_set["state_path"],
+        data_set["events_path"],
+    )
+    assert type(returned) is WorkflowProgressionDecision
+    assert returned == expected
+    assert returned is not data_set["result"]
     unchanged(data_set)
+
+    failed = values(tmp_path / "failure", index=index, status="failed")
+    failure_calls: list[tuple[object, ...]] = []
+
+    def forbidden_failure(*args: object) -> object:
+        failure_calls.append(args)
+        raise AssertionError(args)
+
+    returned_failure = public_phase144(
+        failed["result"],
+        failed["workflow"],
+        failed["state_path"],
+        failed["events_path"],
+        phase136_function=forbidden_failure,
+    )
+    assert returned_failure is failed["result"]
+    assert returned_failure.failure_category == "api_error"  # type: ignore[union-attr]
+    assert failure_calls == []
+    unchanged(failed)
+
+    complete = values(tmp_path / "complete", index=index)
+    complete_workflow = complete["workflow"]
+    complete_workflow.steps = complete_workflow.steps[:index]  # type: ignore[union-attr]
+    complete["state_path"].write_bytes(  # type: ignore[union-attr]
+        serialize_workflow_execution_state_json(
+            WorkflowExecutionState(
+                "w",
+                "succeeded",
+                complete_workflow.steps[-1].id,  # type: ignore[union-attr]
+                index,
+                complete_workflow.steps[-1].employee,  # type: ignore[union-attr]
+                tuple(step.id for step in complete_workflow.steps),  # type: ignore[union-attr]
+                None,
+            )
+        ).encode("utf-8")
+    )
+    set_before(complete)
+    result = complete["result"]
+    complete_result = WorkflowProgressionDecision(
+        "workflow_complete",
+        result.workflow_id,
+        result.current_step_id,
+        result.current_step_index,
+        result.current_employee_id,
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+    complete_calls: list[tuple[object, ...]] = []
+
+    def forbidden_complete(*args: object) -> object:
+        complete_calls.append(args)
+        raise AssertionError(args)
+
+    returned_complete = public_phase144(
+        complete_result,
+        complete["workflow"],
+        complete["state_path"],
+        complete["events_path"],
+        phase136_function=forbidden_complete,
+    )
+    assert returned_complete is complete_result
+    assert complete_calls == []
+    unchanged(complete)
+
+    if index == 1:
+        one_step = workflow()
+        one_step.steps = one_step.steps[:1]
+        one_step_success = values(tmp_path / "one-step", definition=one_step, index=1)
+        one_step_expected = WorkflowProgressionDecision(
+            "workflow_complete",
+            "w",
+            "one",
+            1,
+            "a",
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        )
+        one_step_returned = public_phase144(
+            one_step_success["result"],
+            one_step_success["workflow"],
+            one_step_success["state_path"],
+            one_step_success["events_path"],
+        )
+        assert type(one_step_returned) is WorkflowProgressionDecision
+        assert one_step_returned == one_step_expected
+        unchanged(one_step_success)
 
 
 def test_immediate_predecessor_empty_output_text_delegates_once_canonical_order(
