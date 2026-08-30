@@ -84,8 +84,6 @@ def route_classified_persisted_outcome_progression_cycle_handoff_reentry_continu
         assert type(result) is PersistedExecutionOutcome
         if result.outcome == "persisted_success":
             _validate_success(result, workflow)
-            if result.current_step_index < 2:
-                _raise("success_contract")
             terminal_status = "succeeded"
         elif result.outcome == "persisted_failure":
             _validate_failure(result, workflow)

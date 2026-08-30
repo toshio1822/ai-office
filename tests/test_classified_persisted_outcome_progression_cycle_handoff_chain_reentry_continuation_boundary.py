@@ -370,16 +370,80 @@ def test_source_audit_uses_only_public_phase122_dependency() -> None:
 def test_success_continuation_index_below_three_is_rejected_before_phase122(
     tmp_path: Path, index: int
 ) -> None:
-    result, supplied_workflow, state, events, *_ = setup(tmp_path, index=index)
-    calls = 0
+    result, supplied_workflow, state, events, before_state, before_events = setup(
+        tmp_path, index=index
+    )
+    expected = expected_decision(supplied_workflow, index)
+    returned = route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary(
+        result, supplied_workflow, state, events
+    )
+    assert type(returned) is WorkflowProgressionDecision
+    assert returned == expected
+    assert returned is not result
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
-    def forbidden(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
+    failure_path = tmp_path / "failure"
+    failure_path.mkdir(parents=True, exist_ok=True)
+    failed_result, failed_workflow, failed_state, failed_events, failed_before_state, failed_before_events = setup(
+        failure_path, status="failed", index=index
+    )
+    failure_calls: list[tuple[object, ...]] = []
 
-    assert_rejected(result, supplied_workflow, state, events, "success_contract", forbidden)
-    assert calls == 0
+    def forbidden_failure(*args: object) -> object:
+        failure_calls.append(args)
+        raise AssertionError(args)
+
+    returned_failure = call(
+        failed_result,
+        failed_workflow,
+        failed_state,
+        failed_events,
+        forbidden_failure,
+    )
+    assert returned_failure is failed_result
+    assert returned_failure.failure_category == "api_error"  # type: ignore[union-attr]
+    assert failure_calls == []
+    assert (
+        failed_state.read_bytes(),
+        failed_events.read_bytes(),
+    ) == (failed_before_state, failed_before_events)
+
+    complete_path = tmp_path / "complete"
+    complete_path.mkdir(parents=True, exist_ok=True)
+    complete_result, complete_workflow, complete_state, complete_events, complete_before_state, complete_before_events = setup(
+        complete_path, index=index
+    )
+    complete_workflow.steps = complete_workflow.steps[:index]
+    complete = WorkflowProgressionDecision(
+        "workflow_complete",
+        complete_result.workflow_id,
+        complete_result.current_step_id,
+        complete_result.current_step_index,
+        complete_result.current_employee_id,
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+    complete_calls: list[tuple[object, ...]] = []
+
+    def forbidden_complete(*args: object) -> object:
+        complete_calls.append(args)
+        raise AssertionError(args)
+
+    returned_complete = call(
+        complete,
+        complete_workflow,
+        complete_state,
+        complete_events,
+        forbidden_complete,
+    )
+    assert returned_complete is complete
+    assert complete_calls == []
+    assert (
+        complete_state.read_bytes(),
+        complete_events.read_bytes(),
+    ) == (complete_before_state, complete_before_events)
 
 
 @pytest.mark.parametrize("index", [3, 4], ids=["intermediate", "final"])

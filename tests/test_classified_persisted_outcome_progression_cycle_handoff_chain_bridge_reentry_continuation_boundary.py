@@ -514,7 +514,83 @@ def test_persisted_success_terminal_event_fields_are_exact(
 
 @pytest.mark.parametrize("index", [1, 2, 3])
 def test_indices_one_two_three_are_rejected_before_phase129(tmp_path: Path, index: int) -> None:
-    reject(data(tmp_path, index=index), "success_contract")
+    data_set = data(tmp_path, index=index)
+    expected = expected_decision(data_set)
+    returned = public_phase136(
+        data_set["result"],
+        data_set["workflow"],
+        data_set["state_path"],
+        data_set["events_path"],
+    )
+    assert type(returned) is WorkflowProgressionDecision
+    assert returned == expected
+    assert returned is not data_set["result"]
+    unchanged(data_set)
+
+    failed = data(tmp_path / "failure", index=index, status="failed")
+    failure_calls: list[tuple[object, ...]] = []
+
+    def forbidden_failure(*args: object) -> object:
+        failure_calls.append(args)
+        raise AssertionError(args)
+
+    returned_failure = public_phase136(
+        failed["result"],
+        failed["workflow"],
+        failed["state_path"],
+        failed["events_path"],
+        phase129_function=forbidden_failure,
+    )
+    assert returned_failure is failed["result"]
+    assert returned_failure.failure_category == "api_error"  # type: ignore[union-attr]
+    assert failure_calls == []
+    unchanged(failed)
+
+    complete = data(tmp_path / "complete", index=index)
+    complete_workflow = complete["workflow"]
+    complete_workflow.steps = complete_workflow.steps[:index]  # type: ignore[union-attr]
+    complete["state_path"].write_bytes(  # type: ignore[union-attr]
+        serialize_workflow_execution_state_json(
+            WorkflowExecutionState(
+                "w",
+                "succeeded",
+                complete_workflow.steps[-1].id,  # type: ignore[union-attr]
+                index,
+                complete_workflow.steps[-1].employee,  # type: ignore[union-attr]
+                tuple(step.id for step in complete_workflow.steps),  # type: ignore[union-attr]
+                None,
+            )
+        ).encode("utf-8")
+    )
+    set_before(complete)
+    result = complete["result"]
+    complete_result = WorkflowProgressionDecision(
+        "workflow_complete",
+        result.workflow_id,
+        result.current_step_id,
+        result.current_step_index,
+        result.current_employee_id,
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+    complete_calls: list[tuple[object, ...]] = []
+
+    def forbidden_complete(*args: object) -> object:
+        complete_calls.append(args)
+        raise AssertionError(args)
+
+    returned_complete = public_phase136(
+        complete_result,
+        complete["workflow"],
+        complete["state_path"],
+        complete["events_path"],
+        phase129_function=forbidden_complete,
+    )
+    assert returned_complete is complete_result
+    assert complete_calls == []
+    unchanged(complete)
 
 
 @pytest.mark.parametrize(

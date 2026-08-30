@@ -131,19 +131,76 @@ def test_public_signature_and_default_identity() -> None:
 
 
 def test_persisted_success_continuation_index_one_is_rejected_before_phase115(tmp_path: Path) -> None:
-    result, definition, state, events = setup(tmp_path)
-    result = replace(result, current_step_id="one", current_step_index=1, current_employee_id="a")
-    calls = 0
-    def forbidden(*args: object) -> object:
-        nonlocal calls
-        calls += 1
-        return expected_decision()
-    with pytest.raises(ClassifiedPersistedOutcomeProgressionCycleHandoffReentryContinuationCompatibilityError) as caught:
-        route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
-            result, definition, state, events, phase115_function=forbidden
-        )
-    assert classification(caught) == "success_contract"
-    assert calls == 0
+    _, definition, state, events = setup(tmp_path, single=True, complete=True)
+    step = definition.steps[0]
+    result = PersistedExecutionOutcome(
+        "persisted_success", "w", step.id, 1, step.employee, None
+    )
+    expected = WorkflowProgressionDecision(
+        "workflow_complete", "w", step.id, 1, step.employee, None, None, None,
+        "last_step_succeeded"
+    )
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    returned = route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
+        result, definition, state, events
+    )
+    assert type(returned) is WorkflowProgressionDecision
+    assert returned == expected
+    assert returned is not result
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+
+    failure_path = tmp_path / "failure"
+    failure_path.mkdir(parents=True, exist_ok=True)
+    failed_result, failed_definition, failed_state, failed_events = setup(
+        failure_path, failed=True
+    )
+    failed_before = failed_state.read_bytes(), failed_events.read_bytes()
+    failure_calls: list[tuple[object, ...]] = []
+
+    def forbidden_failure(*args: object) -> object:
+        failure_calls.append(args)
+        raise AssertionError(args)
+
+    returned_failure = route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
+        failed_result,
+        failed_definition,
+        failed_state,
+        failed_events,
+        phase115_function=forbidden_failure,
+    )
+    assert returned_failure is failed_result
+    assert returned_failure.failure_category == "api_error"  # type: ignore[union-attr]
+    assert failure_calls == []
+    assert (failed_state.read_bytes(), failed_events.read_bytes()) == failed_before
+
+    _, complete_definition, complete_state, complete_events = setup(
+        tmp_path / "complete"
+    )
+    complete_definition.steps = complete_definition.steps[:2]
+    complete = WorkflowProgressionDecision(
+        "workflow_complete",
+        "w",
+        complete_definition.steps[1].id,
+        2,
+        complete_definition.steps[1].employee,
+        None,
+        None,
+        None,
+        "last_step_succeeded",
+    )
+    complete_before = complete_state.read_bytes(), complete_events.read_bytes()
+    complete_calls: list[tuple[object, ...]] = []
+
+    def forbidden_complete(*args: object) -> object:
+        complete_calls.append(args)
+        raise AssertionError(args)
+
+    returned_complete = route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
+        complete, complete_definition, complete_state, complete_events, phase115_function=forbidden_complete
+    )
+    assert returned_complete is complete
+    assert complete_calls == []
+    assert (complete_state.read_bytes(), complete_events.read_bytes()) == complete_before
 
 
 @pytest.mark.parametrize("single", [False, True], ids=["intermediate", "final"])
