@@ -37,16 +37,19 @@ def workflow() -> WorkflowDefinition:
     ]})
 
 
-def employee() -> EmployeeDefinition:
-    return EmployeeDefinition.model_validate({"id": "three", "name": "Three", "role": "role", "instructions": "employee", "model": "model", "allowed_tools": ["tool"]})
+def employee(index: int = 3) -> EmployeeDefinition:
+    step = workflow().steps[index - 1]
+    return EmployeeDefinition.model_validate({"id": step.employee, "name": step.name, "role": "role", "instructions": "employee", "model": "model", "allowed_tools": ["tool"]})
 
 
-def prepared() -> PreparedWorkflowStep:
-    return PreparedWorkflowStep("workflow", "third", 3, "three", "employee", "c", "model", ("tool",))
+def prepared(index: int = 3) -> PreparedWorkflowStep:
+    step = workflow().steps[index - 1]
+    return PreparedWorkflowStep("workflow", step.id, index, step.employee, "employee", step.instructions, "model", ("tool",))
 
 
-def started() -> PreparedStepExecutionStart:
-    return PreparedStepExecutionStart(ModelInvocationRequest("model", "employee", "c", ("tool",)), WorkflowExecutionState("workflow", "running", "third", 3, "three", ("first", "second"), None))
+def started(index: int = 3) -> PreparedStepExecutionStart:
+    value = prepared(index)
+    return PreparedStepExecutionStart(ModelInvocationRequest(value.model, value.employee_instructions, value.step_instructions, value.allowed_tool_names), WorkflowExecutionState("workflow", "running", value.step_id, value.step_index, value.employee_id, tuple(item.id for item in workflow().steps[: index - 1]), None))
 
 
 def completion() -> WorkflowProgressionDecision:
@@ -109,18 +112,41 @@ def test_prepared_route_uses_exact_five_arguments_once_and_preserves_return_iden
     assert len(received) == 5
 
 
-def test_prepared_step_index_two_is_rejected_before_dependency(tmp_path: Path) -> None:
-    state, events = targets(tmp_path)
-    calls = 0
+def test_prepared_step_index_two_delegates_once_with_exact_contract(tmp_path: Path) -> None:
+    supplied_workflow = workflow()
+    supplied_employee = employee(2)
+    value = prepared(2)
+    state, events = targets(tmp_path, index=1)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    returned = started(2)
+    calls: list[tuple[object, ...]] = []
 
-    def fake(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return started()
+    def fake(*args: object) -> PreparedStepExecutionStart:
+        calls.append(args)
+        return returned
 
-    with pytest.raises(PreparedStepStartCycleHandoffChainReentryContinuationCompatibilityError) as caught:
-        invoke(PreparedWorkflowStep("workflow", "second", 2, "two", "employee", "b", "model", ("tool",)), employee(), state, events, fake)
-    assert caught.value.detail.classification == "prepared_step_contract" and calls == 0
+    actual = route_prepared_step_start_cycle_handoff_chain_reentry_continuation_boundary(
+        value,
+        supplied_workflow,
+        supplied_employee,
+        state,
+        events,
+        phase117_function=fake,
+    )
+    assert actual is returned
+    assert calls == [(value, supplied_workflow, supplied_employee, state, events)]
+    assert returned.request.model == value.model
+    assert returned.request.system_instructions == value.employee_instructions
+    assert returned.request.task_instructions == value.step_instructions
+    assert returned.request.allowed_tools == value.allowed_tool_names
+    assert returned.running_state.workflow_id == value.workflow_id
+    assert returned.running_state.status == "running"
+    assert returned.running_state.current_step_id == value.step_id
+    assert returned.running_state.current_step_index == 2
+    assert returned.running_state.current_employee_id == value.employee_id
+    assert returned.running_state.completed_step_ids == ("first",)
+    assert returned.running_state.last_failure_category is None
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("result, status, index", [(completion(), "succeeded", 3), (failure(), "failed", 1)])

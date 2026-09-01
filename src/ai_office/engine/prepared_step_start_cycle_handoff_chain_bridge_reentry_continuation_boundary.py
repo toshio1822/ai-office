@@ -179,7 +179,7 @@ def _check_prepared_index(
 ) -> None:
     if (
         type(value.step_index) is not int
-        or value.step_index < 4
+        or value.step_index < 2
         or value.step_index > len(workflow.steps)
     ):
         _fail("prepared_step_contract")

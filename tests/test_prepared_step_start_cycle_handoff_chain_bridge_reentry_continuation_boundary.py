@@ -380,28 +380,51 @@ def test_prepared_route_delegates_once_in_canonical_order_and_returns_identity(
 
 
 @pytest.mark.parametrize("index", [1, 2, 3])
-def test_step_indices_one_two_three_are_rejected_before_phase124(
+def test_step_index_one_rejects_and_indices_two_three_delegate_once(
     tmp_path: Path, index: int
 ) -> None:
     value = prepared(index)
-    state, events, *_ = targets(tmp_path)
-    calls = 0
-
-    def forbidden(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert_rejected(
-        value,
-        workflow(),
-        employee(index),
-        state,
-        events,
-        "prepared_step_contract",
-        forbidden,
+    target_index = index - 1 if index >= 2 else 3
+    supplied_workflow = workflow()
+    supplied_employee = employee(index)
+    state, events, before_state, before_events = targets(
+        tmp_path, index=target_index
     )
-    assert calls == 0
+    returned = start_for(value, supplied_workflow)
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*args: object) -> PreparedStepExecutionStart:
+        calls.append(args)
+        return returned
+
+    if index == 1:
+        assert_rejected(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            "prepared_step_contract",
+            fake,
+        )
+        assert calls == []
+    else:
+        assert invoke(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        ) is returned
+        assert calls == [
+            (value, supplied_workflow, supplied_employee, state, events)
+        ]
+        assert returned.running_state.current_step_index == index
+        assert returned.running_state.completed_step_ids == tuple(
+            step.id for step in supplied_workflow.steps[: index - 1]
+        )
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 def test_source_default_dependency_is_the_public_phase124_route() -> None:

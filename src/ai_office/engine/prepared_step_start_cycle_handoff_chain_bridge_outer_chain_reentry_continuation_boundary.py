@@ -199,7 +199,7 @@ def _valid_workflow(workflow: WorkflowDefinition) -> bool:
 def _check_prepared_index(value: PreparedWorkflowStep, workflow: WorkflowDefinition) -> None:
     if (
         type(value.step_index) is not int
-        or value.step_index < 6
+        or value.step_index < 2
         or value.step_index > len(workflow.steps)
     ):
         _fail("prepared_step_contract")
@@ -592,7 +592,7 @@ def _check_start(
         and _exact_string(running.status, "running")
         and _exact_string(running.current_step_id, prepared.step_id)
         and type(running.current_step_index) is int
-        and running.current_step_index >= 6
+        and running.current_step_index >= 2
         and running.current_step_index == prepared.step_index
         and _exact_string(running.current_employee_id, prepared.employee_id)
         and type(running.completed_step_ids) is tuple

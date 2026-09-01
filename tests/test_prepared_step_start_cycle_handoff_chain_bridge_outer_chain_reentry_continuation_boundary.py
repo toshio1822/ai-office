@@ -438,23 +438,75 @@ def test_empty_earlier_predecessor_output_is_accepted(tmp_path: Path) -> None:
     assert calls == 1
 
 
-def test_prepared_indices_one_to_five_are_zero_call_rejections(
+def test_prepared_index_one_rejects_and_indices_two_to_five_delegate_once(
     tmp_path: Path,
 ) -> None:
     for index in (1, 2, 3, 4, 5):
         value = prepared(index)
-        state, events, *_ = targets(tmp_path, index=index - 1)
-        calls = 0
-
-        def fake(*_: object) -> object:
-            nonlocal calls
-            calls += 1
-            return object()
-
-        assert_rejected(
-            value, workflow(), employee(index), state, events, "prepared_step_contract", fake
+        target_index = index - 1 if index >= 2 else 5
+        state, events, before_state, before_events = targets(
+            tmp_path, index=target_index
         )
-        assert calls == 0
+        supplied_workflow = workflow()
+        supplied_employee = employee(index)
+        returned = start_for(value, supplied_workflow)
+        calls: list[tuple[object, ...]] = []
+
+        def fake(*args: object) -> PreparedStepExecutionStart:
+            calls.append(args)
+            return returned
+
+        if index == 1:
+            assert_rejected(
+                value,
+                supplied_workflow,
+                supplied_employee,
+                state,
+                events,
+                "prepared_step_contract",
+                fake,
+            )
+            assert calls == []
+        else:
+            assert invoke(
+                value,
+                supplied_workflow,
+                supplied_employee,
+                state,
+                events,
+                fake,
+            ) is returned
+            assert calls == [
+                (value, supplied_workflow, supplied_employee, state, events)
+            ]
+        assert (state.read_bytes(), events.read_bytes()) == (
+            before_state,
+            before_events,
+        )
+
+    value = prepared(2)
+    supplied_workflow = workflow()
+    supplied_employee = employee(2)
+    state, events, before_state, before_events = targets(tmp_path, index=1)
+    returned = public_route(
+        value, supplied_workflow, supplied_employee, state, events
+    )
+    assert type(returned) is PreparedStepExecutionStart
+    assert returned.request.model == value.model
+    assert returned.request.system_instructions == value.employee_instructions
+    assert returned.request.task_instructions == value.step_instructions
+    assert returned.request.allowed_tools == value.allowed_tool_names
+    assert returned.running_state.workflow_id == value.workflow_id
+    assert returned.running_state.status == "running"
+    assert returned.running_state.current_step_id == value.step_id
+    assert returned.running_state.current_step_index == value.step_index
+    assert returned.running_state.current_employee_id == value.employee_id
+    assert returned.running_state.completed_step_ids == ("one",)
+    assert returned.running_state.last_failure_category is None
+    assert (state.read_bytes(), events.read_bytes()) == (
+        before_state,
+        before_events,
+    )
 
 
 @pytest.mark.parametrize("kind", ["result", "workflow", "employee", "step"])

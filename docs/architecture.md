@@ -854,7 +854,7 @@ Phase 123 performs one explicitly authorized progression-to-approved-preparation
 
 ## Phase 124: Prepared Step Start Cycle Handoff Chain Reentry Continuation Boundary
 
-`route_prepared_step_start_cycle_handoff_chain_reentry_continuation_boundary()` accepts one exact Phase 123 result. An exact `PreparedWorkflowStep` from the continuation path, with `step_index >= 3` and matching workflow, employee, predecessor terminal history, and regular state/event targets, is delegated exactly once to the public Phase 117 boundary in canonical `(result, workflow, employee, state_path, events_path)` order and returns its exact `PreparedStepExecutionStart`. Exact `WorkflowProgressionDecision(workflow_complete)` and `PersistedExecutionOutcome(persisted_failure)` results are strict unchanged zero-call stops.
+`route_prepared_step_start_cycle_handoff_chain_reentry_continuation_boundary()` accepts one exact Phase 123 result. An exact `PreparedWorkflowStep` from the continuation path, with `step_index >= 2` and matching workflow, employee, predecessor terminal history, and regular state/event targets, is delegated exactly once to the public Phase 117 boundary in canonical `(result, workflow, employee, state_path, events_path)` order and returns its exact `PreparedStepExecutionStart`. Exact `WorkflowProgressionDecision(workflow_complete)` and `PersistedExecutionOutcome(persisted_failure)` results are strict unchanged zero-call stops.
 
 Phase 124 performs one explicitly authorized prepared-step start handoff through Phase 117. It does not call Phase 110 directly, persist prepared-start state, execute a provider or tool, retry, automatically continue, finalize, schedule, loop, run in parallel, or add CLI/GUI behavior. Dependency errors, malformed returns, and target mutation are classified safely with byte-for-byte compensation and no retry. Focused tests inject Phase 117 fakes only and make no real provider, network, paid API, or external tool calls.
 
@@ -1008,7 +1008,7 @@ Phase 124 (future explicit caller action)
 
 ## Phase 131: Prepared Step Start Cycle Handoff Chain Bridge Reentry Continuation Boundary
 
-Phase 131は、Phase 130 continuationからの正確な`PreparedWorkflowStep`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるread-only bridgeである。prepared-step routeでは`step_index >= 4`を要求し、exact workflow/step/employee、regular state/event targets、succeeded predecessor terminal state/history、completed-step prefix、terminal eventのruntime linkageとprovider `"openai"`を再検証する。検証後、公開Phase 124 `route_prepared_step_start_cycle_handoff_chain_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderで正確に一度だけ委譲し、exact valid `PreparedStepExecutionStart`を返す。
+Phase 131は、Phase 130 continuationからの正確な`PreparedWorkflowStep`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるread-only bridgeである。prepared-step routeでは`step_index >= 2`を要求し、exact workflow/step/employee、regular state/event targets、succeeded predecessor terminal state/history、completed-step prefix、terminal eventのruntime linkageとprovider `"openai"`を再検証する。検証後、公開Phase 124 `route_prepared_step_start_cycle_handoff_chain_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderで正確に一度だけ委譲し、exact valid `PreparedStepExecutionStart`を返す。
 
 Phase 124の返却はexact `PreparedStepExecutionStart`でなければならず、nested `ModelInvocationRequest`とrunning `WorkflowExecutionState`、request model/system/task instructions/allowed-tools、workflow/step/index/employee linkage、predecessor由来のcompleted-step prefix、`last_failure_category`を再検証する。`workflow_complete`と`persisted_failure`はemployeeが`None`であり、Phase 130 stop routeより厳しいprovider条件を追加せず、Phase 124を呼ばず同一objectを返すunchanged zero-call stop routeである。Phase 131はPhase 117を迂回せず、prepared-start persistence、provider/tool実行、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しない。safe dependency errorはsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類する。両targetをbyte-for-byteに補償復元し、復元失敗は`dependency_rollback`とする。Focused testsはinjected Phase 124 fakesのみを使い、real provider、network、paid API、external tool、real transportを呼ばない。
 
@@ -1017,7 +1017,7 @@ Phase 130
 PreparedWorkflowStep | workflow_complete | persisted_failure
     ↓
 Phase 131 prepared-step start cycle handoff chain bridge reentry continuation boundary
-PreparedWorkflowStep (step_index >= 4) + exact employee
+PreparedWorkflowStep (step_index >= 2) + exact employee
     → Phase 124 exactly once in canonical five-argument order
     → exact PreparedStepExecutionStart
 workflow_complete | persisted_failure
@@ -1164,7 +1164,7 @@ Phase 131 (future explicit caller action)
 
 ## Phase 138: Prepared-step Start Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary
 
-Phase 138は、Phase 137のexact `PreparedWorkflowStep`と`EmployeeDefinition`を受けるprepared-start outer bridgeである。`step_index >= 5`、workflow/step/employee linkage、prepared predecessor state/history、completed prefix、直前predecessor provider=`"openai"`、terminal response/request/outputのexact contractを検証し、exact built-in empty success `output_text`も許容する。
+Phase 138は、Phase 137のexact `PreparedWorkflowStep`と`EmployeeDefinition`を受けるprepared-start outer bridgeである。`step_index >= 2`、workflow/step/employee linkage、prepared predecessor state/history、completed prefix、直前predecessor provider=`"openai"`、terminal response/request/outputのexact contractを検証し、exact built-in empty success `output_text`も許容する。
 
 valid routeでは公開Phase 131 `route_prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へ、`(result, workflow, employee, state_path, events_path)`のcanonical five-argument orderとsupplied-object identityを保持してexactly once委譲する。返却されたexact `PreparedStepExecutionStart`とnested request/running stateを再検証し、state/eventsはbyte-for-byte不変に保つ。safe error identity、両target compensation、unexpected errorのsanitize、`dependency_rollback`、no retryを継承する。
 
@@ -1177,7 +1177,7 @@ Phase 137
 PreparedWorkflowStep | workflow_complete | persisted_failure
     ↓
 Phase 138 prepared-step start cycle handoff chain bridge outer reentry continuation boundary
-PreparedWorkflowStep (step_index >= 5) + exact employee
+PreparedWorkflowStep (step_index >= 2) + exact employee
     → Phase 131 exactly once in canonical five-argument order
     → exact PreparedStepExecutionStart
 workflow_complete | persisted_failure
@@ -1350,7 +1350,7 @@ Phase 138 (future explicit caller action; not called by Phase 145)
 
 ## Phase 146: Prepared-Step Start Cycle Handoff Chain Bridge Outer-Chain Reentry Continuation Boundary
 
-Phase 146は、Phase 145のexact `PreparedWorkflowStep`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるouter-chain boundaryである。prepared-step routeでは、exact `PreparedWorkflowStep`、exact `WorkflowDefinition`/`WorkflowStepDefinition`、exact `EmployeeDefinition`、regular targets、exact built-in `int step_index >= 6`（Phase 145 continuation provenance）、workflow/step/index/employee linkage、employee ID/instructions/model/allowed-tools linkage、exact built-in tuple `allowed_tool_names`、persisted predecessor terminal succeeded state（`prepared.step_index - 1`、index `>= 5`）、complete ordered succeeded predecessor/terminal history、succeeded completed-step prefix、`last_failure_category is None`、Phase 145 provenance（全historyがexact `RuntimeStepEvent`、earlier predecessorはexact `step_succeeded`・`running -> succeeded`・provider non-empty str・immediate predecessor provider=`"openai"`・still earlier providerはvalid non-`openai`・response_id/request_id non-empty・`output_text`はexact built-in `str`でemptyも許容・failure_category/messageは`None`、terminal eventはprovider=`"openai"`・request_id `None`またはnon-empty・response_id non-empty・`output_text`はexact built-in `str`でemptyも許容）を再検証する。検証後、公開Phase 138 `route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`へcanonical five-argument order `(result, workflow, employee, state_path, events_path)`でexactly once委譲し、返却されたexact `PreparedStepExecutionStart`（exact nested `ModelInvocationRequest`/`WorkflowExecutionState`、request linkage、running stateはstatus=`"running"`・`current_step_index >= 6`・completed-step prefix継承・`last_failure_category is None`）を再検証して返す。正常経路では両targetをbyte-for-byte不変に保つ。
+Phase 146は、Phase 145のexact `PreparedWorkflowStep`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるouter-chain boundaryである。prepared-step routeでは、exact `PreparedWorkflowStep`、exact `WorkflowDefinition`/`WorkflowStepDefinition`、exact `EmployeeDefinition`、regular targets、exact built-in `int step_index >= 2`（generic continuation domain; historical Phase-position lower bound removed; Phase 145 provenance/compatibility thresholds are preserved）、workflow/step/index/employee linkage、employee ID/instructions/model/allowed-tools linkage、exact built-in tuple `allowed_tool_names`、persisted predecessor terminal succeeded state（`prepared.step_index - 1`、step 2 continuationでは exact succeeded step 1がpredecessor）、complete ordered succeeded predecessor/terminal history、succeeded completed-step prefix、`last_failure_category is None`、Phase 145 provenance（全historyがexact `RuntimeStepEvent`、earlier predecessorはexact `step_succeeded`・`running -> succeeded`・provider non-empty str・immediate predecessor provider=`"openai"`・still earlier providerはvalid non-`openai`・response_id/request_id non-empty・`output_text`はexact built-in `str`でemptyも許容・failure_category/messageは`None`、terminal eventはprovider=`"openai"`・request_id `None`またはnon-empty・response_id non-empty・`output_text`はexact built-in `str`でemptyも許容）を再検証する。検証後、公開Phase 138 `route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`へcanonical five-argument order `(result, workflow, employee, state_path, events_path)`でexactly once委譲し、返却されたexact `PreparedStepExecutionStart`（exact nested `ModelInvocationRequest`/`WorkflowExecutionState`、request linkage、running stateはstatus=`"running"`・`current_step_index >= 2`・completed-step prefix継承・`last_failure_category is None`）を再検証して返す。正常経路では両targetをbyte-for-byte不変に保つ。
 
 `workflow_complete`と`persisted_failure`はPhase 138を呼ばず、Phase 145 stop-route契約でterminal state/historyを検証して同じobjectを返すunchanged zero-call stop routeである。stop routeは`step_index >= 6`を課さず、non-openai terminal providerとsucceeded predecessorのexact built-in `str output_text == ""`を許容するが、workflow_completeの最終terminal succeeded eventの`output_text` non-empty契約とpersisted-failure terminal semanticsは維持する。
 
@@ -1361,7 +1361,7 @@ Phase 145
 PreparedWorkflowStep | workflow_complete | persisted_failure
     ↓
 Phase 146 prepared-step start cycle handoff chain bridge outer-chain reentry continuation boundary
-PreparedWorkflowStep (step_index >= 6) + exact employee
+PreparedWorkflowStep (step_index >= 2) + exact employee
     → Phase 138 exactly once in canonical five-argument order
     → exact PreparedStepExecutionStart
 workflow_complete | persisted_failure
