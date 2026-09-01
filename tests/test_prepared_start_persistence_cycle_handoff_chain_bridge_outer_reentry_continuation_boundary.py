@@ -181,33 +181,41 @@ def _event(
 def predecessor_targets(
     tmp_path: Path,
     *,
+    index: int = 4,
     output_text: object = "output",
     terminal_provider: object = "openai",
     terminal_request_id: object = "request",
     terminal_response_id: object = "response",
 ) -> tuple[Path, Path, bytes, bytes]:
     definition = workflow()
+    current = definition.steps[index - 1]
     state = WorkflowExecutionState(
         "workflow",
         "succeeded",
-        "four",
-        4,
-        "d",
-        ("one", "two", "three", "four"),
+        current.id,
+        index,
+        current.employee,
+        tuple(item.id for item in definition.steps[:index]),
         None,
     )
     events = [
-        _event(definition, 1, provider="other", request_id="request-one", response_id="response-one"),
-        _event(definition, 2, provider="other", request_id="request-two", response_id="response-two"),
-        _event(definition, 3, provider="openai", request_id="request-three", response_id="response-three"),
         _event(
             definition,
-            4,
+            position,
+            provider="other" if position < index - 1 else "openai",
+            request_id=f"request-{definition.steps[position - 1].id}",
+            response_id=f"response-{definition.steps[position - 1].id}",
+        )
+        for position in range(1, index)
+    ] + [
+        _event(
+            definition,
+            index,
             provider=terminal_provider,
             output_text=output_text,
             request_id=terminal_request_id,
             response_id=terminal_response_id,
-        ),
+        )
     ]
     state_bytes = serialize_workflow_execution_state_json(state).encode()
     event_bytes = b"".join(serialize_runtime_step_event_jsonl(event).encode() for event in events)
@@ -366,18 +374,56 @@ def test_empty_success_predecessor_output_is_accepted(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("index", [1, 2, 3, 4])
-def test_indices_one_to_four_reject_before_phase132(tmp_path: Path, index: int) -> None:
-    state, events, before_state, before_events = predecessor_targets(tmp_path)
-    calls = 0
+def test_index_one_rejects_and_indices_two_to_four_delegate_once(
+    tmp_path: Path, index: int
+) -> None:
+    target_index = index - 1 if index >= 2 else 4
+    state, events, before_state, before_events = predecessor_targets(
+        tmp_path, index=target_index
+    )
+    supplied_workflow = workflow()
+    supplied_employee = employee(index)
+    value = start(index, supplied_workflow)
+    expected = _valid_persistence(value)
+    expected_state = serialize_workflow_execution_state_json(
+        value.running_state
+    ).encode()
+    calls: list[tuple[object, ...]] = []
 
-    def fake(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
 
-    reject(lambda: invoke(start(index), workflow(), employee(index), state, events, fake), "start_contract")
-    assert calls == 0
-    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    if index == 1:
+        reject(
+            lambda: invoke(
+                value,
+                supplied_workflow,
+                supplied_employee,
+                state,
+                events,
+                fake,
+            ),
+            "start_contract",
+        )
+        assert calls == []
+        assert state.read_bytes() == before_state
+    else:
+        assert invoke(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        ) is expected
+        assert calls == [
+            (value, supplied_workflow, supplied_employee, state, events)
+        ]
+        assert state.read_bytes() == expected_state
+        assert state.read_bytes() != before_state
+    assert events.read_bytes() == before_events
 
 
 @pytest.mark.parametrize("kind", ["result", "workflow", "employee"])
@@ -496,18 +542,59 @@ def test_fully_compatible_workflow_and_employee_substitutes_are_zero_call_reject
 
 
 @pytest.mark.parametrize("index", [1, 2, 3, 4])
-def test_start_index_boundary_is_exact_and_targets_unchanged(tmp_path: Path, index: int) -> None:
-    state, events, before_state, before_events = predecessor_targets(tmp_path)
-    calls = 0
+def test_start_index_boundary_delegates_from_two_and_preserves_targets(
+    tmp_path: Path, index: int
+) -> None:
+    target_index = index - 1 if index >= 2 else 4
+    state, events, before_state, before_events = predecessor_targets(
+        tmp_path, index=target_index
+    )
+    supplied_workflow = workflow()
+    supplied_employee = employee(index)
+    value = start(index, supplied_workflow)
+    expected = _valid_persistence(value)
+    expected_state = serialize_workflow_execution_state_json(
+        value.running_state
+    ).encode()
+    calls: list[tuple[object, ...]] = []
 
-    def fake(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
 
-    reject(lambda: invoke(start(index), workflow(), employee(index), state, events, fake), "start_contract")
-    assert calls == 0
-    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    if index == 1:
+        reject(
+            lambda: invoke(
+                value,
+                supplied_workflow,
+                supplied_employee,
+                state,
+                events,
+                fake,
+            ),
+            "start_contract",
+        )
+        assert calls == []
+        assert (state.read_bytes(), events.read_bytes()) == (
+            before_state,
+            before_events,
+        )
+    else:
+        assert invoke(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        ) is expected
+        assert calls == [
+            (value, supplied_workflow, supplied_employee, state, events)
+        ]
+        assert state.read_bytes() == expected_state
+        assert state.read_bytes() != before_state
+        assert events.read_bytes() == before_events
 
 
 @pytest.mark.parametrize("field", ["model", "system_instructions", "task_instructions", "allowed_tools"])

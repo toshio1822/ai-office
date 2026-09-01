@@ -215,7 +215,7 @@ def _check_start(
     if type(request) is not ModelInvocationRequest or type(state) is not WorkflowExecutionState:
         _fail("start_contract")
     index = state.current_step_index
-    if type(index) is not int or not 5 <= index <= len(workflow.steps):
+    if type(index) is not int or not 2 <= index <= len(workflow.steps):
         _fail("start_contract")
     step = workflow.steps[index - 1]
     expected_completed = tuple(item.id for item in workflow.steps[: index - 1])
