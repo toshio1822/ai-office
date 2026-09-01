@@ -105,7 +105,7 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
             expected_status: Literal["succeeded", "failed"] = "succeeded"
             require_immediate_openai = True
             allow_empty_success_output = True
-            minimum_index = 5
+            minimum_index = 1
             stop = False
         elif result.decision == "workflow_complete":
             _check_completion(result, workflow, approval, employee)
@@ -223,7 +223,7 @@ def _check_prepare(
     next_index = result.next_step_index
     if (
         type(current_index) is not int
-        or current_index < 5
+        or current_index < 1
         or current_index >= len(workflow.steps)
         or type(next_index) is not int
         or next_index != current_index + 1

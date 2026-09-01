@@ -37,20 +37,60 @@ def wf() -> WorkflowDefinition:
     ]})
 
 
-def decision() -> WorkflowProgressionDecision:
-    return WorkflowProgressionDecision("prepare_next_step", "workflow", "second", 2, "two", "third", 3, "three", "next_step_available")
+def decision(index: int = 2) -> WorkflowProgressionDecision:
+    supplied_workflow = wf()
+    current = supplied_workflow.steps[index - 1]
+    following = supplied_workflow.steps[index]
+    return WorkflowProgressionDecision(
+        "prepare_next_step",
+        supplied_workflow.id,
+        current.id,
+        index,
+        current.employee,
+        following.id,
+        index + 1,
+        following.employee,
+        "next_step_available",
+    )
 
 
-def approval() -> NextStepPreparationApproval:
-    return NextStepPreparationApproval(True, "workflow", "second", 2, "third", 3, "three")
+def approval(value: WorkflowProgressionDecision | None = None) -> NextStepPreparationApproval:
+    value = decision() if value is None else value
+    return NextStepPreparationApproval(
+        True,
+        value.workflow_id,
+        value.current_step_id,
+        value.current_step_index,
+        value.next_step_id,
+        value.next_step_index,
+        value.next_employee_id,
+    )
 
 
-def employee() -> EmployeeDefinition:
-    return EmployeeDefinition.model_validate({"id": "three", "name": "Three", "role": "role", "instructions": "employee", "model": "model", "allowed_tools": ["tool"]})
+def employee(value: WorkflowProgressionDecision | None = None) -> EmployeeDefinition:
+    value = decision() if value is None else value
+    return EmployeeDefinition.model_validate({"id": value.next_employee_id, "name": "Three", "role": "role", "instructions": "employee", "model": "model", "allowed_tools": ["tool"]})
 
 
-def prepared() -> PreparedWorkflowStep:
-    return PreparedWorkflowStep("workflow", "third", 3, "three", "employee", "b", "model", ("tool",))
+def prepared(
+    supplied_workflow: WorkflowDefinition | None = None,
+    value: WorkflowProgressionDecision | None = None,
+    supplied_employee: EmployeeDefinition | None = None,
+) -> PreparedWorkflowStep:
+    supplied_workflow = wf() if supplied_workflow is None else supplied_workflow
+    value = decision() if value is None else value
+    supplied_employee = employee(value) if supplied_employee is None else supplied_employee
+    step = supplied_workflow.steps[value.next_step_index - 1]
+    return PreparedWorkflowStep(
+        supplied_workflow.id,
+        step.id,
+        value.next_step_index,
+        supplied_employee.id,
+        supplied_employee.instructions,
+        step.instructions,
+        supplied_employee.model,
+        tuple(supplied_employee.allowed_tools),
+    )
 
 
 def targets(tmp_path: Path, status: str = "succeeded", index: int = 2) -> tuple[Path, Path]:
@@ -117,12 +157,47 @@ def test_public_signature_and_exact_six_argument_identity(tmp_path: Path) -> Non
     assert all(left is right for left, right in zip(received, supplied, strict=True))
 
 
-def test_prepare_delegates_once_and_returns_exact_dependency_object(tmp_path: Path) -> None:
-    state, events = targets(tmp_path); value = prepared(); calls = 0
-    def fake(*_: object) -> object:
-        nonlocal calls; calls += 1; return value
-    assert call(decision(), wf(), approval(), employee(), state, events, phase116_function=fake) is value
-    assert calls == 1
+@pytest.mark.parametrize("index", [1, 2], ids=["current-one", "current-two"])
+def test_prepare_delegates_once_and_returns_exact_dependency_object(
+    tmp_path: Path, index: int
+) -> None:
+    supplied_workflow = wf()
+    supplied_decision = decision(index)
+    supplied_approval = approval(supplied_decision)
+    supplied_employee = employee(supplied_decision)
+    state, events = targets(tmp_path, index=index)
+    value = prepared(supplied_workflow, supplied_decision, supplied_employee)
+    before = (state.read_bytes(), events.read_bytes())
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*args: object) -> object:
+        calls.append(args)
+        return value
+
+    assert call(
+        supplied_decision,
+        supplied_workflow,
+        supplied_approval,
+        supplied_employee,
+        state,
+        events,
+        phase116_function=fake,
+    ) is value
+    assert calls == [
+        (
+            supplied_decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state,
+            events,
+        )
+    ]
+    assert value.workflow_id == supplied_workflow.id
+    assert value.step_id == supplied_decision.next_step_id
+    assert value.step_index == index + 1
+    assert value.employee_id == supplied_decision.next_employee_id
+    assert (state.read_bytes(), events.read_bytes()) == before
 
 
 def test_completion_and_failure_are_identity_preserving_zero_call_stops(tmp_path: Path) -> None:

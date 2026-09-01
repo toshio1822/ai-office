@@ -441,9 +441,29 @@ def test_prepare_delegates_canonical_six_arguments_once_and_returns_identity(tmp
 
 
 @pytest.mark.parametrize("index", [1, 2, 3])
-def test_prepare_indices_one_two_three_are_zero_call(tmp_path: Path, index: int) -> None:
+def test_prepare_indices_one_two_three_delegate_once_with_identity(
+    tmp_path: Path, index: int
+) -> None:
     value = data(tmp_path, index=index)
-    assert_rejected(value, "decision_contract", lambda *_: pytest.fail("called"))
+    expected = prepared(value["workflow"], value["result"], value["employee"])
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*args: object) -> PreparedWorkflowStep:
+        calls.append(args)
+        return expected
+
+    assert invoke(value, fake) is expected
+    assert calls == [
+        (
+            value["result"], value["workflow"], value["approval"], value["employee"],
+            value["state_path"], value["events_path"],
+        )
+    ]
+    assert expected.workflow_id == value["workflow"].id
+    assert expected.step_id == value["result"].next_step_id
+    assert expected.step_index == index + 1
+    assert expected.employee_id == value["result"].next_employee_id
+    unchanged(value)
 
 
 @pytest.mark.parametrize("kind", ["completion", "failure"])

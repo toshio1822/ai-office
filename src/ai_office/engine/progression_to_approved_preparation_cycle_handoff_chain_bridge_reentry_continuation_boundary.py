@@ -211,7 +211,7 @@ def _check_prepare(
     next_index = result.next_step_index
     if (
         type(current_index) is not int
-        or current_index < 3
+        or current_index < 1
         or current_index >= len(workflow.steps)
         or type(next_index) is not int
         or next_index != current_index + 1
