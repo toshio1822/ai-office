@@ -19,7 +19,7 @@ Requirement-to-test mapping (Issue #316):
      test_nested_request_fully_attribute_compatible_substitute_is_rejected,
      test_nested_secretstr_exact_type_is_rejected
 - approval semantic contract -> test_approval_semantic_contract_is_strict
-- step index >= 6 requirement -> test_continuation_indices_one_through_five_are_rejected_before_phase141
+- continuation step index >= 2 requirement -> test_continuation_indices_one_rejects_and_two_through_five_delegate_once
 - persistence result byte count / state bytes match -> test_persistence_byte_count_requires_positive_exact_actual_length,
      test_persistence_byte_count_int_subclass_is_rejected,
      test_mismatched_persisted_running_state_is_rejected_before_phase141
@@ -276,33 +276,44 @@ def _event(
     )
 
 
-def setup(tmp_path: Path) -> dict[str, object]:
+def setup(tmp_path: Path, *, index: int = 6) -> dict[str, object]:
+    definition = workflow()
+    step = definition.steps[index - 1]
     state_value = WorkflowExecutionState(
-        "w", "running", "six", 6, "e", ("one", "two", "three", "four", "five"), None
+        "w",
+        "running",
+        step.id,
+        index,
+        "e",
+        tuple(item.id for item in definition.steps[: index - 1]),
+        None,
     )
     state_path, events_path = tmp_path / "state", tmp_path / "events"
     state_path.write_text(serialize_workflow_execution_state_json(state_value), encoding="utf-8")
-    events_path.write_text(
-        "".join(
+    predecessor_events = []
+    for position, predecessor in enumerate(
+        definition.steps[: index - 1], 1
+    ):
+        predecessor_events.append(
             serialize_runtime_step_event_jsonl(
-                _event("step_succeeded", step_id, index, provider)
+                _event(
+                    "step_succeeded",
+                    predecessor.id,
+                    position,
+                    "other" if position < index - 1 else "openai",
+                )
             )
-            for step_id, index, provider in (
-                ("one", 1, "other"),
-                ("two", 2, "other"),
-                ("three", 3, "other"),
-                ("four", 4, "other"),
-                ("five", 5, "openai"),
-            )
-        ),
+        )
+    events_path.write_text(
+        "".join(predecessor_events),
         encoding="utf-8",
     )
-    request = ModelInvocationRequest("model", "system", "f", ("tool",))
+    request = ModelInvocationRequest("model", "system", step.instructions, ("tool",))
     tools = (ToolDefinition("tool", "Tool", ()),)
     return {
         "result": RunningStatePersistenceResult(len(state_path.read_bytes())),
         "start": PreparedStepExecutionStart(request, state_value),
-        "workflow": workflow(),
+        "workflow": definition,
         "employee": employee(),
         "state_path": state_path,
         "events_path": events_path,
@@ -319,21 +330,23 @@ def setup(tmp_path: Path) -> dict[str, object]:
     }
 
 
-def runtime_success() -> StepRuntimeExecutionSuccess:
+def runtime_success(index: int = 6) -> StepRuntimeExecutionSuccess:
+    step = workflow().steps[index - 1]
     return StepRuntimeExecutionSuccess(
         "w",
-        "six",
-        6,
+        step.id,
+        index,
         "e",
         ModelInvocationSuccess("openai", "response", "request", "completed", ("ok",), "ok"),
     )
 
 
-def runtime_failure() -> StepRuntimeExecutionFailure:
+def runtime_failure(index: int = 6) -> StepRuntimeExecutionFailure:
+    step = workflow().steps[index - 1]
     return StepRuntimeExecutionFailure(
         "w",
-        "six",
-        6,
+        step.id,
+        index,
         "e",
         ModelInvocationFailure("openai", "api_error", "safe", "request", None, None, None),
     )
@@ -520,20 +533,61 @@ def test_default_dependency_identity_and_non_callable_rejection(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("index", [1, 2, 3, 4, 5])
-def test_continuation_indices_one_through_five_are_rejected_before_phase141(
+def test_continuation_indices_one_rejects_and_two_through_five_delegate_once(
     tmp_path: Path, index: int
 ) -> None:
-    values = setup(tmp_path)
-    step = values["workflow"].steps[index - 1]  # type: ignore[union-attr]
-    state = WorkflowExecutionState(
-        "w", "running", step.id, index, "e", tuple(item.id for item in values["workflow"].steps[: index - 1]), None  # type: ignore[union-attr]
-    )
-    values["start"] = PreparedStepExecutionStart(
-        ModelInvocationRequest("model", "system", step.instructions, ("tool",)), state
-    )
-    values["state_path"].write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")  # type: ignore[union-attr]
-    values["result"] = RunningStatePersistenceResult(len(values["state_path"].read_bytes()))  # type: ignore[union-attr]
-    reject(values, "start_contract")
+    values = setup(tmp_path, index=index)
+    if index == 1:
+        before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
+        reject(values, "start_contract")
+        assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+        return
+
+    for expected in (runtime_success(index), runtime_failure(index)):
+        current = setup(tmp_path, index=index)
+        state = current["state_path"]
+        events = current["events_path"]
+        before = state.read_bytes(), events.read_bytes()  # type: ignore[union-attr]
+        start = current["start"]
+        workflow_value = current["workflow"]
+        assert isinstance(start, PreparedStepExecutionStart)
+        assert isinstance(workflow_value, WorkflowDefinition)
+        assert state.read_bytes() == serialize_workflow_execution_state_json(  # type: ignore[union-attr]
+            start.running_state
+        ).encode()
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state, events)  # type: ignore[arg-type]
+        )
+        assert tuple(
+            (event.step_index, event.step_id) for event in history.events
+        ) == tuple(
+            (position, step.id)
+            for position, step in enumerate(
+                workflow_value.steps[: index - 1], 1
+            )
+        )
+        calls: list[tuple[object, ...]] = []
+
+        def dependency(*args: object, expected: object = expected) -> object:
+            calls.append(args)
+            return expected
+
+        actual = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+            **current, phase141_function=dependency  # type: ignore[arg-type]
+        )
+        assert actual is expected and len(calls) == 1
+        assert all(
+            left is right
+            for left, right in zip(
+                calls[0],
+                tuple(current[name] for name in (
+                    "result", "start", "workflow", "employee", "state_path", "events_path",
+                    "resolved_tools", "api_key", "approval", "transport",
+                )),
+                strict=True,
+            )
+        )
+        assert (state.read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
 
 
 def test_valid_execution_route_delegates_once_with_identity(tmp_path: Path) -> None:
@@ -1297,39 +1351,22 @@ def test_stop_routes_with_provider_openai_terminal_are_zero_call(tmp_path: Path)
 
 
 def _real_default_values(tmp_path: Path) -> dict[str, object]:
-    """Phase 147-provenance running step-6 inputs with earlier+immediate empty output.
+    """Phase 147-provenance running step-2 inputs with one succeeded predecessor.
 
-    Step 2 (earlier predecessor) carries the exact empty built-in ``output_text``
-    and the immediate (step-5) predecessor carries the Phase 149-valid ``request_id
-    is None`` provenance and the exact empty built-in ``output_text``, exactly as
-    the Phase 154 whole-chain regression proves Phase 141 accepts. The only
-    synthetic seam is the final ``transport`` callable.
+    The only synthetic seam is the final ``transport`` callable; every Phase
+    155/141/133/126/119/112 dependency keeps its public default.
     """
     state_value = WorkflowExecutionState(
-        "w", "running", "six", 6, "e", ("one", "two", "three", "four", "five"), None
+        "w", "running", "two", 2, "e", ("one",), None
     )
     state_path, events_path = tmp_path / "smoke-state", tmp_path / "smoke-events"
     state_path.write_text(serialize_workflow_execution_state_json(state_value), encoding="utf-8")
-    events = [
-        _event("step_succeeded", step_id, index, "openai", output_text=output)
-        for index, (step_id, output) in enumerate(
-            (
-                ("one", "output-1"),
-                ("two", ""),
-                ("three", "output-3"),
-                ("four", "output-4"),
-                ("five", ""),
-            ),
-            start=1,
-        )
-    ]
-    # Immediate step-5 request_id is the exact None provenance (Phase 149).
-    events[-1] = _event("step_succeeded", "five", 5, "openai", output_text="", request_id=None)
+    events = [_event("step_succeeded", "one", 1, "openai")]
     events_path.write_text(
         "".join(serialize_runtime_step_event_jsonl(event) for event in events),
         encoding="utf-8",
     )
-    request = ModelInvocationRequest("model", "system", "f", ("tool",))
+    request = ModelInvocationRequest("model", "system", "b", ("tool",))
     tools = (ToolDefinition("tool", "Tool", ()),)
     return {
         "result": RunningStatePersistenceResult(len(state_path.read_bytes())),
@@ -1383,13 +1420,11 @@ def _success_transport(
 def test_real_default_smoke_reaches_real_phase141_through_synthetic_transport(
     tmp_path: Path,
 ) -> None:
-    """Real-default smoke: Phase 155 -> real Phase 141 default chain -> synthetic transport.
+    """Real-default smoke: Phase 155 -> 141 -> 133 -> 126 -> 119 -> 112.
 
-    No ``phase141_function`` override and no monkeypatching: the only synthetic
-    seam is the final ``transport`` callable. Proves Phase 155 inherits the
-    Phase 154-proven Phase-141-to-execution empty-success compatibility closure
-    for the combined earlier-empty + immediate-empty + immediate-request_id-None
-    provenance.
+    No lower dependency override and no monkeypatching: the only synthetic seam
+    is the final ``transport`` callable. The input is the exact persisted
+    running step-2 state with exactly one succeeded step-1 predecessor event.
     """
     values = _real_default_values(tmp_path)
     state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
@@ -1399,11 +1434,9 @@ def test_real_default_smoke_reaches_real_phase141_through_synthetic_transport(
             values["state_path"], values["events_path"]  # type: ignore[arg-type]
         )
     )
-    assert history.events[1].step_index == 2
-    assert history.events[1].output_text == ""
-    assert history.events[-1].step_index == 5
-    assert history.events[-1].output_text == ""
-    assert history.events[-1].request_id is None
+    assert len(history.events) == 1
+    assert history.events[0].step_index == 1
+    assert history.events[0].step_id == "one"
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
     result = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
         **values,  # type: ignore[arg-type]
@@ -1415,7 +1448,7 @@ def test_real_default_smoke_reaches_real_phase141_through_synthetic_transport(
         result.step_id,
         result.step_index,
         result.employee_id,
-    ) == ("w", "six", 6, "e")
+    ) == ("w", "two", 2, "e")
     invocation = result.invocation_result
     assert invocation.provider == "openai"
     assert invocation.response_id == "resp_123"
