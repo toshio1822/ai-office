@@ -1072,7 +1072,7 @@ Phase 126 (future explicit caller action)
 
 ## Persisted Running Execution Cycle Handoff Chain Reentry Continuation Boundary（Phase 126）
 
-`route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary()`は、正確なPhase 125の`RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるread-only handoff boundaryです。継続経路（`current_step_index >= 3`）では、matchingする`PreparedStepExecutionStart`、workflow、employee、regular state/event targets、resolved tools、credential、approval、transportを再検証し、既存の公開Phase 119 boundaryへcanonical ten-argument order`(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`で正確に一度だけ委譲します。Phase 119の正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を同じobjectで返します。supplied object identityを維持し、retryは行いません。
+`route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary()`は、正確なPhase 125の`RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるread-only handoff boundaryです。継続経路（`PreparedStepExecutionStart.running_state.current_step_index >= 2`）では、matchingする`PreparedStepExecutionStart`、workflow、employee、regular state/event targets、resolved tools、credential、approval、transportを再検証し、既存の公開Phase 119 boundaryへcanonical ten-argument order`(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`で正確に一度だけ委譲します。step 2では、exact persisted running stateとexact succeeded step-1 predecessor historyを受け渡します。Phase 119の正確な`StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`を同じobjectで返します。supplied object identityを維持し、state/event targetsをbyte-for-byte不変に保ち、retryは行いません。
 
 `workflow_complete`と`persisted_failure`は実行専用入力をすべて`None`にし、strict terminal state/historyとtargetsのbyte-for-byte不変性を確認して、Phase 119を呼ばずに同じobjectを返すzero-call stop routeです。Phase 126は1回の明示的に許可されたpersisted-running execution handoffだけを行い、Phase 112を直接参照・呼び出しせず、runtime resultの永続化、persisted outcomeの分類、workflow progression、retry、自動継続、finalize、schedule、loop、parallel execution、CLI/GUI behaviorを追加しません。依存のsafe errorはidentityを保持し、unexpected error、不正な返却、target mutationはdetail-safeに分類して可能な限り両targetをbyte-for-byteに補償復元します。focused testsはinjected Phase 119 fakeのみを使用し、real provider、network、有料API、external tool、real transportを呼びません。
 
@@ -1212,7 +1212,7 @@ Phase 126 (future explicit caller action)
 
 ## Persisted-Running Execution Cycle Handoff Chain Bridge Reentry Continuation Boundary（Phase 133）
 
-`route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary()`は、Phase 132から受け取った正確な`RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を検証するouter bridgeです。実行routeでは`current_step_index >= 4`、exact workflow/start/request/running-state/employee/tools/credential/approval/target linkage、Phase 132のcanonical running-state bytes、succeeded predecessor history、直前terminal eventのprovider=`"openai"`を再検証します。以前のpredecessor provider条件は不必要に厳格化しません。
+`route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary()`は、Phase 132から受け取った正確な`RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を検証するouter bridgeです。実行routeでは`PreparedStepExecutionStart.running_state.current_step_index >= 2`、exact workflow/start/request/running-state/employee/tools/credential/approval/target linkage、Phase 132のcanonical running-state bytes、succeeded predecessor history、直前terminal eventのprovider=`"openai"`を再検証します。step 2ではpredecessor historyはexact succeeded step 1です。以前のpredecessor provider条件は不必要に厳格化しません。
 
 検証後、既存の公開Phase 126 `route_persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary()`へ、supplied object identityを保持した`(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`のcanonical ten-argument orderで正確に一度だけ委譲します。Phase 126からはexact `StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`だけを受け入れ、nested invocation result、OpenAI provider、runtime linkage、target byte-for-byte不変性を再検証して同じresult objectを返します。
 
@@ -1378,7 +1378,7 @@ Phase 129のpersisted-success local validationも、shared loaderが正常成功
 
 ## Persisted-Running Execution Cycle Handoff Chain Bridge Outer Reentry Continuation Boundary（Phase 141）
 
-`route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`は、Phase 139から受け取ったexact `RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を、公開Phase 133へcanonical ten-argument order `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`でexactly once委譲するouter boundaryです。実行routeでは`current_step_index >= 5`、exact workflow/start/request/running-state/employee/tools/credential/approval/transport、regular targets、Phase 139のcanonical running-state bytes、succeeded predecessor history、immediate predecessor provider=`"openai"`を再検証します。exact built-in empty success `output_text`はPhase 140の非final契約どおり許容します。
+`route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`は、Phase 139から受け取ったexact `RunningStatePersistenceResult`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を、公開Phase 133へcanonical ten-argument order `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`でexactly once委譲するouter boundaryです。実行routeでは`PreparedStepExecutionStart.running_state.current_step_index >= 2`、exact workflow/start/request/running-state/employee/tools/credential/approval/transport、regular targets、Phase 139のcanonical running-state bytes、succeeded predecessor history、immediate predecessor provider=`"openai"`を再検証します。step 2ではexact persisted running stateとexact succeeded step-1 predecessor historyを使用します。exact built-in empty success `output_text`はPhase 140の非final契約どおり許容します。
 
 検証後、公開Phase 133 `route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary()`へsupplied object identityを保持したまま正確に一度だけ委譲し、exact `StepRuntimeExecutionSuccess`または`StepRuntimeExecutionFailure`、nested invocation result、provider=`"openai"`、runtime linkage、target byte-for-byte不変性を再検証して同じresult objectを返します。`workflow_complete`と`persisted_failure`はexecution-only inputを`None`に限定し、Phase 133を呼ばず同じobjectを返すunchanged zero-call stop routeです。
 
@@ -1389,7 +1389,7 @@ Phase 139
 RunningStatePersistenceResult | workflow_complete | persisted_failure
     ↓
 Phase 141 persisted-running execution cycle handoff chain bridge outer reentry continuation boundary
-RunningStatePersistenceResult (current_step_index >= 5) + exact execution inputs
+RunningStatePersistenceResult (current_step_index >= 2) + exact execution inputs
     → Phase 133 exactly once in canonical ten-argument order
     → exact StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
 workflow_complete | persisted_failure
@@ -1858,7 +1858,7 @@ Phase 154は以下を行いません:
 
 ## Phase 155: Persisted-Running Execution Cycle Handoff Chain Bridge Outer-Chain Reentry Continuation Boundary
 
-Phase 155はPhase 147のpersisted-running execution結果を公開Phase 141へ明示的にhandoffする**新しいouter-chain orchestration boundary**です。Phase 147が生成したexact `RunningStatePersistenceResult`と対応するexact `PreparedStepExecutionStart`（step index `>= 6`、Phase 147 continuation provenance）を、公開Phase 141 `route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(...)`へcanonical ten-argument order `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`でexactly once委譲します。
+Phase 155はPhase 147のpersisted-running execution結果を公開Phase 141へ明示的にhandoffする**新しいouter-chain orchestration boundary**です。Phase 147が生成したexact `RunningStatePersistenceResult`と対応するexact `PreparedStepExecutionStart`（`running_state.current_step_index >= 2`、Phase 147 continuation provenance）を、公開Phase 141 `route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(...)`へcanonical ten-argument order `(result, start, workflow, employee, state_path, events_path, resolved_tools, api_key, approval, transport)`でexactly once委譲します。step 2ではexact persisted running stateとexact succeeded step-1 predecessor historyを受け取り、下流実行が返すruntime resultだけを返します。
 
 ```text
 Phase 147 persisted-running execution result

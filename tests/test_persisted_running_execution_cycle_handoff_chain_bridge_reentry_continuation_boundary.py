@@ -192,31 +192,42 @@ def _event(
     )
 
 
-def setup(tmp_path: Path) -> dict[str, object]:
+def setup(tmp_path: Path, *, index: int = 4) -> dict[str, object]:
+    definition = workflow()
+    current = definition.steps[index - 1]
     state_value = WorkflowExecutionState(
-        "w", "running", "four", 4, "e", ("one", "two", "three"), None
+        "w",
+        "running",
+        current.id,
+        index,
+        "e",
+        tuple(item.id for item in definition.steps[: index - 1]),
+        None,
     )
     state_path, events_path = tmp_path / "state", tmp_path / "events"
     state_path.write_text(serialize_workflow_execution_state_json(state_value), encoding="utf-8")
     events_path.write_text(
         "".join(
             serialize_runtime_step_event_jsonl(
-                _event("step_succeeded", step_id, index, provider)
+                _event(
+                    "step_succeeded",
+                    predecessor.id,
+                    position,
+                    "other" if position < index - 1 else "openai",
+                )
             )
-            for step_id, index, provider in (
-                ("one", 1, "other"),
-                ("two", 2, "other"),
-                ("three", 3, "openai"),
+            for position, predecessor in enumerate(
+                definition.steps[: index - 1], 1
             )
         ),
         encoding="utf-8",
     )
-    request = ModelInvocationRequest("model", "system", "d", ("tool",))
+    request = ModelInvocationRequest("model", "system", current.instructions, ("tool",))
     tools = (ToolDefinition("tool", "Tool", ()),)
     return {
         "result": RunningStatePersistenceResult(len(state_path.read_bytes())),
         "start": PreparedStepExecutionStart(request, state_value),
-        "workflow": workflow(),
+        "workflow": definition,
         "employee": employee(),
         "state_path": state_path,
         "events_path": events_path,
@@ -233,21 +244,23 @@ def setup(tmp_path: Path) -> dict[str, object]:
     }
 
 
-def runtime_success() -> StepRuntimeExecutionSuccess:
+def runtime_success(index: int = 4) -> StepRuntimeExecutionSuccess:
+    current = workflow().steps[index - 1]
     return StepRuntimeExecutionSuccess(
         "w",
-        "four",
-        4,
+        current.id,
+        index,
         "e",
         ModelInvocationSuccess("openai", "response", "request", "completed", ("ok",), "ok"),
     )
 
 
-def runtime_failure() -> StepRuntimeExecutionFailure:
+def runtime_failure(index: int = 4) -> StepRuntimeExecutionFailure:
+    current = workflow().steps[index - 1]
     return StepRuntimeExecutionFailure(
         "w",
-        "four",
-        4,
+        current.id,
+        index,
         "e",
         ModelInvocationFailure("openai", "api_error", "safe", "request", None, None, None),
     )
@@ -409,20 +422,39 @@ def test_default_dependency_identity_and_non_callable_rejection(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("index", [1, 2, 3])
-def test_continuation_indices_one_two_three_are_rejected_before_phase126(
+def test_continuation_index_one_rejects_and_two_three_delegate_once(
     tmp_path: Path, index: int
 ) -> None:
-    values = setup(tmp_path)
-    step = values["workflow"].steps[index - 1]  # type: ignore[union-attr]
-    state = WorkflowExecutionState(
-        "w", "running", step.id, index, "e", tuple(item.id for item in values["workflow"].steps[: index - 1]), None  # type: ignore[union-attr]
+    values = setup(tmp_path, index=index)
+    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
+    if index == 1:
+        reject(values, "start_contract")
+        assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+        return
+
+    expected = runtime_success(index)
+    seen: list[tuple[object, ...]] = []
+
+    def dependency(*args: object) -> object:
+        seen.append(args)
+        return expected
+
+    actual = route_persisted_running_execution_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+        **values, phase126_function=dependency  # type: ignore[arg-type]
     )
-    values["start"] = PreparedStepExecutionStart(
-        ModelInvocationRequest("model", "system", step.instructions, ("tool",)), state
+    assert actual is expected and len(seen) == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            seen[0],
+            tuple(values[name] for name in (
+                "result", "start", "workflow", "employee", "state_path", "events_path",
+                "resolved_tools", "api_key", "approval", "transport",
+            )),
+            strict=True,
+        )
     )
-    values["state_path"].write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")  # type: ignore[union-attr]
-    values["result"] = RunningStatePersistenceResult(len(values["state_path"].read_bytes()))  # type: ignore[union-attr]
-    reject(values, "start_contract")
+    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(

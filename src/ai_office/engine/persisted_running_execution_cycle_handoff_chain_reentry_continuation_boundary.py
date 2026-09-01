@@ -342,7 +342,7 @@ def _validate_execution_inputs(
         _compatibility_error("start_contract")
     if (
         type(running.current_step_index) is not int
-        or not 3 <= running.current_step_index <= len(workflow.steps)
+        or not 2 <= running.current_step_index <= len(workflow.steps)
     ):
         _compatibility_error("start_contract")
     step = workflow.steps[running.current_step_index - 1]

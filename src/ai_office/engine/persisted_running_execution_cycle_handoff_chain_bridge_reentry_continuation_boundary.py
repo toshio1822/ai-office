@@ -329,7 +329,7 @@ def _check_execution_inputs(
         _fail("start_contract")
     if (
         type(running.current_step_index) is not int
-        or not 4 <= running.current_step_index <= len(workflow.steps)
+        or not 2 <= running.current_step_index <= len(workflow.steps)
     ):
         _fail("start_contract")
     step = workflow.steps[running.current_step_index - 1]

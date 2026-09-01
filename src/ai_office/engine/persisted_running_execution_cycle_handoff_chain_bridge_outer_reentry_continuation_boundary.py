@@ -192,7 +192,7 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_c
         _require_unchanged(state_path, events_path, original, "runtime_contract")
         try:
             valid = (
-                start.running_state.current_step_index >= 5
+                start.running_state.current_step_index >= 2
                 and is_valid_step_runtime_execution_result(
                     value,
                     workflow_id=start.running_state.workflow_id,
@@ -336,7 +336,7 @@ def _check_execution_inputs(
         _fail("start_contract")
     if (
         type(running.current_step_index) is not int
-        or not 5 <= running.current_step_index <= len(workflow.steps)
+        or not 2 <= running.current_step_index <= len(workflow.steps)
     ):
         _fail("start_contract")
     step = workflow.steps[running.current_step_index - 1]
