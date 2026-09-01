@@ -181,7 +181,7 @@ def _check_prepared_index(
     value: PreparedWorkflowStep,
     workflow: WorkflowDefinition,
 ) -> None:
-    if type(value.step_index) is not int or not 3 <= value.step_index <= len(workflow.steps):
+    if type(value.step_index) is not int or not 2 <= value.step_index <= len(workflow.steps):
         _fail("prepared_step_contract")
 
 
@@ -190,7 +190,7 @@ def _check_prepared(
     workflow: WorkflowDefinition,
     employee: EmployeeDefinition,
 ) -> None:
-    if type(value.step_index) is not int or not 3 <= value.step_index <= len(workflow.steps):
+    if type(value.step_index) is not int or not 2 <= value.step_index <= len(workflow.steps):
         _fail("prepared_step_contract")
     step = workflow.steps[value.step_index - 1]
     if not (

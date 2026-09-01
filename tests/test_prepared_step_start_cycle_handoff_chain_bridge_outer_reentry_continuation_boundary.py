@@ -481,22 +481,44 @@ def test_stop_routes_reject_empty_predecessor_output_zero_call(
 
 
 @pytest.mark.parametrize("index", [1, 2, 3, 4])
-def test_prepared_indices_one_to_four_are_zero_call_rejections(
+def test_prepared_index_one_rejects_and_indices_two_to_four_delegate_once(
     tmp_path: Path, index: int
 ) -> None:
     value = prepared(index)
-    state, events, before_state, before_events = targets(tmp_path, index=4)
-    calls = 0
+    target_index = index - 1 if index >= 2 else 4
+    state, events, before_state, before_events = targets(tmp_path, index=target_index)
+    supplied_workflow = workflow()
+    supplied_employee = employee(index)
+    returned = start_for(value, supplied_workflow)
+    calls: list[tuple[object, ...]] = []
 
-    def fake(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
+    def fake(*args: object) -> PreparedStepExecutionStart:
+        calls.append(args)
+        return returned
 
-    assert_rejected(
-        value, workflow(), employee(index), state, events, "prepared_step_contract", fake
-    )
-    assert calls == 0
+    if index == 1:
+        assert_rejected(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            "prepared_step_contract",
+            fake,
+        )
+        assert calls == []
+    else:
+        assert invoke(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        ) is returned
+        assert calls == [
+            (value, supplied_workflow, supplied_employee, state, events)
+        ]
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
