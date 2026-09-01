@@ -171,7 +171,7 @@ def _validate_prepare(
     if not (
         type(current_index) is int
         and type(next_index) is int
-        and 2 <= current_index < len(workflow.steps)
+        and 1 <= current_index < len(workflow.steps)
         and next_index == current_index + 1
     ):
         _raise("decision_contract")

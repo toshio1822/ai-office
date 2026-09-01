@@ -446,31 +446,54 @@ def test_prepare_route_delegates_once_and_returns_exact_prepared_identity(
     assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
-@pytest.mark.parametrize("index", [1, 2], ids=["index-one", "index-two"])
-def test_prepare_current_index_below_three_is_rejected_before_phase123(
+@pytest.mark.parametrize("index", [1, 2], ids=["current-one", "current-two"])
+def test_prepare_current_index_one_two_delegate_once_with_identity(
     tmp_path: Path, index: int
 ) -> None:
-    decision, supplied_workflow, supplied_approval, supplied_employee, state, events, *_ = setup(
-        tmp_path, index=index
-    )
-    calls = 0
-
-    def forbidden(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert_rejected(
+    (
         decision,
         supplied_workflow,
         supplied_approval,
         supplied_employee,
         state,
         events,
-        "decision_contract",
-        forbidden,
+        before_state,
+        before_events,
+    ) = setup(tmp_path, index=index)
+    expected = prepared(supplied_workflow, decision, supplied_employee)
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*args: object) -> PreparedWorkflowStep:
+        calls.append(args)
+        return expected
+
+    assert (
+        invoke(
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        )
+        is expected
     )
-    assert calls == 0
+    assert calls == [
+        (
+            decision,
+            supplied_workflow,
+            supplied_approval,
+            supplied_employee,
+            state,
+            events,
+        )
+    ]
+    assert expected.workflow_id == supplied_workflow.id
+    assert expected.step_id == decision.next_step_id
+    assert expected.step_index == index + 1
+    assert expected.employee_id == decision.next_employee_id
+    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
 
 
 @pytest.mark.parametrize("route", ["complete", "failure"])
