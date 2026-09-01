@@ -286,19 +286,59 @@ def test_prepared_route_uses_canonical_identity_once_and_persists_state_only(
 
 
 @pytest.mark.parametrize("index", [1, 2, 3])
-def test_continuation_indices_below_four_are_rejected_before_phase125(
+def test_index_one_rejects_and_indices_two_three_delegate_once(
     tmp_path: Path, index: int
 ) -> None:
-    state, events = targets(tmp_path)
-    calls = 0
+    target_index = index - 1 if index >= 2 else 3
+    supplied_workflow = workflow()
+    supplied_employee = employee(index)
+    value = start(index)
+    state, events = targets(tmp_path, index=target_index)
+    before_state, before_events = state.read_bytes(), events.read_bytes()
+    expected_state = serialize_workflow_execution_state_json(
+        value.running_state
+    ).encode()
+    expected = RunningStatePersistenceResult(len(expected_state))
+    calls: list[tuple[object, ...]] = []
 
-    def fake(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
 
-    reject(lambda: invoke(start(index), employee(index), state, events, fake), "start_contract")
-    assert calls == 0
+    if index == 1:
+        reject(
+            lambda: route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+                value,
+                supplied_workflow,
+                supplied_employee,
+                state,
+                events,
+                phase125_function=fake,
+            ),
+            "start_contract",
+        )
+        assert calls == []
+        assert (state.read_bytes(), events.read_bytes()) == (
+            before_state,
+            before_events,
+        )
+    else:
+        returned = route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            phase125_function=fake,
+        )
+        assert returned is expected
+        assert calls == [
+            (value, supplied_workflow, supplied_employee, state, events)
+        ]
+        assert state.read_bytes() == expected_state
+        assert state.read_bytes() != before_state
+        assert events.read_bytes() == before_events
 
 
 @pytest.mark.parametrize("bad", [object(), RunningStatePersistenceResult(1)])

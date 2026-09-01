@@ -200,7 +200,7 @@ def _validate_start(
     request, state = value.request, value.running_state
     if type(request) is not ModelInvocationRequest or type(state) is not WorkflowExecutionState:
         _compatibility_error("start_contract")
-    if type(state.current_step_index) is not int or not 3 <= state.current_step_index <= len(workflow.steps):
+    if type(state.current_step_index) is not int or not 2 <= state.current_step_index <= len(workflow.steps):
         _compatibility_error("start_contract")
     step = workflow.steps[state.current_step_index - 1]
     expected_completed = tuple(item.id for item in workflow.steps[: state.current_step_index - 1])

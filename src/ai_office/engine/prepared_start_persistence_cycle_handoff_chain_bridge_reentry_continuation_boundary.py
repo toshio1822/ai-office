@@ -217,7 +217,7 @@ def _check_start(
         _fail("start_contract")
     if (
         type(state.current_step_index) is not int
-        or not 4 <= state.current_step_index <= len(workflow.steps)
+        or not 2 <= state.current_step_index <= len(workflow.steps)
     ):
         _fail("start_contract")
     step = workflow.steps[state.current_step_index - 1]

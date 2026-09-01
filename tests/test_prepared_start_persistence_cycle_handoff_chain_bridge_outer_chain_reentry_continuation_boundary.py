@@ -185,34 +185,41 @@ def _event(
 def predecessor_targets(
     tmp_path: Path,
     *,
+    index: int = 5,
     output_text: object = "output",
     terminal_provider: object = "openai",
     terminal_request_id: object = "request",
     terminal_response_id: object = "response",
 ) -> tuple[Path, Path, bytes, bytes]:
     definition = workflow()
+    current = definition.steps[index - 1]
     state = WorkflowExecutionState(
         "workflow",
         "succeeded",
-        "five",
-        5,
-        "e",
-        ("one", "two", "three", "four", "five"),
+        current.id,
+        index,
+        current.employee,
+        tuple(item.id for item in definition.steps[:index]),
         None,
     )
     events = [
-        _event(definition, 1, provider="other", request_id="request-one", response_id="response-one"),
-        _event(definition, 2, provider="other", request_id="request-two", response_id="response-two"),
-        _event(definition, 3, provider="other", request_id="request-three", response_id="response-three"),
-        _event(definition, 4, provider="openai", request_id="request-four", response_id="response-four"),
         _event(
             definition,
-            5,
+            position,
+            provider="other" if position < index - 1 else "openai",
+            request_id=f"request-{definition.steps[position - 1].id}",
+            response_id=f"response-{definition.steps[position - 1].id}",
+        )
+        for position in range(1, index)
+    ] + [
+        _event(
+            definition,
+            index,
             provider=terminal_provider,
             output_text=output_text,
             request_id=terminal_request_id,
             response_id=terminal_response_id,
-        ),
+        )
     ]
     state_bytes = serialize_workflow_execution_state_json(state).encode()
     event_bytes = b"".join(serialize_runtime_step_event_jsonl(event).encode() for event in events)
@@ -450,22 +457,69 @@ def test_terminal_empty_and_nonempty_output_are_accepted(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("index", [1, 2, 3, 4, 5])
-def test_prepared_indices_one_to_five_are_zero_call_rejections(
+def test_prepared_index_one_rejects_and_indices_two_to_five_delegate_once(
     tmp_path: Path, index: int
 ) -> None:
-    state, events, before_state, before_events = predecessor_targets(tmp_path)
-    calls = 0
-
-    def fake(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert_rejected(
-        start(index), workflow(), employee(index), state, events, "start_contract", fake
+    target_index = index - 1 if index >= 2 else 5
+    state, events, before_state, before_events = predecessor_targets(
+        tmp_path, index=target_index
     )
-    assert calls == 0
-    assert (state.read_bytes(), events.read_bytes()) == (before_state, before_events)
+    supplied_workflow = workflow()
+    supplied_employee = employee(index)
+    value = start(index, supplied_workflow)
+    expected = _valid_persistence(value)
+    expected_state = serialize_workflow_execution_state_json(
+        value.running_state
+    ).encode()
+    calls: list[tuple[object, ...]] = []
+
+    def fake(*arguments: object) -> RunningStatePersistenceResult:
+        calls.append(arguments)
+        state.write_bytes(expected_state)
+        return expected
+
+    if index == 1:
+        assert_rejected(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            "start_contract",
+            fake,
+        )
+        assert calls == []
+        assert state.read_bytes() == before_state
+    else:
+        assert invoke(
+            value,
+            supplied_workflow,
+            supplied_employee,
+            state,
+            events,
+            fake,
+        ) is expected
+        assert calls == [
+            (value, supplied_workflow, supplied_employee, state, events)
+        ]
+        assert state.read_bytes() == expected_state
+        assert state.read_bytes() != before_state
+    assert events.read_bytes() == before_events
+
+    value = start(2, supplied_workflow)
+    supplied_employee = employee(2)
+    state, events, before_state, before_events = predecessor_targets(
+        tmp_path, index=1
+    )
+    expected_state = serialize_workflow_execution_state_json(
+        value.running_state
+    ).encode()
+    returned = public_route(value, supplied_workflow, supplied_employee, state, events)
+    assert type(returned) is RunningStatePersistenceResult
+    assert returned.state_bytes_written == len(expected_state)
+    assert state.read_bytes() == expected_state
+    assert state.read_bytes() != before_state
+    assert events.read_bytes() == before_events
 
 
 @pytest.mark.parametrize("kind", ["result", "workflow", "employee"])
