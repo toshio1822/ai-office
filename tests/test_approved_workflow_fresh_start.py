@@ -69,6 +69,7 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
+    RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
     route_runtime_result_to_progression_orchestration_boundary,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
@@ -86,6 +87,9 @@ from ai_office.runtime import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
+)
+from ai_office.runtime.persisted_start_execution import (
+    PersistedStartExecutionCompatibilityError,
 )
 from ai_office.storage import (
     RunningStatePersistenceError,
@@ -464,32 +468,32 @@ def test_07_partial_pair_creation_removes_only_created_target(
     state_path = tmp_path / "state"
     events_path = tmp_path / "events"
 
-    def failing_events_open(*args: object, **kwargs: object):
-        raise OSError("synthetic events open failure")
+    original_open = Path.open
+
+    def failing_events_open(
+        path: Path, mode: str = "r", *args: object, **kwargs: object
+    ):
+        if path == events_path and mode == "xb":
+            # The state exclusive-create really succeeded before the events
+            # exclusive-create is made to fail.
+            assert state_path.is_file()
+            raise OSError("synthetic events open failure")
+        return original_open(path, mode, *args, **kwargs)
 
     monkeypatch.setattr(
         "ai_office.engine.approved_workflow_fresh_start.Path.open",
         failing_events_open,
     )
-    with pytest.raises(FreshWorkflowBootstrapCompatibilityError):
-        route_approved_workflow_fresh_start(
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
             wf, state_path, events_path, context(wf, 1)
-        )
-    # The failing open happens on the events target; the state target may or
-    # may not have been created by the patched open.  Restore normal opens and
-    # assert that no events target exists and that a rerun from nonexistent
-    # targets succeeds.
-    monkeypatch.undo()
-    assert not events_path.exists()
-    state_path.unlink(missing_ok=True)
-    calls: list[object] = []
-    ctx = context(wf, 1)
-    ctx = replace(ctx, transport=success_transport(calls))
-    result = route_approved_workflow_fresh_start(
-        wf, state_path, events_path, ctx
+        ),
+        "dependency_error",
     )
-    assert type(result) is WorkflowProgressionDecision
-    assert len(calls) == 1
+    # The bootstrap itself compensates the state file created by the real
+    # exclusive-create; the test does not unlink either target.
+    assert not state_path.exists()
+    assert not events_path.exists()
 
 
 def test_08_loadback_mismatch_compensates_created_targets(
@@ -499,21 +503,64 @@ def test_08_loadback_mismatch_compensates_created_targets(
     state_path = tmp_path / "state"
     events_path = tmp_path / "events"
 
-    def corrupting_create(state: object, events: object, sbytes: bytes, ebytes: bytes) -> None:
-        Path(state).write_bytes(b"corrupted")
+    def mismatched_loadback(*_: object) -> object:
+        # Real _create_pair has completed, so both bootstrap-owned targets
+        # exist before strict loadback is deliberately rejected.
+        assert state_path.is_file()
+        assert events_path.is_file()
+        return object()
 
     monkeypatch.setattr(
-        "ai_office.engine.approved_workflow_fresh_start._create_pair",
-        corrupting_create,
+        "ai_office.engine.approved_workflow_fresh_start.load_workflow_execution_history",
+        mismatched_loadback,
     )
-    with pytest.raises(FreshWorkflowBootstrapCompatibilityError) as caught:
-        route_approved_workflow_fresh_start(
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
             wf, state_path, events_path, context(wf, 1)
-        )
-    assert classification(caught.value) == "initialization_contract"
-    # Compensation must not leave the corrupted target behind.
+        ),
+        "initialization_contract",
+    )
+    # Real-pair strict-loadback compensation removes both targets itself.
     assert not state_path.exists()
     assert not events_path.exists()
+
+    rollback_state_path = tmp_path / "rollback-state"
+    rollback_events_path = tmp_path / "rollback-events"
+    original_unlink = Path.unlink
+
+    def failing_state_unlink(
+        path: Path, *args: object, **kwargs: object
+    ) -> None:
+        if path == rollback_state_path:
+            raise OSError("synthetic rollback unlink failure")
+        original_unlink(path, *args, **kwargs)
+
+    def rollback_mismatch(*_: object) -> object:
+        assert rollback_state_path.is_file()
+        assert rollback_events_path.is_file()
+        return object()
+
+    monkeypatch.setattr(
+        "ai_office.engine.approved_workflow_fresh_start.load_workflow_execution_history",
+        rollback_mismatch,
+    )
+    monkeypatch.setattr(
+        "ai_office.engine.approved_workflow_fresh_start.Path.unlink",
+        failing_state_unlink,
+    )
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
+            wf,
+            rollback_state_path,
+            rollback_events_path,
+            context(wf, 1),
+        ),
+        "rollback_failure",
+    )
+    # The synthetic unlink failure is retained as an actual rollback failure;
+    # the other bootstrap-created target was still removed by the bootstrap.
+    assert rollback_state_path.is_file()
+    assert not rollback_events_path.exists()
 
 
 def test_09_invalid_step1_approval_keeps_ready_pair_unchanged(
@@ -655,14 +702,53 @@ def test_12_persistence_failure_compensates_to_ready_snapshot_no_retry(
     assert load_workflow_execution_state(malformed_state_path).status == "ready"
     assert malformed_events_path.read_bytes() == b""
 
+    mutated_state_path = tmp_path / "mutated-ready-state"
+    mutated_events_path = tmp_path / "mutated-ready-events"
+    ready_snapshot: list[tuple[bytes, bytes]] = []
+    mutating_safe = RunningStatePersistenceError("mutating safe failure")
+
+    def mutating_running(start: object, target: object) -> object:
+        del start
+        target = Path(target)
+        ready_snapshot.append(
+            (target.read_bytes(), mutated_events_path.read_bytes())
+        )
+        target.write_bytes(b"mutated-state")
+        mutated_events_path.write_bytes(b"mutated-events")
+        raise mutating_safe
+
+    with pytest.raises(RunningStatePersistenceError) as caught_mutating:
+        route_approved_workflow_fresh_start(
+            wf,
+            mutated_state_path,
+            mutated_events_path,
+            context(wf, 1),
+            running_persistence_function=mutating_running,
+            execution_function=execution,
+            phase172_function=execution,
+        )
+    assert caught_mutating.value is mutating_safe
+    assert len(ready_snapshot) == 1
+    assert (
+        mutated_state_path.read_bytes(),
+        mutated_events_path.read_bytes(),
+    ) == ready_snapshot[0]
+    assert load_workflow_execution_state(mutated_state_path).status == "ready"
+    assert mutated_events_path.read_bytes() == b""
+
 
 def test_13_execution_canonical_args_invalid_approval_keeps_running(
     tmp_path: Path,
 ) -> None:
     wf = workflow(2)
     state_path, events_path = tmp_path / "state", tmp_path / "events"
-    ctx = context(wf, 1, bad_execution_approval=True)
+    ctx = context(wf, 1)
     captured: list[tuple[object, ...]] = []
+    running_starts: list[object] = []
+
+    def record_running(start: object, target: object) -> object:
+        running_starts.append(start)
+        return _persist_running_result(start, target)
 
     def record_execution(*args: object, **kwargs: object) -> object:
         captured.append((args, kwargs))
@@ -678,7 +764,7 @@ def test_13_execution_canonical_args_invalid_approval_keeps_running(
         state_path,
         events_path,
         ctx,
-        running_persistence_function=_persist_running_result,
+        running_persistence_function=record_running,
         execution_function=record_execution,
         phase172_function=_fake_phase172_accept(),
     )
@@ -686,13 +772,63 @@ def test_13_execution_canonical_args_invalid_approval_keeps_running(
     assert len(captured) == 1
     args, kwargs = captured[0]
     assert kwargs == {"transport": ctx.transport}
-    assert args[0] is None or args[0] is not None  # start identity covered below
+    assert len(running_starts) == 1
+    assert type(args[0]) is PreparedStepExecutionStart
+    assert args[0] is running_starts[0]
+    assert args[0].request.model == ctx.employee.model
+    assert args[0].request.system_instructions == ctx.employee.instructions
+    assert args[0].request.task_instructions == wf.steps[0].instructions
+    assert args[0].request.allowed_tools == ctx.resolved_tools
+    assert args[0].running_state == WorkflowExecutionState(
+        "w", "running", "step-1", 1, "e1", (), None
+    )
     assert args[1] is state_path
     assert args[2] is wf
     assert args[3] is ctx.employee
     assert args[4] is ctx.resolved_tools
     assert args[5] is ctx.api_key
     assert args[6] is ctx.execution_approval
+
+    invalid_state_path = tmp_path / "invalid-approval-state"
+    invalid_events_path = tmp_path / "invalid-approval-events"
+    transport_calls: list[object] = []
+    phase172_calls: list[object] = []
+    invalid_starts: list[object] = []
+    invalid_ctx = context(wf, 1, bad_execution_approval=True)
+    invalid_ctx = replace(
+        invalid_ctx, transport=success_transport(transport_calls)
+    )
+
+    def record_invalid_running(start: object, target: object) -> object:
+        invalid_starts.append(start)
+        return _persist_running_result(start, target)
+
+    def unexpected_phase172(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        phase172_calls.append(1)
+        raise AssertionError("Phase172 must not run after invalid approval")
+
+    with pytest.raises(PersistedStartExecutionCompatibilityError) as caught:
+        route_approved_workflow_fresh_start(
+            wf,
+            invalid_state_path,
+            invalid_events_path,
+            invalid_ctx,
+            running_persistence_function=record_invalid_running,
+            phase172_function=unexpected_phase172,
+        )
+    assert caught.value.detail.classification == "request_data"
+    assert len(invalid_starts) == 1
+    expected_running = serialize_workflow_execution_state_json(
+        invalid_starts[0].running_state
+    ).encode()
+    assert invalid_state_path.read_bytes() == expected_running
+    assert invalid_events_path.read_bytes() == b""
+    assert load_workflow_execution_state(invalid_state_path) == WorkflowExecutionState(
+        "w", "running", "step-1", 1, "e1", (), None
+    )
+    assert transport_calls == []
+    assert phase172_calls == []
 
 
 def test_14_malformed_execution_output_compensates_to_running_snapshot(
@@ -722,6 +858,85 @@ def test_14_malformed_execution_output_compensates_to_running_snapshot(
     assert events_path.read_bytes() == b""
     # Never rolled back to ready/nonexistent.
     assert state_path.exists() and events_path.exists()
+
+    mutated_state_path = tmp_path / "mutated-running-state"
+    mutated_events_path = tmp_path / "mutated-running-events"
+    running_snapshot: list[tuple[bytes, bytes]] = []
+
+    def record_running(start: object, target: object) -> object:
+        result = _persist_running_result(start, target)
+        running_snapshot.append(
+            (mutated_state_path.read_bytes(), mutated_events_path.read_bytes())
+        )
+        return result
+
+    def mutating_malformed(*_: object, **__: object) -> object:
+        mutated_state_path.write_bytes(b"execution-mutated-state")
+        mutated_events_path.write_bytes(b"execution-mutated-events")
+        return object()
+
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
+            wf,
+            mutated_state_path,
+            mutated_events_path,
+            context(wf, 1),
+            running_persistence_function=record_running,
+            execution_function=mutating_malformed,
+            phase172_function=mutating_malformed,
+        ),
+        "execution_contract",
+    )
+    assert len(running_snapshot) == 1
+    assert (
+        mutated_state_path.read_bytes(),
+        mutated_events_path.read_bytes(),
+    ) == running_snapshot[0]
+    restored_running = load_workflow_execution_state(mutated_state_path)
+    assert restored_running == WorkflowExecutionState(
+        "w", "running", "step-1", 1, "e1", (), None
+    )
+    assert mutated_events_path.read_bytes() == b""
+    assert restored_running.status != "ready"
+
+    error_state_path = tmp_path / "error-running-state"
+    error_events_path = tmp_path / "error-running-events"
+    error_snapshot: list[tuple[bytes, bytes]] = []
+    execution_error = PersistedStartExecutionCompatibilityError("state_status")
+
+    def record_error_running(start: object, target: object) -> object:
+        result = _persist_running_result(start, target)
+        error_snapshot.append(
+            (error_state_path.read_bytes(), error_events_path.read_bytes())
+        )
+        return result
+
+    def mutating_execution_error(*_: object, **__: object) -> object:
+        error_state_path.write_bytes(b"execution-error-state")
+        error_events_path.write_bytes(b"execution-error-events")
+        raise execution_error
+
+    with pytest.raises(PersistedStartExecutionCompatibilityError) as caught_error:
+        route_approved_workflow_fresh_start(
+            wf,
+            error_state_path,
+            error_events_path,
+            context(wf, 1),
+            running_persistence_function=record_error_running,
+            execution_function=mutating_execution_error,
+            phase172_function=mutating_execution_error,
+        )
+    assert caught_error.value is execution_error
+    assert len(error_snapshot) == 1
+    assert (
+        error_state_path.read_bytes(),
+        error_events_path.read_bytes(),
+    ) == error_snapshot[0]
+    assert load_workflow_execution_state(error_state_path) == WorkflowExecutionState(
+        "w", "running", "step-1", 1, "e1", (), None
+    )
+    assert error_events_path.read_bytes() == b""
+    assert load_workflow_execution_state(error_state_path).status != "ready"
 
 
 def test_15_phase172_exact_input_and_no_outer_rollback_after_invocation(
@@ -786,6 +1001,34 @@ def test_15_phase172_exact_input_and_no_outer_rollback_after_invocation(
     assert classification(caught.value) == "phase172_contract"
     assert mutated_state.read_bytes() == b"mutated"
     assert mutated_events.read_bytes() == b""
+
+    safe_state = tmp_path / "safe-phase172-state"
+    safe_events = tmp_path / "safe-phase172-events"
+    safe_error = Phase172Error("synthetic recognized Phase172 error")
+    safe_calls: list[object] = []
+
+    def recognized_safe_phase172(result: object, *_: object) -> object:
+        safe_calls.append(result)
+        safe_state.write_bytes(b"phase172-safe-mutated-state")
+        safe_events.write_bytes(b"phase172-safe-mutated-events")
+        raise safe_error
+
+    with pytest.raises(Phase172Error) as caught_safe:
+        route_approved_workflow_fresh_start(
+            wf,
+            safe_state,
+            safe_events,
+            context(wf, 1),
+            running_persistence_function=_persist_running_result,
+            execution_function=_runtime_result(wf, 1),
+            phase172_function=recognized_safe_phase172,
+        )
+    assert caught_safe.value is safe_error
+    assert len(safe_calls) == 1
+    # A recognized Phase172 error is returned unchanged and no outer layer
+    # restores the running snapshot after Phase172 has been invoked.
+    assert safe_state.read_bytes() == b"phase172-safe-mutated-state"
+    assert safe_events.read_bytes() == b"phase172-safe-mutated-events"
 
 
 def test_16_bootstrap_composes_with_phase192_no_internal_190_192(
