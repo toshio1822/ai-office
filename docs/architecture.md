@@ -4304,3 +4304,70 @@ or events, and has no top-level rollback, retry, recursion, unbounded loop,
 automatic continuation, scheduler, finalizer, parallel work, CLI/GUI behavior,
 or provider/network/paid API behavior. Persisted resume/reentry remains a
 separate future public contract.
+
+## Phase 212: Persisted-Terminal Bounded Top-Level Resume
+
+Phase 212 is the explicit top-level entry for resuming an already persisted
+terminal workflow. It is intentionally separate from the Phase-210 fresh
+bounded start: it accepts no bootstrap context and performs no target-existence
+detection or fresh/resume auto-selection.
+
+```text
+authoritative persisted state/events
+          ↓
+Phase37: classify_persisted_execution_outcome_reentry (exactly once)
+          ↓
+Phase38: route_persisted_execution_outcome_reentry (exactly once)
+          ↓
+Phase38-owned duplicate read-only Phase37 classification (exactly once)
+          ├─ persisted_failure
+          │      → exact outer Phase37 object, terminal stop
+          │      → Phase31 zero-call, Phase192 zero-call
+          └─ persisted_success
+                 ↓
+              Phase31 exactly once
+                 ├─ workflow_complete
+                 │      → exact Phase38/31 object, terminal stop
+                 │      → Phase192 zero-call
+                 └─ prepare_next_step
+                        ↓
+                 deferred continuation validation
+                        ↓
+                 Phase192 exactly once
+                        ↓
+                 finite caller-supplied contexts
+                        ↓
+                 prepare_next_step | workflow_complete | persisted_failure
+                        ↓
+                       STOP
+```
+
+The duplicate read-only Phase37 classification is by design: Phase 38 owns
+stale-outcome revalidation, target invariance, routing, and lower error
+ownership. Phase 212 does not reread or revalidate full history at either
+thin result seam. A valid persisted failure must be the exact outer Phase37
+object; a valid final success must be the exact Phase38/31 result. Neither
+terminal route validates, consumes, or requires continuation contexts.
+
+Only a valid `prepare_next_step` result reaches continuation validation. The
+container must then be an exact built-in tuple of exact
+`ApprovedWorkflowContinuationContext` instances and the bounded dependency
+must be callable. Preparation approval, employee, tools, API key, execution
+approval, and transport contents remain Phase 192/190/lower-owned. The
+Phase-212 wrapper has no continuation loop and no retry.
+
+Persisted `ready` and `running` states are rejected by Phase 37 before Phase
+38 or Phase 192. A persisted `running` state does not prove whether an
+external provider side effect completed before process death, so automatic
+replay could duplicate execution; explicit persisted-running boundaries
+remain separate. Phase 37, Phase 38, and Phase 31 are read-only owners.
+Once Phase 192 begins, Phase 192/190 and lower boundaries own later durable
+state/event changes. Phase 212 never restores the pre-resume snapshot after
+that ownership boundary, even when the lower dependency raises or returns a
+malformed result.
+
+The Phase-212 focused suite contains exactly 20 top-level tests and uses only
+deterministic synthetic transports. No context or approval generation,
+employee/tool/key/transport lookup, automatic replay, fresh/resume router,
+recursion, unbounded loop, scheduler, finalizer, parallelism, CLI/GUI,
+provider/network, or paid API behavior is added.
