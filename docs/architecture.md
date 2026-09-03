@@ -4240,3 +4240,33 @@ use a local safe classification family, and unexpected errors from an injected
 Phase-190 substitute are sanitized without exposing exception details. The
 focused Phase-192 module contains exactly 20 tests; validation uses
 deterministic synthetic transports only.
+
+## Phase 208: Explicit Fresh Workflow Step-1 Bootstrap Boundary
+
+Phase 208 adds the public
+`route_approved_workflow_fresh_start` boundary for one explicit fresh workflow
+entry at step 1. It requires two nonexistent durable targets and an exact
+`ApprovedWorkflowBootstrapContext`; the context carries the distinct
+`InitialStepPreparationApproval`, step-1 employee, resolved tools, credential,
+execution approval, and transport. The initial approval is not a fabricated
+predecessor-bound `NextStepPreparationApproval`.
+
+The boundary creates the canonical ready state together with an empty event
+log using exclusive creation, and strictly loads both targets before accepting
+them. This ready pair is the first durable commit. It then directly constructs
+the existing `PreparedWorkflowStep` and `PreparedStepExecutionStart` models,
+calls `persist_prepared_running_state` once, and accepts the resulting running
+state plus unchanged empty events as the second durable commit.
+
+Exactly one `execute_persisted_start_openai_step` call follows. That public
+execution owner verifies the persisted start and performs one explicit
+execution, but does not persist the runtime result. Phase 172 receives that
+exact result once and owns terminal state/event persistence, classification, and
+progression. Phase 208 returns the exact Phase-172 result and stops immediately;
+it never prepares, starts, persists, or executes a later step.
+
+Phase 192 remains a separate caller action for bounded continuation after a
+`prepare_next_step` result. Phase 208 does not call Phase 190 or Phase 192 and
+does not generate contexts, approvals, or lookups. It adds no retry, loop,
+automatic continuation, scheduler, finalizer, parallel execution, or provider
+call, and therefore is not a full automatic workflow runner.

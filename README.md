@@ -4318,3 +4318,33 @@ safe local classifications. The focused Phase-192 suite contains exactly 20
 tests and uses deterministic synthetic transports only. Retry, recursion,
 unbounded loops, parallel execution, scheduling, finalization,
 provider/network/paid API, CLI, and GUI behavior remain outside this phase.
+
+## Phase 208: Explicit Fresh Workflow Step-1 Bootstrap Boundary
+
+Phase 208 exposes
+`route_approved_workflow_fresh_start(workflow, state_path, events_path, context, *, running_persistence_function=persist_prepared_running_state, execution_function=execute_persisted_start_openai_step, phase172_function=route_runtime_result_to_progression_orchestration_boundary)`.
+It is the explicit fresh-entry boundary for exactly one step-1 execution. Both
+durable targets must be nonexistent, and the caller supplies the exact frozen
+`ApprovedWorkflowBootstrapContext` containing the distinct
+`InitialStepPreparationApproval`, step-1 employee, resolved tools, API key,
+execution approval, and transport.
+
+The boundary creates the canonical ready state and empty event log as a pair,
+then strictly loads them back. Accepted ready initialization is the first
+durable commit. The explicit step-1 approval is separate from the
+predecessor-bound next-step approval used by Phase 190/192. Phase 208 then
+constructs the existing `PreparedWorkflowStep` and
+`PreparedStepExecutionStart` models directly, persists the running state once
+as the second durable commit, and performs exactly one
+`execute_persisted_start_openai_step` call. That execution owner does not
+persist its runtime result.
+
+The exact runtime result is handed once to Phase 172, which owns the terminal
+state/event persistence, classification, and progression commit. Phase 208
+returns the exact Phase-172 result and stops; it does not prepare or execute a
+later step. Phase 192 remains a separate caller action for any bounded
+continuation.
+
+This boundary adds no retry, generated context, hidden approval or lookup,
+scheduler, loop, automatic continuation, parallel execution, or provider/API
+call of its own. It is not a full automatic workflow runner.
