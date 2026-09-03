@@ -4270,3 +4270,37 @@ Phase 192 remains a separate caller action for bounded continuation after a
 does not generate contexts, approvals, or lookups. It adds no retry, loop,
 automatic continuation, scheduler, finalizer, parallel execution, or provider
 call, and therefore is not a full automatic workflow runner.
+
+## Phase 210: Fresh Workflow Bounded Top-Level Runner
+
+Phase 210 adds the explicit public
+`route_approved_fresh_workflow_bounded` boundary. Its inputs are the Phase-208
+workflow/path/bootstrap values plus a caller-supplied finite tuple of exact
+`ApprovedWorkflowContinuationContext` values. It composes fresh step-1
+execution with one bounded continuation handoff; it is not a persisted
+resume/reentry entry point.
+
+The boundary shallowly prevalidates the continuation tuple before calling
+Phase 208: the container must be an exact built-in `tuple`, each element must
+be an exact `ApprovedWorkflowContinuationContext`, and the two injected public
+dependencies must be callable. This prevents an avoidable container/type
+mistake from durably executing step 1. It deliberately does not inspect
+approval, employee, resolved-tool, API-key, execution-approval, or transport
+contents. Those operational contracts remain with Phase 208 and the existing
+Phase 192/190 chain; no such values are generated or looked up here.
+
+After prevalidation, Phase 208 is called exactly once with four positional
+arguments. Its valid terminal `workflow_complete` or `persisted_failure` is
+returned by exact identity and bypasses Phase 192 completely. Only its valid
+`prepare_next_step` result crosses Phase 192 exactly once with five positional
+arguments. Phase 192 alone iterates the finite caller-supplied tuple and calls
+Phase 190; Phase 210 returns the valid Phase-192 result by exact identity and
+stops without readvance.
+
+Durable ownership is intentionally not duplicated: Phase 208 owns fresh
+ready/running/terminal commits, while Phase 192/190 own later continuation
+commits and recognized safe errors. Phase 210 does not write or restore state
+or events, and has no top-level rollback, retry, recursion, unbounded loop,
+automatic continuation, scheduler, finalizer, parallel work, CLI/GUI behavior,
+or provider/network/paid API behavior. Persisted resume/reentry remains a
+separate future public contract.
