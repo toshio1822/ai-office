@@ -29,6 +29,7 @@ import inspect
 from dataclasses import FrozenInstanceError, astuple, replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from pydantic import SecretStr
@@ -55,13 +56,16 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase145CompatibilityError,
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
+    PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase155CompatibilityError,
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155Error,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
+    ModelInvocationFailureCategory,
     ModelInvocationRequest,
     approve_model_invocation_execution,
 )
@@ -69,12 +73,16 @@ from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesRawHttpResponse,
 )
-from ai_office.runtime import WorkflowExecutionState
+from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.runtime.persisted_start_execution import (
     PersistedStartExecutionCompatibilityError,
 )
 from ai_office.storage import (
+    WorkflowExecutionPersistenceTargets,
     load_workflow_execution_state,
+    load_workflow_execution_history,
+    serialize_runtime_step_event_jsonl,
+    serialize_workflow_execution_state_json,
 )
 
 _MODULE_PATH = Path(route_approved_fresh_workflow_bounded.__code__.co_filename)
@@ -838,47 +846,137 @@ def test_14_default_phase192_safe_errors_keep_later_ownership(tmp_path: Path) ->
     wf = workflow(3)
     prep_directory = tmp_path / "preparation"
     prep_directory.mkdir()
-    prep_calls: list[str] = []
-    first = _run_step1(prep_directory, wf, prep_calls)
-    assert type(first) is WorkflowProgressionDecision
-    assert first.decision == "prepare_next_step"
+    prep_step1_calls: list[str] = []
+    prep_step2_calls: list[str] = []
+    prep_later_calls: list[str] = []
     bad_preparation = _continuation_context(
-        wf, 2, prep_calls, preparation_approval=object()
+        wf, 2, prep_step2_calls, preparation_approval=object()
     )
-    with pytest.raises(Phase145Error):
-        route_bounded_approved_workflow_continuation(
-            first,
+    bad_preparation = replace(
+        bad_preparation,
+        transport=_failure_transport(prep_step2_calls, "step-2"),
+    )
+    later_preparation = replace(
+        _continuation_context(wf, 3, prep_later_calls),
+        transport=_failure_transport(prep_later_calls, "step-3"),
+    )
+    with pytest.raises(Phase145Error) as preparation_error:
+        route_approved_fresh_workflow_bounded(
             wf,
             prep_directory / "state.json",
             prep_directory / "events.jsonl",
-            (bad_preparation, _continuation_context(wf, 3, prep_calls)),
+            _bootstrap_context(wf, prep_step1_calls),
+            (bad_preparation, later_preparation),
+            fresh_start_function=route_approved_workflow_fresh_start,
+            bounded_continuation_function=route_bounded_approved_workflow_continuation,
         )
-    assert prep_calls == ["step-1"]
-    assert load_workflow_execution_state(prep_directory / "state.json").status == "succeeded"
-    assert len((prep_directory / "events.jsonl").read_text().splitlines()) == 1
+    assert type(preparation_error.value) is Phase145CompatibilityError
+    assert not isinstance(
+        preparation_error.value, ApprovedFreshWorkflowBoundedRunnerError
+    )
+    assert preparation_error.value.detail.classification == "approval_contract"
+    assert prep_step1_calls == ["step-1"]
+    assert prep_step2_calls == []
+    assert prep_later_calls == []
+    preparation_state = load_workflow_execution_state(
+        prep_directory / "state.json"
+    )
+    assert preparation_state == WorkflowExecutionState(
+        wf.id,
+        "succeeded",
+        wf.steps[0].id,
+        1,
+        wf.steps[0].employee,
+        (wf.steps[0].id,),
+        None,
+    )
+    assert (prep_directory / "state.json").read_bytes() == (
+        serialize_workflow_execution_state_json(preparation_state).encode()
+    )
+    preparation_history = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            prep_directory / "state.json", prep_directory / "events.jsonl"
+        )
+    )
+    assert len(preparation_history.events) == 1
+    expected_step1_event = RuntimeStepEvent(
+        "step_succeeded",
+        wf.id,
+        wf.steps[0].id,
+        1,
+        wf.steps[0].employee,
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        "response-step-1",
+        "request-step-1",
+        "ok",
+        None,
+    )
+    assert preparation_history.events == (expected_step1_event,)
+    assert (prep_directory / "events.jsonl").read_bytes() == (
+        serialize_runtime_step_event_jsonl(expected_step1_event).encode()
+    )
 
     execution_directory = tmp_path / "execution"
     execution_directory.mkdir()
-    execution_calls: list[str] = []
-    second_first = _run_step1(execution_directory, wf, execution_calls)
-    assert type(second_first) is WorkflowProgressionDecision
+    execution_step1_calls: list[str] = []
+    execution_step2_calls: list[str] = []
+    execution_later_calls: list[str] = []
     bad_execution = _continuation_context(
-        wf, 2, execution_calls, execution_approval=object()
+        wf, 2, execution_step2_calls, execution_approval=object()
     )
-    with pytest.raises(Phase155Error):
-        route_bounded_approved_workflow_continuation(
-            second_first,
+    bad_execution = replace(
+        bad_execution,
+        transport=_failure_transport(execution_step2_calls, "step-2"),
+    )
+    later_execution = replace(
+        _continuation_context(wf, 3, execution_later_calls),
+        transport=_failure_transport(execution_later_calls, "step-3"),
+    )
+    with pytest.raises(Phase155Error) as execution_error:
+        route_approved_fresh_workflow_bounded(
             wf,
             execution_directory / "state.json",
             execution_directory / "events.jsonl",
-            (bad_execution, _continuation_context(wf, 3, execution_calls)),
+            _bootstrap_context(wf, execution_step1_calls),
+            (bad_execution, later_execution),
+            fresh_start_function=route_approved_workflow_fresh_start,
+            bounded_continuation_function=route_bounded_approved_workflow_continuation,
         )
-    assert execution_calls == ["step-1"]
+    assert type(execution_error.value) is Phase155CompatibilityError
+    assert not isinstance(
+        execution_error.value, ApprovedFreshWorkflowBoundedRunnerError
+    )
+    assert execution_error.value.detail.classification == "approval_contract"
+    assert execution_step1_calls == ["step-1"]
+    assert execution_step2_calls == []
+    assert execution_later_calls == []
     state = load_workflow_execution_state(execution_directory / "state.json")
-    assert state.status == "running"
-    assert state.current_step_index == 2
-    assert state.completed_step_ids == ("step-1",)
-    assert len((execution_directory / "events.jsonl").read_text().splitlines()) == 1
+    assert state == WorkflowExecutionState(
+        wf.id,
+        "running",
+        wf.steps[1].id,
+        2,
+        wf.steps[1].employee,
+        (wf.steps[0].id,),
+        None,
+    )
+    assert (execution_directory / "state.json").read_bytes() == (
+        serialize_workflow_execution_state_json(state).encode()
+    )
+    execution_history = load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            execution_directory / "state.json",
+            execution_directory / "events.jsonl",
+        )
+    )
+    assert len(execution_history.events) == 1
+    assert execution_history.events == (expected_step1_event,)
+    assert (execution_directory / "events.jsonl").read_bytes() == (
+        serialize_runtime_step_event_jsonl(expected_step1_event).encode()
+    )
 
 
 def test_15_result_family_and_linkage_are_strict() -> None:
@@ -886,9 +984,10 @@ def test_15_result_family_and_linkage_are_strict() -> None:
     contexts = (_opaque_context(),)
     prep = _prepare(wf)
     complete = _complete(wf)
+    fresh_failed = _failure(wf, 1)
     failed = _failure(wf, 2)
 
-    for terminal in (complete, failed):
+    for terminal in (complete, fresh_failed):
         result = route_approved_fresh_workflow_bounded(
             wf,
             object(),
@@ -899,6 +998,32 @@ def test_15_result_family_and_linkage_are_strict() -> None:
             bounded_continuation_function=lambda *args: object(),
         )
         assert result is terminal
+
+    allowed_categories = tuple(get_args(ModelInvocationFailureCategory))
+    for category in allowed_categories:
+        fresh_failure = replace(fresh_failed, failure_category=category)
+        result = route_approved_fresh_workflow_bounded(
+            wf,
+            object(),
+            object(),
+            object(),
+            contexts,
+            fresh_start_function=lambda *args, result=fresh_failure: result,
+            bounded_continuation_function=lambda *args: object(),
+        )
+        assert result is fresh_failure
+
+        bounded_failure = replace(failed, failure_category=category)
+        result = route_approved_fresh_workflow_bounded(
+            wf,
+            object(),
+            object(),
+            object(),
+            contexts,
+            fresh_start_function=lambda *args: prep,
+            bounded_continuation_function=lambda *args, result=bounded_failure: result,
+        )
+        assert result is bounded_failure
 
     for terminal in (complete, failed):
         result = route_approved_fresh_workflow_bounded(
@@ -922,7 +1047,7 @@ def test_15_result_family_and_linkage_are_strict() -> None:
         replace(prep, reason="not-next-step-available"),
         replace(prep, next_step_id="wrong-step"),
         replace(complete, next_step_id="unexpected"),
-        replace(failed, failure_category="unknown"),
+        replace(fresh_failed, failure_category="unknown"),
         FailureSubclass(*astuple(failed)),
         DecisionSubclass(*astuple(prep)),
     )
