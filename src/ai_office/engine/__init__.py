@@ -60,6 +60,13 @@ from ai_office.engine.approved_workflow_continuation_cycle import (
     ApprovedWorkflowContinuationCycleFailureDetail,
     route_approved_workflow_continuation_cycle,
 )
+from ai_office.engine.approved_workflow_fresh_bounded_runner import (
+    ApprovedFreshWorkflowBoundedRunnerClassification,
+    ApprovedFreshWorkflowBoundedRunnerCompatibilityError,
+    ApprovedFreshWorkflowBoundedRunnerError,
+    ApprovedFreshWorkflowBoundedRunnerFailureDetail,
+    route_approved_fresh_workflow_bounded,
+)
 from ai_office.engine.approved_workflow_fresh_start import (
     ApprovedWorkflowBootstrapContext,
     FreshWorkflowBootstrapClassification,
@@ -881,6 +888,11 @@ __all__ = [
     "BoundedApprovedWorkflowRunnerError",
     "BoundedApprovedWorkflowRunnerFailureDetail",
     "route_bounded_approved_workflow_continuation",
+    "ApprovedFreshWorkflowBoundedRunnerClassification",
+    "ApprovedFreshWorkflowBoundedRunnerCompatibilityError",
+    "ApprovedFreshWorkflowBoundedRunnerError",
+    "ApprovedFreshWorkflowBoundedRunnerFailureDetail",
+    "route_approved_fresh_workflow_bounded",
     "ApprovedNextStepCycleContinuationCompatibilityError",
     "ApprovedNextStepCycleContinuationError",
     "ApprovedNextStepCycleContinuationFailureDetail",
