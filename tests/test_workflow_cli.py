@@ -1,5 +1,6 @@
 """Tests for workflow definition CLI commands."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -307,6 +308,25 @@ def write_succeeded_prefix(paths: dict[str, Path], current: int) -> None:
         encoding="utf-8",
     )
     paths["events"].write_text(events, encoding="utf-8")
+
+
+def replace_last_output(paths: dict[str, Path], output_text: str) -> None:
+    """Replace one synthetic predecessor output through the event contract."""
+    records = [
+        json.loads(line)
+        for line in paths["events"].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    records[-1]["output_text"] = output_text
+    paths["events"].write_text(
+        "".join(
+            serialize_runtime_step_event_jsonl(
+                RuntimeStepEvent(**record)  # type: ignore[arg-type]
+            )
+            for record in records
+        ),
+        encoding="utf-8",
+    )
 
 
 def write_nonterminal_history(paths: dict[str, Path], status: str) -> None:
@@ -3025,4 +3045,168 @@ def test_workflows_execution_output_and_errors_never_expose_credentials_or_raw_p
     assert "secret_param" not in combined
     assert "secret_code" not in combined
     assert len(calls) == 1
+    assert key_calls == [1]
+
+
+def test_workflows_continue_preview_displays_exact_upstream_provenance_text_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_succeeded_prefix(paths, 1)
+    sentinel = "  prior line\n日本語 😀\n\tfinal line  "
+    replace_last_output(paths, sentinel)
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+
+    result, preview = preview_command("continue", "research-and-summarize", paths)
+
+    provenance = {
+        "workflow_id": "research-and-summarize",
+        "step_id": "research",
+        "step_index": 1,
+        "employee_id": "general-researcher",
+        "output_text": sentinel,
+    }
+    digest_value = json.dumps(
+        provenance,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    task_input = json.dumps(
+        {
+            "task_instructions": "Summarize the information.",
+            "upstream_inputs": [provenance],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert result.exit_code == 0
+    assert preview["upstream_inputs"] == [
+        {
+            **provenance,
+            "sha256": hashlib.sha256(digest_value.encode("utf-8")).hexdigest(),
+        }
+    ]
+    assert preview["task_input"] == task_input
+    assert preview["system_instructions"] == "Work on the assigned step."
+    assert sentinel not in preview["system_instructions"]
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+    assert calls == []
+    assert key_calls == []
+
+
+def test_workflows_continue_restart_style_execution_sends_exact_upstream_once_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_three_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_succeeded_prefix(paths, 1)
+    sentinel = "restart-safe sentinel\n日本語"
+    replace_last_output(paths, sentinel)
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+    _, preview = preview_command("continue", "research-and-summarize", paths)
+
+    result = invoke_execution("continue", "research-and-summarize", paths, preview)
+    output = json.loads(result.stdout)
+    request_body = json.loads(calls[0].body)  # type: ignore[union-attr]
+    event_records = [
+        json.loads(line)
+        for line in paths["events"].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert result.exit_code == 0
+    assert output["status"] == "prepare_next_step"
+    assert len(calls) == 1
+    assert request_body["input"] == preview["task_input"]
+    assert (
+        json.loads(request_body["input"])["upstream_inputs"][0]["output_text"]
+        == sentinel
+    )
+    assert sentinel not in request_body["instructions"]
+    assert len(event_records) == 2
+    assert event_records[-1]["step_id"] == "summarize"
+    assert load_workflow_execution_state(paths["state"]).current_step_index == 2
+    assert key_calls == [1]
+
+
+def test_workflows_continue_changed_predecessor_rejects_old_fingerprint_before_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_three_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_succeeded_prefix(paths, 1)
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+    _, old_preview = preview_command("continue", "research-and-summarize", paths)
+    replace_last_output(paths, "changed after preview")
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+
+    result = invoke_execution("continue", "research-and-summarize", paths, old_preview)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == "Error: expected preview does not match current step\n"
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+    assert calls == []
+    assert key_calls == []
+
+
+def test_workflows_continue_mutation_before_phase190_guard_rejects_before_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_three_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_succeeded_prefix(paths, 1)
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+    _, preview = preview_command("continue", "research-and-summarize", paths)
+    real_phase212 = cli_module.route_persisted_terminal_workflow_bounded
+    mutated_snapshot: list[tuple[bytes, bytes]] = []
+
+    def mutate_before_phase190(
+        workflow: object,
+        state_path: object,
+        events_path: object,
+        contexts: object,
+    ) -> object:
+        assert state_path == paths["state"]
+        assert events_path == paths["events"]
+        replace_last_output(paths, "mutated after CLI approval binding")
+        mutated_snapshot.append(
+            (paths["state"].read_bytes(), paths["events"].read_bytes())
+        )
+        return real_phase212(workflow, state_path, events_path, contexts)
+
+    monkeypatch.setattr(
+        cli_module,
+        "route_persisted_terminal_workflow_bounded",
+        mutate_before_phase190,
+    )
+    result = invoke_execution("continue", "research-and-summarize", paths, preview)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == "Error: workflow continuation failed\n"
+    assert mutated_snapshot
+    assert (
+        paths["state"].read_bytes(),
+        paths["events"].read_bytes(),
+    ) == mutated_snapshot[0]
+    assert load_workflow_execution_state(paths["state"]).current_step_index == 1
+    assert calls == []
     assert key_calls == [1]

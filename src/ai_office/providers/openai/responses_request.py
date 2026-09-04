@@ -2,7 +2,10 @@
 
 from dataclasses import dataclass
 
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    build_model_invocation_task_input,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,6 @@ def build_openai_responses_request(
     return OpenAIResponsesRequest(
         model=invocation_request.model,
         instructions=invocation_request.system_instructions,
-        input=invocation_request.task_instructions,
+        input=build_model_invocation_task_input(invocation_request),
         allowed_tool_names=tuple(invocation_request.allowed_tools),
     )

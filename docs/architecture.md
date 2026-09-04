@@ -4424,3 +4424,50 @@ in-progress state does not establish whether an external provider side effect
 already occurred, so recovery or manual investigation is a separate contract.
 The Phase-214 CLI adds no fresh/resume auto-detection, provider selection,
 credential persistence, GUI, scheduler, finalizer, or parallel execution.
+
+## Phase 216: Restart-safe immediate-predecessor output handoff
+
+Phase 216 connects the durable output of one completed step to the next
+provider-independent invocation request without changing workflow, runtime,
+state, event, or storage schemas. The existing `events.jsonl` event history is
+the sole authoritative source:
+
+```text
+step N-1 succeeded output
+  → authoritative RuntimeStepEvent.output_text
+  → restart-safe immediate-predecessor reconstruction
+  → structured UpstreamStepOutput
+  → exact task input preview
+  → fingerprint / explicit approval
+  → Phase190 authoritative pre-persistence revalidation
+  → Phase147 running persistence
+  → Phase155 provider execution <= 1
+  → terminal persistence
+  → STOP
+```
+
+Only the immediately preceding successful event is reconstructed. Its
+workflow/step/index/employee provenance and exact `output_text` are copied into
+one `UpstreamStepOutput`; empty, multiline, Unicode, and whitespace-bearing
+text remain unchanged. With no upstream input, the legacy task text and
+Phase214 fingerprint payload are unchanged. With upstream input, the task-side
+request is deterministic compact canonical JSON and the complete provenance and
+content are included in the invocation fingerprint used by explicit approval.
+
+The forwarded model output is untrusted task/user data. It is never promoted to
+an instruction, appended to employee/system instructions, summarized, or
+silently transformed. The CLI preview exposes the exact provenance, text,
+canonical task input, digest, and request fingerprint. Before Phase147 writes a
+running state, Phase190 independently reloads strict terminal history,
+reconstructs the immediate predecessor, compares it with the prepared request,
+and revalidates the execution approval. A stale or mutated history therefore
+stops before running-state persistence and before the provider transport. The
+existing Phase155 approval check remains in place immediately before provider
+execution.
+
+This phase implements Policy A only. It adds no all-prior accumulation,
+workflow-declared fan-in or dataflow schema, branching/DAG execution, provider
+conversation continuation, retry, replay/recovery, automatic continuation,
+parallelism, or new output store. One explicit command still executes at most
+one provider step and then stops; fresh step 1 continues to use an empty
+upstream tuple.

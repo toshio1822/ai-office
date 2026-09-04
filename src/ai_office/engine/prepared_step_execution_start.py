@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.engine.upstream_step_output_handoff import (
+    UpstreamStepOutputHandoffError,
+    build_immediate_predecessor_upstream_inputs,
+)
 from ai_office.invocation import ModelInvocationRequest
 from ai_office.runtime import WorkflowExecutionState
 from ai_office.storage.workflow_execution_history import LoadedWorkflowExecutionHistory
@@ -59,11 +63,20 @@ def prepare_prepared_step_execution_start(
         _raise("step_index")
     if not _valid_request_data(prepared_step):
         _raise("request_data")
+    try:
+        upstream_inputs = build_immediate_predecessor_upstream_inputs(
+            prepared_step.workflow_id,
+            prepared_step.step_index,
+            history,
+        )
+    except UpstreamStepOutputHandoffError:
+        _raise("request_data")
     request = ModelInvocationRequest(
         model=prepared_step.model,
         system_instructions=prepared_step.employee_instructions,
         task_instructions=prepared_step.step_instructions,
         allowed_tools=tuple(prepared_step.allowed_tool_names),
+        upstream_inputs=upstream_inputs,
     )
     return PreparedStepExecutionStart(
         request,

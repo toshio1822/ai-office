@@ -37,6 +37,7 @@ from ai_office.invocation import (
     ModelInvocationFailure,
     ModelInvocationRequest,
     ModelInvocationSuccess,
+    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
@@ -276,7 +277,19 @@ def preparation_approval(wf: WorkflowDefinition, index: int) -> NextStepPreparat
 def contexts(values: dict[str, object], index: int) -> tuple[object, ...]:
     wf = values["workflow"]
     assert isinstance(wf, WorkflowDefinition)
-    return (decision(wf, index), wf, None, employee(wf, index + 1), values["state_path"], values["events_path"], (), None, None, None)
+    execution = execution_context(wf, index + 1)
+    return (
+        decision(wf, index),
+        wf,
+        None,
+        execution["employee"],
+        values["state_path"],
+        values["events_path"],
+        execution["resolved_tools"],
+        execution["api_key"],
+        execution["execution_approval"],
+        object(),
+    )
 
 
 def prepared(wf: WorkflowDefinition, index: int) -> PreparedWorkflowStep:
@@ -287,7 +300,7 @@ def prepared(wf: WorkflowDefinition, index: int) -> PreparedWorkflowStep:
 
 def started(wf: WorkflowDefinition, index: int) -> PreparedStepExecutionStart:
     p = prepared(wf, index)
-    return PreparedStepExecutionStart(ModelInvocationRequest(p.model, p.employee_instructions, p.step_instructions, ()), WorkflowExecutionState(wf.id, "running", p.step_id, index, p.employee_id, tuple(s.id for s in wf.steps[:index - 1]), None))
+    return PreparedStepExecutionStart(ModelInvocationRequest(p.model, p.employee_instructions, p.step_instructions, (), (UpstreamStepOutput(wf.id, wf.steps[index - 2].id, index - 1, wf.steps[index - 2].employee, "output"),)), WorkflowExecutionState(wf.id, "running", p.step_id, index, p.employee_id, tuple(s.id for s in wf.steps[:index - 1]), None))
 
 
 def write_running(path: Path, start: PreparedStepExecutionStart) -> RunningStatePersistenceResult:
@@ -381,7 +394,7 @@ def test_03_terminal_persisted_failure_identity_zero_calls_context_ignored(tmp_p
 
 
 def test_04_prepare_stage_order_canonical_identity_once(tmp_path: Path) -> None:
-    v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); emp = employee(wf, 10); r = decision(wf, 9); p = prepared(wf, 10); st = started(wf, 10); rt = runtime(wf, 10); out = decision(wf, 10); order = []; args = []
+    v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); emp = employee(wf, 10); r = decision(wf, 9); p = prepared(wf, 10); st = started(wf, 10); rt = runtime(wf, 10); out = decision(wf, 10); order = []; args = []; ctx = execution_context(wf, 10)
     def p145(*a): order.append(145); args.append(a); return p
     def p146(*a): order.append(146); args.append(a); return st
     def p147(*a): order.append(147); args.append(a); return write_running(v["state_path"], st)
@@ -389,7 +402,7 @@ def test_04_prepare_stage_order_canonical_identity_once(tmp_path: Path) -> None:
     def p172(*a):
         order.append(172); args.append(a)
         return write_terminal(v, rt, out)
-    result = phase190(r, wf, object(), emp, v["state_path"], v["events_path"], object(), object(), object(), object(), phase145_function=p145, phase146_function=p146, phase147_function=p147, phase155_function=p155, phase172_function=p172)
+    result = phase190(r, wf, object(), emp, v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], object(), phase145_function=p145, phase146_function=p146, phase147_function=p147, phase155_function=p155, phase172_function=p172)
     assert result is out and order == [145, 146, 147, 155, 172] and [len(a) for a in args] == [6, 5, 5, 10, 4]
     assert args[0][0] is r and args[0][1] is wf and args[0][2] is not None and args[0][3] is emp and args[0][4] is v["state_path"] and args[0][5] is v["events_path"]
     assert args[1] == (p, wf, emp, v["state_path"], v["events_path"]) and args[2] == (st, wf, emp, v["state_path"], v["events_path"])
@@ -482,72 +495,72 @@ def test_08_phase147_failure_malformed_or_unauthorized_restores_terminal_snapsho
         assert (v["state_path"].read_bytes(), v["events_path"].read_bytes()) == v["before"]
 
 def test_09_phase147_success_is_durable_state_only_commit(tmp_path: Path) -> None:
-    v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); before_events = v["events_path"].read_bytes(); calls = []
+    v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); before_events = v["events_path"].read_bytes(); calls = []; ctx = execution_context(wf, 10)
     def p147(*a): calls.append(a); return write_running(v["state_path"], st)
     safe = Phase155Error("safe")
     def p155(*a):
         raise safe
     with pytest.raises(Phase155Error) as caught:
-        phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a: p, phase146_function=lambda *a: st, phase147_function=p147, phase155_function=p155)
+        phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], object(), phase145_function=lambda *a: p, phase146_function=lambda *a: st, phase147_function=p147, phase155_function=p155)
     assert caught.value is safe and len(calls) == 1 and load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == before_events
 
 
 def test_10_phase155_safe_error_preserves_running_snapshot_identity(tmp_path: Path) -> None:
     for safe_type in PHASE155_SAFE_ERRORS:
-        v = setup(tmp_path / f"safe-{safe_type.__name__}"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); safe = safe_type("safe")
+        v = setup(tmp_path / f"safe-{safe_type.__name__}"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); safe = safe_type("safe"); ctx = execution_context(wf, 10)
         running_bytes = serialize_workflow_execution_state_json(st.running_state).encode()
         def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
         def p155(*a, safe=safe): raise safe
         with pytest.raises(safe_type) as caught:
-            phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155)
+            phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], object(), phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155)
         assert caught.value is safe and v["state_path"].read_bytes() == running_bytes and v["events_path"].read_bytes() == v["before"][1]
-    v = setup(tmp_path / "unrelated"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); unrelated = Phase147BoundaryError("unrelated")
+    v = setup(tmp_path / "unrelated"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); unrelated = Phase147BoundaryError("unrelated"); ctx = execution_context(wf, 10)
     def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
     def p155_unrelated(*a, unrelated=unrelated): raise unrelated
-    err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155_unrelated), "dependency_error")
+    err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], object(), phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155_unrelated), "dependency_error")
     assert load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == v["before"][1]
 
 def test_11_phase155_unexpected_malformed_mutation_running_snapshot_no_phase172(tmp_path: Path) -> None:
     for mode in ("unexpected", "malformed", "mutation", "malformed_mutation"):
-        v = setup(tmp_path / mode); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); calls = []; valid_runtime = runtime(wf, 10)
+        v = setup(tmp_path / mode); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); calls = []; valid_runtime = runtime(wf, 10); ctx = execution_context(wf, 10)
         def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
         def p155(*a, mode=mode, v=v, valid_runtime=valid_runtime):
             if mode == "unexpected": raise RuntimeError("secret")
             if mode in ("mutation", "malformed_mutation"): v["state_path"].write_bytes(b"changed")
             return valid_runtime if mode == "mutation" else object()
         expected = "committed_mutation" if mode == "mutation" else "phase155_contract" if mode in ("malformed", "malformed_mutation") else "dependency_error"
-        err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155, phase172_function=lambda *a: calls.append(a)), expected)
+        err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], object(), phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=p155, phase172_function=lambda *a: calls.append(a)), expected)
         assert calls == [] and load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == v["before"][1]
 
 def test_12_phase172_safe_error_identity_no_outer_rollback(tmp_path: Path) -> None:
     for safe_type in PHASE172_SAFE_ERRORS:
-        v = setup(tmp_path / f"safe-{safe_type.__name__}"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); safe = safe_type("safe")
+        v = setup(tmp_path / f"safe-{safe_type.__name__}"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); safe = safe_type("safe"); ctx = execution_context(wf, 10)
         def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
         def p172(*a, safe=safe): raise safe
         with pytest.raises(safe_type) as caught:
-            phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=lambda *a: runtime(wf, 10), phase172_function=p172)
+            phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], object(), phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=lambda *a: runtime(wf, 10), phase172_function=p172)
         assert caught.value is safe and load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == v["before"][1]
-    v = setup(tmp_path / "unrelated"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); unrelated = Phase155BoundaryError("unrelated")
+    v = setup(tmp_path / "unrelated"); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); unrelated = Phase155BoundaryError("unrelated"); ctx = execution_context(wf, 10)
     def p147(*a, v=v, st=st): return write_running(v["state_path"], st)
     def p172_unrelated(*a, unrelated=unrelated): raise unrelated
-    err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=lambda *a: runtime(wf, 10), phase172_function=p172_unrelated), "dependency_error")
+    err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], object(), phase145_function=lambda *a, p=p: p, phase146_function=lambda *a, st=st: st, phase147_function=p147, phase155_function=lambda *a: runtime(wf, 10), phase172_function=p172_unrelated), "dependency_error")
     assert load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == v["before"][1]
 
 def test_13_phase172_unexpected_or_malformed_detail_safe_no_outer_rollback(tmp_path: Path) -> None:
     for mode in ("unexpected", "malformed", "valid_without_persistence"):
-        v=setup(tmp_path/mode); wf=v["workflow"]; assert isinstance(wf,WorkflowDefinition); st=started(wf,10); p=prepared(wf,10); rt=runtime(wf,10); before_events=v["events_path"].read_bytes()
+        v=setup(tmp_path/mode); wf=v["workflow"]; assert isinstance(wf,WorkflowDefinition); st=started(wf,10); p=prepared(wf,10); rt=runtime(wf,10); before_events=v["events_path"].read_bytes(); ctx=execution_context(wf,10)
         def p172(*a,mode=mode,v=v,rt=rt):
             if mode == "valid_without_persistence": return decision(wf, 10)
             v["events_path"].write_bytes(b"phase172-owned")
             if mode=="unexpected": raise RuntimeError("secret")
             return object()
-        err(lambda: phase190(decision(wf,9),wf,None,employee(wf,10),v["state_path"],v["events_path"],(),None,None,None,phase145_function=lambda *a:p,phase146_function=lambda *a:st,phase147_function=lambda *a:write_running(v["state_path"],st),phase155_function=lambda *a,rt=rt:rt,phase172_function=p172), "dependency_error" if mode=="unexpected" else "phase172_contract")
+        err(lambda: phase190(decision(wf,9),wf,None,employee(wf,10),v["state_path"],v["events_path"],ctx["resolved_tools"],ctx["api_key"],ctx["execution_approval"],object(),phase145_function=lambda *a:p,phase146_function=lambda *a:st,phase147_function=lambda *a:write_running(v["state_path"],st),phase155_function=lambda *a,rt=rt:rt,phase172_function=p172), "dependency_error" if mode=="unexpected" else "phase172_contract")
         assert v["events_path"].read_bytes()==(b"phase172-owned" if mode != "valid_without_persistence" else before_events)
 
 
 def test_14_step_index_independent_linkage_and_wrong_outputs_rejected(tmp_path: Path) -> None:
     for index in (10, 11):
-        wf = workflow(12); current = index - 1; next_emp = employee(wf, index); valid_p = prepared(wf, index); valid_st = started(wf, index); valid_rt = runtime(wf, index); valid_final = complete(wf) if index == 12 else decision(wf, index)
+        wf = workflow(12); current = index - 1; valid_p = prepared(wf, index); valid_st = started(wf, index); valid_rt = runtime(wf, index); valid_final = complete(wf) if index == 12 else decision(wf, index)
         cases = (
             ("phase145", replace(valid_p, step_index=index + 1), "phase145_contract"),
             ("phase146", replace(valid_st, running_state=replace(valid_st.running_state, current_step_index=index + 1)), "phase146_contract"),
@@ -556,7 +569,7 @@ def test_14_step_index_independent_linkage_and_wrong_outputs_rejected(tmp_path: 
             ("phase172", replace(valid_final, current_employee_id="wrong-employee"), "phase172_contract"),
         )
         for seam, bad, classification in cases:
-            v = setup(tmp_path / f"{index}-{seam}", current=current, count=12); calls = []
+            v = setup(tmp_path / f"{index}-{seam}", current=current, count=12); calls = []; ctx = execution_context(wf, index)
             def p145(*a, bad=bad, seam=seam, valid_p=valid_p): return bad if seam == "phase145" else valid_p
             def p146(*a, bad=bad, seam=seam, valid_st=valid_st): return bad if seam == "phase146" else valid_st
             def p147(*a, bad=bad, seam=seam, v=v, valid_st=valid_st):
@@ -565,7 +578,7 @@ def test_14_step_index_independent_linkage_and_wrong_outputs_rejected(tmp_path: 
             def p155(*a, bad=bad, seam=seam, valid_rt=valid_rt): return bad if seam == "phase155" else valid_rt
             def p172(*a, bad=bad, seam=seam, v=v, valid_rt=valid_rt, valid_final=valid_final):
                 return bad if seam == "phase172" else write_terminal(v, valid_rt, valid_final)
-            err(lambda: phase190(decision(wf, current), wf, None, next_emp, v["state_path"], v["events_path"], (), None, None, None, phase145_function=p145, phase146_function=p146, phase147_function=p147, phase155_function=p155, phase172_function=p172), classification)
+            err(lambda: phase190(decision(wf, current), wf, preparation_approval(wf, index), ctx["employee"], v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], transport(calls), phase145_function=p145, phase146_function=p146, phase147_function=p147, phase155_function=p155, phase172_function=p172), classification)
             assert calls == []
 
     class StringSubclass(str):
@@ -573,7 +586,8 @@ def test_14_step_index_independent_linkage_and_wrong_outputs_rejected(tmp_path: 
 
     v = setup(tmp_path / "phase172-string-subclass", current=9, count=12); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); rt = runtime(wf, 10); valid = decision(wf, 10)
     bad = replace(valid, decision=StringSubclass("prepare_next_step"), reason=StringSubclass("next_step_available"))
-    err(lambda: phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], (), None, None, None, phase145_function=lambda *a: p, phase146_function=lambda *a: st, phase147_function=lambda *a: write_running(v["state_path"], st), phase155_function=lambda *a: rt, phase172_function=lambda *a: write_terminal(v, rt, bad)), "phase172_contract")
+    ctx = execution_context(wf, 10)
+    err(lambda: phase190(decision(wf, 9), wf, preparation_approval(wf, 10), ctx["employee"], v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], transport([]), phase145_function=lambda *a: p, phase146_function=lambda *a: st, phase147_function=lambda *a: write_running(v["state_path"], st), phase155_function=lambda *a: rt, phase172_function=lambda *a: write_terminal(v, rt, bad)), "phase172_contract")
 
 
 def test_15_rollback_failure_matrix_both_targets_once_no_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -585,7 +599,7 @@ def test_15_rollback_failure_matrix_both_targets_once_no_retry(tmp_path: Path, m
         raise OSError("rollback")
 
     for stage in ("pre", "post"):
-        v = setup(tmp_path / stage); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); stage_calls = []
+        v = setup(tmp_path / stage); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); p = prepared(wf, 10); st = started(wf, 10); stage_calls = []; ctx = execution_context(wf, 10)
         attempts.clear()
         fstate = v["state_path"]; fevents = v["events_path"]
         assert isinstance(fstate, Path) and isinstance(fevents, Path)
@@ -596,7 +610,7 @@ def test_15_rollback_failure_matrix_both_targets_once_no_retry(tmp_path: Path, m
             return p
         def run():
             if stage == "pre":
-                phase190(decision(wf, 9), wf, None, employee(wf, 10), fstate, fevents, (), None, None, None, phase145_function=p145)
+                phase190(decision(wf, 9), wf, preparation_approval(wf, 10), ctx["employee"], fstate, fevents, ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], transport([]), phase145_function=p145)
             else:
                 running_bytes = serialize_workflow_execution_state_json(st.running_state).encode()
                 def p146(*a): stage_calls.append("146"); return st
@@ -604,7 +618,7 @@ def test_15_rollback_failure_matrix_both_targets_once_no_retry(tmp_path: Path, m
                     stage_calls.append("147"); fstate.write_text(running_bytes.decode()); return RunningStatePersistenceResult(len(running_bytes))
                 def p155(*a):
                     stage_calls.append("155"); fstate.write_text("changed"); fevents.write_text("changed"); raise RuntimeError("secret")
-                phase190(decision(wf, 9), wf, None, employee(wf, 10), fstate, fevents, (), None, None, None, phase145_function=p145, phase146_function=p146, phase147_function=p147, phase155_function=p155)
+                phase190(decision(wf, 9), wf, preparation_approval(wf, 10), ctx["employee"], fstate, fevents, ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], transport([]), phase145_function=p145, phase146_function=p146, phase147_function=p147, phase155_function=p155)
         with monkeypatch.context() as patch:
             patch.setattr(Path, "write_bytes", fail_write_bytes)
             err(run, "rollback_failure")
@@ -648,11 +662,12 @@ def test_19_real_default_invalid_preparation_approval_stops_at_phase145(tmp_path
     assert calls==[] and (v["state_path"].read_bytes(),v["events_path"].read_bytes())==before
 
 
-def test_20_real_default_invalid_execution_approval_keeps_running_commit(tmp_path: Path) -> None:
-    v=setup(tmp_path,current=9,count=11); wf=v["workflow"]; assert isinstance(wf,WorkflowDefinition); ctx=execution_context(wf,10); calls=[]; serialize_workflow_execution_state_json(started(wf,10).running_state).encode(); events_before=v["events_path"].read_bytes()
-    with pytest.raises(Phase155BoundaryError):
-        phase190(decision(wf,9),wf,preparation_approval(wf,10),ctx["employee"],v["state_path"],v["events_path"],ctx["resolved_tools"],ctx["api_key"],object(),transport(calls),phase145_function=real145,phase146_function=real146,phase147_function=real147,phase155_function=real155,phase172_function=real172)
-    loaded=load_workflow_execution_state(v["state_path"])
-    event_count=len([line for line in v["events_path"].read_text().splitlines() if line.strip()])
-    assert loaded.status=="running" and loaded.current_step_index==10 and loaded.completed_step_ids==tuple(step.id for step in wf.steps[:9])
-    assert v["events_path"].read_bytes()==events_before and event_count==9 and calls==[]
+def test_20_real_default_invalid_execution_approval_rejected_before_running_persistence(tmp_path: Path) -> None:
+    v=setup(tmp_path,current=9,count=11); wf=v["workflow"]; assert isinstance(wf,WorkflowDefinition); ctx=execution_context(wf,10); calls=[]; before=(v["state_path"].read_bytes(),v["events_path"].read_bytes())
+    stale_approval = replace(ctx["execution_approval"], request_fingerprint="0" * 64)
+    with pytest.raises(Phase190Error) as caught:
+        phase190(decision(wf,9),wf,preparation_approval(wf,10),ctx["employee"],v["state_path"],v["events_path"],ctx["resolved_tools"],ctx["api_key"],stale_approval,transport(calls),phase145_function=real145,phase146_function=real146,phase147_function=real147,phase155_function=real155,phase172_function=real172)
+    assert caught.value.detail.classification == "approval_contract"
+    assert (v["state_path"].read_bytes(),v["events_path"].read_bytes()) == before
+    assert load_workflow_execution_state(v["state_path"]).status == "succeeded"
+    assert len([line for line in v["events_path"].read_text().splitlines() if line.strip()]) == 9 and calls==[]

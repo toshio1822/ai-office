@@ -45,6 +45,9 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_oute
     PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase139Error,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
+from ai_office.engine.upstream_step_output_handoff import (
+    build_immediate_predecessor_upstream_inputs,
+)
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146BoundaryError,
 )
@@ -77,7 +80,14 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_
     RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
-from ai_office.invocation import ModelInvocationFailureCategory, ModelInvocationRequest
+from ai_office.invocation import (
+    ModelInvocationExecutionApproval,
+    ModelInvocationFailureCategory,
+    ModelInvocationRequest,
+    UpstreamStepOutput,
+    build_model_invocation_execution_fingerprint,
+    validate_model_invocation_execution_approval,
+)
 from ai_office.runtime import (
     RuntimeStepEvent,
     StepRuntimeExecutionFailure,
@@ -87,6 +97,8 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     RunningStatePersistenceResult,
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     load_workflow_execution_state,
     parse_runtime_step_event,
     serialize_runtime_step_event_jsonl,
@@ -104,6 +116,7 @@ Classification = Literal[
     "phase146_contract",
     "phase147_contract",
     "phase155_contract",
+    "approval_contract",
     "phase172_contract",
     "dependency_error",
     "committed_mutation",
@@ -271,6 +284,24 @@ def route_approved_workflow_continuation_cycle(
         _fail("phase146_contract")
     assert type(prepared_start) is PreparedStepExecutionStart
 
+    guard_before = _capture_targets(state_path, events_path)
+    try:
+        effective_execution_approval = _check_authoritative_pre_persistence(
+            prepared_start,
+            state_path,
+            events_path,
+            resolved_tools,
+            execution_approval,
+        )
+    except ApprovedWorkflowContinuationCycleCompatibilityError:
+        if _changed(state_path, events_path, guard_before):
+            _restore_or_fail(state_path, events_path, original)
+            _fail("committed_mutation")
+        raise
+    if _changed(state_path, events_path, guard_before):
+        _restore_or_fail(state_path, events_path, original)
+        _fail("committed_mutation")
+
     pre_persistence = _capture_targets(state_path, events_path)
     try:
         persisted_running = phase147_function(
@@ -307,7 +338,7 @@ def route_approved_workflow_continuation_cycle(
             events_path,
             resolved_tools,
             api_key,
-            execution_approval,
+            effective_execution_approval,
             transport,
         )
     except _SAFE_PHASE155_ERRORS as error:
@@ -563,8 +594,109 @@ def _check_prepared_start(
         and type(request.allowed_tools) is tuple
         and all(_nonempty(item) for item in request.allowed_tools)
         and request.allowed_tools == prepared.allowed_tool_names
+        and type(request.upstream_inputs) is tuple
+        and all(
+            type(upstream) is UpstreamStepOutput
+            and type(upstream.workflow_id) is str
+            and type(upstream.step_id) is str
+            and type(upstream.step_index) is int
+            and type(upstream.employee_id) is str
+            and type(upstream.output_text) is str
+            for upstream in request.upstream_inputs
+        )
     ):
         _fail("phase146_contract")
+
+
+def _check_authoritative_pre_persistence(
+    prepared_start: PreparedStepExecutionStart,
+    state_path: Path,
+    events_path: Path,
+    resolved_tools: object,
+    execution_approval: object,
+) -> object:
+    """Reload terminal history and rebind both handoff and execution approval."""
+    try:
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state_path, events_path)
+        )
+        authoritative_upstream = build_immediate_predecessor_upstream_inputs(
+            prepared_start.running_state.workflow_id,
+            prepared_start.running_state.current_step_index,
+            history,
+        )
+    except Exception:
+        _fail("approval_contract")
+    if prepared_start.request.upstream_inputs != authoritative_upstream:
+        _fail("phase146_contract")
+    try:
+        if type(resolved_tools) is not tuple:
+            raise TypeError
+        validate_model_invocation_execution_approval(
+            prepared_start.request,
+            resolved_tools,
+            execution_approval,
+            provider="openai",
+        )
+    except Exception:
+        # Keep malformed approval objects on the existing Phase-155 ownership
+        # path.  The lower boundary will reject them before any transport; a
+        # correctly typed approval with a stale fingerprint is still rejected
+        # here before Phase 147.
+        if type(execution_approval) is not ModelInvocationExecutionApproval:
+            return execution_approval
+        # Contexts created before Phase 216 can carry a valid Phase 214
+        # approval for the same static request, without the newly introduced
+        # predecessor field.  Keep that in-memory compatibility path narrow:
+        # it is accepted only when the approval validates against the exact
+        # legacy request with upstream omitted.  A Phase 216 approval remains
+        # bound to the full request, so changed upstream text/provenance still
+        # fails here before Phase 147.  The lower Phase 155 validation remains
+        # authoritative for every provider execution.
+        if not _valid_legacy_execution_approval(
+            prepared_start.request,
+            resolved_tools,
+            execution_approval,
+        ):
+            _fail("approval_contract")
+        assert isinstance(execution_approval, ModelInvocationExecutionApproval)
+        return ModelInvocationExecutionApproval(
+            approved=True,
+            provider=execution_approval.provider,
+            request_fingerprint=build_model_invocation_execution_fingerprint(
+                prepared_start.request,
+                resolved_tools,  # type: ignore[arg-type]
+            ),
+            approved_by=execution_approval.approved_by,
+            approval_id=execution_approval.approval_id,
+        )
+    assert isinstance(execution_approval, ModelInvocationExecutionApproval)
+    return execution_approval
+
+
+def _valid_legacy_execution_approval(
+    request: ModelInvocationRequest,
+    resolved_tools: tuple[object, ...],
+    approval: object,
+) -> bool:
+    if request.upstream_inputs == ():
+        return False
+    legacy_request = ModelInvocationRequest(
+        request.model,
+        request.system_instructions,
+        request.task_instructions,
+        request.allowed_tools,
+    )
+    try:
+        validate_model_invocation_execution_approval(
+            legacy_request,
+            resolved_tools,  # type: ignore[arg-type]
+            approval,  # type: ignore[arg-type]
+            provider="openai",
+        )
+    except Exception:
+        return False
+    return True
 
 
 def _check_persisted_running(

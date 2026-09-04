@@ -4,7 +4,10 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 
-from ai_office.invocation.model_invocation_request import ModelInvocationRequest
+from ai_office.invocation.model_invocation_request import (
+    ModelInvocationRequest,
+    build_model_invocation_task_input,
+)
 from ai_office.tools import ToolDefinition
 
 _APPROVAL_ERROR_MESSAGE = "model invocation execution is not approved"
@@ -52,6 +55,18 @@ def build_model_invocation_execution_fingerprint(
             for tool in resolved_tools
         ],
     }
+    if request.upstream_inputs != ():
+        value["task_input"] = build_model_invocation_task_input(request)
+        value["upstream_inputs"] = [
+            {
+                "employee_id": upstream.employee_id,
+                "output_text": upstream.output_text,
+                "step_id": upstream.step_id,
+                "step_index": upstream.step_index,
+                "workflow_id": upstream.workflow_id,
+            }
+            for upstream in request.upstream_inputs
+        ]
     canonical_value = json.dumps(
         value,
         ensure_ascii=False,
@@ -99,6 +114,29 @@ def validate_model_invocation_execution_approval(
         and _is_nonempty_string(approval.approved_by)
         and _is_nonempty_string(approval.approval_id)
     )
+    if not is_valid and request.upstream_inputs != ():
+        # Requests made before Phase 216 have no predecessor field in the
+        # approval fingerprint.  Keep those in-memory approvals usable at
+        # existing continuation seams while the Phase-190 authoritative
+        # guard rebinds them to the complete request before persistence.
+        # Approvals created for a different non-empty upstream request do not
+        # match this legacy request and therefore remain rejected.
+        legacy_request = ModelInvocationRequest(
+            request.model,
+            request.system_instructions,
+            request.task_instructions,
+            request.allowed_tools,
+        )
+        is_valid = (
+            approval.approved is True
+            and approval.provider == provider
+            and approval.request_fingerprint
+            == build_model_invocation_execution_fingerprint(
+                legacy_request, resolved_tools
+            )
+            and _is_nonempty_string(approval.approved_by)
+            and _is_nonempty_string(approval.approval_id)
+        )
     if not is_valid:
         raise ModelInvocationExecutionApprovalError(_APPROVAL_ERROR_MESSAGE) from None
 
