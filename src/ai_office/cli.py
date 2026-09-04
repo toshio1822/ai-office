@@ -1,17 +1,40 @@
 """Command-line interface for AI Office."""
 
+import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 
-from ai_office.definitions.employee import EmployeeLoadError, load_employees
+from ai_office.definitions.employee import (
+    EmployeeDefinition,
+    EmployeeLoadError,
+    load_employees,
+)
 from ai_office.definitions.workflow import (
     WorkflowLoadError,
     load_workflows,
     validate_workflow_employee_references,
 )
+from ai_office.engine import (
+    ApprovedWorkflowBootstrapContext,
+    ApprovedWorkflowContinuationContext,
+    InitialStepPreparationApproval,
+    NextStepPreparationApproval,
+    classify_persisted_execution_outcome_reentry,
+    route_approved_fresh_workflow_bounded,
+    route_persisted_execution_outcome_reentry,
+    route_persisted_terminal_workflow_bounded,
+)
+from ai_office.engine.persisted_execution_outcome_reentry import (
+    PersistedExecutionOutcome,
+)
+from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
     ModelInvocationRequest,
+    approve_model_invocation_execution,
+    build_model_invocation_execution_fingerprint,
     build_model_invocation_request,
 )
 from ai_office.planning.execution_plan import (
@@ -25,6 +48,7 @@ from ai_office.planning.step_execution_request import (
     StepExecutionRequest,
     StepSelectionError,
     build_step_execution_request,
+    find_employee_by_id,
 )
 from ai_office.providers.openai import (
     OpenAIResponsesFunctionTool,
@@ -35,6 +59,8 @@ from ai_office.providers.openai import (
     build_openai_responses_payload_from_invocation,
     build_openai_responses_request,
     build_openai_responses_tools,
+    load_openai_api_key_from_environment,
+    send_openai_responses_http_request,
     serialize_openai_responses_payload_dict_pretty,
 )
 from ai_office.providers.openai.responses_dict_payload import JsonValue
@@ -383,6 +409,554 @@ def _display_payload_text(value: str) -> None:
         return
     for line in value.split("\n"):
         typer.echo(f"    {line}")
+
+
+@dataclass(frozen=True)
+class _WorkflowStepPreview:
+    """The exact public request values shown before one step execution."""
+
+    step_request: StepExecutionRequest
+    invocation_request: ModelInvocationRequest
+    employee: EmployeeDefinition
+    resolved_tools: tuple[ToolDefinition, ...]
+    request_fingerprint: str
+
+
+def _workflow_cli_error(message: str, *, code: int = 2) -> NoReturn:
+    """Report one safe workflow-command error and stop without a traceback."""
+    typer.echo(f"Error: {message}", err=True)
+    raise typer.Exit(code=code)
+
+
+def _load_workflow_command_inputs(
+    directory: Path, employees_directory: Path
+) -> tuple[list[object], list[object]]:
+    """Load and validate all definitions for a real workflow command."""
+    try:
+        workflows = load_workflows(directory)
+        employees = load_employees(employees_directory)
+        validate_workflow_employee_references(workflows, employees)
+    except (EmployeeLoadError, WorkflowLoadError):
+        _workflow_cli_error("workflow definitions are invalid")
+    except Exception:
+        _workflow_cli_error("workflow definitions could not be loaded")
+    return workflows, employees
+
+
+def _build_workflow_step_preview(
+    workflows: list[object],
+    employees: list[object],
+    workflow_id: str,
+    step_index: int,
+) -> tuple[object, _WorkflowStepPreview]:
+    """Construct one exact step request through the existing public seams."""
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        plan = build_execution_plan(workflow, employees)
+        step_request = build_step_execution_request(plan, step_index, employees)
+        selected_employee = find_employee_by_id(employees, step_request.employee_id)
+        invocation_request = build_model_invocation_request(step_request)
+        resolved_tools = resolve_tool_names(
+            DEFAULT_TOOL_CATALOG, invocation_request.allowed_tools
+        )
+        fingerprint = build_model_invocation_execution_fingerprint(
+            invocation_request, resolved_tools
+        )
+    except (
+        WorkflowSelectionError,
+        StepSelectionError,
+        EmployeeSelectionError,
+        ToolCatalogError,
+    ):
+        _workflow_cli_error("workflow step preview is invalid")
+    except Exception:
+        _workflow_cli_error("workflow step preview could not be built")
+
+    return workflow, _WorkflowStepPreview(
+        step_request=step_request,
+        invocation_request=invocation_request,
+        employee=selected_employee.definition,
+        resolved_tools=resolved_tools,
+        request_fingerprint=fingerprint,
+    )
+
+
+def _select_workflow_or_exit(
+    workflows: list[object], workflow_id: str
+) -> object:
+    """Select the requested loaded workflow without inspecting execution state."""
+    try:
+        return find_workflow_by_id(workflows, workflow_id)
+    except WorkflowSelectionError:
+        _workflow_cli_error("workflow selection is invalid")
+
+
+def _resolved_tools_json(
+    tools: tuple[ToolDefinition, ...],
+) -> list[dict[str, object]]:
+    """Copy static tool definitions into the safe preview representation."""
+    return [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": [
+                {
+                    "name": parameter.name,
+                    "description": parameter.description,
+                    "type": parameter.type,
+                    "required": parameter.required,
+                }
+                for parameter in tool.parameters
+            ],
+        }
+        for tool in tools
+    ]
+
+
+def _emit_json(value: dict[str, object]) -> None:
+    """Emit exactly one deterministic, secret-free JSON line."""
+    typer.echo(json.dumps(value, ensure_ascii=False, sort_keys=True))
+
+
+def _step_preview_json(
+    operation: str, preview: _WorkflowStepPreview
+) -> dict[str, object]:
+    request = preview.step_request
+    invocation = preview.invocation_request
+    return {
+        "allowed_tools": list(invocation.allowed_tools),
+        "employee_id": request.employee_id,
+        "mode": "preview",
+        "model": invocation.model,
+        "operation": operation,
+        "request_fingerprint": preview.request_fingerprint,
+        "resolved_tools": _resolved_tools_json(preview.resolved_tools),
+        "status": "step_ready",
+        "step_id": request.step_id,
+        "step_index": request.step_index,
+        "system_instructions": invocation.system_instructions,
+        "task_instructions": invocation.task_instructions,
+        "workflow_id": request.workflow_id,
+    }
+
+
+def _result_json(
+    operation: str,
+    mode: str,
+    result: WorkflowProgressionDecision | PersistedExecutionOutcome,
+) -> dict[str, object]:
+    """Build safe result metadata without copying provider result contents."""
+    if type(result) is WorkflowProgressionDecision:
+        return {
+            "current_employee_id": result.current_employee_id,
+            "current_step_id": result.current_step_id,
+            "current_step_index": result.current_step_index,
+            "failure_category": None,
+            "mode": mode,
+            "next_employee_id": result.next_employee_id,
+            "next_step_id": result.next_step_id,
+            "next_step_index": result.next_step_index,
+            "operation": operation,
+            "reason": result.reason,
+            "status": result.decision,
+            "workflow_id": result.workflow_id,
+        }
+    if type(result) is PersistedExecutionOutcome:
+        return {
+            "current_employee_id": result.current_employee_id,
+            "current_step_id": result.current_step_id,
+            "current_step_index": result.current_step_index,
+            "failure_category": result.failure_category,
+            "mode": mode,
+            "next_employee_id": None,
+            "next_step_id": None,
+            "next_step_index": None,
+            "operation": operation,
+            "reason": None,
+            "status": result.outcome,
+            "workflow_id": result.workflow_id,
+        }
+    _workflow_cli_error("workflow result is incompatible")
+
+
+def _has_execution_fields(
+    approve_preparation: bool,
+    approve_execution: bool,
+    approved_by: str | None,
+    approval_id: str | None,
+    expected_step_id: str | None,
+    expected_step_index: int | None,
+    expected_employee_id: str | None,
+    expected_request_fingerprint: str | None,
+) -> bool:
+    """Return whether any execution-only option was supplied by the caller."""
+    return any(
+        (
+            approve_preparation,
+            approve_execution,
+            approved_by is not None,
+            approval_id is not None,
+            expected_step_id is not None,
+            expected_step_index is not None,
+            expected_employee_id is not None,
+            expected_request_fingerprint is not None,
+        )
+    )
+
+
+def _require_execution_options(
+    approve_preparation: bool,
+    approve_execution: bool,
+    approved_by: str | None,
+    approval_id: str | None,
+    expected_step_id: str | None,
+    expected_step_index: int | None,
+    expected_employee_id: str | None,
+    expected_request_fingerprint: str | None,
+) -> None:
+    """Reject incomplete explicit approval before credential or provider work."""
+    if not approve_preparation or not approve_execution:
+        _workflow_cli_error("both explicit approvals are required")
+    if approved_by is None or approved_by == "":
+        _workflow_cli_error("approved-by is required")
+    if approval_id is None or approval_id == "":
+        _workflow_cli_error("approval-id is required")
+    if (
+        expected_step_id is None
+        or expected_step_index is None
+        or expected_employee_id is None
+        or expected_request_fingerprint is None
+    ):
+        _workflow_cli_error("all expected preview values are required")
+
+
+def _expected_preview_matches(
+    preview: _WorkflowStepPreview,
+    expected_step_id: str | None,
+    expected_step_index: int | None,
+    expected_employee_id: str | None,
+    expected_request_fingerprint: str | None,
+) -> bool:
+    """Compare caller values with the newly rebuilt preview without coercion."""
+    request = preview.step_request
+    return (
+        type(expected_step_id) is str
+        and expected_step_id == request.step_id
+        and type(expected_step_index) is int
+        and not isinstance(expected_step_index, bool)
+        and expected_step_index == request.step_index
+        and type(expected_employee_id) is str
+        and expected_employee_id == request.employee_id
+        and type(expected_request_fingerprint) is str
+        and expected_request_fingerprint == preview.request_fingerprint
+    )
+
+
+def _build_start_context(
+    preview: _WorkflowStepPreview,
+    approved_by: str,
+    approval_id: str,
+) -> ApprovedWorkflowBootstrapContext:
+    """Create the exact fresh-start context only after preview binding passes."""
+    try:
+        api_key = load_openai_api_key_from_environment()
+        preparation_approval = InitialStepPreparationApproval(
+            True,
+            preview.step_request.workflow_id,
+            preview.step_request.step_id,
+            preview.step_request.step_index,
+            preview.step_request.employee_id,
+        )
+        execution_approval = approve_model_invocation_execution(
+            preview.invocation_request,
+            preview.resolved_tools,
+            provider="openai",
+            approved_by=approved_by,
+            approval_id=approval_id,
+        )
+    except Exception:
+        _workflow_cli_error("credential or approval configuration is invalid")
+    return ApprovedWorkflowBootstrapContext(
+        preparation_approval=preparation_approval,
+        employee=preview.employee,
+        resolved_tools=preview.resolved_tools,
+        api_key=api_key,
+        execution_approval=execution_approval,
+        transport=send_openai_responses_http_request,
+    )
+
+
+def _build_continuation_context(
+    decision: WorkflowProgressionDecision,
+    preview: _WorkflowStepPreview,
+    approved_by: str,
+    approval_id: str,
+) -> ApprovedWorkflowContinuationContext:
+    """Create one exact next-step context only after preview binding passes."""
+    try:
+        api_key = load_openai_api_key_from_environment()
+        preparation_approval = NextStepPreparationApproval(
+            True,
+            decision.workflow_id,
+            decision.current_step_id,
+            decision.current_step_index,
+            decision.next_step_id,
+            decision.next_step_index,
+            decision.next_employee_id,
+        )
+        execution_approval = approve_model_invocation_execution(
+            preview.invocation_request,
+            preview.resolved_tools,
+            provider="openai",
+            approved_by=approved_by,
+            approval_id=approval_id,
+        )
+    except Exception:
+        _workflow_cli_error("credential or approval configuration is invalid")
+    return ApprovedWorkflowContinuationContext(
+        preparation_approval=preparation_approval,
+        employee=preview.employee,
+        resolved_tools=preview.resolved_tools,
+        api_key=api_key,
+        execution_approval=execution_approval,
+        transport=send_openai_responses_http_request,
+    )
+
+
+def _run_fresh_workflow(
+    workflow: object,
+    state_path: Path,
+    events_path: Path,
+    context: ApprovedWorkflowBootstrapContext,
+) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
+    """Call the public Phase-210 composition with an exact empty tuple."""
+    try:
+        return route_approved_fresh_workflow_bounded(
+            workflow,
+            state_path,
+            events_path,
+            context,
+            (),
+        )
+    except Exception:
+        _workflow_cli_error("workflow execution failed")
+
+
+def _read_persisted_continue_route(
+    workflow: object,
+    state_path: Path,
+    events_path: Path,
+) -> PersistedExecutionOutcome | WorkflowProgressionDecision:
+    """Run the canonical read-only Phase-37 → Phase-38 preflight."""
+    try:
+        classified = classify_persisted_execution_outcome_reentry(
+            workflow,
+            state_path,
+            events_path,
+        )
+        routed = route_persisted_execution_outcome_reentry(
+            classified,
+            workflow,
+            state_path,
+            events_path,
+        )
+    except Exception:
+        _workflow_cli_error(
+            "persisted workflow state requires recovery or investigation"
+        )
+    if type(routed) not in (PersistedExecutionOutcome, WorkflowProgressionDecision):
+        _workflow_cli_error("persisted workflow route is incompatible")
+    return routed
+
+
+def _run_persisted_workflow(
+    workflow: object,
+    state_path: Path,
+    events_path: Path,
+    context: ApprovedWorkflowContinuationContext,
+) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
+    """Call Phase-212 with exactly one built-in continuation context."""
+    try:
+        return route_persisted_terminal_workflow_bounded(
+            workflow,
+            state_path,
+            events_path,
+            (context,),
+        )
+    except Exception:
+        _workflow_cli_error("workflow continuation failed")
+
+
+@workflows_app.command("start")
+def start_workflow(
+    workflow_id: str,
+    state_path: Path = typer.Option(..., "--state-path"),
+    events_path: Path = typer.Option(..., "--events-path"),
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+    preview_only: bool = typer.Option(False, "--preview-only"),
+    approve_preparation: bool = typer.Option(False, "--approve-preparation"),
+    approve_execution: bool = typer.Option(False, "--approve-execution"),
+    approved_by: str | None = typer.Option(None, "--approved-by"),
+    approval_id: str | None = typer.Option(None, "--approval-id"),
+    expected_step_id: str | None = typer.Option(None, "--expected-step-id"),
+    expected_step_index: int | None = typer.Option(None, "--expected-step-index"),
+    expected_employee_id: str | None = typer.Option(None, "--expected-employee-id"),
+    expected_request_fingerprint: str | None = typer.Option(
+        None, "--expected-request-fingerprint"
+    ),
+) -> None:
+    """Preview or execute exactly one fresh workflow step."""
+    if preview_only and _has_execution_fields(
+        approve_preparation,
+        approve_execution,
+        approved_by,
+        approval_id,
+        expected_step_id,
+        expected_step_index,
+        expected_employee_id,
+        expected_request_fingerprint,
+    ):
+        _workflow_cli_error("preview-only cannot include execution options")
+    if not preview_only:
+        _require_execution_options(
+            approve_preparation,
+            approve_execution,
+            approved_by,
+            approval_id,
+            expected_step_id,
+            expected_step_index,
+            expected_employee_id,
+            expected_request_fingerprint,
+        )
+
+    workflows, employees = _load_workflow_command_inputs(
+        directory, employees_directory
+    )
+    workflow, preview = _build_workflow_step_preview(
+        workflows, employees, workflow_id, 1
+    )
+    if preview_only:
+        _emit_json(_step_preview_json("start", preview))
+        return
+    assert approved_by is not None and approval_id is not None
+    if not _expected_preview_matches(
+        preview,
+        expected_step_id,
+        expected_step_index,
+        expected_employee_id,
+        expected_request_fingerprint,
+    ):
+        _workflow_cli_error("expected preview does not match current step")
+    context = _build_start_context(preview, approved_by, approval_id)
+    result = _run_fresh_workflow(workflow.definition, state_path, events_path, context)
+    _emit_json(_result_json("start", "execute", result))
+    if type(result) is PersistedExecutionOutcome:
+        raise typer.Exit(code=1)
+
+
+@workflows_app.command("continue")
+def continue_workflow(
+    workflow_id: str,
+    state_path: Path = typer.Option(..., "--state-path"),
+    events_path: Path = typer.Option(..., "--events-path"),
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+    preview_only: bool = typer.Option(False, "--preview-only"),
+    approve_preparation: bool = typer.Option(False, "--approve-preparation"),
+    approve_execution: bool = typer.Option(False, "--approve-execution"),
+    approved_by: str | None = typer.Option(None, "--approved-by"),
+    approval_id: str | None = typer.Option(None, "--approval-id"),
+    expected_step_id: str | None = typer.Option(None, "--expected-step-id"),
+    expected_step_index: int | None = typer.Option(None, "--expected-step-index"),
+    expected_employee_id: str | None = typer.Option(None, "--expected-employee-id"),
+    expected_request_fingerprint: str | None = typer.Option(
+        None, "--expected-request-fingerprint"
+    ),
+) -> None:
+    """Preview or execute exactly one persisted next workflow step."""
+    if preview_only and _has_execution_fields(
+        approve_preparation,
+        approve_execution,
+        approved_by,
+        approval_id,
+        expected_step_id,
+        expected_step_index,
+        expected_employee_id,
+        expected_request_fingerprint,
+    ):
+        _workflow_cli_error("preview-only cannot include execution options")
+
+    workflows, employees = _load_workflow_command_inputs(
+        directory, employees_directory
+    )
+    workflow = _select_workflow_or_exit(workflows, workflow_id)
+    routed = _read_persisted_continue_route(
+        workflow.definition, state_path, events_path
+    )
+
+    if type(routed) is PersistedExecutionOutcome:
+        _emit_json(
+            _result_json(
+                "continue", "preview" if preview_only else "execute", routed
+            )
+        )
+        if not preview_only:
+            raise typer.Exit(code=1)
+        return
+    if routed.decision == "workflow_complete":
+        _emit_json(
+            _result_json(
+                "continue", "preview" if preview_only else "execute", routed
+            )
+        )
+        return
+    if routed.decision != "prepare_next_step":
+        _workflow_cli_error("persisted workflow requires recovery or investigation")
+
+    assert routed.next_step_index is not None
+    workflow, preview = _build_workflow_step_preview(
+        workflows,
+        employees,
+        workflow_id,
+        routed.next_step_index,
+    )
+    if preview_only:
+        _emit_json(_step_preview_json("continue", preview))
+        return
+
+    _require_execution_options(
+        approve_preparation,
+        approve_execution,
+        approved_by,
+        approval_id,
+        expected_step_id,
+        expected_step_index,
+        expected_employee_id,
+        expected_request_fingerprint,
+    )
+    assert approved_by is not None and approval_id is not None
+    if not _expected_preview_matches(
+        preview,
+        expected_step_id,
+        expected_step_index,
+        expected_employee_id,
+        expected_request_fingerprint,
+    ):
+        _workflow_cli_error("expected preview does not match current step")
+    context = _build_continuation_context(
+        routed, preview, approved_by, approval_id
+    )
+    result = _run_persisted_workflow(
+        workflow.definition, state_path, events_path, context
+    )
+    _emit_json(_result_json("continue", "execute", result))
+    if type(result) is PersistedExecutionOutcome:
+        raise typer.Exit(code=1)
 
 
 @workflows_app.command("plan")

@@ -4371,3 +4371,56 @@ deterministic synthetic transports. No context or approval generation,
 employee/tool/key/transport lookup, automatic replay, fresh/resume router,
 recursion, unbounded loop, scheduler, finalizer, parallelism, CLI/GUI,
 provider/network, or paid API behavior is added.
+
+## Phase 214: 明示承認付き1-step CLI boundary
+
+Phase 214 adds only the two operator-facing commands
+`ai-office workflows start WORKFLOW_ID` and
+`ai-office workflows continue WORKFLOW_ID`. The CLI performs static/public
+request construction and uses the existing Phase 210 / Phase 212 boundaries;
+it does not add a generic engine wrapper or alter those production contracts.
+
+```text
+CLI static/public request construction
+  -> operator preview
+  -> operator returns exact expected identity + fingerprint
+  -> explicit approval construction
+  -> start: Phase210 + ()
+  -> continue: read-only Phase37→38 preview, then Phase212 + (one context,)
+  -> STOP
+```
+
+Both commands require explicit `--state-path` and `--events-path`. Preview mode
+rebuilds the selected step from validated workflow and employee definitions and
+prints only deterministic, safe metadata. It writes no state or events, loads
+no `OPENAI_API_KEY`, creates no approval object, and calls no provider
+transport.
+
+An execution route requires both preparation and paid-execution approvals,
+caller-supplied non-empty approval identity (`--approved-by` and
+`--approval-id`), and all four expected preview values: step ID, 1-based step
+index, employee ID, and request fingerprint. The CLI rebuilds the preview and
+compares these values exactly before constructing either approval or loading
+the API key. A missing or mismatched value therefore cannot silently widen the
+operator's intent; it stops before credential or provider work. The CLI guard
+is separate from Phase 212's authoritative persisted-state revalidation, which
+independently prevents execution after the persisted terminal route becomes
+stale between preview and execution.
+
+`start` constructs an `ApprovedWorkflowBootstrapContext` and calls Phase 210
+with the exact empty continuation tuple. `continue` first performs the
+read-only Phase 37 → Phase 38 route on every invocation. Terminal persisted
+failure and workflow completion stop without future approval, key, or transport;
+only `prepare_next_step` constructs one
+`ApprovedWorkflowContinuationContext` and calls Phase 212 with the exact
+one-element tuple. Consequently one explicit CLI approval authorizes at most
+one provider step: there is no retry, automatic continuation, loop, or
+backoff. The API key is read only on an actual execution route, and result
+output contains safe state metadata rather than credentials or raw provider
+payloads.
+
+Persisted `ready` and `running` states are rejected rather than replayed. An
+in-progress state does not establish whether an external provider side effect
+already occurred, so recovery or manual investigation is a separate contract.
+The Phase-214 CLI adds no fresh/resume auto-detection, provider selection,
+credential persistence, GUI, scheduler, finalizer, or parallel execution.
