@@ -4413,3 +4413,48 @@ and lower stages own durable changes and Phase 212 performs no outer rollback.
 There is no retry, generated input, loop, recursion, scheduler, finalizer,
 CLI/GUI, or provider/network/paid API behavior in this boundary, and it never
 automatically selects fresh versus persisted-terminal resume.
+
+## 明示承認付きワークフロー実行（Phase 214）
+
+`workflows start` と `workflows continue` は、定義と既存の公開実行境界を
+組み合わせた、1 step 限定の operator-facing CLI です。実行前に必ず
+preview を表示し、その出力を確認してから、同じ step を実行するための
+値を明示的に返します。
+
+```bash
+# preview: 状態・イベント・API key・provider transportを変更しない
+ai-office workflows start research-and-summarize \
+  --state-path state.json --events-path events.json --preview-only
+
+# execution: previewから次の4値をそのまま指定する
+ai-office workflows start research-and-summarize \
+  --state-path state.json --events-path events.json \
+  --approve-preparation --approve-execution \
+  --approved-by operator --approval-id approval-20260904-001 \
+  --expected-step-id research --expected-step-index 1 \
+  --expected-employee-id general-researcher \
+  --expected-request-fingerprint <previewのrequest_fingerprint>
+
+# step 1成功後は、同じpreview-first手順で次の1 stepだけcontinueする
+ai-office workflows continue research-and-summarize \
+  --state-path state.json --events-path events.json --preview-only
+```
+
+executionでは、`expected-step-id`、`expected-step-index`、
+`expected-employee-id`、`expected-request-fingerprint` の4値が、再計算した
+現在のpreviewと完全一致しなければなりません。欠落または不一致の場合は、
+preparation approval、paid execution approval、`OPENAI_API_KEY` の読込、
+provider transportのいずれも行わずに拒否します。approvalの実行者とIDも
+callerが明示的に指定する必要があり、既定値や自動生成はありません。
+
+1つのコマンドが実行できるprovider stepは最大1つです。自動継続、retry、
+backoffはなく、成功後は必ず停止します。`OPENAI_API_KEY` は実際のexecution
+routeで必要になった場合にだけ読み込まれ、previewでは不要です。最終結果の
+CLI出力はstepの状態遷移など安全なmetadataに限定され、credentialやraw
+provider payloadは表示しません。
+
+永続化された `ready` / `running` state は、外部provider side effectの有無を
+判定できないため、`continue` が自動再実行しません。これらは別途 recovery
+または manual investigation が必要です。`continue` は persisted terminal
+routeを再検証してから次の1 stepを実行するため、CLI preview後に保存状態が
+変化した場合も stale execution を防ぎます。
