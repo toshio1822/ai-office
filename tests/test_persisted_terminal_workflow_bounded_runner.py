@@ -816,7 +816,8 @@ def test_09_final_success_terminal_ignores_malformed_contexts(tmp_path: Path) ->
     inner_calls = 0
     routing_calls = 0
     progression_calls = 0
-    progression_result: list[object] = []
+    phase31_result: list[object] = []
+    phase38_result: list[object] = []
 
     def outer(*args: object) -> object:
         nonlocal outer_calls
@@ -832,17 +833,19 @@ def test_09_final_success_terminal_ignores_malformed_contexts(tmp_path: Path) ->
         nonlocal progression_calls
         progression_calls += 1
         value = decide_persisted_success_progression(*args)
-        progression_result.append(value)
+        phase31_result.append(value)
         return value
 
     def routing(*args: object) -> object:
         nonlocal routing_calls
         routing_calls += 1
-        return route_persisted_execution_outcome_reentry(
+        value = route_persisted_execution_outcome_reentry(
             *args,
             classification_function=inner,
             progression_function=progression,
         )
+        phase38_result.append(value)
+        return value
 
     final = route_persisted_terminal_workflow_bounded(
         workflow,
@@ -855,7 +858,12 @@ def test_09_final_success_terminal_ignores_malformed_contexts(tmp_path: Path) ->
     )
     assert type(final) is WorkflowProgressionDecision
     assert final.decision == "workflow_complete"
-    assert progression_result == [final]
+    assert len(phase31_result) == 1
+    assert len(phase38_result) == 1
+    assert phase31_result == [final]
+    assert final is phase31_result[0]
+    assert final is phase38_result[0]
+    assert phase31_result[0] is phase38_result[0]
     assert (outer_calls, routing_calls, inner_calls, progression_calls) == (1, 1, 1, 1)
     assert calls == ["step-1", "step-2", "step-3", "step-4"]
     assert len(events_path.read_text().splitlines()) == 4
@@ -913,6 +921,8 @@ def test_10_prepare_configuration_is_deferred_until_after_routing() -> None:
 
 def test_11_phase192_receives_routed_identity_and_exact_arguments_once() -> None:
     workflow = _workflow(2)
+    state_path = object()
+    events_path = object()
     classified = _success_outcome(workflow)
     routed = _prepare(workflow)
     contexts = (_opaque_context(),)
@@ -925,20 +935,23 @@ def test_11_phase192_receives_routed_identity_and_exact_arguments_once() -> None
 
     result = route_persisted_terminal_workflow_bounded(
         workflow,
-        object(),
-        object(),
+        state_path,
+        events_path,
         contexts,
         classification_function=lambda *_args: classified,
         routing_function=lambda *_args: routed,
         bounded_continuation_function=bounded,
     )
     assert result is returned
-    assert bounded_calls == [
-        ((routed, workflow, bounded_calls[0][0][2], bounded_calls[0][0][3], contexts), {})
-    ]
-    assert bounded_calls[0][0][0] is routed
-    assert bounded_calls[0][0][1] is workflow
-    assert bounded_calls[0][0][4] is contexts
+    assert len(bounded_calls) == 1
+    args, kwargs = bounded_calls[0]
+    assert len(args) == 5
+    assert kwargs == {}
+    assert args[0] is routed
+    assert args[1] is workflow
+    assert args[2] is state_path
+    assert args[3] is events_path
+    assert args[4] is contexts
 
 
 def test_12_phase192_output_family_and_linkage_are_strict() -> None:
