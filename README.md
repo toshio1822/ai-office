@@ -4379,3 +4379,37 @@ safe errors. Phase 210 performs no state/event write, rollback, retry,
 recursion, unbounded loop, automatic continuation, scheduler, finalizer,
 parallel work, CLI/GUI behavior, or provider/network/paid API call. Persisted
 resume/reentry remains a separate future contract.
+
+## Phase 212: Persisted-Terminal Bounded Top-Level Resume
+
+Phase 212 adds the explicit persisted-terminal operation
+`route_persisted_terminal_workflow_bounded(workflow, state_path, events_path, continuation_contexts, *, classification_function=classify_persisted_execution_outcome_reentry, routing_function=route_persisted_execution_outcome_reentry, bounded_continuation_function=route_bounded_approved_workflow_continuation)`.
+There are now two deliberately separate top-level operations:
+
+```text
+fresh bounded start
+  → route_approved_fresh_workflow_bounded(...)
+
+existing persisted-terminal target
+  → route_persisted_terminal_workflow_bounded(...)
+```
+
+The persisted-terminal operation reads the authoritative target through Phase
+37 exactly once, routes that exact outcome through Phase 38 exactly once, and
+preserves the Phase-38-owned duplicate read-only Phase-37 reclassification.
+A persisted failure is an identity-preserving terminal stop; final persisted
+success is routed through Phase 31 and is also an identity-preserving terminal
+stop. Only `prepare_next_step` validates the caller-supplied exact tuple of
+`ApprovedWorkflowContinuationContext` values and calls the public Phase-192
+bounded runner once.
+
+Continuation configuration is deferred until it is relevant. Terminal failure
+and final success do not validate or consume contexts and do not require a
+bounded continuation dependency. Persisted `ready` and `running` states are
+not automatically replayed: an in-progress persisted state does not prove
+whether an external provider side effect completed before process death.
+Phase 37/38/31 remain read-only owners; once Phase 192 begins, Phase 192/190
+and lower stages own durable changes and Phase 212 performs no outer rollback.
+There is no retry, generated input, loop, recursion, scheduler, finalizer,
+CLI/GUI, or provider/network/paid API behavior in this boundary, and it never
+automatically selects fresh versus persisted-terminal resume.

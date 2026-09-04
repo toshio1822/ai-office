@@ -411,6 +411,13 @@ from ai_office.engine.persisted_terminal_outcome_classification_routing_reentry 
     PersistedTerminalOutcomeClassificationRoutingFailureDetail,
     route_persisted_terminal_outcome_classification_reentry,
 )
+from ai_office.engine.persisted_terminal_workflow_bounded_runner import (
+    PersistedTerminalWorkflowBoundedRunnerClassification,
+    PersistedTerminalWorkflowBoundedRunnerCompatibilityError,
+    PersistedTerminalWorkflowBoundedRunnerError,
+    PersistedTerminalWorkflowBoundedRunnerFailureDetail,
+    route_persisted_terminal_workflow_bounded,
+)
 from ai_office.engine.persisted_transition_outcome_classification_cycle_continuation_boundary import (  # noqa: E501
     PersistedTransitionOutcomeClassificationCycleContinuationCompatibilityError,
     PersistedTransitionOutcomeClassificationCycleContinuationError,
@@ -883,6 +890,11 @@ __all__ = [
     "FreshWorkflowBootstrapFailureDetail",
     "InitialStepPreparationApproval",
     "route_approved_workflow_fresh_start",
+    "PersistedTerminalWorkflowBoundedRunnerClassification",
+    "PersistedTerminalWorkflowBoundedRunnerFailureDetail",
+    "PersistedTerminalWorkflowBoundedRunnerError",
+    "PersistedTerminalWorkflowBoundedRunnerCompatibilityError",
+    "route_persisted_terminal_workflow_bounded",
     "ApprovedWorkflowContinuationContext",
     "BoundedApprovedWorkflowRunnerCompatibilityError",
     "BoundedApprovedWorkflowRunnerError",
