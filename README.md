@@ -4494,3 +4494,58 @@ Policy A（直前の成功出力のみ）を採用し、fan-in、DAG、workflow 
 dataflow schema、retry、conversation continuation、automatic continuation は
 追加しません。fresh な step 1 の upstream は空 tuple のままで、Phase214 の
 provider input と fingerprint の互換性を維持します。
+
+## Phase 218: restart-safeなworkflow result inspection
+
+永続化済みworkflowの現在のbusiness resultを、プロセス再起動後に
+read-onlyで確認するには、次を使用します。
+
+```bash
+ai-office workflows result research-and-summarize \
+  --state-path state.json \
+  --events-path events.jsonl
+
+# 定義ディレクトリを明示する場合
+ai-office workflows result research-and-summarize \
+  --state-path state.json \
+  --events-path events.jsonl \
+  --directory path/to/workflows \
+  --employees-directory path/to/employees
+```
+
+`--state-path` と `--events-path` は必須で、定義ディレクトリの既定値は
+`workflows` / `employees` です。このコマンドはworkflowとemployee定義を
+検証して対象workflowを選択した後、Phase37 → Phase38のcanonicalな永続
+terminal routeを読み取り、strictな`load_workflow_execution_history`で
+履歴を再読込します。CLIはstep数からprogressionを推測せず、最後のterminal
+eventをcurrent stateとPhase38のresult identityへ照合してから、1個の決定的な
+JSON objectだけを出力します。
+
+成功時の`output.output_text`は、最後のsuccessful stepに保存された値を
+trim、normalize、要約、連結せず、そのまま返します。途中stepの成功では
+current stepのoutputとPhase38が返した次stepの`id` / `index` /
+`employee_id`を返し、workflow完了時は最終successful stepのoutputだけを
+business resultとします。以前のstepのoutputは履歴上の監査データとして
+残りますが、結果へ集約しません。空文字、空白、改行、Unicode、JSON-likeな
+文字列、instruction-likeな文字列、長い文字列もuntrusted dataとして無加工で
+扱います。成功outputには、そのsource provenance（workflow/step/index/
+employee）とexact outputから作ったcanonical SHA-256 digestも含まれます。
+
+終了コードは次のとおりです。
+
+```text
+0  persisted success（prepare_next_step または workflow_complete）
+1  persisted_failure（JSONを出力し、output は null）
+2  不正な定義・履歴・workflow identity、または recovery/investigationが必要
+```
+
+`ready` / `running` stateは、過去のeventから結果を推測したりproviderを
+再実行したりせず、`Error: persisted workflow state requires recovery or
+investigation`として終了コード2になります。破損・不一致のstate/eventも
+修復せず、安全なエラーとして終了します。
+
+result inspectionはstate/eventsを変更しません。API key、preparation/
+execution approval、provider、retry、replay、automatic continuation、
+recovery、repairを行わず、`OPENAI_API_KEY`も要求しません。provider、
+request_id、response_id、failure event message、credential、approval、
+raw provider payloadはresult JSONへ出力しません。

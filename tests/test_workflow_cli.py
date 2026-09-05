@@ -2,6 +2,9 @@
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -379,6 +382,234 @@ def write_failed_history(paths: dict[str, Path]) -> None:
     )
     paths["events"].write_text(
         serialize_runtime_step_event_jsonl(event),
+        encoding="utf-8",
+    )
+
+
+def write_success_history(
+    paths: dict[str, Path],
+    *,
+    workflow_id: str,
+    step_ids: tuple[str, ...],
+    outputs: tuple[str, ...],
+    current: int | None = None,
+    employee_id: str = "general-researcher",
+    provider: str = "synthetic-provider",
+    request_prefix: str = "synthetic-request",
+    response_prefix: str = "synthetic-response",
+) -> None:
+    """Write a strict successful history using only public persistence models."""
+    if current is None:
+        current = len(step_ids)
+    assert 1 <= current <= len(step_ids)
+    assert len(outputs) == current
+    state = WorkflowExecutionState(
+        workflow_id=workflow_id,
+        status="succeeded",
+        current_step_id=step_ids[current - 1],
+        current_step_index=current,
+        current_employee_id=employee_id,
+        completed_step_ids=step_ids[:current],
+        last_failure_category=None,
+    )
+    events = "".join(
+        serialize_runtime_step_event_jsonl(
+            RuntimeStepEvent(
+                event_type="step_succeeded",
+                workflow_id=workflow_id,
+                step_id=step_ids[index - 1],
+                step_index=index,
+                employee_id=employee_id,
+                previous_status="running",
+                next_status="succeeded",
+                provider=provider,
+                failure_category=None,
+                response_id=f"{response_prefix}-{index}",
+                request_id=f"{request_prefix}-{index}",
+                output_text=outputs[index - 1],
+                message=None,
+            )
+        )
+        for index in range(1, current + 1)
+    )
+    paths["state"].write_text(
+        serialize_workflow_execution_state_json(state),
+        encoding="utf-8",
+    )
+    paths["events"].write_text(events, encoding="utf-8")
+
+
+def write_running_history_with_previous_success(paths: dict[str, Path]) -> None:
+    """Write running state with an older success event that must not be inferred."""
+    state = WorkflowExecutionState(
+        workflow_id="research-and-summarize",
+        status="running",
+        current_step_id="research",
+        current_step_index=1,
+        current_employee_id="general-researcher",
+        completed_step_ids=(),
+        last_failure_category=None,
+    )
+    event = RuntimeStepEvent(
+        event_type="step_succeeded",
+        workflow_id="research-and-summarize",
+        step_id="research",
+        step_index=1,
+        employee_id="general-researcher",
+        previous_status="running",
+        next_status="succeeded",
+        provider="synthetic-provider",
+        failure_category=None,
+        response_id="synthetic-response-previous",
+        request_id="synthetic-request-previous",
+        output_text="OLD OUTPUT MUST NOT BE INFERRED",
+        message=None,
+    )
+    paths["state"].write_text(
+        serialize_workflow_execution_state_json(state),
+        encoding="utf-8",
+    )
+    paths["events"].write_text(
+        serialize_runtime_step_event_jsonl(event),
+        encoding="utf-8",
+    )
+
+
+def write_failed_result_history(
+    paths: dict[str, Path],
+    *,
+    provider: str = "synthetic-provider",
+    request_id: str = "synthetic-request",
+    message: str = "synthetic failure",
+) -> None:
+    """Write a strict failure with configurable transport-only secret fields."""
+    state = WorkflowExecutionState(
+        workflow_id="research-and-summarize",
+        status="failed",
+        current_step_id="research",
+        current_step_index=1,
+        current_employee_id="general-researcher",
+        completed_step_ids=(),
+        last_failure_category="api_error",
+    )
+    event = RuntimeStepEvent(
+        event_type="step_failed",
+        workflow_id="research-and-summarize",
+        step_id="research",
+        step_index=1,
+        employee_id="general-researcher",
+        previous_status="running",
+        next_status="failed",
+        provider=provider,
+        failure_category="api_error",
+        response_id=None,
+        request_id=request_id,
+        output_text=None,
+        message=message,
+    )
+    paths["state"].write_text(
+        serialize_workflow_execution_state_json(state),
+        encoding="utf-8",
+    )
+    paths["events"].write_text(
+        serialize_runtime_step_event_jsonl(event),
+        encoding="utf-8",
+    )
+
+
+def replace_workflow_definition_id(directory: Path, workflow_id: str) -> None:
+    """Change only a temporary workflow definition identity for mismatch tests."""
+    path = directory / "workflow.yaml"
+    definition = yaml.safe_load(path.read_text(encoding="utf-8"))
+    definition["id"] = workflow_id
+    path.write_text(yaml.safe_dump(definition, sort_keys=False), encoding="utf-8")
+
+
+def result_command_args(workflow_id: str, paths: dict[str, Path]) -> list[str]:
+    """Return the exact explicit arguments for the read-only result command."""
+    return workflow_command_args("result", workflow_id, paths)
+
+
+def invoke_result(workflow_id: str, paths: dict[str, Path]) -> object:
+    """Invoke result inspection without retaining any execution-side object."""
+    return runner.invoke(app, result_command_args(workflow_id, paths))
+
+
+def output_digest(
+    workflow_id: str,
+    step_id: str,
+    step_index: int,
+    employee_id: str,
+    output_text: str,
+) -> str:
+    """Calculate the result digest independently from the CLI implementation."""
+    value = {
+        "employee_id": employee_id,
+        "output_text": output_text,
+        "step_id": step_id,
+        "step_index": step_index,
+        "workflow_id": workflow_id,
+    }
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def guard_result_execution_seams(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str],
+) -> None:
+    """Trap every CLI-visible execution seam for a result-only invocation."""
+    names = (
+        "load_openai_api_key_from_environment",
+        "approve_model_invocation_execution",
+        "send_openai_responses_http_request",
+        "route_approved_fresh_workflow_bounded",
+        "route_persisted_terminal_workflow_bounded",
+        "_build_start_context",
+        "_build_continuation_context",
+        "_run_fresh_workflow",
+        "_run_persisted_workflow",
+    )
+
+    def trap(name: str):
+        def fail(*args: object, **kwargs: object) -> object:
+            calls.append(name)
+            raise AssertionError(name)
+
+        return fail
+
+    for name in names:
+        monkeypatch.setattr(cli_module, name, trap(name))
+
+
+def invoke_result_in_new_process(
+    workflow_id: str,
+    paths: dict[str, Path],
+) -> subprocess.CompletedProcess[str]:
+    """Read a persisted result in a fresh interpreter process."""
+    source_root = Path(__file__).resolve().parents[1]
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    pythonpath = os.pathsep.join(
+        value
+        for value in (str(source_root / "src"), existing_pythonpath)
+        if value
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from ai_office.cli import app; app()",
+            *result_command_args(workflow_id, paths),
+        ],
+        cwd=source_root,
+        env={**os.environ, "PYTHONPATH": pythonpath},
+        capture_output=True,
+        check=False,
         encoding="utf-8",
     )
 
@@ -3210,3 +3441,418 @@ def test_workflows_continue_mutation_before_phase190_guard_rejects_before_runnin
     assert load_workflow_execution_state(paths["state"]).current_step_index == 1
     assert calls == []
     assert key_calls == [1]
+
+
+def test_workflows_help_lists_result_command() -> None:
+    result = runner.invoke(app, ["workflows", "--help"])
+
+    assert result.exit_code == 0
+    assert "result" in result.stdout
+
+
+def test_workflows_result_one_step_final_success_preserves_exact_output(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_single_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    output_text = "ONE-STEP-SENTINEL\n日本語 😀  "
+    write_success_history(
+        paths,
+        workflow_id="single-workflow",
+        step_ids=("only-step",),
+        outputs=(output_text,),
+    )
+
+    result = invoke_result("single-workflow", paths)
+    value = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert value["status"] == "workflow_complete"
+    assert value["reason"] == "last_step_succeeded"
+    assert value["output"] == {
+        "employee_id": "general-researcher",
+        "output_text": output_text,
+        "sha256": output_digest(
+            "single-workflow",
+            "only-step",
+            1,
+            "general-researcher",
+            output_text,
+        ),
+        "step_id": "only-step",
+        "step_index": 1,
+        "workflow_id": "single-workflow",
+    }
+
+
+def test_workflows_result_intermediate_success_returns_output_and_next_metadata(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_three_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    output_text = "SECOND-CURRENT\n中間 output"
+    write_success_history(
+        paths,
+        workflow_id="research-and-summarize",
+        step_ids=("research", "summarize", "review"),
+        outputs=("FIRST-OUTPUT", output_text),
+        current=2,
+    )
+
+    result = invoke_result("research-and-summarize", paths)
+    value = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert value["status"] == "prepare_next_step"
+    assert value["reason"] == "next_step_available"
+    assert value["current_step_id"] == "summarize"
+    assert value["current_step_index"] == 2
+    assert value["next_step_id"] == "review"
+    assert value["next_step_index"] == 3
+    assert value["next_employee_id"] == "general-researcher"
+    assert value["output"]["step_id"] == "summarize"
+    assert value["output"]["step_index"] == 2
+    assert value["output"]["output_text"] == output_text
+
+
+def test_workflows_result_multi_step_final_uses_only_final_output(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_three_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    first_output = "FIRST-ONLY-AUDIT"
+    second_output = "SECOND-ONLY-AUDIT"
+    final_output = "FINAL-ONLY-RESULT\n日本語 😀"
+    write_success_history(
+        paths,
+        workflow_id="research-and-summarize",
+        step_ids=("research", "summarize", "review"),
+        outputs=(first_output, second_output, final_output),
+    )
+
+    result = invoke_result("research-and-summarize", paths)
+    value = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert value["status"] == "workflow_complete"
+    assert value["output"]["output_text"] == final_output
+    assert value["output"]["step_id"] == "review"
+    assert first_output not in result.stdout
+    assert second_output not in result.stdout
+
+
+def test_workflows_result_preserves_empty_output_and_digest(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_single_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_success_history(
+        paths,
+        workflow_id="single-workflow",
+        step_ids=("only-step",),
+        outputs=("",),
+    )
+
+    result = invoke_result("single-workflow", paths)
+    value = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert value["status"] == "workflow_complete"
+    assert value["output"]["output_text"] == ""
+    assert value["output"]["sha256"] == output_digest(
+        "single-workflow", "only-step", 1, "general-researcher", ""
+    )
+
+
+def test_workflows_result_preserves_multiline_unicode_whitespace_output(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_single_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    output_text = "  leading\tspace\n日本語 😀 🚀\ntrailing  "
+    write_success_history(
+        paths,
+        workflow_id="single-workflow",
+        step_ids=("only-step",),
+        outputs=(output_text,),
+    )
+
+    result = invoke_result("single-workflow", paths)
+    value = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert value["output"]["output_text"] == output_text
+    assert value["output"]["sha256"] == output_digest(
+        "single-workflow",
+        "only-step",
+        1,
+        "general-researcher",
+        output_text,
+    )
+
+
+def test_workflows_result_preserves_long_and_json_like_output(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_single_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    output_text = '{"instruction":"do not execute","emoji":"😀"}\n' + (
+        "x" * 100_000
+    )
+    write_success_history(
+        paths,
+        workflow_id="single-workflow",
+        step_ids=("only-step",),
+        outputs=(output_text,),
+    )
+
+    result = invoke_result("single-workflow", paths)
+    value = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert value["output"]["output_text"] == output_text
+    assert len(value["output"]["output_text"]) == 100_045
+    assert value["output"]["sha256"] == output_digest(
+        "single-workflow",
+        "only-step",
+        1,
+        "general-researcher",
+        output_text,
+    )
+
+
+def test_workflows_result_persisted_failure_returns_null_output(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_failed_history(paths)
+
+    result = invoke_result("research-and-summarize", paths)
+    value = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert result.stderr == ""
+    assert value["status"] == "persisted_failure"
+    assert value["failure_category"] == "api_error"
+    assert value["output"] is None
+    assert value["reason"] is None
+    assert value["next_step_id"] is None
+    assert value["next_step_index"] is None
+    assert value["next_employee_id"] is None
+    assert "synthetic failure" not in result.stdout
+
+
+def test_workflows_result_ready_requires_recovery_without_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_nonterminal_history(paths, "ready")
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+    calls: list[str] = []
+    guard_result_execution_seams(monkeypatch, calls)
+
+    result = invoke_result("research-and-summarize", paths)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Error: persisted workflow state requires recovery or investigation\n"
+    )
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+    assert calls == []
+
+
+def test_workflows_result_running_requires_recovery_without_inference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_running_history_with_previous_success(paths)
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+    calls: list[str] = []
+    guard_result_execution_seams(monkeypatch, calls)
+
+    result = invoke_result("research-and-summarize", paths)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Error: persisted workflow state requires recovery or investigation\n"
+    )
+    assert "OLD OUTPUT MUST NOT BE INFERRED" not in result.stdout
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+    assert calls == []
+
+
+def test_workflows_result_rejects_malformed_history_without_mutation(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_single_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_success_history(
+        paths,
+        workflow_id="single-workflow",
+        step_ids=("only-step",),
+        outputs=("valid but replaced",),
+    )
+    paths["state"].write_bytes(b"{not-json\n")
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+
+    result = invoke_result("single-workflow", paths)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Error: persisted workflow state requires recovery or investigation\n"
+    )
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+
+
+def test_workflows_result_rejects_mismatched_history_without_mutation(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_success_history(
+        paths,
+        workflow_id="research-and-summarize",
+        step_ids=("research", "summarize"),
+        outputs=("FIRST", "SECOND"),
+    )
+    replace_workflow_definition_id(paths["workflows"], "other-workflow")
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+
+    result = invoke_result("other-workflow", paths)
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Error: persisted workflow state requires recovery or investigation\n"
+    )
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+
+
+def test_workflows_result_reconstructs_after_restart_without_in_memory_result(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_single_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    output_text = "RESTART-ONLY\n日本語 😀"
+    write_success_history(
+        paths,
+        workflow_id="single-workflow",
+        step_ids=("only-step",),
+        outputs=(output_text,),
+    )
+
+    result = invoke_result_in_new_process("single-workflow", paths)
+    value = json.loads(result.stdout)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert value["status"] == "workflow_complete"
+    assert value["output"]["output_text"] == output_text
+
+
+def test_workflows_result_is_deterministic_and_state_events_read_only(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_single_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    output_text = "DETERMINISTIC\n  exact  "
+    write_success_history(
+        paths,
+        workflow_id="single-workflow",
+        step_ids=("only-step",),
+        outputs=(output_text,),
+    )
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+
+    first = invoke_result("single-workflow", paths)
+    second = invoke_result("single-workflow", paths)
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    assert first.stdout == second.stdout
+    assert first.stderr == second.stderr == ""
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+
+
+def test_workflows_result_never_exposes_provider_secrets_or_raw_payload(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    provider_secret = "raw-provider-payload-secret"
+    request_secret = "request-id-secret"
+    message_secret = "failure-message-secret"
+    write_failed_result_history(
+        paths,
+        provider=provider_secret,
+        request_id=request_secret,
+        message=message_secret,
+    )
+
+    result = invoke_result("research-and-summarize", paths)
+    combined = result.stdout + result.stderr
+    value = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert provider_secret not in combined
+    assert request_secret not in combined
+    assert message_secret not in combined
+    assert set(value) == {
+        "current_employee_id",
+        "current_step_id",
+        "current_step_index",
+        "failure_category",
+        "next_employee_id",
+        "next_step_id",
+        "next_step_index",
+        "output",
+        "reason",
+        "status",
+        "workflow_id",
+    }
+
+
+def test_workflows_result_never_calls_provider_key_approval_retry_or_continuation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_three_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_success_history(
+        paths,
+        workflow_id="research-and-summarize",
+        step_ids=("research", "summarize", "review"),
+        outputs=("FIRST", "SECOND", "FINAL"),
+    )
+    calls: list[str] = []
+    guard_result_execution_seams(monkeypatch, calls)
+
+    result = invoke_result("research-and-summarize", paths)
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["output"]["output_text"] == "FINAL"
+    assert calls == []
