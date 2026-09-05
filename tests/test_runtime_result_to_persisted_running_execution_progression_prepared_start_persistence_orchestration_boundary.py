@@ -30,6 +30,11 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryCompatibilityError as Phase179CompatibilityError,
 )
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    UpstreamStepOutput,
+    approve_model_invocation_execution,
+)
 from ai_office.runtime import WorkflowExecutionState
 from ai_office.storage import (
     RunningStatePersistenceResult,
@@ -52,9 +57,38 @@ def _harness():
     return module
 
 
+def _authoritative_execution_approval(case: dict) -> object:
+    workflow = case["workflow"]
+    employee = case["employee"]
+    step = workflow.steps[6]
+    request = ModelInvocationRequest(
+        employee.model,
+        employee.instructions,
+        step.instructions,
+        tuple(employee.allowed_tools),
+        (
+            UpstreamStepOutput(
+                workflow.id,
+                workflow.steps[5].id,
+                6,
+                workflow.steps[5].employee,
+                "output",
+            ),
+        ),
+    )
+    return approve_model_invocation_execution(
+        request,
+        case["tools"],
+        provider="openai",
+        approved_by="step-7",
+        approval_id="approval-7",
+    )
+
+
 def _prepared_case(tmp_path: Path) -> tuple[dict, PreparedStepExecutionStart]:
     h = _harness()
     case = h._case(tmp_path)
+    case["execution_approval"] = _authoritative_execution_approval(case)
     calls: list[object] = []
     start = h._call(case, transport=case["h"].success_transport(calls))
     assert type(start) is PreparedStepExecutionStart

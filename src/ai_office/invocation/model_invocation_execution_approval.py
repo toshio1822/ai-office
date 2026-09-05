@@ -4,7 +4,10 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 
-from ai_office.invocation.model_invocation_request import ModelInvocationRequest
+from ai_office.invocation.model_invocation_request import (
+    ModelInvocationRequest,
+    build_model_invocation_task_input,
+)
 from ai_office.tools import ToolDefinition
 
 _APPROVAL_ERROR_MESSAGE = "model invocation execution is not approved"
@@ -52,6 +55,18 @@ def build_model_invocation_execution_fingerprint(
             for tool in resolved_tools
         ],
     }
+    if request.upstream_inputs != ():
+        value["task_input"] = build_model_invocation_task_input(request)
+        value["upstream_inputs"] = [
+            {
+                "employee_id": upstream.employee_id,
+                "output_text": upstream.output_text,
+                "step_id": upstream.step_id,
+                "step_index": upstream.step_index,
+                "workflow_id": upstream.workflow_id,
+            }
+            for upstream in request.upstream_inputs
+        ]
     canonical_value = json.dumps(
         value,
         ensure_ascii=False,

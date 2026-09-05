@@ -66,7 +66,7 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reent
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
     PreparedStepStartCycleHandoffChainBridgeReentryContinuationCompatibilityError as Phase131Error,
 )
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.invocation import ModelInvocationRequest, UpstreamStepOutput
 from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
@@ -199,6 +199,15 @@ def _start_for(value: PreparedWorkflowStep) -> PreparedStepExecutionStart:
             value.employee_instructions,
             value.step_instructions,
             value.allowed_tool_names,
+            (
+                UpstreamStepOutput(
+                    value.workflow_id,
+                    wf.steps[value.step_index - 2].id,
+                    value.step_index - 1,
+                    wf.steps[value.step_index - 2].employee,
+                    f"output-step-{value.step_index - 1}",
+                ),
+            ),
         ),
         WorkflowExecutionState(
             value.workflow_id,

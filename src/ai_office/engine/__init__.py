@@ -844,6 +844,14 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_reentry_contin
     RuntimeResultTransitionPersistenceCycleReentryContinuationFailureDetail,
     route_runtime_result_transition_persistence_cycle_reentry_continuation_boundary,
 )
+from ai_office.engine.upstream_step_output_handoff import (
+    UpstreamStepOutput,
+    UpstreamStepOutputHandoffClassification,
+    UpstreamStepOutputHandoffCompatibilityError,
+    UpstreamStepOutputHandoffError,
+    UpstreamStepOutputHandoffFailureDetail,
+    build_immediate_predecessor_upstream_inputs,
+)
 from ai_office.engine.workflow_progression import (
     WorkflowProgressionCompatibilityDetail,
     WorkflowProgressionCompatibilityError,
@@ -1070,6 +1078,12 @@ __all__ = [
     "PreparedStepExecutionStartCompatibilityError",
     "PreparedStepExecutionStartError",
     "prepare_prepared_step_execution_start",
+    "UpstreamStepOutputHandoffClassification",
+    "UpstreamStepOutput",
+    "UpstreamStepOutputHandoffCompatibilityError",
+    "UpstreamStepOutputHandoffError",
+    "UpstreamStepOutputHandoffFailureDetail",
+    "build_immediate_predecessor_upstream_inputs",
     "PreparedStepStartReentryCompatibilityError",
     "PreparedStepStartReentryError",
     "PreparedStepStartReentryFailureDetail",

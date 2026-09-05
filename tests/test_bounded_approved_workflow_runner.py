@@ -32,6 +32,7 @@ from ai_office.engine.prepared_step_execution_start import PreparedStepExecution
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
     ModelInvocationRequest,
+    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
@@ -176,8 +177,16 @@ def real_context(
     wf: WorkflowDefinition, index: int, *, bad_execution_approval: bool = False
 ) -> ApprovedWorkflowContinuationContext:
     emp = employee(wf, index)
+    upstream = UpstreamStepOutput(
+        wf.id,
+        wf.steps[index - 2].id,
+        index - 1,
+        wf.steps[index - 2].employee,
+        "output" if index == 10 else "ok",
+    )
     prepared_request = ModelInvocationRequest(
         emp.model, emp.instructions, wf.steps[index - 1].instructions, ()
+        , (upstream,)
     )
     approval = approve_model_invocation_execution(
         prepared_request, (), provider="openai", approved_by="reviewer", approval_id="approval-1"
@@ -502,15 +511,14 @@ def test_20_real_default_second_context_failures_preserve_phase_190_ownership(tm
                 second.preparation_approval, second.employee, second.resolved_tools,
                 second.api_key, second.execution_approval, synthetic_transport(calls),
             )
-        with pytest.raises(Phase145Error if mode == "preparation" else Phase155Error):
+        with pytest.raises(Phase145Error if mode == "preparation" else Phase190Error):
             route_bounded_approved_workflow_continuation(
                 preparation(wf, 9), wf, values["state_path"], values["events_path"],
                 (first, second, context("unused")),
             )
         state = load_workflow_execution_state(values["state_path"])
         assert len(calls) == 1
-        if mode == "preparation":
-            assert state.status == "succeeded" and state.current_step_index == 10
-        else:
-            assert state.status == "running" and state.current_step_index == 11
+        # A malformed second execution approval is now rejected by Phase190
+        # before Phase147; no running-state write or provider call is allowed.
+        assert state.status == "succeeded" and state.current_step_index == 10
         assert len(values["events_path"].read_text().splitlines()) == 10

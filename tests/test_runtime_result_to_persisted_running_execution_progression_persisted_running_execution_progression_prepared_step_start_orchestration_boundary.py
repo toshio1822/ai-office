@@ -92,7 +92,7 @@ def _call(case: dict[str, object], **overrides: object) -> object:
 
 
 def _start(prepared: PreparedWorkflowStep, workflow: object) -> PreparedStepExecutionStart:
-    from ai_office.invocation import ModelInvocationRequest
+    from ai_office.invocation import ModelInvocationRequest, UpstreamStepOutput
     from ai_office.runtime import WorkflowExecutionState
 
     return PreparedStepExecutionStart(
@@ -101,6 +101,15 @@ def _start(prepared: PreparedWorkflowStep, workflow: object) -> PreparedStepExec
             prepared.employee_instructions,
             prepared.step_instructions,
             prepared.allowed_tool_names,
+            (
+                UpstreamStepOutput(
+                    workflow.id,
+                    workflow.steps[prepared.step_index - 2].id,
+                    prepared.step_index - 1,
+                    workflow.steps[prepared.step_index - 2].employee,
+                    "ok",
+                ),
+            ),
         ),
         WorkflowExecutionState(
             prepared.workflow_id,

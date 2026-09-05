@@ -46,6 +46,11 @@ from ai_office.engine import (
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase145Error,
 )
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    UpstreamStepOutput,
+    approve_model_invocation_execution,
+)
 from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import WorkflowExecutionState
 from ai_office.storage import (
@@ -65,6 +70,34 @@ def _harness178():
     return module
 
 
+def _full_execution_approval(harness, workflow):
+    """Approve the exact Phase-178 step-7 request, including predecessor data."""
+    employee = harness.employee_for(harness.prepare_decision(workflow, 6))
+    step = workflow.steps[6]
+    request = ModelInvocationRequest(
+        employee.model,
+        employee.instructions,
+        step.instructions,
+        tuple(employee.allowed_tools),
+        (
+            UpstreamStepOutput(
+                workflow.id,
+                workflow.steps[5].id,
+                6,
+                workflow.steps[5].employee,
+                "output",
+            ),
+        ),
+    )
+    return approve_model_invocation_execution(
+        request,
+        harness.TOOLS,
+        provider="openai",
+        approved_by="test",
+        approval_id="approval-id",
+    )
+
+
 def _phase178_prepare_step8(tmp_path: Path) -> tuple[dict, WorkflowProgressionDecision]:
     """Drive the real Phase 178 public boundary with a synthetic successful
     transport to obtain the exact prepare_next_step(step8) decision and the
@@ -80,7 +113,7 @@ def _phase178_prepare_step8(tmp_path: Path) -> tuple[dict, WorkflowProgressionDe
     approval = harness.approval_for(decision)
     employee = harness.employee_for(decision)
     api_key = OpenAIApiKey(value=SecretStr("synthetic"))
-    execution_approval = harness.execution_approval_for(values)
+    execution_approval = _full_execution_approval(harness, wf)
     calls: list = []
     out = harness.phase178(
         result,

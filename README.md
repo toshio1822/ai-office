@@ -4458,3 +4458,39 @@ provider payloadは表示しません。
 または manual investigation が必要です。`continue` は persisted terminal
 routeを再検証してから次の1 stepを実行するため、CLI preview後に保存状態が
 変化した場合も stale execution を防ぎます。
+
+## Phase 216: 直前step outputのrestart-safe handoff
+
+成功した step の出力は、既存の `events.jsonl` に保存された
+`RuntimeStepEvent.output_text` を唯一の authoritative source とします。
+`workflows continue` と下位の実行境界は、再起動後も同じ履歴から直前の成功
+step **1件だけ**を再構成し、provider非依存の `UpstreamStepOutput` として次の
+requestへ渡します。
+
+```text
+step N-1 succeeded output
+  → authoritative RuntimeStepEvent.output_text
+  → restart-safe immediate-predecessor reconstruction
+  → structured UpstreamStepOutput
+  → exact task input preview
+  → fingerprint / explicit approval
+  → Phase190 authoritative pre-persistence revalidation
+  → Phase147 running persistence
+  → Phase155 provider execution (最大1回)
+  → terminal persistence
+  → STOP
+```
+
+upstream output は untrusted task/user data であり、employee の
+`system_instructions` には決して注入しません。task input は deterministic
+canonical JSON として明示的に preview に表示され、source provenance、元の
+text、digest、request fingerprint が operator approval に結び付けられます。
+CLI の preview/expected-value 検査とは別に、Phase190 は Phase147 の running
+state 永続化前に最新の terminal history、upstream tuple、execution approval
+fingerprint を再検証します。履歴が変化した場合は provider call や running
+state 永続化を行わず、既存の state/events を保ちます。
+
+Policy A（直前の成功出力のみ）を採用し、fan-in、DAG、workflow 定義への
+dataflow schema、retry、conversation continuation、automatic continuation は
+追加しません。fresh な step 1 の upstream は空 tuple のままで、Phase214 の
+provider input と fingerprint の互換性を維持します。

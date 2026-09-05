@@ -69,6 +69,7 @@ from ai_office.invocation import (
     ModelInvocationFailure,
     ModelInvocationRequest,
     ModelInvocationSuccess,
+    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import (
@@ -433,7 +434,33 @@ def constructed_start(values: dict[str, object]) -> PreparedStepExecutionStart:
     wf = values["workflow"]  # type: ignore[arg-type]
     decision = prepare_decision(wf, 6)
     employee = employee_for(decision)
-    return prepared_start_for(wf, prepared_for(wf, decision, employee))
+    prepared = prepared_for(wf, decision, employee)
+    return PreparedStepExecutionStart(
+        ModelInvocationRequest(
+            prepared.model,
+            prepared.employee_instructions,
+            prepared.step_instructions,
+            prepared.allowed_tool_names,
+            (
+                UpstreamStepOutput(
+                    wf.id,
+                    wf.steps[5].id,
+                    6,
+                    wf.steps[5].employee,
+                    "output",
+                ),
+            ),
+        ),
+        WorkflowExecutionState(
+            prepared.workflow_id,
+            "running",
+            prepared.step_id,
+            prepared.step_index,
+            prepared.employee_id,
+            tuple(step.id for step in wf.steps[: prepared.step_index - 1]),
+            None,
+        ),
+    )
 
 
 def success_transport(

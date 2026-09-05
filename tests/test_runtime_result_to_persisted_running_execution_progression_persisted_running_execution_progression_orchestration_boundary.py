@@ -31,6 +31,11 @@ from ai_office.runtime import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
 )
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    UpstreamStepOutput,
+    approve_model_invocation_execution,
+)
 from ai_office.storage import load_workflow_execution_state, serialize_runtime_step_event_jsonl
 
 _HARNESS_PATH = Path(__file__).with_name(
@@ -54,9 +59,42 @@ def _case(tmp_path: Path, *, steps: int = 8, current: int = 6) -> dict[str, obje
     return _harness()._case(tmp_path, steps=steps, current=current)
 
 
+def _second_context(case: dict[str, object]) -> dict[str, object]:
+    """Build the exact step-8 approval used by this continuation fixture."""
+    employee = case["next_employee"]
+    workflow = case["workflow"]
+    step = workflow.steps[7]  # type: ignore[union-attr]
+    request = ModelInvocationRequest(
+        employee.model,  # type: ignore[union-attr]
+        employee.instructions,  # type: ignore[union-attr]
+        step.instructions,
+        tuple(employee.allowed_tools),  # type: ignore[union-attr]
+        (
+            UpstreamStepOutput(
+                workflow.id,  # type: ignore[union-attr]
+                workflow.steps[6].id,  # type: ignore[union-attr]
+                7,
+                workflow.steps[6].employee,  # type: ignore[union-attr]
+                "ok",
+            ),
+        ),
+    )
+    return {
+        "tools": case["tools"],
+        "api_key": case["api_key"],
+        "approval": approve_model_invocation_execution(
+            request,
+            case["tools"],
+            provider="openai",
+            approved_by="step8-test",
+            approval_id="step8-approval",
+        ),
+    }
+
+
 def _args(case: dict[str, object], **overrides: object) -> list[object]:
     second = (
-        _harness()._second_context(case)
+        _second_context(case)
         if case.get("next_employee") is not None
         else {"tools": None, "api_key": None, "approval": None}
     )

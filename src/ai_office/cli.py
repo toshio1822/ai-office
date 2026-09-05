@@ -22,6 +22,7 @@ from ai_office.engine import (
     ApprovedWorkflowContinuationContext,
     InitialStepPreparationApproval,
     NextStepPreparationApproval,
+    build_immediate_predecessor_upstream_inputs,
     classify_persisted_execution_outcome_reentry,
     route_approved_fresh_workflow_bounded,
     route_persisted_execution_outcome_reentry,
@@ -36,6 +37,7 @@ from ai_office.invocation import (
     approve_model_invocation_execution,
     build_model_invocation_execution_fingerprint,
     build_model_invocation_request,
+    build_model_invocation_task_input,
 )
 from ai_office.planning.execution_plan import (
     ExecutionPlan,
@@ -64,6 +66,10 @@ from ai_office.providers.openai import (
     serialize_openai_responses_payload_dict_pretty,
 )
 from ai_office.providers.openai.responses_dict_payload import JsonValue
+from ai_office.storage import (
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
+)
 from ai_office.tools import (
     DEFAULT_TOOL_CATALOG,
     ToolCatalogError,
@@ -448,6 +454,7 @@ def _build_workflow_step_preview(
     employees: list[object],
     workflow_id: str,
     step_index: int,
+    upstream_inputs: tuple[object, ...] = (),
 ) -> tuple[object, _WorkflowStepPreview]:
     """Construct one exact step request through the existing public seams."""
     try:
@@ -455,7 +462,10 @@ def _build_workflow_step_preview(
         plan = build_execution_plan(workflow, employees)
         step_request = build_step_execution_request(plan, step_index, employees)
         selected_employee = find_employee_by_id(employees, step_request.employee_id)
-        invocation_request = build_model_invocation_request(step_request)
+        invocation_request = build_model_invocation_request(
+            step_request,
+            upstream_inputs=upstream_inputs,  # type: ignore[arg-type]
+        )
         resolved_tools = resolve_tool_names(
             DEFAULT_TOOL_CATALOG, invocation_request.allowed_tools
         )
@@ -523,7 +533,7 @@ def _step_preview_json(
 ) -> dict[str, object]:
     request = preview.step_request
     invocation = preview.invocation_request
-    return {
+    value: dict[str, object] = {
         "allowed_tools": list(invocation.allowed_tools),
         "employee_id": request.employee_id,
         "mode": "preview",
@@ -538,6 +548,40 @@ def _step_preview_json(
         "task_instructions": invocation.task_instructions,
         "workflow_id": request.workflow_id,
     }
+    if invocation.upstream_inputs != ():
+        value["task_input"] = build_model_invocation_task_input(invocation)
+        value["upstream_inputs"] = [
+            {
+                "workflow_id": upstream.workflow_id,
+                "step_id": upstream.step_id,
+                "step_index": upstream.step_index,
+                "employee_id": upstream.employee_id,
+                "output_text": upstream.output_text,
+                "sha256": _upstream_output_digest(upstream),
+            }
+            for upstream in invocation.upstream_inputs
+        ]
+    return value
+
+
+def _upstream_output_digest(upstream: object) -> str:
+    """Digest exactly one canonical provenance-and-output object for preview."""
+    from hashlib import sha256
+
+    value = {
+        "employee_id": upstream.employee_id,
+        "output_text": upstream.output_text,
+        "step_id": upstream.step_id,
+        "step_index": upstream.step_index,
+        "workflow_id": upstream.workflow_id,
+    }
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _result_json(
@@ -919,11 +963,23 @@ def continue_workflow(
         _workflow_cli_error("persisted workflow requires recovery or investigation")
 
     assert routed.next_step_index is not None
+    try:
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state_path, events_path)
+        )
+        upstream_inputs = build_immediate_predecessor_upstream_inputs(
+            workflow_id,
+            routed.next_step_index,
+            history,
+        )
+    except Exception:
+        _workflow_cli_error("persisted workflow handoff is invalid")
     workflow, preview = _build_workflow_step_preview(
         workflows,
         employees,
         workflow_id,
         routed.next_step_index,
+        upstream_inputs,
     )
     if preview_only:
         _emit_json(_step_preview_json("continue", preview))

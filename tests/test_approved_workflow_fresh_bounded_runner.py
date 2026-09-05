@@ -51,6 +51,9 @@ from ai_office.engine import (
 from ai_office.engine.approved_workflow_fresh_start import (
     FreshWorkflowBootstrapCompatibilityError,
 )
+from ai_office.engine.approved_workflow_continuation_cycle import (
+    ApprovedWorkflowContinuationCycleCompatibilityError as Phase190CompatibilityError,
+)
 from ai_office.engine.next_step_preparation import NextStepPreparationApproval
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
@@ -67,6 +70,7 @@ from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
     ModelInvocationFailureCategory,
     ModelInvocationRequest,
+    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import (
@@ -206,11 +210,19 @@ def _continuation_context(
     transport: object = _MISSING,
 ) -> ApprovedWorkflowContinuationContext:
     employee = _employee(wf, index)
+    upstream = UpstreamStepOutput(
+        wf.id,
+        wf.steps[index - 2].id,
+        index - 1,
+        wf.steps[index - 2].employee,
+        "ok",
+    )
     request = ModelInvocationRequest(
         employee.model,
         employee.instructions,
         wf.steps[index - 1].instructions,
         (),
+        (upstream,),
     )
     approved_execution = approve_model_invocation_execution(
         request,
@@ -935,7 +947,7 @@ def test_14_default_phase192_safe_errors_keep_later_ownership(tmp_path: Path) ->
         _continuation_context(wf, 3, execution_later_calls),
         transport=_failure_transport(execution_later_calls, "step-3"),
     )
-    with pytest.raises(Phase155Error) as execution_error:
+    with pytest.raises(Phase190CompatibilityError) as execution_error:
         route_approved_fresh_workflow_bounded(
             wf,
             execution_directory / "state.json",
@@ -945,7 +957,7 @@ def test_14_default_phase192_safe_errors_keep_later_ownership(tmp_path: Path) ->
             fresh_start_function=route_approved_workflow_fresh_start,
             bounded_continuation_function=route_bounded_approved_workflow_continuation,
         )
-    assert type(execution_error.value) is Phase155CompatibilityError
+    assert type(execution_error.value) is Phase190CompatibilityError
     assert not isinstance(
         execution_error.value, ApprovedFreshWorkflowBoundedRunnerError
     )
@@ -956,10 +968,10 @@ def test_14_default_phase192_safe_errors_keep_later_ownership(tmp_path: Path) ->
     state = load_workflow_execution_state(execution_directory / "state.json")
     assert state == WorkflowExecutionState(
         wf.id,
-        "running",
-        wf.steps[1].id,
-        2,
-        wf.steps[1].employee,
+        "succeeded",
+        wf.steps[0].id,
+        1,
+        wf.steps[0].employee,
         (wf.steps[0].id,),
         None,
     )

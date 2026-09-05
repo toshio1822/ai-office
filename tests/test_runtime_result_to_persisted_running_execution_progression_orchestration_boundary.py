@@ -105,6 +105,7 @@ from ai_office.invocation import (
     ModelInvocationFailure,
     ModelInvocationRequest,
     ModelInvocationSuccess,
+    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import (
@@ -429,6 +430,15 @@ def prepared_start_for(
             prepared.employee_instructions,
             prepared.step_instructions,
             prepared.allowed_tool_names,
+            (
+                UpstreamStepOutput(
+                    wf.id,
+                    wf.steps[prepared.step_index - 2].id,
+                    prepared.step_index - 1,
+                    wf.steps[prepared.step_index - 2].employee,
+                    "output",
+                ),
+            ),
         ),
         WorkflowExecutionState(
             prepared.workflow_id,

@@ -10,7 +10,7 @@ from ai_office.engine import (
 )
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
 from ai_office.invocation import ModelInvocationRequest
-from ai_office.runtime import WorkflowExecutionState
+from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import LoadedWorkflowExecutionHistory
 
 
@@ -21,6 +21,21 @@ def prepared() -> PreparedWorkflowStep:
 
 
 def history(status: str = "succeeded") -> LoadedWorkflowExecutionHistory:
+    event = RuntimeStepEvent(
+        "step_succeeded",
+        "workflow",
+        "current",
+        1,
+        "old",
+        "running",
+        "succeeded",
+        "openai",
+        None,
+        "response",
+        "request",
+        "predecessor output",
+        None,
+    )
     return LoadedWorkflowExecutionHistory(
         WorkflowExecutionState(
             "workflow",
@@ -31,7 +46,7 @@ def history(status: str = "succeeded") -> LoadedWorkflowExecutionHistory:
             ("old", "old"),
             "api_error" if status == "failed" else None,
         ),
-        (),  # type: ignore[arg-type]
+        (event,),
     )
 
 

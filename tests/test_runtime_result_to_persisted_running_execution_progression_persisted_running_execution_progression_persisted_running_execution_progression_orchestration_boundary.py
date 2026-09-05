@@ -39,6 +39,11 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryError as Phase187Error,
     route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary as phase187,
 )
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    UpstreamStepOutput,
+    approve_model_invocation_execution,
+)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase186CompatibilityError,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryError as Phase186Error,
@@ -135,10 +140,42 @@ def _case(tmp_path: Path, *, steps: int = 9) -> dict[str, object]:
     return _h()._case(tmp_path, steps=steps)
 
 
+def _authoritative_following_execution_approval(case: dict[str, object]) -> object:
+    workflow = case["workflow"]
+    employee = case["following_employee"]
+    step = workflow.steps[8]  # type: ignore[union-attr]
+    predecessor = workflow.steps[7]  # type: ignore[union-attr]
+    request = ModelInvocationRequest(
+        employee.model,  # type: ignore[union-attr]
+        employee.instructions,  # type: ignore[union-attr]
+        step.instructions,
+        tuple(employee.allowed_tools),  # type: ignore[union-attr]
+        (
+            UpstreamStepOutput(
+                workflow.id,  # type: ignore[union-attr]
+                predecessor.id,
+                8,
+                predecessor.employee,
+                "ok",
+            ),
+        ),
+    )
+    return approve_model_invocation_execution(
+        request,
+        case["tools"],
+        provider="openai",
+        approved_by="step-9",
+        approval_id="approval-9",
+    )
+
+
 def _args(case: dict[str, object], *, first_transport=None, next_transport=None, following_transport=None) -> list[object]:
+    contexts = _h()._contexts(case)
+    if len(case["workflow"].steps) >= 9:  # type: ignore[union-attr]
+        contexts["following_execution_approval"] = _authoritative_following_execution_approval(case)
     args = _h()._args(
         case,
-        _h()._contexts(case),
+        contexts,
         first_transport=first_transport,
         next_transport=next_transport,
     )
