@@ -4471,3 +4471,52 @@ conversation continuation, retry, replay/recovery, automatic continuation,
 parallelism, or new output store. One explicit command still executes at most
 one provider step and then stops; fresh step 1 continues to use an empty
 upstream tuple.
+
+## Phase 218: Restart-safe read-only workflow business-result path
+
+Phase 214/216の`start` / `continue` execution-control pathとは別に、Phase 218
+は保存済み結果を読むだけのbusiness-result pathを追加する。
+
+```text
+execution-control path:
+start / continue
+  -> progression metadata
+  -> (at most one explicitly approved provider step)
+  -> STOP
+
+read-side business-result path:
+load/validate definitions
+  -> select exact WORKFLOW_ID
+  -> Phase37 classify persisted terminal outcome
+  -> Phase38 route/revalidate canonical progression
+  -> strict load_workflow_execution_history
+  -> exact latest terminal event projection
+  -> deterministic safe JSON
+  -> STOP
+```
+
+`classify_persisted_execution_outcome_reentry` (Phase37) と
+`route_persisted_execution_outcome_reentry` (Phase38) が、persisted terminal
+outcomeの分類とprogressionのcanonical ownerである。result CLIはstep数や
+completed listから`prepare_next_step` / `workflow_complete`を手動推論せず、
+Phase38のdecision、reason、next-step metadataをそのまま使う。Phase38後の
+strict `load_workflow_execution_history`の二重読み込みは意図的なread-side
+validationであり、strict history loaderが永続化されたstate/eventの整合性を
+所有する。
+
+CLIが追加で行うのは、最新eventのworkflow/step/index/employee provenanceを
+current stateおよびrouted result identityへ狭く照合し、successful
+`output_text`とsource provenanceから決定的なSHA-256を作り、安全なJSONへ
+projectionすることだけである。`workflow_complete`では最終successful step
+のoutputだけをbusiness resultにし、`prepare_next_step`ではcurrent
+successful stepのoutputとPhase38の正確なnext-step metadataを返す。
+empty output、空白、改行、Unicode、JSON-like、instruction-like、長いtextは
+untrusted persisted dataとして無加工で返す。persisted failureではfailure
+categoryのみを返し、`output`は`null`とする。
+
+`ready` / `running`は過去のsuccessful eventから結果を推測せず、recovery/
+investigation requiredとしてexit 2にする。result pathではprovider、API key、
+approval、Phase190、Phase192、Phase210、Phase212、retry、replay、automatic
+continuation、repairを呼び出さない。state/eventsは全経路でbyte-for-byte
+read-onlyであり、provider/request/response ID、failure message、raw payload、
+credential、approval objectもresult JSONへ持ち込まない。

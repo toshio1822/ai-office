@@ -813,6 +813,112 @@ def _read_persisted_continue_route(
     return routed
 
 
+def _persisted_result_json(
+    routed: PersistedExecutionOutcome | WorkflowProgressionDecision,
+    history: object,
+) -> dict[str, object]:
+    """Project one canonical persisted route and its exact terminal event."""
+    try:
+        state = history.state
+        events = history.events
+        latest = events[-1]
+    except (AttributeError, IndexError, TypeError):
+        _workflow_cli_error("persisted workflow result is inconsistent")
+
+    state_identity = (
+        state.workflow_id,
+        state.current_step_id,
+        state.current_step_index,
+        state.current_employee_id,
+    )
+    routed_identity = (
+        routed.workflow_id,
+        routed.current_step_id,
+        routed.current_step_index,
+        routed.current_employee_id,
+    )
+    event_identity = (
+        latest.workflow_id,
+        latest.step_id,
+        latest.step_index,
+        latest.employee_id,
+    )
+    if state_identity != routed_identity or state_identity != event_identity:
+        _workflow_cli_error("persisted workflow result is inconsistent")
+
+    if type(routed) is WorkflowProgressionDecision:
+        if routed.decision not in {"prepare_next_step", "workflow_complete"}:
+            _workflow_cli_error("persisted workflow result is incompatible")
+        if (
+            latest.event_type != "step_succeeded"
+            or latest.failure_category is not None
+            or latest.message is not None
+            or type(latest.output_text) is not str
+        ):
+            _workflow_cli_error("persisted workflow result is inconsistent")
+        if routed.decision == "prepare_next_step":
+            if (
+                routed.reason != "next_step_available"
+                or routed.next_step_id is None
+                or routed.next_step_index is None
+                or routed.next_employee_id is None
+            ):
+                _workflow_cli_error("persisted workflow result is inconsistent")
+        elif routed.reason != "last_step_succeeded" or any(
+            value is not None
+            for value in (
+                routed.next_step_id,
+                routed.next_step_index,
+                routed.next_employee_id,
+            )
+        ):
+            _workflow_cli_error("persisted workflow result is inconsistent")
+
+        return {
+            "current_employee_id": routed.current_employee_id,
+            "current_step_id": routed.current_step_id,
+            "current_step_index": routed.current_step_index,
+            "failure_category": None,
+            "next_employee_id": routed.next_employee_id,
+            "next_step_id": routed.next_step_id,
+            "next_step_index": routed.next_step_index,
+            "output": {
+                "employee_id": latest.employee_id,
+                "output_text": latest.output_text,
+                "sha256": _upstream_output_digest(latest),
+                "step_id": latest.step_id,
+                "step_index": latest.step_index,
+                "workflow_id": latest.workflow_id,
+            },
+            "reason": routed.reason,
+            "status": routed.decision,
+            "workflow_id": routed.workflow_id,
+        }
+
+    if type(routed) is not PersistedExecutionOutcome:
+        _workflow_cli_error("persisted workflow result is incompatible")
+    if (
+        routed.outcome != "persisted_failure"
+        or latest.event_type != "step_failed"
+        or latest.output_text is not None
+        or latest.failure_category != routed.failure_category
+    ):
+        _workflow_cli_error("persisted workflow result is inconsistent")
+    return {
+        "current_employee_id": routed.current_employee_id,
+        "current_step_id": routed.current_step_id,
+        "current_step_index": routed.current_step_index,
+        "failure_category": routed.failure_category,
+        "next_employee_id": None,
+        "next_step_id": None,
+        "next_step_index": None,
+        "output": None,
+        "reason": None,
+        "status": routed.outcome,
+        "workflow_id": routed.workflow_id,
+    }
+
+
 def _run_persisted_workflow(
     workflow: object,
     state_path: Path,
@@ -1012,6 +1118,40 @@ def continue_workflow(
     )
     _emit_json(_result_json("continue", "execute", result))
     if type(result) is PersistedExecutionOutcome:
+        raise typer.Exit(code=1)
+
+
+@workflows_app.command("result")
+def result_workflow(
+    workflow_id: str,
+    state_path: Path = typer.Option(..., "--state-path"),
+    events_path: Path = typer.Option(..., "--events-path"),
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Read one exact persisted workflow business result without executing."""
+    workflows, _employees = _load_workflow_command_inputs(
+        directory, employees_directory
+    )
+    workflow = _select_workflow_or_exit(workflows, workflow_id)
+    routed = _read_persisted_continue_route(
+        workflow.definition, state_path, events_path
+    )
+    try:
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(
+                state_path=state_path,
+                events_path=events_path,
+            )
+        )
+    except Exception:
+        _workflow_cli_error(
+            "persisted workflow state requires recovery or investigation"
+        )
+    _emit_json(_persisted_result_json(routed, history))
+    if type(routed) is PersistedExecutionOutcome:
         raise typer.Exit(code=1)
 
 
