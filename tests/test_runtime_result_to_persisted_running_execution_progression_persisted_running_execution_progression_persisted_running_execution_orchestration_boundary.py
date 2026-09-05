@@ -102,6 +102,11 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
 )
 from ai_office.runtime import StepRuntimeExecutionFailure, StepRuntimeExecutionSuccess
 from ai_office.storage import RunningStatePersistenceResult
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    UpstreamStepOutput,
+    approve_model_invocation_execution,
+)
 
 _HARNESS = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py"
@@ -132,9 +137,31 @@ def _case(tmp_path: Path, *, steps: int = 9) -> dict[str, object]:
 
 
 def _following_execution_approval(case: dict[str, object]) -> object:
-    path = _HARNESS.with_name("test_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_approved_preparation_orchestration_boundary.py")
-    module = _load(path, "phase184_helpers_for_187")
-    return module._execution_approval(case["workflow"], 9)
+    workflow = case["workflow"]
+    employee = case["following_employee"]
+    step = workflow.steps[8]  # type: ignore[union-attr]
+    request = ModelInvocationRequest(
+        employee.model,  # type: ignore[union-attr]
+        employee.instructions,  # type: ignore[union-attr]
+        step.instructions,
+        tuple(employee.allowed_tools),  # type: ignore[union-attr]
+        (
+            UpstreamStepOutput(
+                workflow.id,  # type: ignore[union-attr]
+                workflow.steps[7].id,  # type: ignore[union-attr]
+                8,
+                workflow.steps[7].employee,  # type: ignore[union-attr]
+                "ok",
+            ),
+        ),
+    )
+    return approve_model_invocation_execution(
+        request,
+        case["tools"],
+        provider="openai",
+        approved_by="step-9",
+        approval_id="approval-9",
+    )
 
 
 def _contexts(case: dict[str, object]) -> dict[str, object]:

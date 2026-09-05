@@ -78,6 +78,15 @@ def _execution_approval(wf: object, index: int) -> object:
         employee.instructions,
         step.instructions,
         tuple(employee.allowed_tools),
+        (
+            h.UpstreamStepOutput(
+                wf.id,
+                wf.steps[index - 2].id,
+                index - 1,
+                wf.steps[index - 2].employee,
+                "output" if index == 7 else "ok",
+            ),
+        ),
     )
     return h.approve_model_invocation_execution(
         request,

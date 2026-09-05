@@ -85,7 +85,6 @@ from ai_office.invocation import (
     ModelInvocationFailureCategory,
     ModelInvocationRequest,
     UpstreamStepOutput,
-    build_model_invocation_execution_fingerprint,
     validate_model_invocation_execution_approval,
 )
 from ai_office.runtime import (
@@ -615,7 +614,7 @@ def _check_authoritative_pre_persistence(
     resolved_tools: object,
     execution_approval: object,
 ) -> object:
-    """Reload terminal history and rebind both handoff and execution approval."""
+    """Reload terminal history and validate the complete approved request."""
     try:
         history = load_workflow_execution_history(
             WorkflowExecutionPersistenceTargets(state_path, events_path)
@@ -629,9 +628,11 @@ def _check_authoritative_pre_persistence(
         _fail("approval_contract")
     if prepared_start.request.upstream_inputs != authoritative_upstream:
         _fail("phase146_contract")
+    if type(resolved_tools) is not tuple:
+        _fail("approval_contract")
+    if type(execution_approval) is not ModelInvocationExecutionApproval:
+        _fail("approval_contract")
     try:
-        if type(resolved_tools) is not tuple:
-            raise TypeError
         validate_model_invocation_execution_approval(
             prepared_start.request,
             resolved_tools,
@@ -639,64 +640,8 @@ def _check_authoritative_pre_persistence(
             provider="openai",
         )
     except Exception:
-        # Keep malformed approval objects on the existing Phase-155 ownership
-        # path.  The lower boundary will reject them before any transport; a
-        # correctly typed approval with a stale fingerprint is still rejected
-        # here before Phase 147.
-        if type(execution_approval) is not ModelInvocationExecutionApproval:
-            return execution_approval
-        # Contexts created before Phase 216 can carry a valid Phase 214
-        # approval for the same static request, without the newly introduced
-        # predecessor field.  Keep that in-memory compatibility path narrow:
-        # it is accepted only when the approval validates against the exact
-        # legacy request with upstream omitted.  A Phase 216 approval remains
-        # bound to the full request, so changed upstream text/provenance still
-        # fails here before Phase 147.  The lower Phase 155 validation remains
-        # authoritative for every provider execution.
-        if not _valid_legacy_execution_approval(
-            prepared_start.request,
-            resolved_tools,
-            execution_approval,
-        ):
-            _fail("approval_contract")
-        assert isinstance(execution_approval, ModelInvocationExecutionApproval)
-        return ModelInvocationExecutionApproval(
-            approved=True,
-            provider=execution_approval.provider,
-            request_fingerprint=build_model_invocation_execution_fingerprint(
-                prepared_start.request,
-                resolved_tools,  # type: ignore[arg-type]
-            ),
-            approved_by=execution_approval.approved_by,
-            approval_id=execution_approval.approval_id,
-        )
-    assert isinstance(execution_approval, ModelInvocationExecutionApproval)
+        _fail("approval_contract")
     return execution_approval
-
-
-def _valid_legacy_execution_approval(
-    request: ModelInvocationRequest,
-    resolved_tools: tuple[object, ...],
-    approval: object,
-) -> bool:
-    if request.upstream_inputs == ():
-        return False
-    legacy_request = ModelInvocationRequest(
-        request.model,
-        request.system_instructions,
-        request.task_instructions,
-        request.allowed_tools,
-    )
-    try:
-        validate_model_invocation_execution_approval(
-            legacy_request,
-            resolved_tools,  # type: ignore[arg-type]
-            approval,  # type: ignore[arg-type]
-            provider="openai",
-        )
-    except Exception:
-        return False
-    return True
 
 
 def _check_persisted_running(

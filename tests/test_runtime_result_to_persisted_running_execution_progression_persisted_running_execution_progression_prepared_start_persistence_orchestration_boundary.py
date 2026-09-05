@@ -54,6 +54,11 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryCompatibilityError as Phase185Error,
     route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary as phase185,
 )
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    UpstreamStepOutput,
+    approve_model_invocation_execution,
+)
 from ai_office.runtime import WorkflowExecutionState
 from ai_office.storage import (
     RunningStatePersistenceResult,
@@ -88,9 +93,40 @@ def _terminal_harness():
     return _load(_TERMINAL_TEST_PATH, "terminal_harness_for_186")
 
 
+def _authoritative_execution_approval(case: dict[str, object], index: int) -> object:
+    workflow = case["workflow"]
+    employee = case["employee"] if index == 7 else case["next_employee"]
+    step = workflow.steps[index - 1]  # type: ignore[union-attr]
+    predecessor = workflow.steps[index - 2]  # type: ignore[union-attr]
+    request = ModelInvocationRequest(
+        employee.model,  # type: ignore[union-attr]
+        employee.instructions,  # type: ignore[union-attr]
+        step.instructions,
+        tuple(employee.allowed_tools),  # type: ignore[union-attr]
+        (
+            UpstreamStepOutput(
+                workflow.id,  # type: ignore[union-attr]
+                predecessor.id,
+                index - 1,
+                predecessor.employee,
+                "output" if index == 7 else "ok",
+            ),
+        ),
+    )
+    return approve_model_invocation_execution(
+        request,
+        case["tools"],
+        provider="openai",
+        approved_by=f"step-{index}",
+        approval_id=f"approval-{index}",
+    )
+
+
 def _prepared_case(tmp_path: Path) -> tuple[dict[str, object], PreparedStepExecutionStart]:
     h = _harness()
     case = h._case(tmp_path)
+    case["execution_approval"] = _authoritative_execution_approval(case, 7)
+    case["next_execution_approval"] = _authoritative_execution_approval(case, 8)
     first: list[object] = []
     second: list[object] = []
     start = phase185(

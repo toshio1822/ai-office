@@ -114,29 +114,6 @@ def validate_model_invocation_execution_approval(
         and _is_nonempty_string(approval.approved_by)
         and _is_nonempty_string(approval.approval_id)
     )
-    if not is_valid and request.upstream_inputs != ():
-        # Requests made before Phase 216 have no predecessor field in the
-        # approval fingerprint.  Keep those in-memory approvals usable at
-        # existing continuation seams while the Phase-190 authoritative
-        # guard rebinds them to the complete request before persistence.
-        # Approvals created for a different non-empty upstream request do not
-        # match this legacy request and therefore remain rejected.
-        legacy_request = ModelInvocationRequest(
-            request.model,
-            request.system_instructions,
-            request.task_instructions,
-            request.allowed_tools,
-        )
-        is_valid = (
-            approval.approved is True
-            and approval.provider == provider
-            and approval.request_fingerprint
-            == build_model_invocation_execution_fingerprint(
-                legacy_request, resolved_tools
-            )
-            and _is_nonempty_string(approval.approved_by)
-            and _is_nonempty_string(approval.approval_id)
-        )
     if not is_valid:
         raise ModelInvocationExecutionApprovalError(_APPROVAL_ERROR_MESSAGE) from None
 

@@ -29,7 +29,11 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase181Error,
 )
-from ai_office.invocation import ModelInvocationRequest, approve_model_invocation_execution
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    UpstreamStepOutput,
+    approve_model_invocation_execution,
+)
 from ai_office.runtime import StepRuntimeExecutionFailure, StepRuntimeExecutionSuccess
 from ai_office.storage import RunningStatePersistenceResult
 
@@ -67,6 +71,15 @@ def _second_context(case: dict[str, object]) -> dict[str, object]:
         employee.instructions,
         step.instructions,
         tuple(employee.allowed_tools),
+        (
+            UpstreamStepOutput(
+                workflow.id,
+                workflow.steps[6].id,
+                7,
+                workflow.steps[6].employee,
+                "ok",
+            ),
+        ),
     )
     return {
         "tools": case["tools"],

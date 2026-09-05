@@ -105,7 +105,7 @@ def _real_phase179(s: dict, *, transport=None):
 
 
 def _start(prepared: PreparedWorkflowStep, workflow) -> PreparedStepExecutionStart:
-    from ai_office.invocation import ModelInvocationRequest
+    from ai_office.invocation import ModelInvocationRequest, UpstreamStepOutput
     from ai_office.runtime import WorkflowExecutionState
 
     return PreparedStepExecutionStart(
@@ -114,6 +114,15 @@ def _start(prepared: PreparedWorkflowStep, workflow) -> PreparedStepExecutionSta
             prepared.employee_instructions,
             prepared.step_instructions,
             prepared.allowed_tool_names,
+            (
+                UpstreamStepOutput(
+                    workflow.id,
+                    workflow.steps[prepared.step_index - 2].id,
+                    prepared.step_index - 1,
+                    workflow.steps[prepared.step_index - 2].employee,
+                    "ok",
+                ),
+            ),
         ),
         WorkflowExecutionState(
             prepared.workflow_id,

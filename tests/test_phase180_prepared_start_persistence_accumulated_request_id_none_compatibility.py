@@ -41,7 +41,7 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_oute
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError as Phase132Error,
 )
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.invocation import ModelInvocationRequest, UpstreamStepOutput
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
     RunningStatePersistenceResult,
@@ -146,6 +146,15 @@ def _start(workflow: WorkflowDefinition, index: int) -> PreparedStepExecutionSta
             person.instructions,
             step.instructions,
             tuple(person.allowed_tools),
+            (
+                UpstreamStepOutput(
+                    workflow.id,
+                    workflow.steps[index - 2].id,
+                    index - 1,
+                    workflow.steps[index - 2].employee,
+                    f"output-{workflow.steps[index - 2].id}",
+                ),
+            ),
         ),
         WorkflowExecutionState(
             workflow.id,

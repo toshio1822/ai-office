@@ -402,11 +402,26 @@ def test_13_approval_validation_rejects_changed_upstream() -> None:
     approval = approve_model_invocation_execution(
         original, (), provider="openai", approved_by="reviewer", approval_id="id"
     )
+    legacy_approval = approve_model_invocation_execution(
+        ModelInvocationRequest("model", "system", "task", ()),
+        (),
+        provider="openai",
+        approved_by="reviewer",
+        approval_id="legacy-id",
+    )
+    validate_model_invocation_execution_approval(
+        original, (), approval, provider="openai"
+    )
 
-    with pytest.raises(ModelInvocationExecutionApprovalError):
-        validate_model_invocation_execution_approval(
-            changed, (), approval, provider="openai"
-        )
+    for candidate, candidate_approval in (
+        (original, legacy_approval),
+        (changed, legacy_approval),
+        (changed, approval),
+    ):
+        with pytest.raises(ModelInvocationExecutionApprovalError):
+            validate_model_invocation_execution_approval(
+                candidate, (), candidate_approval, provider="openai"
+            )
 
 
 def test_14_prepared_step_start_reconstructs_exact_predecessor_output() -> None:
@@ -473,17 +488,26 @@ def test_16_phase190_rejects_stale_approval_before_running_or_provider(
     phase147_calls: list[object] = []
     transport_calls: list[object] = []
 
-    with pytest.raises(Phase190Error) as caught:
-        _phase190_common(
-            state_path,
-            events_path,
-            start,
-            stale,
-            phase147_calls,
-            transport_calls,
-        )
+    invalid_approvals = (
+        stale,
+        None,
+        object(),
+        replace(approval, provider="other"),
+    )
+    for invalid in invalid_approvals:
+        phase147_calls.clear()
+        transport_calls.clear()
+        with pytest.raises(Phase190Error) as caught:
+            _phase190_common(
+                state_path,
+                events_path,
+                start,
+                invalid,
+                phase147_calls,
+                transport_calls,
+            )
 
-    assert caught.value.detail.classification == "approval_contract"
-    assert phase147_calls == []
-    assert transport_calls == []
-    assert (state_path.read_bytes(), events_path.read_bytes()) == before
+        assert caught.value.detail.classification == "approval_contract"
+        assert phase147_calls == []
+        assert transport_calls == []
+        assert (state_path.read_bytes(), events_path.read_bytes()) == before

@@ -72,6 +72,7 @@ from ai_office.engine.approved_workflow_fresh_start import (
 from ai_office.invocation import (
     ModelInvocationFailureCategory,
     ModelInvocationRequest,
+    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
@@ -263,11 +264,19 @@ def _continuation_context(
     current = workflow.steps[index - 2]
     next_step = workflow.steps[index - 1]
     employee = _employee(workflow, index)
+    upstream = UpstreamStepOutput(
+        workflow.id,
+        workflow.steps[index - 2].id,
+        index - 1,
+        workflow.steps[index - 2].employee,
+        "ok",
+    )
     request = ModelInvocationRequest(
         employee.model,
         employee.instructions,
         next_step.instructions,
         (),
+        (upstream,),
     )
     approval = approve_model_invocation_execution(
         request,

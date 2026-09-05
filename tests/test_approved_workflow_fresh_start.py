@@ -77,6 +77,7 @@ from ai_office.invocation import (
     ModelInvocationFailure,
     ModelInvocationRequest,
     ModelInvocationSuccess,
+    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import (
@@ -227,8 +228,19 @@ def real_context_for(
 ) -> ApprovedWorkflowContinuationContext:
     """One Phase-192 context for a real bounded continuation run."""
     emp = employee(index)
+    upstream = UpstreamStepOutput(
+        wf.id,
+        wf.steps[index - 2].id,
+        index - 1,
+        wf.steps[index - 2].employee,
+        "ok",
+    )
     request = ModelInvocationRequest(
-        emp.model, emp.instructions, wf.steps[index - 1].instructions, ()
+        emp.model,
+        emp.instructions,
+        wf.steps[index - 1].instructions,
+        (),
+        (upstream,),
     )
     approval = approve_model_invocation_execution(
         request,

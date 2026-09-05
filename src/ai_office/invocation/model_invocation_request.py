@@ -1,7 +1,7 @@
 """Provider-independent inputs for a future model adapter."""
 
 import json
-from dataclasses import InitVar, dataclass
+from dataclasses import dataclass
 
 from ai_office.planning.step_execution_request import StepExecutionRequest
 
@@ -17,7 +17,7 @@ class UpstreamStepOutput:
     output_text: str
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True)
 class ModelInvocationRequest:
     """Immutable values required to invoke a model for one workflow step."""
 
@@ -25,49 +25,10 @@ class ModelInvocationRequest:
     system_instructions: str
     task_instructions: str
     allowed_tools: tuple[str, ...]
-    upstream_inputs: InitVar[tuple[UpstreamStepOutput, ...]] = ()
+    upstream_inputs: tuple[UpstreamStepOutput, ...] = ()
 
-    def __post_init__(self, upstream_inputs: tuple[UpstreamStepOutput, ...]) -> None:
-        _validate_upstream_inputs(upstream_inputs)
-        # Keep the public value in the instance dictionary.  InitVar excludes
-        # it from dataclasses.fields (preserving the legacy structural view),
-        # while retaining compatibility with existing boundary tests that
-        # reconstruct immutable requests through ``request.__dict__``.
-        object.__setattr__(self, "upstream_inputs", upstream_inputs)
-
-    def __eq__(self, other: object) -> bool:
-        if type(other) is not type(self):
-            return False
-        assert isinstance(other, ModelInvocationRequest)
-        return (
-            self.model,
-            self.system_instructions,
-            self.task_instructions,
-            self.allowed_tools,
-            self.upstream_inputs,
-        ) == (
-            other.model,
-            other.system_instructions,
-            other.task_instructions,
-            other.allowed_tools,
-            other.upstream_inputs,
-        )
-
-    def __hash__(self) -> int:
-        return hash(
-            (
-                self.model,
-                self.system_instructions,
-                self.task_instructions,
-                self.allowed_tools,
-                self.upstream_inputs,
-            )
-        )
-
-
-# ``InitVar`` is intentionally not part of ``dataclasses.fields``.  The value
-# is installed on each instance by ``__post_init__`` so old ``__dict__`` based
-# reconstruction seams continue to accept the new optional input.
+    def __post_init__(self) -> None:
+        _validate_upstream_inputs(self.upstream_inputs)
 
 def build_model_invocation_request(
     step_request: StepExecutionRequest,

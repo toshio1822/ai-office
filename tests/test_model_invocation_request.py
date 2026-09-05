@@ -33,6 +33,7 @@ def test_model_invocation_request_is_frozen_and_preserves_tool_order() -> None:
 
     assert isinstance(request, ModelInvocationRequest)
     assert request.allowed_tools == ("search", "read", "search")
+    assert request.upstream_inputs == ()
     assert isinstance(request.allowed_tools, tuple)
     with pytest.raises(FrozenInstanceError):
         request.model = "other"
@@ -53,6 +54,7 @@ def test_model_invocation_request_copies_values_without_combining_instructions(
         "system_instructions",
         "task_instructions",
         "allowed_tools",
+        "upstream_inputs",
     )
     for field_name in (
         "workflow_id",
