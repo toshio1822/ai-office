@@ -2906,6 +2906,13 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
     assert preview == {
         "allowed_tools": [],
         "employee_id": "general-researcher",
+        "execution_target": {
+            "allow_loopback_http": False,
+            "credential_environment_variable": "OPENAI_API_KEY",
+            "endpoint": "https://api.openai.com/v1/responses",
+            "protocol": "openai-responses",
+            "provider": "openai",
+        },
         "mode": "preview",
         "model": "codex",
         "operation": "start",

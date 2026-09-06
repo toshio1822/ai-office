@@ -153,7 +153,7 @@ def _execution_inputs(result: RunningStatePersistenceResult, start: object | Non
     step = workflow.steps[running.current_step_index - 1]
     prefix = tuple(item.id for item in workflow.steps[: running.current_step_index - 1])
     if not (_str(running.status, "running") and running.last_failure_category is None and _str(running.workflow_id, workflow.id) and _str(running.current_step_id, step.id) and _str(running.current_employee_id, step.employee) and _str(employee.id, running.current_employee_id) and _tuple(running.completed_step_ids, prefix) and _str(request.model, employee.model) and _str(request.system_instructions, employee.instructions) and _str(request.task_instructions, step.instructions) and _tuple(request.allowed_tools, tuple(employee.allowed_tools)) and _tuple(tuple(tool.name for tool in tools), request.allowed_tools)): _compatibility_error("start_contract")
-    try: validate_model_invocation_execution_approval(request, tools, approval, provider="openai")
+    try: validate_model_invocation_execution_approval(request, tools, approval, provider=approval.provider, execution_target=approval.execution_target)
     except ValueError: _compatibility_error("approval_contract")
 
 

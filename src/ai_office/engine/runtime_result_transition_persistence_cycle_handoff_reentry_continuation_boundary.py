@@ -318,7 +318,7 @@ def _check_running_history(
                     event.request_id is None
                     and position >= 5
                     and type(event.provider) is str
-                    and event.provider == "openai"
+                    and event.provider in {"openai", "omniroute"}
                 )
             )
             and type(event.output_text) is str

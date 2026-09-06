@@ -32,6 +32,11 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.execution_target import (
+    ModelExecutionTarget,
+    ModelExecutionTargetError,
+    execution_target_for_name,
+)
 from ai_office.invocation import (
     ModelInvocationRequest,
     approve_model_invocation_execution,
@@ -53,6 +58,7 @@ from ai_office.planning.step_execution_request import (
     find_employee_by_id,
 )
 from ai_office.providers.openai import (
+    OpenAIApiKey,
     OpenAIResponsesFunctionTool,
     OpenAIResponsesPayload,
     OpenAIResponsesRequest,
@@ -61,6 +67,7 @@ from ai_office.providers.openai import (
     build_openai_responses_payload_from_invocation,
     build_openai_responses_request,
     build_openai_responses_tools,
+    load_api_key_for_execution_target,
     load_openai_api_key_from_environment,
     send_openai_responses_http_request,
     serialize_openai_responses_payload_dict_pretty,
@@ -426,6 +433,7 @@ class _WorkflowStepPreview:
     employee: EmployeeDefinition
     resolved_tools: tuple[ToolDefinition, ...]
     request_fingerprint: str
+    execution_target: ModelExecutionTarget
 
 
 def _workflow_cli_error(message: str, *, code: int = 2) -> NoReturn:
@@ -455,6 +463,7 @@ def _build_workflow_step_preview(
     workflow_id: str,
     step_index: int,
     upstream_inputs: tuple[object, ...] = (),
+    execution_target: ModelExecutionTarget | None = None,
 ) -> tuple[object, _WorkflowStepPreview]:
     """Construct one exact step request through the existing public seams."""
     try:
@@ -469,8 +478,13 @@ def _build_workflow_step_preview(
         resolved_tools = resolve_tool_names(
             DEFAULT_TOOL_CATALOG, invocation_request.allowed_tools
         )
+        target = (
+            execution_target
+            if execution_target is not None
+            else execution_target_for_name("openai")
+        )
         fingerprint = build_model_invocation_execution_fingerprint(
-            invocation_request, resolved_tools
+            invocation_request, resolved_tools, target
         )
     except (
         WorkflowSelectionError,
@@ -488,7 +502,23 @@ def _build_workflow_step_preview(
         employee=selected_employee.definition,
         resolved_tools=resolved_tools,
         request_fingerprint=fingerprint,
+        execution_target=target,
     )
+
+
+def _resolve_execution_target(name: str) -> ModelExecutionTarget:
+    """Resolve the only operator-selectable target before credential work."""
+    try:
+        return execution_target_for_name(name)
+    except (ModelExecutionTargetError, TypeError):
+        _workflow_cli_error("execution target is invalid")
+
+
+def _load_api_key_for_target(target: ModelExecutionTarget) -> OpenAIApiKey:
+    """Keep direct-OpenAI compatibility while selecting target credentials."""
+    if target.provider == "openai":
+        return load_openai_api_key_from_environment()
+    return load_api_key_for_execution_target(target)
 
 
 def _select_workflow_or_exit(
@@ -535,6 +565,7 @@ def _step_preview_json(
     invocation = preview.invocation_request
     value: dict[str, object] = {
         "allowed_tools": list(invocation.allowed_tools),
+        "execution_target": preview.execution_target.descriptor(),
         "employee_id": request.employee_id,
         "mode": "preview",
         "model": invocation.model,
@@ -703,7 +734,7 @@ def _build_start_context(
 ) -> ApprovedWorkflowBootstrapContext:
     """Create the exact fresh-start context only after preview binding passes."""
     try:
-        api_key = load_openai_api_key_from_environment()
+        api_key = _load_api_key_for_target(preview.execution_target)
         preparation_approval = InitialStepPreparationApproval(
             True,
             preview.step_request.workflow_id,
@@ -714,9 +745,10 @@ def _build_start_context(
         execution_approval = approve_model_invocation_execution(
             preview.invocation_request,
             preview.resolved_tools,
-            provider="openai",
+            provider=preview.execution_target.provider,
             approved_by=approved_by,
             approval_id=approval_id,
+            execution_target=preview.execution_target,
         )
     except Exception:
         _workflow_cli_error("credential or approval configuration is invalid")
@@ -727,6 +759,7 @@ def _build_start_context(
         api_key=api_key,
         execution_approval=execution_approval,
         transport=send_openai_responses_http_request,
+        execution_target=preview.execution_target,
     )
 
 
@@ -738,7 +771,7 @@ def _build_continuation_context(
 ) -> ApprovedWorkflowContinuationContext:
     """Create one exact next-step context only after preview binding passes."""
     try:
-        api_key = load_openai_api_key_from_environment()
+        api_key = _load_api_key_for_target(preview.execution_target)
         preparation_approval = NextStepPreparationApproval(
             True,
             decision.workflow_id,
@@ -751,9 +784,10 @@ def _build_continuation_context(
         execution_approval = approve_model_invocation_execution(
             preview.invocation_request,
             preview.resolved_tools,
-            provider="openai",
+            provider=preview.execution_target.provider,
             approved_by=approved_by,
             approval_id=approval_id,
+            execution_target=preview.execution_target,
         )
     except Exception:
         _workflow_cli_error("credential or approval configuration is invalid")
@@ -764,6 +798,7 @@ def _build_continuation_context(
         api_key=api_key,
         execution_approval=execution_approval,
         transport=send_openai_responses_http_request,
+        execution_target=preview.execution_target,
     )
 
 
@@ -947,6 +982,7 @@ def start_workflow(
         Path("employees"), "--employees-directory"
     ),
     preview_only: bool = typer.Option(False, "--preview-only"),
+    execution_target: str = typer.Option("openai", "--execution-target"),
     approve_preparation: bool = typer.Option(False, "--approve-preparation"),
     approve_execution: bool = typer.Option(False, "--approve-execution"),
     approved_by: str | None = typer.Option(None, "--approved-by"),
@@ -959,6 +995,7 @@ def start_workflow(
     ),
 ) -> None:
     """Preview or execute exactly one fresh workflow step."""
+    target = _resolve_execution_target(execution_target)
     if preview_only and _has_execution_fields(
         approve_preparation,
         approve_execution,
@@ -986,7 +1023,7 @@ def start_workflow(
         directory, employees_directory
     )
     workflow, preview = _build_workflow_step_preview(
-        workflows, employees, workflow_id, 1
+        workflows, employees, workflow_id, 1, execution_target=target
     )
     if preview_only:
         _emit_json(_step_preview_json("start", preview))
@@ -1017,6 +1054,7 @@ def continue_workflow(
         Path("employees"), "--employees-directory"
     ),
     preview_only: bool = typer.Option(False, "--preview-only"),
+    execution_target: str = typer.Option("openai", "--execution-target"),
     approve_preparation: bool = typer.Option(False, "--approve-preparation"),
     approve_execution: bool = typer.Option(False, "--approve-execution"),
     approved_by: str | None = typer.Option(None, "--approved-by"),
@@ -1029,6 +1067,7 @@ def continue_workflow(
     ),
 ) -> None:
     """Preview or execute exactly one persisted next workflow step."""
+    target = _resolve_execution_target(execution_target)
     if preview_only and _has_execution_fields(
         approve_preparation,
         approve_execution,
@@ -1086,6 +1125,7 @@ def continue_workflow(
         workflow_id,
         routed.next_step_index,
         upstream_inputs,
+        execution_target=target,
     )
     if preview_only:
         _emit_json(_step_preview_json("continue", preview))

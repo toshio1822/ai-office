@@ -16,6 +16,10 @@ from typing import Literal, get_args
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
+from ai_office.execution_target import (
+    ModelExecutionTargetError,
+    validate_execution_target_for_provider,
+)
 from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
 )
@@ -349,6 +353,11 @@ def route_approved_workflow_continuation_cycle(
     runtime_result_valid = _valid_runtime_result(
         runtime_result, prepared_start, workflow
     )
+    if runtime_result_valid and (
+        runtime_result.invocation_result.provider
+        != effective_execution_approval.provider
+    ):
+        runtime_result_valid = False
     if _changed(state_path, events_path, running_snapshot):
         _restore_or_fail(state_path, events_path, running_snapshot)
         _fail(
@@ -633,13 +642,18 @@ def _check_authoritative_pre_persistence(
     if type(execution_approval) is not ModelInvocationExecutionApproval:
         _fail("approval_contract")
     try:
+        target = validate_execution_target_for_provider(
+            execution_approval.execution_target,
+            provider=execution_approval.provider,
+        )
         validate_model_invocation_execution_approval(
             prepared_start.request,
             resolved_tools,
             execution_approval,
-            provider="openai",
+            provider=execution_approval.provider,
+            execution_target=target,
         )
-    except Exception:
+    except (AttributeError, ModelExecutionTargetError, TypeError, ValueError):
         _fail("approval_contract")
     return execution_approval
 

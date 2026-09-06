@@ -17,6 +17,7 @@ from ai_office.providers.openai.responses_dict_payload import (
 from ai_office.providers.openai.responses_environment import (
     OPENAI_API_KEY_ENVIRONMENT_VARIABLE,
     OpenAIApiKeyEnvironmentError,
+    load_api_key_for_execution_target,
     load_openai_api_key_from_environment,
 )
 from ai_office.providers.openai.responses_execution import (
@@ -137,6 +138,7 @@ __all__ = [
     "build_model_invocation_success_from_openai",
     "extract_openai_responses_output_text",
     "execute_openai_model_invocation",
+    "load_api_key_for_execution_target",
     "load_openai_api_key_from_environment",
     "parse_openai_responses_http_response",
     "serialize_openai_responses_payload",

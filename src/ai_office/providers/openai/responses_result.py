@@ -19,10 +19,12 @@ from ai_office.providers.openai.responses_transport import OpenAIResponsesTransp
 
 def build_model_invocation_success_from_openai(
     result: OpenAIResponsesOutputText,
+    *,
+    provider: str = "openai",
 ) -> ModelInvocationSuccess:
     """Copy an OpenAI output-text result into the common success contract."""
     return ModelInvocationSuccess(
-        provider="openai",
+        provider=provider,
         response_id=result.response_id,
         request_id=result.request_id,
         status=result.status,
@@ -33,10 +35,12 @@ def build_model_invocation_success_from_openai(
 
 def build_model_invocation_failure_from_openai_api_error(
     result: OpenAIResponsesApiErrorResponse,
+    *,
+    provider: str = "openai",
 ) -> ModelInvocationFailure:
     """Copy safe OpenAI API-error fields into the common failure contract."""
     return ModelInvocationFailure(
-        provider="openai",
+        provider=provider,
         category="api_error",
         message=result.message,
         request_id=result.request_id,
@@ -52,37 +56,47 @@ class OpenAIResponsesExecutionInputError(ValueError):
 
 def build_model_invocation_failure_from_openai_execution_input_error(
     error: OpenAIResponsesExecutionInputError,
+    *,
+    provider: str = "openai",
 ) -> ModelInvocationFailure:
     """Normalize the safe public message of an invalid execution input."""
-    return _build_safe_openai_exception_failure(error, "invalid_request")
+    return _build_safe_openai_exception_failure(error, "invalid_request", provider)
 
 
 def build_model_invocation_failure_from_execution_approval_error(
     error: ModelInvocationExecutionApprovalError,
+    *,
+    provider: str = "openai",
 ) -> ModelInvocationFailure:
     """Normalize a rejected explicit approval into a safe failure result."""
-    return _build_safe_openai_exception_failure(error, "approval_required")
+    return _build_safe_openai_exception_failure(error, "approval_required", provider)
 
 
 def build_model_invocation_failure_from_openai_transport_error(
     error: OpenAIResponsesTransportError,
+    *,
+    provider: str = "openai",
 ) -> ModelInvocationFailure:
     """Normalize the safe public message of an OpenAI transport error."""
-    return _build_safe_openai_exception_failure(error, "transport_error")
+    return _build_safe_openai_exception_failure(error, "transport_error", provider)
 
 
 def build_model_invocation_failure_from_openai_invalid_response_error(
     error: OpenAIResponsesInvalidResponseError,
+    *,
+    provider: str = "openai",
 ) -> ModelInvocationFailure:
     """Normalize the safe public message of an invalid OpenAI response error."""
-    return _build_safe_openai_exception_failure(error, "invalid_response")
+    return _build_safe_openai_exception_failure(error, "invalid_response", provider)
 
 
 def build_model_invocation_failure_from_openai_invalid_output_error(
     error: OpenAIResponsesInvalidOutputError,
+    *,
+    provider: str = "openai",
 ) -> ModelInvocationFailure:
     """Normalize the safe public message of an invalid OpenAI output error."""
-    return _build_safe_openai_exception_failure(error, "invalid_output")
+    return _build_safe_openai_exception_failure(error, "invalid_output", provider)
 
 
 def _build_safe_openai_exception_failure(
@@ -94,9 +108,10 @@ def _build_safe_openai_exception_failure(
         | ModelInvocationExecutionApprovalError
     ),
     category: ModelInvocationFailureCategory,
+    provider: str = "openai",
 ) -> ModelInvocationFailure:
     return ModelInvocationFailure(
-        provider="openai",
+        provider=provider,
         category=category,
         message=str(error),
         request_id=None,

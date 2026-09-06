@@ -324,7 +324,7 @@ def _check_persistence(
 
 
 def _valid_terminal_event(event: RuntimeStepEvent, state: WorkflowExecutionState) -> bool:
-    if event.provider != "openai":
+    if event.provider not in {"openai", "omniroute"}:
         return False
     if event.request_id is not None and not _nonempty_string(event.request_id):
         return False
@@ -428,7 +428,7 @@ def _valid_empty_success_history(
         and _exact_string(terminal.employee_id, state.current_employee_id)
         and _exact_string(terminal.previous_status, "running")
         and _exact_string(terminal.next_status, "succeeded")
-        and _exact_string(terminal.provider, "openai")
+        and terminal.provider in {"openai", "omniroute"}
         and terminal.failure_category is None
         and _nonempty_string(terminal.response_id)
         and (terminal.request_id is None or _nonempty_string(terminal.request_id))

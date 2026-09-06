@@ -529,7 +529,7 @@ def _valid_terminal_event(
             base
             and event.event_type == "step_succeeded"
             and event.next_status == "succeeded"
-            and (not require_openai or (type(event.provider) is str and event.provider == "openai"))
+            and (not require_openai or (type(event.provider) is str and event.provider in {"openai", "omniroute"}))
             and expected_failure is None
             and event.failure_category is None
             and _nonempty_string(event.response_id)

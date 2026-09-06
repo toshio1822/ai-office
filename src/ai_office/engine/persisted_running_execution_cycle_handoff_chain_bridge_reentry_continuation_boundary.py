@@ -312,7 +312,7 @@ def _check_execution_inputs(
         or type(approval.approved) is not bool
         or approval.approved is not True
         or type(approval.provider) is not str
-        or approval.provider != "openai"
+        or approval.provider not in {"openai", "omniroute"}
         or type(approval.request_fingerprint) is not str
         or type(approval.approved_by) is not str
         or type(approval.approval_id) is not str
@@ -360,7 +360,7 @@ def _check_execution_inputs(
         _fail("start_contract")
     try:
         validate_model_invocation_execution_approval(
-            request, tools, approval, provider="openai"
+            request, tools, approval, provider=approval.provider, execution_target=approval.execution_target
         )
     except (TypeError, ValueError):
         _fail("approval_contract")
@@ -611,7 +611,7 @@ def _valid_predecessor_event(
 ) -> bool:
     none_request_id = event.request_id is None
     provider_valid = _nonempty_string(event.provider) and (
-        (not require_openai and not none_request_id) or event.provider == "openai"
+        (not require_openai and not none_request_id) or event.provider in {"openai", "omniroute"}
     )
     request_id_valid = (none_request_id and allow_none_request_id) or (
         _nonempty_string(event.request_id)

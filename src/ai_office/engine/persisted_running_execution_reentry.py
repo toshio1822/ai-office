@@ -137,7 +137,11 @@ def execute_persisted_running_openai_step(
         _raise("execution_contract")
     try:
         validate_model_invocation_execution_approval(
-            start.request, resolved_tools, approval, provider="openai"
+            start.request,
+            resolved_tools,
+            approval,
+            provider=approval.provider,
+            execution_target=approval.execution_target,
         )
     except ValueError:
         _raise("execution_contract")
