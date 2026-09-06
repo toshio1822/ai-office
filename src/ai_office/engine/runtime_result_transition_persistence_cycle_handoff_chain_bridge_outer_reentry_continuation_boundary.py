@@ -349,7 +349,7 @@ def _check_runtime_result(
 def _valid_success(value: object) -> bool:
     return (
         type(value) is ModelInvocationSuccess
-        and _exact_string(value.provider, "openai")
+        and value.provider in {"openai", "omniroute"}
         and _nonempty_string(value.response_id)
         and _optional_nonempty_string(value.request_id)
         and _nonempty_string(value.status)
@@ -363,7 +363,7 @@ def _valid_success(value: object) -> bool:
 def _valid_failure(value: object) -> bool:
     return (
         type(value) is ModelInvocationFailure
-        and _exact_string(value.provider, "openai")
+        and value.provider in {"openai", "omniroute"}
         and type(value.category) is str
         and value.category in _FAILURE_CATEGORIES
         and _nonempty_string(value.message)
@@ -405,7 +405,7 @@ def _check_predecessor_history(
             allow_none_request_id=allow_none,
         ):
             _fail("runtime_contract")
-        if allow_none and event.request_id is None and event.provider != "openai":
+        if allow_none and event.request_id is None and event.provider not in {"openai", "omniroute"}:
             _fail("runtime_contract")
 
 
@@ -419,7 +419,7 @@ def _valid_predecessor_event(
     allow_none_request_id: bool = False,
 ) -> bool:
     provider_valid = _nonempty_string(event.provider) and (
-        not require_openai or event.provider == "openai"
+        not require_openai or event.provider in {"openai", "omniroute"}
     )
     request_id_valid = (event.request_id is None and allow_none_request_id) or (
         _nonempty_string(event.request_id)
@@ -655,7 +655,7 @@ def _check_persistence(
         and terminal.step_index == result.step_index
         and _exact_string(terminal.employee_id, result.employee_id)
         and _exact_string(terminal.previous_status, "running")
-        and _exact_string(terminal.provider, "openai")
+        and terminal.provider == invocation.provider
         and terminal.request_id == invocation.request_id
     )
     if successful:

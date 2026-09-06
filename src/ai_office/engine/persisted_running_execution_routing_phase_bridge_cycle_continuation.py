@@ -270,7 +270,7 @@ def _validate_execution_inputs(
         _raise("start_contract")
     try:
         validate_model_invocation_execution_approval(
-            request, tools, approval, provider="openai"
+            request, tools, approval, provider=approval.provider, execution_target=approval.execution_target
         )
     except ValueError:
         _raise("approval_contract")

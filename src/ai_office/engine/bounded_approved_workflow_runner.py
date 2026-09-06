@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
+from ai_office.execution_target import (
+    DIRECT_OPENAI_EXECUTION_TARGET,
+    ModelExecutionTarget,
+    validate_execution_target_for_provider,
+)
 from ai_office.engine.approved_workflow_continuation_cycle import (
     route_approved_workflow_continuation_cycle,
 )
@@ -15,6 +20,7 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
+from ai_office.invocation import ModelInvocationExecutionApproval
 
 Classification = Literal[
     "result_type",
@@ -44,6 +50,7 @@ class ApprovedWorkflowContinuationContext:
     api_key: object
     execution_approval: object
     transport: object
+    execution_target: ModelExecutionTarget = DIRECT_OPENAI_EXECUTION_TARGET
 
 
 @dataclass(frozen=True)
@@ -310,6 +317,18 @@ def _check_contexts(contexts: object) -> None:
         for context in contexts
     ):
         _fail("context_type")
+    for context in contexts:
+        if type(context.execution_approval) is not ModelInvocationExecutionApproval:
+            continue
+        try:
+            target = validate_execution_target_for_provider(
+                context.execution_target,
+                provider=context.execution_approval.provider,
+            )
+            if target != context.execution_approval.execution_target:
+                _fail("context_type")
+        except (AttributeError, TypeError, ValueError):
+            _fail("context_type")
 
 
 def _is_terminal(value: object) -> bool:

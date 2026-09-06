@@ -2,6 +2,11 @@
 
 from dataclasses import dataclass
 
+from ai_office.execution_target import (
+    ModelExecutionTargetError,
+    is_supported_execution_provider,
+    validate_execution_target_for_provider,
+)
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationFailure,
@@ -70,7 +75,23 @@ def execute_openai_runtime_step(
     try:
         _validate_execution_input(execution_input)
     except StepRuntimeExecutionInputError as error:
-        return _build_input_failure(execution_input.step_request, error)
+        return _build_input_failure(
+            execution_input.step_request,
+            error,
+            provider=_approval_provider(execution_input.approval),
+        )
+
+    try:
+        execution_target = validate_execution_target_for_provider(
+            execution_input.approval.execution_target,
+            provider=execution_input.approval.provider,
+        )
+    except (AttributeError, ModelExecutionTargetError, TypeError, ValueError):
+        return _build_input_failure(
+            execution_input.step_request,
+            StepRuntimeExecutionInputError(_INPUT_ERROR_MESSAGE),
+            provider=_approval_provider(execution_input.approval),
+        )
 
     invocation_result = execute_openai_model_invocation(
         execution_input.invocation_request,
@@ -78,6 +99,7 @@ def execute_openai_runtime_step(
         api_key,
         execution_input.approval,
         transport=transport,
+        execution_target=execution_target,
     )
     result = _build_runtime_result(execution_input.step_request, invocation_result)
     if not is_valid_step_runtime_execution_result(
@@ -106,6 +128,8 @@ def _validate_execution_input(execution_input: StepRuntimeExecutionInput) -> Non
 def _build_input_failure(
     step_request: StepExecutionRequest,
     error: StepRuntimeExecutionInputError,
+    *,
+    provider: str = "openai",
 ) -> StepRuntimeExecutionFailure:
     return StepRuntimeExecutionFailure(
         workflow_id=step_request.workflow_id,
@@ -113,7 +137,7 @@ def _build_input_failure(
         step_index=step_request.step_index,
         employee_id=step_request.employee_id,
         invocation_result=ModelInvocationFailure(
-            provider="openai",
+            provider=provider,
             category="invalid_request",
             message=str(error),
             request_id=None,
@@ -122,6 +146,12 @@ def _build_input_failure(
             provider_error_code=None,
         ),
     )
+
+
+def _approval_provider(approval: object) -> str:
+    """Preserve a supported target provider on pre-transport failures."""
+    provider = getattr(approval, "provider", "openai")
+    return provider if is_supported_execution_provider(provider) else "openai"
 
 
 def _build_runtime_result(
@@ -190,7 +220,7 @@ def _valid_runtime_identity(
 def _valid_invocation_success(value: object) -> bool:
     return (
         type(value) is ModelInvocationSuccess
-        and value.provider == "openai"
+        and is_supported_execution_provider(value.provider)
         and all(type(item) is str and item != "" for item in (
             value.provider,
             value.response_id,
@@ -207,7 +237,7 @@ def _valid_invocation_success(value: object) -> bool:
 def _valid_invocation_failure(value: object) -> bool:
     return (
         type(value) is ModelInvocationFailure
-        and value.provider == "openai"
+        and is_supported_execution_provider(value.provider)
         and type(value.provider) is str
         and value.category in {
             "api_error",

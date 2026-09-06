@@ -375,7 +375,7 @@ def _validate_execution_inputs(
         _compatibility_error("start_contract")
     try:
         validate_model_invocation_execution_approval(
-            request, tools, approval, provider="openai"
+            request, tools, approval, provider=approval.provider, execution_target=approval.execution_target
         )
     except (TypeError, ValueError):
         _compatibility_error("approval_contract")

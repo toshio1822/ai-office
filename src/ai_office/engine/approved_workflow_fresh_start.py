@@ -43,6 +43,12 @@ from ai_office.definitions.workflow import (
     WorkflowDefinition,
     WorkflowStepDefinition,
 )
+from ai_office.execution_target import (
+    DIRECT_OPENAI_EXECUTION_TARGET,
+    ModelExecutionTarget,
+    ModelExecutionTargetError,
+    validate_execution_target_for_provider,
+)
 from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
 )
@@ -66,6 +72,7 @@ from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationRequest,
+    validate_model_invocation_execution_approval,
 )
 from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import (
@@ -154,6 +161,7 @@ class ApprovedWorkflowBootstrapContext:
     api_key: OpenAIApiKey
     execution_approval: ModelInvocationExecutionApproval
     transport: object
+    execution_target: ModelExecutionTarget = DIRECT_OPENAI_EXECUTION_TARGET
 
 
 @dataclass(frozen=True)
@@ -255,6 +263,19 @@ def route_approved_workflow_fresh_start(
         workflow, prepared_step, context.employee
     )
 
+    target = _validate_context_execution_target(context)
+    if type(context.execution_approval) is ModelInvocationExecutionApproval:
+        try:
+            validate_model_invocation_execution_approval(
+                prepared_start.request,
+                context.resolved_tools,
+                context.execution_approval,
+                provider=target.provider,
+                execution_target=target,
+            )
+        except Exception:
+            _fail("execution_contract")
+
     ready_snapshot = _capture(state_path, events_path)
     try:
         persisted = running_persistence_function(prepared_start, state_path)
@@ -300,6 +321,9 @@ def route_approved_workflow_fresh_start(
         _restore_or_fail(state_path, events_path, running_snapshot)
         _fail("execution_contract")
     if not _valid_runtime_result(runtime_result, prepared_start, workflow):
+        _restore_or_fail(state_path, events_path, running_snapshot)
+        _fail("execution_contract")
+    if runtime_result.invocation_result.provider != target.provider:
         _restore_or_fail(state_path, events_path, running_snapshot)
         _fail("execution_contract")
 
@@ -362,6 +386,32 @@ def _check_initial_inputs(
             _fail("target_exists")
     except OSError:
         _fail("target_exists")
+
+
+def _validate_context_execution_target(
+    context: ApprovedWorkflowBootstrapContext,
+) -> ModelExecutionTarget:
+    """Reject target/provider replay before the ready/running persistence seam."""
+    try:
+        approval = context.execution_approval
+        if type(approval) is not ModelInvocationExecutionApproval:
+            return DIRECT_OPENAI_EXECUTION_TARGET
+        target = validate_execution_target_for_provider(
+            approval.execution_target,
+            provider=approval.provider,
+        )
+        context_target = validate_execution_target_for_provider(
+            context.execution_target,
+            provider=approval.provider,
+        )
+        if (
+            context_target != target
+            or approval.execution_target_fingerprint == ""
+        ):
+            _fail("execution_contract")
+        return target
+    except (ModelExecutionTargetError, AttributeError):
+        _fail("execution_contract")
 
 
 def _create_pair(

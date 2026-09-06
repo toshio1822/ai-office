@@ -365,7 +365,7 @@ def _check_predecessor_history(
                 or (
                     event.request_id is None
                     and position >= 5
-                    and _exact_string(event.provider, "openai")
+                    and event.provider in {"openai", "omniroute"}
                 )
             )
             and type(event.output_text) is str

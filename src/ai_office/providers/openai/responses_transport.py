@@ -1,4 +1,4 @@
-"""One synchronous HTTPS exchange for authenticated OpenAI Responses requests."""
+"""One synchronous exchange for authenticated Responses-compatible requests."""
 
 import http.client
 from dataclasses import dataclass
@@ -34,7 +34,16 @@ def _create_https_connection(
     return http.client.HTTPSConnection(hostname, port=port)
 
 
-def _parse_openai_responses_transport_url(url: str) -> tuple[str, int | None, str]:
+def _create_http_connection(
+    hostname: str,
+    port: int | None,
+) -> http.client.HTTPConnection:
+    return http.client.HTTPConnection(hostname, port=port)
+
+
+def _parse_openai_responses_transport_url(
+    url: str,
+) -> tuple[str, str, int | None, str]:
     try:
         parsed = urlsplit(url)
         hostname = parsed.hostname
@@ -46,9 +55,10 @@ def _parse_openai_responses_transport_url(url: str) -> tuple[str, int | None, st
             "OpenAI Responses transport URL is invalid"
         ) from None
 
-    if parsed.scheme.lower() != "https":
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
         raise OpenAIResponsesTransportUrlError(
-            "OpenAI Responses transport requires HTTPS"
+            "OpenAI Responses transport requires HTTP or HTTPS"
         )
     if not hostname:
         raise OpenAIResponsesTransportUrlError(
@@ -58,23 +68,31 @@ def _parse_openai_responses_transport_url(url: str) -> tuple[str, int | None, st
         raise OpenAIResponsesTransportUrlError(
             "OpenAI Responses transport URL must not include user information"
         )
+    if scheme == "http" and hostname.lower() != "127.0.0.1":
+        raise OpenAIResponsesTransportUrlError(
+            "HTTP Responses transport is restricted to canonical loopback"
+        )
 
     target = parsed.path or "/"
     if parsed.query:
         target = f"{target}?{parsed.query}"
-    return hostname, port, target
+    return scheme, hostname, port, target
 
 
 def send_openai_responses_http_request(
     request: OpenAIResponsesAuthenticatedHttpRequest,
 ) -> OpenAIResponsesRawHttpResponse:
     """Send one authenticated HTTPS request and preserve its raw response."""
-    hostname, port, target = _parse_openai_responses_transport_url(request.url)
+    scheme, hostname, port, target = _parse_openai_responses_transport_url(request.url)
     body = request.body.encode("utf-8")
-    connection: http.client.HTTPSConnection | None = None
+    connection: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
 
     try:
-        connection = _create_https_connection(hostname, port)
+        connection = (
+            _create_http_connection(hostname, port)
+            if scheme == "http"
+            else _create_https_connection(hostname, port)
+        )
         has_host_header = any(name.lower() == "host" for name, _ in request.headers)
         connection.putrequest(
             request.method,

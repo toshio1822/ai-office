@@ -506,7 +506,7 @@ def _valid_predecessor(
         and _exact_string(event.previous_status, "running")
         and _exact_string(event.next_status, "succeeded")
         and _nonempty_string(event.provider)
-        and (not require_openai or event.provider == "openai")
+        and (not require_openai or event.provider in {"openai", "omniroute"})
         and event.failure_category is None
         and _nonempty_string(event.response_id)
         and (
@@ -543,7 +543,7 @@ def _valid_terminal_event(
         and _exact_string(event.employee_id, state.current_employee_id)
         and _exact_string(event.previous_status, "running")
         and _nonempty_string(event.provider)
-        and (not require_openai or event.provider == "openai")
+        and (not require_openai or event.provider in {"openai", "omniroute"})
         and (event.request_id is None or _nonempty_string(event.request_id))
     )
     if state.status == "succeeded":

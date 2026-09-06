@@ -245,7 +245,11 @@ def _running(
         _raise("execution_inputs")
     try:
         validate_model_invocation_execution_approval(
-            start.request, tools, approval, provider="openai"
+            start.request,
+            tools,
+            approval,
+            provider=approval.provider,
+            execution_target=approval.execution_target,
         )
     except ValueError:
         _raise("execution_inputs")
