@@ -4,6 +4,7 @@ from ai_office.invocation import (
     ModelInvocationExecutionApprovalError,
     ModelInvocationFailure,
     ModelInvocationFailureCategory,
+    ModelInvocationFailureDiagnostics,
     ModelInvocationSuccess,
 )
 from ai_office.providers.openai.responses_output import (
@@ -110,6 +111,9 @@ def _build_safe_openai_exception_failure(
     category: ModelInvocationFailureCategory,
     provider: str = "openai",
 ) -> ModelInvocationFailure:
+    response_diagnostics = getattr(error, "response_diagnostics", None)
+    if not isinstance(response_diagnostics, ModelInvocationFailureDiagnostics):
+        response_diagnostics = None
     return ModelInvocationFailure(
         provider=provider,
         category=category,
@@ -118,4 +122,5 @@ def _build_safe_openai_exception_failure(
         status_code=None,
         provider_error_type=None,
         provider_error_code=None,
+        response_diagnostics=response_diagnostics,
     )

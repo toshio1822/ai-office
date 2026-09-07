@@ -4,6 +4,10 @@ import json
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from ai_office.invocation import ModelInvocationFailureDiagnostics
+from ai_office.providers.openai.responses_observability import (
+    build_openai_responses_response_diagnostics,
+)
 from ai_office.providers.openai.responses_transport import (
     OpenAIResponsesRawHttpResponse,
 )
@@ -43,6 +47,29 @@ type OpenAIResponsesHttpResponse = (
 class OpenAIResponsesInvalidResponseError(ValueError):
     """Raised when a completed response cannot be represented safely."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        response_diagnostics: ModelInvocationFailureDiagnostics | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.response_diagnostics = response_diagnostics
+
+
+def _raise_invalid_response(
+    response: OpenAIResponsesRawHttpResponse,
+    message: str,
+) -> None:
+    raise OpenAIResponsesInvalidResponseError(
+        message,
+        response_diagnostics=build_openai_responses_response_diagnostics(
+            response.status_code,
+            response.headers,
+            response.body,
+        ),
+    ) from None
+
 
 def _freeze_json_value(value: object) -> object:
     if isinstance(value, dict):
@@ -74,9 +101,7 @@ def _decode_response_payload(
     try:
         decoded_body = response.body.decode("utf-8")
     except UnicodeDecodeError:
-        raise OpenAIResponsesInvalidResponseError(
-            "invalid UTF-8 response body"
-        ) from None
+        _raise_invalid_response(response, "invalid UTF-8 response body")
 
     try:
         payload = json.loads(
@@ -84,14 +109,10 @@ def _decode_response_payload(
             parse_constant=_reject_nonstandard_json_constant,
         )
     except (json.JSONDecodeError, ValueError):
-        raise OpenAIResponsesInvalidResponseError(
-            "invalid JSON response body"
-        ) from None
+        _raise_invalid_response(response, "invalid JSON response body")
 
     if not isinstance(payload, dict):
-        raise OpenAIResponsesInvalidResponseError(
-            "response JSON must be an object"
-        )
+        _raise_invalid_response(response, "response JSON must be an object")
     return payload
 
 
@@ -111,9 +132,7 @@ def _parse_success_response(
         or not status
         or not isinstance(output, list)
     ):
-        raise OpenAIResponsesInvalidResponseError(
-            "invalid OpenAI success response"
-        )
+        _raise_invalid_response(response, "invalid OpenAI success response")
 
     frozen_payload = _freeze_json_value(payload)
     assert isinstance(frozen_payload, MappingProxyType)
@@ -134,18 +153,14 @@ def _parse_api_error_response(
 ) -> OpenAIResponsesApiErrorResponse:
     error = payload.get("error")
     if not isinstance(error, dict):
-        raise OpenAIResponsesInvalidResponseError(
-            "invalid OpenAI API error response"
-        )
+        _raise_invalid_response(response, "invalid OpenAI API error response")
 
     message = error.get("message")
     optional_fields = tuple(error.get(name) for name in ("type", "param", "code"))
     if not isinstance(message, str) or not message or any(
         value is not None and not isinstance(value, str) for value in optional_fields
     ):
-        raise OpenAIResponsesInvalidResponseError(
-            "invalid OpenAI API error response"
-        )
+        _raise_invalid_response(response, "invalid OpenAI API error response")
 
     frozen_payload = _freeze_json_value(payload)
     assert isinstance(frozen_payload, MappingProxyType)

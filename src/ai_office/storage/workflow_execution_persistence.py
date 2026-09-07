@@ -90,7 +90,7 @@ def serialize_workflow_execution_state_json(state: WorkflowExecutionState) -> st
 
 def build_runtime_step_event_dict(event: RuntimeStepEvent) -> dict[str, object]:
     """Build a JSON-compatible runtime event dictionary in deterministic order."""
-    return {
+    value: dict[str, object] = {
         "event_type": event.event_type,
         "workflow_id": event.workflow_id,
         "step_id": event.step_id,
@@ -105,6 +105,14 @@ def build_runtime_step_event_dict(event: RuntimeStepEvent) -> dict[str, object]:
         "output_text": event.output_text,
         "message": event.message,
     }
+    if event.response_diagnostics is not None:
+        value["response_diagnostics"] = {
+            "status_code": event.response_diagnostics.status_code,
+            "content_type": event.response_diagnostics.content_type,
+            "body_length": event.response_diagnostics.body_length,
+            "body_kind": event.response_diagnostics.body_kind,
+        }
+    return value
 
 
 def serialize_runtime_step_event_jsonl(event: RuntimeStepEvent) -> str:

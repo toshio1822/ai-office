@@ -132,6 +132,7 @@ def test_models_are_immutable_and_status_and_event_types_are_exported() -> None:
         "request_id",
         "output_text",
         "message",
+        "response_diagnostics",
     }
     with pytest.raises(FrozenInstanceError):
         state.status = "failed"  # type: ignore[misc]

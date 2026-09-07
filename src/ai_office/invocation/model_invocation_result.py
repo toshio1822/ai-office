@@ -3,6 +3,16 @@
 from dataclasses import dataclass
 from typing import Literal
 
+ModelInvocationResponseBodyKind = Literal[
+    "empty",
+    "json",
+    "sse",
+    "html",
+    "plaintext",
+    "malformed_json",
+    "non_utf8",
+]
+
 ModelInvocationFailureCategory = Literal[
     "api_error",
     "transport_error",
@@ -26,6 +36,16 @@ class ModelInvocationSuccess:
 
 
 @dataclass(frozen=True)
+class ModelInvocationFailureDiagnostics:
+    """Secret-free metadata for one received but invalid HTTP response."""
+
+    status_code: int
+    content_type: str | None
+    body_length: int
+    body_kind: ModelInvocationResponseBodyKind
+
+
+@dataclass(frozen=True)
 class ModelInvocationFailure:
     """Immutable safe failure result for a future runtime."""
 
@@ -36,6 +56,7 @@ class ModelInvocationFailure:
     status_code: int | None
     provider_error_type: str | None
     provider_error_code: str | None
+    response_diagnostics: ModelInvocationFailureDiagnostics | None = None
 
 
 ModelInvocationResult = ModelInvocationSuccess | ModelInvocationFailure

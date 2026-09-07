@@ -7,6 +7,9 @@ from urllib.parse import urlsplit
 from ai_office.providers.openai.responses_auth import (
     OpenAIResponsesAuthenticatedHttpRequest,
 )
+from ai_office.providers.openai.responses_observability import (
+    extract_openai_responses_content_type,
+)
 
 
 @dataclass(frozen=True)
@@ -17,6 +20,19 @@ class OpenAIResponsesRawHttpResponse:
     reason: str
     headers: tuple[tuple[str, str], ...]
     body: bytes
+
+    def __repr__(self) -> str:
+        """Keep raw body and arbitrary response headers out of representations."""
+        return (
+            "OpenAIResponsesRawHttpResponse("
+            f"status_code={self.status_code!r}, "
+            f"body_length={len(self.body)!r}, "
+            f"content_type={extract_openai_responses_content_type(self.headers)!r}"
+            ")"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 class OpenAIResponsesTransportUrlError(ValueError):
