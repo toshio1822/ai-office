@@ -1,6 +1,6 @@
 """Tests for the one-request OpenAI Responses HTTPS transport boundary."""
 
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
 
@@ -109,8 +109,28 @@ def test_transport_sends_one_ordered_request_and_preserves_raw_response(
 
     assert created == [("api.example.test", None)]
     assert connection.putrequest_calls == [("POST", "/v1/responses?x=1", False, True)]
-    assert connection.headers == list(authenticated_request().headers)
-    assert connection.bodies == ["日本語 ✨".encode()]
+    request = authenticated_request()
+    assert connection.headers == [
+        *request.headers,
+        ("Content-Length", str(len(request.body.encode("utf-8")))),
+    ]
+    authorization_headers = [
+        (name, value)
+        for name, value in connection.headers
+        if name.lower() == "authorization"
+    ]
+    assert len(authorization_headers) == 1
+    assert authorization_headers[0][0] == "Authorization"
+    assert authorization_headers[0][1].startswith("Bearer ")
+    assert "test-secret" not in repr(response)
+    assert [
+        value for name, value in connection.headers if name.lower() == "content-length"
+    ] == [str(len(request.body.encode("utf-8")))]
+    assert [
+        name for name, _ in connection.headers if name.lower() == "transfer-encoding"
+    ] == []
+    assert connection.bodies == [request.body.encode("utf-8")]
+    assert len(connection.putrequest_calls) == 1
     assert connection.closed is True
     assert response == OpenAIResponsesRawHttpResponse(
         status_code=200,
@@ -155,6 +175,142 @@ def test_empty_path_and_explicit_https_port_are_preserved(
 
     assert created == [("api.example.test", 8443)]
     assert connection.putrequest_calls == [("POST", "/?query=value", False, True)]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_byte_length", "expected_character_length"),
+    [
+        (
+            '{"message":"hello"}',
+            len(b'{"message":"hello"}'),
+            len('{"message":"hello"}'),
+        ),
+        (
+            '{"message":"日本語 ✨"}',
+            len('{"message":"日本語 ✨"}'.encode()),
+            len('{"message":"日本語 ✨"}'),
+        ),
+    ],
+)
+def test_content_length_uses_exact_utf8_body_byte_length(
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    expected_byte_length: int,
+    expected_character_length: int,
+) -> None:
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        transport, "_create_https_connection", lambda hostname, port: connection
+    )
+    request = replace(authenticated_request(), body=body)
+
+    send_openai_responses_http_request(request)
+
+    assert [
+        value for name, value in connection.headers if name.lower() == "content-length"
+    ] == [str(expected_byte_length)]
+    assert connection.bodies == [body.encode("utf-8")]
+    assert expected_byte_length == len(body.encode("utf-8"))
+    assert expected_character_length == len(body)
+    if body.isascii():
+        assert expected_byte_length == expected_character_length
+    else:
+        assert expected_byte_length != expected_character_length
+
+
+def test_empty_body_has_deterministic_zero_content_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        transport, "_create_https_connection", lambda hostname, port: connection
+    )
+    request = replace(authenticated_request(), body="")
+
+    send_openai_responses_http_request(request)
+
+    assert [
+        value for name, value in connection.headers if name.lower() == "content-length"
+    ] == ["0"]
+    assert connection.bodies == [b""]
+
+
+@pytest.mark.parametrize(
+    ("url", "factory_name", "expected_connection"),
+    [
+        (
+            "https://api.example.test/v1/responses",
+            "_create_https_connection",
+            ("api.example.test", None),
+        ),
+        (
+            "http://127.0.0.1:20128/v1/responses",
+            "_create_http_connection",
+            ("127.0.0.1", 20128),
+        ),
+    ],
+)
+def test_https_and_loopback_http_use_identical_body_framing(
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    factory_name: str,
+    expected_connection: tuple[str, int | None],
+) -> None:
+    connection = FakeConnection()
+    created: list[tuple[str, int | None]] = []
+
+    def factory(hostname: str, port: int | None) -> FakeConnection:
+        created.append((hostname, port))
+        return connection
+
+    monkeypatch.setattr(transport, factory_name, factory)
+    request = authenticated_request(url)
+
+    send_openai_responses_http_request(request)
+
+    assert created == [expected_connection]
+    assert [
+        value for name, value in connection.headers if name.lower() == "content-length"
+    ] == [str(len(request.body.encode("utf-8")))]
+    assert [
+        name for name, _ in connection.headers if name.lower() == "transfer-encoding"
+    ] == []
+    assert connection.bodies == [request.body.encode("utf-8")]
+
+
+@pytest.mark.parametrize(
+    "framing_headers",
+    [
+        (("Content-Length", "1"),),
+        (("content-length", "1"), ("CONTENT-LENGTH", "2")),
+        (("Content-Length", "1"), ("Transfer-Encoding", "chunked")),
+        (("Transfer-Encoding", "chunked"),),
+    ],
+)
+def test_caller_supplied_framing_headers_are_rejected_before_connection(
+    monkeypatch: pytest.MonkeyPatch,
+    framing_headers: tuple[tuple[str, str], ...],
+) -> None:
+    created = 0
+
+    def factory(hostname: str, port: int | None) -> FakeConnection:
+        nonlocal created
+        created += 1
+        return FakeConnection()
+
+    monkeypatch.setattr(transport, "_create_https_connection", factory)
+    request = replace(
+        authenticated_request(),
+        headers=authenticated_request().headers + framing_headers,
+    )
+
+    with pytest.raises(
+        OpenAIResponsesTransportError,
+        match="transport owns request body framing",
+    ):
+        send_openai_responses_http_request(request)
+
+    assert created == 0
 
 
 @pytest.mark.parametrize(

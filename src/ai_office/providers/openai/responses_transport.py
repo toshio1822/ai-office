@@ -43,6 +43,19 @@ class OpenAIResponsesTransportError(RuntimeError):
     """Raised when the HTTPS exchange cannot complete safely."""
 
 
+def _reject_caller_supplied_framing_headers(
+    headers: tuple[tuple[str, str], ...],
+) -> None:
+    """Keep request body framing exclusively under transport control."""
+    if any(
+        name.lower() in {"content-length", "transfer-encoding"}
+        for name, _ in headers
+    ):
+        raise OpenAIResponsesTransportError(
+            "OpenAI Responses transport owns request body framing"
+        )
+
+
 def _create_https_connection(
     hostname: str,
     port: int | None,
@@ -101,6 +114,7 @@ def send_openai_responses_http_request(
     """Send one authenticated HTTPS request and preserve its raw response."""
     scheme, hostname, port, target = _parse_openai_responses_transport_url(request.url)
     body = request.body.encode("utf-8")
+    _reject_caller_supplied_framing_headers(request.headers)
     connection: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
 
     try:
@@ -118,6 +132,7 @@ def send_openai_responses_http_request(
         )
         for name, value in request.headers:
             connection.putheader(name, value)
+        connection.putheader("Content-Length", str(len(body)))
         connection.endheaders(body)
 
         response = connection.getresponse()
