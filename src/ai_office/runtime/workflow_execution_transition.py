@@ -5,6 +5,7 @@ from typing import Literal
 
 from ai_office.invocation import (
     ModelInvocationFailureCategory,
+    ModelInvocationFailureDiagnostics,
     ModelInvocationSuccess,
 )
 from ai_office.planning import StepExecutionRequest
@@ -50,6 +51,7 @@ class RuntimeStepEvent:
     request_id: str | None
     output_text: str | None
     message: str | None
+    response_diagnostics: ModelInvocationFailureDiagnostics | None = None
 
 
 @dataclass(frozen=True)
@@ -182,5 +184,6 @@ def _build_failure_transition(
             request_id=invocation_result.request_id,
             output_text=None,
             message=invocation_result.message,
+            response_diagnostics=invocation_result.response_diagnostics,
         ),
     )

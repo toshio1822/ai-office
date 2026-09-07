@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from ai_office.invocation import ModelInvocationFailureCategory
+from ai_office.invocation import (
+    ModelInvocationFailureCategory,
+    ModelInvocationFailureDiagnostics,
+)
 from ai_office.runtime import (
     RuntimeStepEvent,
     RuntimeStepEventType,
@@ -46,6 +49,9 @@ _EVENT_KEYS = frozenset(
         "output_text",
         "message",
     }
+)
+_RESPONSE_DIAGNOSTICS_KEYS = frozenset(
+    {"status_code", "content_type", "body_length", "body_kind"}
 )
 _STATUSES = frozenset({"ready", "running", "succeeded", "failed"})
 _EVENT_TYPES = frozenset({"step_succeeded", "step_failed"})
@@ -152,7 +158,12 @@ def parse_workflow_execution_state(value: object) -> WorkflowExecutionState:
 
 def parse_runtime_step_event(value: object) -> RuntimeStepEvent:
     """Strictly reconstruct one immutable runtime event from decoded JSON data."""
-    data = _require_exact_object(value, _EVENT_KEYS, "events_parse")
+    if not isinstance(value, dict) or set(value) not in (
+        _EVENT_KEYS,
+        _EVENT_KEYS | {"response_diagnostics"},
+    ):
+        raise WorkflowExecutionDataError("events_parse")
+    data = value
     event_type = _require_member(data["event_type"], _EVENT_TYPES, "events_parse")
     event = RuntimeStepEvent(
         event_type=cast(RuntimeStepEventType, event_type),
@@ -179,6 +190,9 @@ def parse_runtime_step_event(value: object) -> RuntimeStepEvent:
         request_id=_require_optional_string(data["request_id"], "events_parse"),
         output_text=_require_optional_string(data["output_text"], "events_parse"),
         message=_require_optional_string(data["message"], "events_parse"),
+        response_diagnostics=_parse_response_diagnostics(
+            data.get("response_diagnostics")
+        ),
     )
     _validate_event_semantics(event)
     return event
@@ -251,6 +265,7 @@ def _validate_event_semantics(event: RuntimeStepEvent) -> None:
             and event.message is None
             and isinstance(event.response_id, str)
             and isinstance(event.output_text, str)
+            and event.response_diagnostics is None
         )
         or (
             event.event_type == "step_failed"
@@ -259,10 +274,54 @@ def _validate_event_semantics(event: RuntimeStepEvent) -> None:
             and isinstance(event.message, str)
             and event.response_id is None
             and event.output_text is None
+            and (
+                event.response_diagnostics is None
+                or event.failure_category == "invalid_response"
+            )
         )
     )
     if not valid:
         raise WorkflowExecutionDataError("events_parse")
+
+
+def _parse_response_diagnostics(
+    value: object,
+) -> ModelInvocationFailureDiagnostics | None:
+    if value is None:
+        return None
+    data = _require_exact_object(value, _RESPONSE_DIAGNOSTICS_KEYS, "events_parse")
+    status_code = data["status_code"]
+    body_length = data["body_length"]
+    content_type = data["content_type"]
+    body_kind = data["body_kind"]
+    if (
+        isinstance(status_code, bool)
+        or not isinstance(status_code, int)
+        or isinstance(body_length, bool)
+        or not isinstance(body_length, int)
+        or body_length < 0
+        or (
+            content_type is not None
+            and (not isinstance(content_type, str) or not content_type)
+        )
+        or not isinstance(body_kind, str)
+        or body_kind not in {
+            "empty",
+            "json",
+            "sse",
+            "html",
+            "plaintext",
+            "malformed_json",
+            "non_utf8",
+        }
+    ):
+        raise WorkflowExecutionDataError("events_parse")
+    return ModelInvocationFailureDiagnostics(
+        status_code=status_code,
+        content_type=content_type,
+        body_length=body_length,
+        body_kind=body_kind,  # type: ignore[arg-type]
+    )
 
 
 def _validate_history_consistency(

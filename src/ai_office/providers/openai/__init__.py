@@ -39,6 +39,11 @@ from ai_office.providers.openai.responses_json import (
     serialize_openai_responses_payload_dict_pretty,
     serialize_openai_responses_payload_from_invocation,
 )
+from ai_office.providers.openai.responses_observability import (
+    build_openai_responses_response_diagnostics,
+    classify_openai_responses_body,
+    extract_openai_responses_content_type,
+)
 from ai_office.providers.openai.responses_output import (
     OpenAIResponsesInvalidOutputError,
     OpenAIResponsesOutputText,
@@ -136,7 +141,10 @@ __all__ = [
     "build_model_invocation_failure_from_openai_invalid_response_error",
     "build_model_invocation_failure_from_openai_transport_error",
     "build_model_invocation_success_from_openai",
+    "build_openai_responses_response_diagnostics",
+    "classify_openai_responses_body",
     "extract_openai_responses_output_text",
+    "extract_openai_responses_content_type",
     "execute_openai_model_invocation",
     "load_api_key_for_execution_target",
     "load_openai_api_key_from_environment",

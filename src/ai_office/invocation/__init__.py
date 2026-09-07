@@ -16,6 +16,8 @@ from ai_office.invocation.model_invocation_request import (
 from ai_office.invocation.model_invocation_result import (
     ModelInvocationFailure,
     ModelInvocationFailureCategory,
+    ModelInvocationFailureDiagnostics,
+    ModelInvocationResponseBodyKind,
     ModelInvocationResult,
     ModelInvocationSuccess,
 )
@@ -23,6 +25,8 @@ from ai_office.invocation.model_invocation_result import (
 __all__ = [
     "ModelInvocationFailure",
     "ModelInvocationFailureCategory",
+    "ModelInvocationFailureDiagnostics",
+    "ModelInvocationResponseBodyKind",
     "ModelInvocationExecutionApproval",
     "ModelInvocationExecutionApprovalError",
     "ModelInvocationRequest",

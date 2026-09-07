@@ -10,6 +10,8 @@ from ai_office.execution_target import (
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationFailure,
+    ModelInvocationFailureCategory,
+    ModelInvocationFailureDiagnostics,
     ModelInvocationRequest,
     ModelInvocationResult,
     ModelInvocationSuccess,
@@ -235,6 +237,9 @@ def _valid_invocation_success(value: object) -> bool:
 
 
 def _valid_invocation_failure(value: object) -> bool:
+    diagnostics = (
+        value.response_diagnostics if type(value) is ModelInvocationFailure else None
+    )
     return (
         type(value) is ModelInvocationFailure
         and is_supported_execution_provider(value.provider)
@@ -253,6 +258,7 @@ def _valid_invocation_failure(value: object) -> bool:
         and _valid_optional_int(value.status_code)
         and _valid_optional_string(value.provider_error_type)
         and _valid_optional_string(value.provider_error_code)
+        and _valid_failure_diagnostics(diagnostics, value.category)
         and (
             value.category == "api_error"
             or (
@@ -261,6 +267,35 @@ def _valid_invocation_failure(value: object) -> bool:
                 and value.provider_error_code is None
             )
         )
+    )
+
+
+def _valid_failure_diagnostics(
+    value: object,
+    category: ModelInvocationFailureCategory,
+) -> bool:
+    if value is None:
+        return True
+    return (
+        category == "invalid_response"
+        and type(value) is ModelInvocationFailureDiagnostics
+        and type(value.status_code) is int
+        and (
+            value.content_type is None
+            or (type(value.content_type) is str and value.content_type != "")
+        )
+        and type(value.body_length) is int
+        and value.body_length >= 0
+        and type(value.body_kind) is str
+        and value.body_kind in {
+            "empty",
+            "json",
+            "sse",
+            "html",
+            "plaintext",
+            "malformed_json",
+            "non_utf8",
+        }
     )
 
 
