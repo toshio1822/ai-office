@@ -4546,10 +4546,43 @@ deterministic canonical order. Canonical compact UTF-8 JSON uses
 snapshot digest is the SHA-256 of those exact canonical bytes. `EMPTY_RUNTIME_FACTS`
 is the canonical empty value.
 
-This Phase deliberately does not add runtime facts to `ModelInvocationRequest`,
-does not change `build_model_invocation_task_input` or execution fingerprints,
-and does not alter `UpstreamStepOutput` / Policy A. Existing invocation,
-provider, CLI, state, and event behavior—including the empty/current request
-path—remains unchanged. Request integration and fingerprint binding are deferred
-to Phase 259. Terminal freshness and publication-readiness assessment are not
-implemented by this Phase.
+This Phase deliberately does not itself add runtime facts to
+`ModelInvocationRequest`, change `build_model_invocation_task_input`, or change
+execution fingerprints. It does not alter `UpstreamStepOutput` / Policy A.
+Existing invocation, provider, CLI, state, and event behavior—including the
+empty/current request path—remains unchanged. Request integration and
+fingerprint binding are implemented by Phase 259. Terminal freshness and
+publication-readiness assessment are not implemented by this Phase.
+
+## Phase 259: Typed runtime facts in invocation task data and approval identity
+
+Phase 259 integrates the immutable Phase 258 `RuntimeFactsSnapshot` into the
+provider-independent `ModelInvocationRequest` by appending the exact-typed
+`runtime_facts` field with the canonical `EMPTY_RUNTIME_FACTS` default. The
+request builder accepts the same snapshot only as a keyword argument and
+preserves the supplied immutable object; `None`, mappings, tuples, subclasses,
+and other substitutes are rejected without coercion. `UpstreamStepOutput` and
+Policy A remain unchanged.
+
+Runtime facts stay on the task/user-data side of the invocation. An empty
+snapshot preserves the previous task-input text and upstream JSON bytes exactly;
+it also adds no field to the existing execution-fingerprint payload. A non-empty
+snapshot renders the canonical Phase 258 `schema_version` and ordered `facts`,
+plus its exact snapshot SHA-256, alongside `task_instructions` and any existing
+`upstream_inputs`. The snapshot is rendered once and is never merged into
+system instructions or predecessor business output.
+
+The execution fingerprint binds the exact non-empty task input, canonical
+runtime-facts content, and snapshot digest. Consequently fact values, value
+kinds, provenance, source digests, and observation times invalidate a previous
+fingerprint and therefore the existing explicit approval; validation continues
+to return the generic approval error without exposing fact values. Empty
+request/task/fingerprint bytes, including target-bound and upstream-input
+compatibility fixtures, remain unchanged.
+
+No workflow engine or CLI path derives or injects non-empty runtime facts yet;
+current prepared-step and preview paths continue to construct the empty
+snapshot. Persisted-history fact construction, authoritative source
+revalidation, terminal freshness, and publication-readiness assessment remain
+deferred to the next Phase. State/event schemas, providers, provider-specific
+logic, retries, replay, and regeneration are unchanged.

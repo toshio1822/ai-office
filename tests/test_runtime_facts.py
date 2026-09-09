@@ -5,6 +5,7 @@ from hashlib import sha256
 
 import pytest
 
+from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import (
     EMPTY_RUNTIME_FACTS,
     ModelInvocationRequest,
@@ -12,6 +13,7 @@ from ai_office.invocation import (
     RuntimeFactProvenance,
     RuntimeFactsError,
     RuntimeFactsSnapshot,
+    UpstreamStepOutput,
     build_model_invocation_execution_fingerprint,
     build_model_invocation_task_input,
     normalize_runtime_fact_timestamp,
@@ -388,12 +390,123 @@ def test_existing_request_task_input_and_fingerprint_are_unchanged() -> None:
     assert build_model_invocation_execution_fingerprint(request, (tool,)) == (
         "2261827de3a42d02c126f02c9d5c92fc4f8170bf67843217ca257154b20d8e96"
     )
+    assert build_model_invocation_execution_fingerprint(
+        request, (tool,), DIRECT_OPENAI_EXECUTION_TARGET
+    ) == "5165c8b6264ec76cc48a609af8c1b77e40db2cae333c2180f0aa9ceff488a5a1"
     assert tuple(request.__dataclass_fields__) == (
         "model",
         "system_instructions",
         "task_instructions",
         "allowed_tools",
         "upstream_inputs",
+        "runtime_facts",
+    )
+
+
+def test_existing_upstream_request_task_input_and_fingerprint_are_unchanged() -> None:
+    request = ModelInvocationRequest(
+        "model",
+        "system",
+        "task",
+        (),
+        (UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "approved"),),
+    )
+
+    assert build_model_invocation_task_input(request) == (
+        '{"task_instructions":"task","upstream_inputs":[{"employee_id":"employee-1",'
+        '"output_text":"approved","step_id":"step-1","step_index":1,'
+        '"workflow_id":"workflow"}]}'
+    )
+    assert build_model_invocation_execution_fingerprint(request, ()) == (
+        "fddced9418824839b3e13fb0dc1539f1882bda251f1e7428cf4326d97c5666bf"
+    )
+    assert build_model_invocation_execution_fingerprint(
+        request, (), DIRECT_OPENAI_EXECUTION_TARGET
+    ) == "907cc04a3ba99e2eb8402a3011bd2bc32c0eeb87f02e53c10f6f39a6b2821fbe"
+    assert request.runtime_facts is EMPTY_RUNTIME_FACTS
+
+
+def test_nonempty_runtime_facts_task_input_is_exact_canonical_json() -> None:
+    snapshot = RuntimeFactsSnapshot(
+        facts=(
+            fact(
+                key="provider.identity",
+                value_kind="enum",
+                value="omniroute",
+                source=provenance(
+                    workflow_id="article-workflow",
+                    source_ref="event:4",
+                    observed_at="2026-09-09T18:00:00+09:00",
+                ),
+            ),
+        )
+    )
+    request = ModelInvocationRequest(
+        "model", "system", "task\n", (), runtime_facts=snapshot
+    )
+
+    assert build_model_invocation_task_input(request) == (
+        '{"runtime_facts":{"facts":[{"key":"provider.identity",'
+        '"provenance":{"observed_at":"2026-09-09T09:00:00Z",'
+        '"origin":"persisted_event","source_ref":"event:4",'
+        '"source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        'aaaaaaaaaaaaaaaa","workflow_id":"article-workflow"},'
+        '"value":"omniroute","value_kind":"enum"}],'
+        '"schema_version":"runtime-facts.v1",'
+        '"snapshot_sha256":"c2c6ec47cfdb6b067eb6fef96e5823baaa8189c1f2c72956d6ee3e012b49969e"},'
+        '"task_instructions":"task\\n"}'
+    )
+    rendered = build_model_invocation_task_input(request)
+    assert rendered.count(runtime_facts_snapshot_digest(snapshot)) == 1
+    assert request.system_instructions == "system"
+
+
+def test_nonempty_runtime_facts_and_upstream_render_as_separate_task_members() -> None:
+    snapshot = RuntimeFactsSnapshot(facts=(fact(),))
+    upstream = UpstreamStepOutput(
+        "workflow", "step-1", 1, "employee-1", "authoritative output"
+    )
+    request = ModelInvocationRequest(
+        "model", "system", "task", (), (upstream,), snapshot
+    )
+
+    assert build_model_invocation_task_input(request) == (
+        '{"runtime_facts":{"facts":[{"key":"workflow.status",'
+        '"provenance":{"observed_at":null,"origin":"persisted_event",'
+        '"source_ref":"event:4","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","workflow_id":"article-workflow"},'
+        '"value":"workflow_complete","value_kind":"enum"}],'
+        '"schema_version":"runtime-facts.v1",'
+        '"snapshot_sha256":"5ad96dfb1b214b11be3f0587715630cb02e1da7692a1802c81506d6419b78c9c"},'
+        '"task_instructions":"task","upstream_inputs":[{"employee_id":"employee-1",'
+        '"output_text":"authoritative output","step_id":"step-1",'
+        '"step_index":1,"workflow_id":"workflow"}]}'
+    )
+
+
+def test_nonempty_runtime_facts_task_rendering_is_caller_order_independent() -> None:
+    first = fact(
+        key="workflow.status", value="succeeded", source=provenance(source_ref="state")
+    )
+    second = fact(
+        key="step.completed_count",
+        value_kind="integer",
+        value=4,
+        source=provenance(source_ref="state"),
+    )
+    left = ModelInvocationRequest(
+        "model", "system", "task", (), runtime_facts=RuntimeFactsSnapshot(
+            facts=(first, second)
+        )
+    )
+    right = ModelInvocationRequest(
+        "model", "system", "task", (), runtime_facts=RuntimeFactsSnapshot(
+            facts=(second, first)
+        )
+    )
+
+    assert build_model_invocation_task_input(left) == build_model_invocation_task_input(
+        right
     )
 
 

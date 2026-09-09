@@ -2916,7 +2916,9 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
         "mode": "preview",
         "model": "codex",
         "operation": "start",
-        "request_fingerprint": preview["request_fingerprint"],
+        "request_fingerprint": (
+            "20b0998ee0f703ad9e9986ad34ac3197bfd0114ef6e70fcfbd20a9dbf7395b80"
+        ),
         "resolved_tools": [],
         "status": "step_ready",
         "step_id": "research",
@@ -3069,7 +3071,9 @@ def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step(
     assert preview["step_id"] == "summarize"
     assert preview["step_index"] == 2
     assert preview["employee_id"] == "general-researcher"
-    assert isinstance(preview["request_fingerprint"], str)
+    assert preview["request_fingerprint"] == (
+        "204b54796a383bb795f337816a099f07225c24e61d4483dc20f28f81595e9fb2"
+    )
     assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
     assert calls == []
     assert key_calls == []
