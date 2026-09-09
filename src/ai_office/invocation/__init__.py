@@ -21,6 +21,19 @@ from ai_office.invocation.model_invocation_result import (
     ModelInvocationResult,
     ModelInvocationSuccess,
 )
+from ai_office.invocation.runtime_facts import (
+    EMPTY_RUNTIME_FACTS,
+    RuntimeFact,
+    RuntimeFactOrigin,
+    RuntimeFactProvenance,
+    RuntimeFactsError,
+    RuntimeFactsSnapshot,
+    RuntimeFactValueKind,
+    normalize_runtime_fact_timestamp,
+    runtime_facts_snapshot_canonical_bytes,
+    runtime_facts_snapshot_digest,
+    serialize_runtime_facts_snapshot_canonical,
+)
 
 __all__ = [
     "ModelInvocationFailure",
@@ -33,6 +46,17 @@ __all__ = [
     "UpstreamStepOutput",
     "ModelInvocationResult",
     "ModelInvocationSuccess",
+    "EMPTY_RUNTIME_FACTS",
+    "RuntimeFact",
+    "RuntimeFactOrigin",
+    "RuntimeFactProvenance",
+    "RuntimeFactsError",
+    "RuntimeFactsSnapshot",
+    "RuntimeFactValueKind",
+    "normalize_runtime_fact_timestamp",
+    "runtime_facts_snapshot_canonical_bytes",
+    "runtime_facts_snapshot_digest",
+    "serialize_runtime_facts_snapshot_canonical",
     "approve_model_invocation_execution",
     "build_model_invocation_task_input",
     "build_model_invocation_execution_fingerprint",

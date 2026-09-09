@@ -4520,3 +4520,32 @@ approval、Phase190、Phase192、Phase210、Phase212、retry、replay、automati
 continuation、repairを呼び出さない。state/eventsは全経路でbyte-for-byte
 read-onlyであり、provider/request/response ID、failure message、raw payload、
 credential、approval objectもresult JSONへ持ち込まない。
+
+## Phase 258: Typed runtime-facts core
+
+Phase 258 adds only a provider-independent typed runtime-facts core. The public
+models are immutable `RuntimeFactProvenance`, `RuntimeFact`, and
+`RuntimeFactsSnapshot`, with the v1 origins `persisted_state`, `persisted_event`,
+and `human_supplied`, and the v1 value kinds `identifier`, `enum`, `integer`,
+`boolean`, and `timestamp`.
+
+Each fact has a narrow machine key, an exact typed scalar value, and provenance
+containing workflow identity, logical source reference, lowercase SHA-256 source
+identity, and an optional offset-aware RFC3339 observation time. Values do not
+accept free-form prose, mappings, lists, bytes, opaque objects, provider payloads,
+headers, credentials, or implicit coercion. `RuntimeFactsError` is the single
+safe validation error and does not echo supplied values.
+
+`RuntimeFactsSnapshot` rejects duplicate keys and stores validated facts in a
+deterministic canonical order. Canonical compact UTF-8 JSON uses
+`ensure_ascii=False`, `sort_keys=True`, and no incidental whitespace. The
+snapshot digest is the SHA-256 of those exact canonical bytes. `EMPTY_RUNTIME_FACTS`
+is the canonical empty value.
+
+This Phase deliberately does not add runtime facts to `ModelInvocationRequest`,
+does not change `build_model_invocation_task_input` or execution fingerprints,
+and does not alter `UpstreamStepOutput` / Policy A. Existing invocation,
+provider, CLI, state, and event behavior—including the empty/current request
+path—remains unchanged. Request integration and fingerprint binding are deferred
+to Phase 259. Terminal freshness and publication-readiness assessment are not
+implemented by this Phase.
