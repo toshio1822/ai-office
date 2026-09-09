@@ -9,7 +9,7 @@ from ai_office.engine import (
     prepare_prepared_step_execution_start,
 )
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.invocation import EMPTY_RUNTIME_FACTS, ModelInvocationRequest
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import LoadedWorkflowExecutionHistory
 
@@ -59,6 +59,7 @@ def test_returns_exact_request_and_proposed_running_state_immutably() -> None:
         result.request.allowed_tools,
     ) == ("system", "task", "model", ("a", "b"))
     assert isinstance(result.request, ModelInvocationRequest)
+    assert result.request.runtime_facts is EMPTY_RUNTIME_FACTS
     assert result.running_state == WorkflowExecutionState(
         "workflow", "running", "next", 2, "employee", ("old", "old"), None
     )

@@ -5,7 +5,11 @@ from dataclasses import FrozenInstanceError, fields
 import pytest
 
 from ai_office.invocation import (
+    EMPTY_RUNTIME_FACTS,
     ModelInvocationRequest,
+    RuntimeFact,
+    RuntimeFactProvenance,
+    RuntimeFactsSnapshot,
     build_model_invocation_request,
 )
 from ai_office.planning.step_execution_request import StepExecutionRequest
@@ -34,6 +38,7 @@ def test_model_invocation_request_is_frozen_and_preserves_tool_order() -> None:
     assert isinstance(request, ModelInvocationRequest)
     assert request.allowed_tools == ("search", "read", "search")
     assert request.upstream_inputs == ()
+    assert request.runtime_facts is EMPTY_RUNTIME_FACTS
     assert isinstance(request.allowed_tools, tuple)
     with pytest.raises(FrozenInstanceError):
         request.model = "other"
@@ -55,6 +60,7 @@ def test_model_invocation_request_copies_values_without_combining_instructions(
         "task_instructions",
         "allowed_tools",
         "upstream_inputs",
+        "runtime_facts",
     )
     for field_name in (
         "workflow_id",
@@ -85,3 +91,84 @@ def test_model_invocation_request_handles_empty_tools_and_is_deterministic() -> 
     assert first.allowed_tools == ()
     assert first == second
     assert first is not source
+
+
+@pytest.mark.parametrize("value", [None, (), {}, object()])
+def test_model_invocation_request_rejects_non_exact_runtime_facts_types(
+    value: object,
+) -> None:
+    with pytest.raises(
+        TypeError, match="^runtime_facts must be a RuntimeFactsSnapshot$"
+    ):
+        ModelInvocationRequest(  # type: ignore[arg-type]
+            "model", "system", "task", (), runtime_facts=value
+        )
+
+
+def test_model_invocation_request_rejects_runtime_facts_subclass() -> None:
+    class RuntimeFactsSnapshotChild(RuntimeFactsSnapshot):
+        pass
+
+    with pytest.raises(TypeError):
+        ModelInvocationRequest(
+            "model",
+            "system",
+            "task",
+            (),
+            runtime_facts=RuntimeFactsSnapshotChild(),
+        )
+
+
+def test_model_invocation_request_accepts_exact_runtime_facts_without_copying() -> None:
+    runtime_facts = RuntimeFactsSnapshot()
+
+    request = ModelInvocationRequest(
+        "model", "system", "task", (), runtime_facts=runtime_facts
+    )
+
+    assert request.runtime_facts is runtime_facts
+
+
+def test_request_builder_default_and_explicit_empty_runtime_facts_are_identical(
+) -> None:
+    implicit = build_model_invocation_request(step_request())
+    explicit = build_model_invocation_request(
+        step_request(), runtime_facts=EMPTY_RUNTIME_FACTS
+    )
+
+    assert implicit == explicit
+    assert implicit.runtime_facts is EMPTY_RUNTIME_FACTS
+
+
+def test_request_builder_preserves_explicit_nonempty_runtime_facts() -> None:
+    runtime_facts = RuntimeFactsSnapshot(
+        facts=(
+            RuntimeFact(
+                key="workflow.status",
+                value_kind="enum",
+                value="succeeded",
+                provenance=RuntimeFactProvenance(
+                    origin="persisted_state",
+                    workflow_id="research-and-summarize",
+                    source_ref="state",
+                    source_sha256="a" * 64,
+                ),
+            ),
+        )
+    )
+
+    request = build_model_invocation_request(
+        step_request(), runtime_facts=runtime_facts
+    )
+
+    assert request.runtime_facts is runtime_facts
+
+
+@pytest.mark.parametrize("value", [None, (), {}, object()])
+def test_request_builder_rejects_non_exact_runtime_facts_types(
+    value: object,
+) -> None:
+    with pytest.raises(TypeError):
+        build_model_invocation_request(  # type: ignore[arg-type]
+            step_request(), runtime_facts=value
+        )

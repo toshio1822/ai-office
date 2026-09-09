@@ -18,6 +18,11 @@ from ai_office.invocation.model_invocation_request import (
     ModelInvocationRequest,
     build_model_invocation_task_input,
 )
+from ai_office.invocation.runtime_facts import (
+    EMPTY_RUNTIME_FACTS,
+    runtime_facts_snapshot_digest,
+    serialize_runtime_facts_snapshot_canonical,
+)
 from ai_office.tools import ToolDefinition
 
 _APPROVAL_ERROR_MESSAGE = "model invocation execution is not approved"
@@ -83,6 +88,7 @@ def build_model_invocation_execution_fingerprint(
             for tool in resolved_tools
         ],
     }
+    has_runtime_facts = request.runtime_facts != EMPTY_RUNTIME_FACTS
     if request.upstream_inputs != ():
         value["task_input"] = build_model_invocation_task_input(request)
         value["upstream_inputs"] = [
@@ -95,6 +101,14 @@ def build_model_invocation_execution_fingerprint(
             }
             for upstream in request.upstream_inputs
         ]
+    if has_runtime_facts:
+        value["task_input"] = build_model_invocation_task_input(request)
+        value["runtime_facts"] = json.loads(
+            serialize_runtime_facts_snapshot_canonical(request.runtime_facts)
+        )
+        value["runtime_facts_snapshot_sha256"] = runtime_facts_snapshot_digest(
+            request.runtime_facts
+        )
     if execution_target is not None:
         execution_target = validate_execution_target_for_provider(execution_target)
         value["execution_target"] = {
