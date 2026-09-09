@@ -201,6 +201,20 @@ def test_timestamp_equivalents_normalize_to_the_same_value() -> None:
     ) == "2026-09-09T09:00:00.123456789Z"
 
 
+def test_timestamp_value_rejects_rfc3339_unknown_local_offset() -> None:
+    with pytest.raises(RuntimeFactsError):
+        fact(
+            key="observed.at",
+            value_kind="timestamp",
+            value="2026-09-09T09:00:00-00:00",
+        )
+
+
+def test_provenance_observed_at_rejects_rfc3339_unknown_local_offset() -> None:
+    with pytest.raises(RuntimeFactsError):
+        provenance(observed_at="2026-09-09T09:00:00-00:00")
+
+
 def test_duplicate_fact_keys_are_rejected_without_selecting_a_winner() -> None:
     with pytest.raises(RuntimeFactsError, match="^runtime facts are invalid$"):
         RuntimeFactsSnapshot(facts=(fact(), fact(value="succeeded")))

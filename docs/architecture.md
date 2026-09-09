@@ -4532,9 +4532,13 @@ and `human_supplied`, and the v1 value kinds `identifier`, `enum`, `integer`,
 Each fact has a narrow machine key, an exact typed scalar value, and provenance
 containing workflow identity, logical source reference, lowercase SHA-256 source
 identity, and an optional offset-aware RFC3339 observation time. Values do not
-accept free-form prose, mappings, lists, bytes, opaque objects, provider payloads,
-headers, credentials, or implicit coercion. `RuntimeFactsError` is the single
-safe validation error and does not echo supplied values.
+accept free-form prose or implicit coercion, and the narrow typed scalar schema
+rejects mappings, lists, bytes, opaque objects, and provider payloads as values.
+The core has no dedicated credential, header, or provider-payload fields. It does
+not semantically classify token-like strings as secrets or reject them for that
+reason; source-specific builders or allowlists are outside Phase 258.
+`RuntimeFactsError` is the single safe validation error and does not echo supplied
+values.
 
 `RuntimeFactsSnapshot` rejects duplicate keys and stores validated facts in a
 deterministic canonical order. Canonical compact UTF-8 JSON uses

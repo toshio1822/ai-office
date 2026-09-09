@@ -138,6 +138,8 @@ def normalize_runtime_fact_timestamp(value: str) -> str:
         _invalid()
     try:
         offset = match.group("offset")
+        if offset == "-00:00":
+            _invalid()
         parsed = datetime.fromisoformat(
             match.group("date")
             + ("+00:00" if offset == "Z" else offset)
