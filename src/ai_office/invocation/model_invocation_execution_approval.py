@@ -89,8 +89,9 @@ def build_model_invocation_execution_fingerprint(
         ],
     }
     has_runtime_facts = request.runtime_facts != EMPTY_RUNTIME_FACTS
-    if request.upstream_inputs != ():
+    if request.upstream_inputs != () or has_runtime_facts:
         value["task_input"] = build_model_invocation_task_input(request)
+    if request.upstream_inputs != ():
         value["upstream_inputs"] = [
             {
                 "employee_id": upstream.employee_id,
@@ -102,7 +103,6 @@ def build_model_invocation_execution_fingerprint(
             for upstream in request.upstream_inputs
         ]
     if has_runtime_facts:
-        value["task_input"] = build_model_invocation_task_input(request)
         value["runtime_facts"] = json.loads(
             serialize_runtime_facts_snapshot_canonical(request.runtime_facts)
         )
