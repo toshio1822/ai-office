@@ -4628,4 +4628,37 @@ unchanged on this rejection.
 Persisted `continue --preview-only` therefore exposes the deterministic facts
 and intentionally has a new fingerprint because the facts are now part of the
 approved request. Terminal post-completion facts and publication-readiness
-assessment are not implemented by this Phase.
+assessment are implemented by Phase 261.
+
+## Phase 261: Post-terminal facts and publication-readiness core
+
+Phase 260 remains the pre-step boundary for persisted runtime facts, source
+freshness, request fingerprints, and approval validation. Phase 261 is a
+separate provider-independent read-only boundary that loads the exact
+persisted terminal state and event bytes after execution persistence. It
+returns `PersistedTerminalSnapshot` with the existing terminal-history
+classification and the exact state/events SHA-256 digests; ready, running,
+nonterminal, mismatched, and corrupt histories are rejected without repair.
+
+`PostTerminalFacts` is frozen derived evidence containing only workflow and
+terminal identity, terminal status/reason, ordered completed step IDs,
+terminal provider identity, exact source digests, and the SHA-256 of the raw
+UTF-8 final business output. It contains no output text, provider payload,
+request/response IDs, credentials, headers, filesystem paths, approval data,
+diagnostics, or current-time value. The builder receives the already loaded
+snapshot and performs no filesystem access; it never retroactively injects
+post-terminal facts into the completed terminal provider request or changes
+state/events.
+
+`PublicationReadinessAssessment` is a separate derived judgment, not an
+execution result or event. Phase 261 compares only the supplied candidate's
+raw UTF-8 output digest with the persisted final-output digest. An exact match
+for `workflow_complete` is still `insufficient_evidence` with
+`claim_contract_missing`; a missing or mismatched candidate is
+`stale_or_inconsistent`; persisted failure is never publishable and is
+`insufficient_evidence` with `execution_not_workflow_complete`. No Phase 261
+path returns `ready`, because structured publication claims are deferred.
+Reason codes and both new models have deterministic canonical compact UTF-8
+JSON serializers/digests. No readiness event or sidecar is persisted, and the
+existing `workflows result` contract remains unchanged. Structured claims,
+durable readiness audit, and human-approved regeneration remain future work.
