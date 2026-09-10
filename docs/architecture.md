@@ -4660,5 +4660,38 @@ for `workflow_complete` is still `insufficient_evidence` with
 path returns `ready`, because structured publication claims are deferred.
 Reason codes and both new models have deterministic canonical compact UTF-8
 JSON serializers/digests. No readiness event or sidecar is persisted, and the
-existing `workflows result` contract remains unchanged. Structured claims,
-durable readiness audit, and human-approved regeneration remain future work.
+existing `workflows result` contract remains unchanged. Durable readiness
+audit and human-approved regeneration remain future work; the explicit
+structured claim contract is added by Phase 262 below.
+
+## Phase 262: Structured publication claim contract and verified readiness
+
+Phase 262 adds the explicit, frozen `PublicationClaimContract` boundary that
+Phase 261 deliberately deferred. Its fixed `publication-claims.v1` schema and
+`post_terminal_runtime_consistency` scope bind one workflow ID, one exact raw
+UTF-8 business-output SHA-256, one exact `PostTerminalFacts` canonical SHA-256,
+and the asserted terminal status `workflow_complete`. The compact canonical
+UTF-8 JSON uses `ensure_ascii=False`, compact separators, sorted keys, and
+SHA-256; it contains no prose, arbitrary claim keys, provider payload, paths,
+credentials, headers, IDs, or timestamps.
+
+The contract is supplied explicitly to
+`assess_terminal_publication_readiness(...)`; it is never extracted from
+free-text, interpreted by regex/NLP/LLM, or generated from terminal facts.
+`ready` is reachable only after the successful terminal status, candidate raw
+output digest, persisted final-output digest, workflow ID, and exact
+PostTerminalFacts digest all match the explicit contract. A missing contract
+preserves Phase 261's `insufficient_evidence` / `claim_contract_missing`; a
+contract mismatch is `stale_or_inconsistent` / `claim_contract_mismatch`, with
+no differing field disclosed. Persisted failure and output mismatch retain
+Phase 261 precedence and can never become ready.
+
+This readiness is a narrow runtime-consistency judgment for the contract's
+scope only. It is not a claim of general article factual correctness, writing
+quality, production readiness, universal safety, or validation of arbitrary
+prose. The readiness model binds the exact contract object and its canonical
+digest, facts digest, output digest, and successful status at its public model
+boundary, so a directly constructed forged `ready` assessment cannot bypass
+contract validation. Phase 262 still persists no readiness/claim sidecar or
+event, changes no state/events schema, and introduces no provider execution,
+retry, replay, continuation, regeneration, or workflow-result change.
