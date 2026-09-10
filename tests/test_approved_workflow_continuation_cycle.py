@@ -39,6 +39,7 @@ from ai_office.engine.persisted_execution_outcome_reentry import PersistedExecut
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
+    EMPTY_RUNTIME_FACTS,
     ModelInvocationFailure,
     ModelInvocationRequest,
     ModelInvocationSuccess,
@@ -726,6 +727,55 @@ def test_20_real_default_invalid_execution_approval_rejected_before_running_pers
     assert (v["state_path"].read_bytes(),v["events_path"].read_bytes()) == before
     assert load_workflow_execution_state(v["state_path"]).status == "succeeded"
     assert len([line for line in v["events_path"].read_text().splitlines() if line.strip()]) == 9 and calls==[]
+
+
+def test_21_empty_runtime_facts_injected_start_rejected_before_persistence_or_provider(
+    tmp_path: Path,
+) -> None:
+    v = setup(tmp_path, current=9, count=11)
+    wf = v["workflow"]
+    assert isinstance(wf, WorkflowDefinition)
+    ctx = execution_context(wf, 10)
+    valid_start = started(wf, 10)
+    empty_start = replace(
+        valid_start,
+        request=replace(valid_start.request, runtime_facts=EMPTY_RUNTIME_FACTS),
+    )
+    empty_approval = approve_model_invocation_execution(
+        empty_start.request,
+        ctx["resolved_tools"],  # type: ignore[arg-type]
+        provider="openai",
+        approved_by="reviewer",
+        approval_id="empty-facts-approval",
+    )
+    before = (v["state_path"].read_bytes(), v["events_path"].read_bytes())
+    phase147_calls: list[object] = []
+    phase155_calls: list[object] = []
+    transport_calls: list[object] = []
+
+    with pytest.raises(Phase190Error) as caught:
+        phase190(
+            decision(wf, 9),
+            wf,
+            preparation_approval(wf, 10),
+            ctx["employee"],
+            v["state_path"],
+            v["events_path"],
+            ctx["resolved_tools"],
+            ctx["api_key"],
+            empty_approval,
+            transport(transport_calls),
+            phase145_function=lambda *_args: prepared(wf, 10),
+            phase146_function=lambda *_args: empty_start,
+            phase147_function=lambda *_args: phase147_calls.append(1),
+            phase155_function=lambda *_args: phase155_calls.append(1),
+        )
+
+    assert caught.value.detail.classification == "approval_contract"
+    assert phase147_calls == []
+    assert phase155_calls == []
+    assert transport_calls == []
+    assert (v["state_path"].read_bytes(), v["events_path"].read_bytes()) == before
 
 
 def test_21_authoritative_runtime_fact_changes_stop_before_running_or_provider(
