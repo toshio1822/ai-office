@@ -2,7 +2,8 @@
 
 This module is a read-only boundary after terminal state/event persistence.  It
 loads the exact persisted bytes once, derives immutable facts from that fresh
-snapshot, and assesses output identity without interpreting business prose.
+snapshot, and assesses output identity through an explicit structured claim
+contract without interpreting business prose.
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ PublicationReadiness = Literal[
 
 _POST_TERMINAL_FACTS_SCHEMA_VERSION = "post-terminal-facts.v1"
 _PUBLICATION_READINESS_SCHEMA_VERSION = "publication-readiness.v1"
+_PUBLICATION_CLAIM_CONTRACT_SCHEMA_VERSION = "publication-claims.v1"
+_PUBLICATION_CLAIM_CONTRACT_SCOPE = "post_terminal_runtime_consistency"
 _ERROR_MESSAGE = "post-terminal evidence is invalid"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
@@ -51,6 +54,7 @@ _REASON_ORDER = (
     "final_output_missing",
     "final_output_mismatch",
     "claim_contract_missing",
+    "claim_contract_mismatch",
 )
 _REASON_CODES = frozenset(_REASON_ORDER)
 
@@ -76,6 +80,10 @@ class PersistedTerminalSnapshotError(PostTerminalEvidenceError):
 
 class PostTerminalFactsError(PostTerminalEvidenceError):
     """Raised when post-terminal facts are not exactly typed."""
+
+
+class PublicationClaimContractError(PostTerminalEvidenceError):
+    """Raised when a structured publication claim contract is invalid."""
 
 
 class PublicationReadinessError(PostTerminalEvidenceError):
@@ -123,6 +131,26 @@ class PostTerminalFacts:
 
 
 @dataclass(frozen=True)
+class PublicationClaimContract:
+    """Explicit, narrow assertion binding output to terminal runtime facts."""
+
+    schema_version: Literal["publication-claims.v1"]
+    scope: Literal["post_terminal_runtime_consistency"]
+    workflow_id: str
+    business_output_sha256: str
+    post_terminal_facts_sha256: str
+    asserted_terminal_status: Literal["workflow_complete"]
+
+    def __post_init__(self) -> None:
+        _validate_publication_claim_contract_model(self)
+
+    @property
+    def digest(self) -> str:
+        """Return the SHA-256 identity of canonical contract JSON."""
+        return publication_claim_contract_digest(self)
+
+
+@dataclass(frozen=True)
 class PublicationReadinessAssessment:
     """Provider-free derived readiness judgment for one terminal snapshot."""
 
@@ -133,6 +161,7 @@ class PublicationReadinessAssessment:
     post_terminal_facts: PostTerminalFacts
     business_output_sha256: str | None
     claim_contract_sha256: str | None
+    claim_contract: PublicationClaimContract | None = None
 
     def __post_init__(self) -> None:
         _validate_publication_readiness_assessment(self)
@@ -264,17 +293,19 @@ def build_post_terminal_facts(
 def assess_terminal_publication_readiness(
     post_terminal_facts: PostTerminalFacts,
     business_output: str | None,
+    *,
+    claim_contract: PublicationClaimContract | None = None,
 ) -> PublicationReadinessAssessment:
-    """Assess identity-only publication evidence without provider or prose work.
-
-    Phase 261 intentionally cannot return ``ready``: a matching final output
-    proves only byte identity, while the structured claim contract is absent.
-    """
+    """Assess narrow runtime-consistency evidence without provider or prose work."""
     if type(post_terminal_facts) is not PostTerminalFacts:
         _raise_readiness("facts_type")
     _validate_post_terminal_facts(post_terminal_facts)
     if business_output is not None and type(business_output) is not str:
         _raise_readiness("business_output_type")
+    if claim_contract is not None:
+        if type(claim_contract) is not PublicationClaimContract:
+            _raise_readiness("claim_contract_type")
+        _validate_publication_claim_contract_model(claim_contract)
 
     business_output_sha256 = (
         _raw_output_digest(business_output) if business_output is not None else None
@@ -317,11 +348,34 @@ def assess_terminal_publication_readiness(
             business_output_sha256,
         )
 
+    if claim_contract is None:
+        return _build_assessment(
+            post_terminal_facts,
+            "insufficient_evidence",
+            ["claim_contract_missing"],
+            business_output_sha256,
+        )
+
+    try:
+        validate_publication_claim_contract(
+            claim_contract,
+            post_terminal_facts,
+            business_output_sha256,
+        )
+    except PublicationClaimContractError:
+        return _build_assessment(
+            post_terminal_facts,
+            "stale_or_inconsistent",
+            ["claim_contract_mismatch"],
+            business_output_sha256,
+        )
+
     return _build_assessment(
         post_terminal_facts,
-        "insufficient_evidence",
-        ["claim_contract_missing"],
+        "ready",
+        [],
         business_output_sha256,
+        claim_contract,
     )
 
 
@@ -368,6 +422,84 @@ def post_terminal_facts_digest(facts: PostTerminalFacts) -> str:
     return sha256(post_terminal_facts_canonical_bytes(facts)).hexdigest()
 
 
+def serialize_publication_claim_contract_canonical(
+    contract: PublicationClaimContract,
+) -> str:
+    """Serialize one structured claim contract as compact canonical JSON."""
+    if type(contract) is not PublicationClaimContract:
+        _raise_claim_contract("contract_type")
+    _validate_publication_claim_contract_model(contract)
+    value = {
+        "asserted_terminal_status": contract.asserted_terminal_status,
+        "business_output_sha256": contract.business_output_sha256,
+        "post_terminal_facts_sha256": contract.post_terminal_facts_sha256,
+        "schema_version": contract.schema_version,
+        "scope": contract.scope,
+        "workflow_id": contract.workflow_id,
+    }
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        _raise_claim_contract("contract_serialization")
+
+
+def publication_claim_contract_canonical_bytes(
+    contract: PublicationClaimContract,
+) -> bytes:
+    """Return canonical publication-claim JSON encoded as UTF-8 bytes."""
+    return serialize_publication_claim_contract_canonical(contract).encode("utf-8")
+
+
+def publication_claim_contract_digest(contract: PublicationClaimContract) -> str:
+    """Return the SHA-256 digest of canonical claim-contract JSON bytes."""
+    return sha256(publication_claim_contract_canonical_bytes(contract)).hexdigest()
+
+
+def validate_publication_claim_contract(
+    contract: PublicationClaimContract,
+    post_terminal_facts: PostTerminalFacts,
+    business_output_sha256: str,
+) -> None:
+    """Validate an explicit contract against exact terminal evidence."""
+    if type(contract) is not PublicationClaimContract:
+        _raise_claim_contract("contract_type")
+    if type(post_terminal_facts) is not PostTerminalFacts:
+        _raise_claim_contract("facts_type")
+    _validate_publication_claim_contract_model(contract)
+    _validate_post_terminal_facts(post_terminal_facts)
+    if type(business_output_sha256) is not str:
+        _raise_claim_contract("business_output_type")
+    _validate_digest(
+        business_output_sha256,
+        "business_output_digest",
+        error=_raise_claim_contract,
+    )
+    if post_terminal_facts.terminal_status != "workflow_complete":
+        _raise_claim_contract("terminal_status_mismatch")
+    if contract.workflow_id != post_terminal_facts.workflow_id:
+        _raise_claim_contract("workflow_mismatch")
+    if contract.business_output_sha256 != business_output_sha256:
+        _raise_claim_contract("business_output_mismatch")
+    if (
+        post_terminal_facts.final_output_sha256 is None
+        or contract.business_output_sha256
+        != post_terminal_facts.final_output_sha256
+    ):
+        _raise_claim_contract("business_output_mismatch")
+    if contract.post_terminal_facts_sha256 != post_terminal_facts_digest(
+        post_terminal_facts
+    ):
+        _raise_claim_contract("post_terminal_facts_mismatch")
+    if contract.asserted_terminal_status != post_terminal_facts.terminal_status:
+        _raise_claim_contract("terminal_status_mismatch")
+
+
 def serialize_publication_readiness_assessment_canonical(
     assessment: PublicationReadinessAssessment,
 ) -> str:
@@ -389,6 +521,12 @@ def serialize_publication_readiness_assessment_canonical(
             "reason_codes": list(assessment.reason_codes),
             "schema_version": assessment.schema_version,
         }
+        if assessment.claim_contract is not None:
+            value["claim_contract"] = json.loads(
+                serialize_publication_claim_contract_canonical(
+                    assessment.claim_contract
+                )
+            )
         return json.dumps(
             value,
             ensure_ascii=False,
@@ -423,6 +561,7 @@ def _build_assessment(
     readiness: PublicationReadiness,
     reasons: list[str],
     business_output_sha256: str | None,
+    claim_contract: PublicationClaimContract | None = None,
 ) -> PublicationReadinessAssessment:
     try:
         return PublicationReadinessAssessment(
@@ -432,7 +571,12 @@ def _build_assessment(
             reason_codes=tuple(reasons),
             post_terminal_facts=facts,
             business_output_sha256=business_output_sha256,
-            claim_contract_sha256=None,
+            claim_contract_sha256=(
+                publication_claim_contract_digest(claim_contract)
+                if claim_contract is not None
+                else None
+            ),
+            claim_contract=claim_contract,
         )
     except PostTerminalEvidenceError:
         raise
@@ -670,9 +814,42 @@ def _validate_post_terminal_facts(facts: PostTerminalFacts) -> None:
     )
 
 
+def _validate_publication_claim_contract_model(
+    contract: PublicationClaimContract,
+) -> None:
+    if type(contract) is not PublicationClaimContract:
+        _raise_claim_contract("contract_type")
+    if type(contract.schema_version) is not str or (
+        contract.schema_version != _PUBLICATION_CLAIM_CONTRACT_SCHEMA_VERSION
+    ):
+        _raise_claim_contract("schema_version")
+    if type(contract.scope) is not str or (
+        contract.scope != _PUBLICATION_CLAIM_CONTRACT_SCOPE
+    ):
+        _raise_claim_contract("scope")
+    if type(contract.workflow_id) is not str or not contract.workflow_id:
+        _raise_claim_contract("workflow_id")
+    _validate_digest(
+        contract.business_output_sha256,
+        "business_output_digest",
+        error=_raise_claim_contract,
+    )
+    _validate_digest(
+        contract.post_terminal_facts_sha256,
+        "post_terminal_facts_digest",
+        error=_raise_claim_contract,
+    )
+    if type(contract.asserted_terminal_status) is not str or (
+        contract.asserted_terminal_status != "workflow_complete"
+    ):
+        _raise_claim_contract("terminal_status")
+
+
 def _validate_publication_readiness_assessment(
     assessment: PublicationReadinessAssessment,
 ) -> None:
+    if type(assessment) is not PublicationReadinessAssessment:
+        _raise_readiness("assessment_type")
     if (
         type(assessment.schema_version) is not str
         or assessment.schema_version != _PUBLICATION_READINESS_SCHEMA_VERSION
@@ -711,10 +888,46 @@ def _validate_publication_readiness_assessment(
         "business_output_digest",
         error=_raise_readiness,
     )
-    if assessment.readiness == "ready" and assessment.claim_contract_sha256 is None:
-        _raise_readiness("ready_without_claim_contract")
+    if assessment.claim_contract is not None:
+        if type(assessment.claim_contract) is not PublicationClaimContract:
+            _raise_readiness("claim_contract_type")
+        _validate_publication_claim_contract_model(assessment.claim_contract)
     if assessment.claim_contract_sha256 is not None:
-        _raise_readiness("claim_contract_deferred")
+        _validate_digest(
+            assessment.claim_contract_sha256,
+            "claim_contract_digest",
+            error=_raise_readiness,
+        )
+    if assessment.readiness == "ready":
+        if assessment.claim_contract is None:
+            _raise_readiness("ready_without_claim_contract")
+        if assessment.claim_contract_sha256 != publication_claim_contract_digest(
+            assessment.claim_contract
+        ):
+            _raise_readiness("claim_contract_digest_mismatch")
+        try:
+            validate_publication_claim_contract(
+                assessment.claim_contract,
+                assessment.post_terminal_facts,
+                assessment.business_output_sha256 or "",
+            )
+        except PublicationClaimContractError:
+            _raise_readiness("ready_claim_contract_mismatch")
+        if assessment.reason_codes:
+            _raise_readiness("ready_reason_codes")
+    elif (
+        assessment.claim_contract is not None
+        or assessment.claim_contract_sha256 is not None
+    ):
+        if (
+            assessment.claim_contract is None
+            or assessment.claim_contract_sha256 is None
+        ):
+            _raise_readiness("claim_contract_binding")
+        if assessment.claim_contract_sha256 != publication_claim_contract_digest(
+            assessment.claim_contract
+        ):
+            _raise_readiness("claim_contract_digest_mismatch")
 
 
 def _raw_output_digest(output_text: str | None) -> str:
@@ -746,6 +959,10 @@ def _raise_facts(classification: str) -> None:
     raise PostTerminalFactsError(classification) from None
 
 
+def _raise_claim_contract(classification: str) -> None:
+    raise PublicationClaimContractError(classification) from None
+
+
 def _raise_readiness(classification: str) -> None:
     raise PublicationReadinessError(classification) from None
 
@@ -758,6 +975,8 @@ __all__ = [
     "PostTerminalFacts",
     "PostTerminalFactsError",
     "PostTerminalTerminalStatus",
+    "PublicationClaimContract",
+    "PublicationClaimContractError",
     "PublicationReadiness",
     "PublicationReadinessAssessment",
     "PublicationReadinessError",
@@ -766,8 +985,12 @@ __all__ = [
     "load_persisted_terminal_snapshot",
     "post_terminal_facts_canonical_bytes",
     "post_terminal_facts_digest",
+    "publication_claim_contract_canonical_bytes",
+    "publication_claim_contract_digest",
     "publication_readiness_assessment_canonical_bytes",
     "publication_readiness_assessment_digest",
     "serialize_post_terminal_facts_canonical",
+    "serialize_publication_claim_contract_canonical",
     "serialize_publication_readiness_assessment_canonical",
+    "validate_publication_claim_contract",
 ]

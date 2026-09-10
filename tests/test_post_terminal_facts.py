@@ -1,4 +1,4 @@
-"""Focused provider-free tests for Phase 261 post-terminal evidence."""
+"""Focused provider-free tests for Phase 261/262 post-terminal evidence."""
 
 from __future__ import annotations
 
@@ -14,15 +14,21 @@ from ai_office.engine.post_terminal_facts import (
     PersistedTerminalSnapshot,
     PersistedTerminalSnapshotError,
     PostTerminalFactsError,
+    PublicationClaimContract,
+    PublicationClaimContractError,
     PublicationReadinessAssessment,
     PublicationReadinessError,
     assess_terminal_publication_readiness,
     build_post_terminal_facts,
     load_persisted_terminal_snapshot,
     post_terminal_facts_digest,
+    publication_claim_contract_canonical_bytes,
+    publication_claim_contract_digest,
     publication_readiness_assessment_digest,
     serialize_post_terminal_facts_canonical,
+    serialize_publication_claim_contract_canonical,
     serialize_publication_readiness_assessment_canonical,
+    validate_publication_claim_contract,
 )
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
@@ -33,6 +39,10 @@ from ai_office.storage import (
 
 
 class StringChild(str):
+    pass
+
+
+class PublicationClaimContractChild(PublicationClaimContract):
     pass
 
 
@@ -48,6 +58,42 @@ def workflow() -> WorkflowDefinition:
                     "name": "Research",
                     "employee": "researcher",
                     "instructions": "Research.",
+                },
+                {
+                    "id": "publish",
+                    "name": "Publish",
+                    "employee": "editor",
+                    "instructions": "Prepare.",
+                },
+            ],
+        }
+    )
+
+
+def dogfood_workflow() -> WorkflowDefinition:
+    return WorkflowDefinition.model_validate(
+        {
+            "id": "phase262-dogfood-workflow",
+            "name": "Phase 262 dogfood workflow",
+            "description": "four-step publication consistency fixture",
+            "steps": [
+                {
+                    "id": "research",
+                    "name": "Research",
+                    "employee": "researcher",
+                    "instructions": "Research.",
+                },
+                {
+                    "id": "draft",
+                    "name": "Draft",
+                    "employee": "writer",
+                    "instructions": "Draft.",
+                },
+                {
+                    "id": "review",
+                    "name": "Review",
+                    "employee": "reviewer",
+                    "instructions": "Review.",
                 },
                 {
                     "id": "publish",
@@ -104,6 +150,46 @@ def success_history(output: str = "FINAL 日本語 😀") -> tuple[
             output_text=output,
             message=None,
         ),
+    )
+    return state, events
+
+
+def dogfood_success_history(
+    output: str = "FINAL DOGFOOD ARTICLE",
+) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
+    definition = dogfood_workflow()
+    step_identity = (
+        ("research", "researcher"),
+        ("draft", "writer"),
+        ("review", "reviewer"),
+        ("publish", "editor"),
+    )
+    state = WorkflowExecutionState(
+        workflow_id=definition.id,
+        status="succeeded",
+        current_step_id="publish",
+        current_step_index=4,
+        current_employee_id="editor",
+        completed_step_ids=tuple(step_id for step_id, _employee in step_identity),
+        last_failure_category=None,
+    )
+    events = tuple(
+        RuntimeStepEvent(
+            event_type="step_succeeded",
+            workflow_id=definition.id,
+            step_id=step_id,
+            step_index=step_index,
+            employee_id=employee_id,
+            previous_status="running",
+            next_status="succeeded",
+            provider=f"provider-{step_index}",
+            failure_category=None,
+            response_id=f"response-{step_index}",
+            request_id=f"request-{step_index}",
+            output_text=output if step_index == 4 else f"intermediate-{step_index}",
+            message=None,
+        )
+        for step_index, (step_id, employee_id) in enumerate(step_identity, 1)
     )
     return state, events
 
@@ -165,6 +251,26 @@ def load_facts(
     targets = write_history(tmp_path, state, events)
     snapshot = load_persisted_terminal_snapshot(workflow(), targets)
     return targets, snapshot, build_post_terminal_facts(snapshot)
+
+
+def claim_contract_for(
+    facts,
+    *,
+    output: str = "FINAL 日本語 😀",
+    workflow_id: str | None = None,
+    business_output_sha256: str | None = None,
+    post_terminal_facts_sha256: str | None = None,
+) -> PublicationClaimContract:
+    return PublicationClaimContract(
+        schema_version="publication-claims.v1",
+        scope="post_terminal_runtime_consistency",
+        workflow_id=workflow_id or facts.workflow_id,
+        business_output_sha256=business_output_sha256
+        or hashlib.sha256(output.encode("utf-8")).hexdigest(),
+        post_terminal_facts_sha256=post_terminal_facts_sha256
+        or post_terminal_facts_digest(facts),
+        asserted_terminal_status="workflow_complete",
+    )
 
 
 def test_fresh_snapshot_uses_exact_source_bytes_and_terminal_event_identity(
@@ -233,6 +339,274 @@ def test_exact_output_match_is_insufficient_evidence_not_ready(
     assert "ready" not in assessment.reason_codes
 
 
+def test_publication_claim_contract_is_explicit_canonical_and_deterministic(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+
+    canonical = serialize_publication_claim_contract_canonical(contract)
+    assert canonical == json.dumps(
+        {
+            "asserted_terminal_status": "workflow_complete",
+            "business_output_sha256": facts.final_output_sha256,
+            "post_terminal_facts_sha256": facts.digest,
+            "schema_version": "publication-claims.v1",
+            "scope": "post_terminal_runtime_consistency",
+            "workflow_id": "phase261-workflow",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    assert canonical == (
+        '{"asserted_terminal_status":"workflow_complete",'
+        '"business_output_sha256":"075d0db2e91e812458d6769792b43c2c0d64bcf77a3203fd94ba8c84a8f39790",'
+        '"post_terminal_facts_sha256":"967c35093c4ac3ece19a06d8f1878c73b457ad9329a026359fd225a32dc49a13",'
+        '"schema_version":"publication-claims.v1",'
+        '"scope":"post_terminal_runtime_consistency",'
+        '"workflow_id":"phase261-workflow"}'
+    )
+    assert publication_claim_contract_canonical_bytes(contract) == canonical.encode(
+        "utf-8"
+    )
+    assert contract.digest == publication_claim_contract_digest(contract)
+    assert contract.digest == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    assert contract.digest == (
+        "bdb60d1beea78d2a90b26c3589a26833c174a0e796b86d5cff3e807823da91b9"
+    )
+    assert replace(contract) == contract
+
+
+def test_publication_claim_contract_digest_binds_identity_fields(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+    variants = (
+        replace(contract, workflow_id="other-workflow"),
+        replace(contract, business_output_sha256="a" * 64),
+        replace(contract, post_terminal_facts_sha256="b" * 64),
+    )
+
+    assert len({contract.digest, *(variant.digest for variant in variants)}) == 4
+    with pytest.raises(PublicationClaimContractError):
+        replace(contract, asserted_terminal_status="persisted_failure")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", "publication-claims.v0"),
+        ("scope", "arbitrary_scope"),
+        ("workflow_id", ""),
+        ("business_output_sha256", "A" * 64),
+        ("post_terminal_facts_sha256", "B" * 64),
+        ("asserted_terminal_status", "persisted_failure"),
+    ],
+)
+def test_publication_claim_contract_rejects_invalid_fields(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+
+    with pytest.raises(PublicationClaimContractError):
+        replace(contract, **{field: value})
+
+
+def test_publication_claim_contract_rejects_subclass_and_unknown_fields(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+
+    with pytest.raises(PublicationClaimContractError):
+        replace(contract, workflow_id=StringChild(contract.workflow_id))
+    with pytest.raises(PublicationClaimContractError):
+        PublicationClaimContractChild(
+            schema_version=contract.schema_version,
+            scope=contract.scope,
+            workflow_id=contract.workflow_id,
+            business_output_sha256=contract.business_output_sha256,
+            post_terminal_facts_sha256=contract.post_terminal_facts_sha256,
+            asserted_terminal_status=contract.asserted_terminal_status,
+        )
+    with pytest.raises(TypeError):
+        PublicationClaimContract(**contract.__dict__, extra="not allowed")
+
+
+def test_exact_publication_claim_contract_validates_against_output_and_facts(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+
+    assert validate_publication_claim_contract(
+        contract,
+        facts,
+        facts.final_output_sha256,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "classification"),
+    [
+        ("workflow_id", "other-workflow", "workflow_mismatch"),
+        ("business_output_sha256", "a" * 64, "business_output_mismatch"),
+        ("post_terminal_facts_sha256", "b" * 64, "post_terminal_facts_mismatch"),
+    ],
+)
+def test_publication_claim_contract_mismatch_is_safe_and_deterministic(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    classification: str,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = replace(claim_contract_for(facts), **{field: value})
+
+    with pytest.raises(PublicationClaimContractError) as caught:
+        validate_publication_claim_contract(
+            contract,
+            facts,
+            facts.final_output_sha256,
+        )
+
+    assert caught.value.detail.classification == classification
+    assert str(caught.value) == "post-terminal evidence is invalid"
+    assert "FINAL 日本語 😀" not in str(caught.value)
+
+
+def test_exact_verified_claim_contract_reaches_scope_limited_ready(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+
+    assessment = assess_terminal_publication_readiness(
+        facts,
+        "FINAL 日本語 😀",
+        claim_contract=contract,
+    )
+
+    assert assessment.readiness == "ready"
+    assert assessment.reason_codes == ()
+    assert assessment.claim_contract is contract
+    assert assessment.claim_contract_sha256 == contract.digest
+    canonical = serialize_publication_readiness_assessment_canonical(assessment)
+    assert json.loads(canonical)["claim_contract"] == json.loads(
+        serialize_publication_claim_contract_canonical(contract)
+    )
+    assert "FINAL 日本語 😀" not in canonical
+
+
+def test_public_readiness_model_accepts_only_exact_bound_verified_contract(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+
+    assessment = PublicationReadinessAssessment(
+        schema_version="publication-readiness.v1",
+        execution_status="workflow_complete",
+        readiness="ready",
+        reason_codes=(),
+        post_terminal_facts=facts,
+        business_output_sha256=facts.final_output_sha256,
+        claim_contract_sha256=contract.digest,
+        claim_contract=contract,
+    )
+
+    assert assessment.readiness == "ready"
+    assert assessment.claim_contract is contract
+
+
+def test_contract_mismatch_is_stale_or_inconsistent_without_field_disclosure(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = replace(claim_contract_for(facts), workflow_id="other-workflow")
+
+    assessment = assess_terminal_publication_readiness(
+        facts,
+        "FINAL 日本語 😀",
+        claim_contract=contract,
+    )
+
+    assert assessment.readiness == "stale_or_inconsistent"
+    assert assessment.reason_codes == ("claim_contract_mismatch",)
+    assert "other-workflow" not in serialize_publication_readiness_assessment_canonical(
+        assessment
+    )
+
+
+def test_contract_does_not_override_output_mismatch_precedence(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+
+    assessment = assess_terminal_publication_readiness(
+        facts,
+        "different output",
+        claim_contract=contract,
+    )
+
+    assert assessment.readiness == "stale_or_inconsistent"
+    assert assessment.reason_codes == ("final_output_mismatch",)
+
+
+def test_four_step_dogfood_transition_requires_explicit_verified_contract(
+    tmp_path: Path,
+) -> None:
+    output = "FINAL DOGFOOD ARTICLE"
+    state, events = dogfood_success_history(output)
+    targets = write_history(tmp_path, state, events)
+    before = targets.state_path.read_bytes(), targets.events_path.read_bytes()
+    snapshot = load_persisted_terminal_snapshot(dogfood_workflow(), targets)
+    facts = build_post_terminal_facts(snapshot)
+    contract = claim_contract_for(facts, output=output)
+
+    without_contract = assess_terminal_publication_readiness(facts, output)
+    ready = assess_terminal_publication_readiness(
+        facts,
+        output,
+        claim_contract=contract,
+    )
+    different_output = assess_terminal_publication_readiness(
+        facts,
+        "FINAL DOGFOOD ARTICLE CHANGED",
+        claim_contract=contract,
+    )
+    different_facts = assess_terminal_publication_readiness(
+        replace(facts, state_sha256="c" * 64),
+        output,
+        claim_contract=contract,
+    )
+    different_workflow = assess_terminal_publication_readiness(
+        replace(facts, workflow_id="other-workflow"),
+        output,
+        claim_contract=contract,
+    )
+
+    assert facts.terminal_step_index == 4
+    assert facts.completed_step_ids == ("research", "draft", "review", "publish")
+    assert without_contract.readiness == "insufficient_evidence"
+    assert without_contract.reason_codes == ("claim_contract_missing",)
+    assert ready.readiness == "ready"
+    assert ready.claim_contract_sha256 == contract.digest
+    assert different_output.readiness == "stale_or_inconsistent"
+    assert different_output.reason_codes == ("final_output_mismatch",)
+    assert different_facts.readiness == "stale_or_inconsistent"
+    assert different_facts.reason_codes == ("claim_contract_mismatch",)
+    assert different_workflow.readiness == "stale_or_inconsistent"
+    assert different_workflow.reason_codes == ("claim_contract_mismatch",)
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
+
+
 def test_ready_assessment_without_claim_contract_is_rejected_at_model_boundary(
     tmp_path: Path,
 ) -> None:
@@ -248,6 +622,77 @@ def test_ready_assessment_without_claim_contract_is_rejected_at_model_boundary(
             business_output_sha256=facts.final_output_sha256,
             claim_contract_sha256=None,
         )
+
+
+def test_forged_ready_with_arbitrary_claim_digest_is_rejected(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+
+    with pytest.raises(PublicationReadinessError):
+        PublicationReadinessAssessment(
+            schema_version="publication-readiness.v1",
+            execution_status="workflow_complete",
+            readiness="ready",
+            reason_codes=(),
+            post_terminal_facts=facts,
+            business_output_sha256=facts.final_output_sha256,
+            claim_contract_sha256="f" * 64,
+        )
+
+
+def test_forged_ready_with_mismatched_contract_is_rejected(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = replace(claim_contract_for(facts), workflow_id="other-workflow")
+
+    with pytest.raises(PublicationReadinessError):
+        PublicationReadinessAssessment(
+            schema_version="publication-readiness.v1",
+            execution_status="workflow_complete",
+            readiness="ready",
+            reason_codes=(),
+            post_terminal_facts=facts,
+            business_output_sha256=facts.final_output_sha256,
+            claim_contract_sha256=contract.digest,
+            claim_contract=contract,
+        )
+
+
+def test_supplied_claim_contract_cannot_upgrade_persisted_failure(
+    tmp_path: Path,
+) -> None:
+    state, events = failed_history()
+    targets = write_history(tmp_path, state, events)
+    snapshot = load_persisted_terminal_snapshot(workflow(), targets)
+    facts = build_post_terminal_facts(snapshot)
+    contract = PublicationClaimContract(
+        schema_version="publication-claims.v1",
+        scope="post_terminal_runtime_consistency",
+        workflow_id=facts.workflow_id,
+        business_output_sha256="a" * 64,
+        post_terminal_facts_sha256=facts.digest,
+        asserted_terminal_status="workflow_complete",
+    )
+
+    with pytest.raises(PublicationClaimContractError) as caught:
+        validate_publication_claim_contract(contract, facts, "a" * 64)
+    assert caught.value.detail.classification == "terminal_status_mismatch"
+
+    assessment = assess_terminal_publication_readiness(
+        facts,
+        "candidate",
+        claim_contract=contract,
+    )
+
+    assert assessment.readiness == "insufficient_evidence"
+    assert assessment.reason_codes == (
+        "execution_not_workflow_complete",
+        "final_output_missing",
+    )
+    assert assessment.claim_contract is None
+    assert assessment.claim_contract_sha256 is None
 
 
 def test_missing_or_mismatched_output_is_stale_or_inconsistent(
@@ -361,10 +806,40 @@ def test_facts_and_assessment_canonicalization_is_deterministic(
     assert post_terminal_facts_digest(facts) == hashlib.sha256(
         first_facts.encode("utf-8")
     ).hexdigest()
+    assert first_facts == (
+        '{"completed_step_ids":["research","publish"],'
+        '"events_sha256":"eff3503f7ad7cc321aa5944d48a2475d5d8eeae3f78e3654fbd938f036136c33",'
+        '"final_output_sha256":"075d0db2e91e812458d6769792b43c2c0d64bcf77a3203fd94ba8c84a8f39790",'
+        '"schema_version":"post-terminal-facts.v1",'
+        '"state_sha256":"ee261bce686e19f3bd421d1c78f31d609263eb990381077feca8c4757f7f61d4",'
+        '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
+        '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
+        '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase261-workflow"}'
+    )
+    assert post_terminal_facts_digest(facts) == (
+        "967c35093c4ac3ece19a06d8f1878c73b457ad9329a026359fd225a32dc49a13"
+    )
     assert first_assessment == second_assessment
     assert publication_readiness_assessment_digest(assessment) == hashlib.sha256(
         first_assessment.encode("utf-8")
     ).hexdigest()
+    assert first_assessment == (
+        '{"business_output_sha256":"075d0db2e91e812458d6769792b43c2c0d64bcf77a3203fd94ba8c84a8f39790",'
+        '"claim_contract_sha256":null,"execution_status":"workflow_complete",'
+        '"post_terminal_facts":{"completed_step_ids":["research","publish"],'
+        '"events_sha256":"eff3503f7ad7cc321aa5944d48a2475d5d8eeae3f78e3654fbd938f036136c33",'
+        '"final_output_sha256":"075d0db2e91e812458d6769792b43c2c0d64bcf77a3203fd94ba8c84a8f39790",'
+        '"schema_version":"post-terminal-facts.v1",'
+        '"state_sha256":"ee261bce686e19f3bd421d1c78f31d609263eb990381077feca8c4757f7f61d4",'
+        '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
+        '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
+        '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase261-workflow"},'
+        '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
+        '"schema_version":"publication-readiness.v1"}'
+    )
+    assert publication_readiness_assessment_digest(assessment) == (
+        "c0be7b28ea62357099e2c784ed4d43413752fcb6913677d4c0b445218914198d"
+    )
 
 
 def test_facts_digest_binds_terminal_identity_sources_and_raw_output() -> None:
