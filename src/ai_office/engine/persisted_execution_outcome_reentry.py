@@ -94,6 +94,17 @@ def classify_persisted_execution_outcome_reentry(
         _raise("history_data")
     _reject_changed_targets(state_path, events_path, original)
 
+    return classify_loaded_persisted_execution_outcome(workflow, history)
+
+
+def classify_loaded_persisted_execution_outcome(
+    workflow: object,
+    history: object,
+) -> PersistedExecutionOutcome:
+    """Classify one already-loaded history without touching persistence targets."""
+    if type(workflow) is not WorkflowDefinition:
+        _raise("workflow_definition")
+    assert type(workflow) is WorkflowDefinition
     _validate_history_type(history)
     _validate_history_contents(history)
     _validate_terminal_state(history.state)
