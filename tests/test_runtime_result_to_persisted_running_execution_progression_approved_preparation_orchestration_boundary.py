@@ -68,6 +68,7 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from ai_office.tools import ToolDefinition
+from tests._phase260_test_support import synthetic_continuation_facts
 
 phase179 = (
     route_runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary
@@ -430,6 +431,26 @@ def constructed_start(values: dict[str, object]) -> PreparedStepExecutionStart:
         employee.model,
         tuple(employee.allowed_tools),
     )
+    invocation = getattr(values.get("result"), "invocation_result", None)
+    provider = getattr(invocation, "provider", "openai")
+    response_id = getattr(invocation, "response_id", "response-step-6")
+    # The canonical running fixture's immediate predecessor intentionally has
+    # an aged ``request_id=None``.  Preserve that persisted value when this
+    # helper is used without a runtime result.
+    request_id = getattr(invocation, "request_id", None)
+    output_text = getattr(invocation, "text", "output") or "output"
+    facts = synthetic_continuation_facts(
+        workflow_id=wf.id,
+        predecessor_step_id=wf.steps[5].id,
+        predecessor_step_index=6,
+        predecessor_employee_id=wf.steps[5].employee,
+        completed_step_ids=tuple(step.id for step in wf.steps[:6]),
+        output_text=output_text,
+        response_id=response_id,
+        request_id=request_id,
+        next_step_index=7,
+        provider=provider,
+    )
     return PreparedStepExecutionStart(
         ModelInvocationRequest(
             prepared.model,
@@ -445,6 +466,7 @@ def constructed_start(values: dict[str, object]) -> PreparedStepExecutionStart:
                     "output",
                 ),
             ),
+            facts,
         ),
         WorkflowExecutionState(
             prepared.workflow_id,
@@ -1040,6 +1062,7 @@ def test_11_non_contiguous_accumulated_provenance_real_default_prepares_step8(
         values = running_setup(root, steps=8, current=6)
         wf = values["workflow"]  # type: ignore[assignment]
         result = runtime_success(wf, 6, request_id_none=False)
+        values["result"] = result
         decision = prepare_decision(wf, 6)
         next_decision = prepare_decision(wf, 7)
         return {

@@ -100,6 +100,9 @@ def _canonical(tmp_path: Path, *, non_contiguous: bool = False) -> dict:
     sp: Path = values["state_path"]  # type: ignore[assignment]
     ep: Path = values["events_path"]  # type: ignore[assignment]
     result = h.runtime_success(wf, 6, request_id_none=(not non_contiguous))
+    # The Phase260 approval must bind to the exact synthetic runtime result
+    # used for this scenario, including the non-contiguous request-id case.
+    values["result"] = result
     decision = h.prepare_decision(wf, 6)
     approval = h.approval_for(decision)
     employee = h.employee_for(decision)

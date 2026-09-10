@@ -111,6 +111,7 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_orchestratio
 )
 from ai_office.runtime import RuntimeStepEvent, StepRuntimeExecutionFailure, StepRuntimeExecutionSuccess
 from ai_office.storage import load_workflow_execution_state, serialize_runtime_step_event_jsonl
+from tests._phase260_test_support import synthetic_continuation_facts
 
 _PHASE187_TEST = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary.py"
@@ -158,6 +159,17 @@ def _authoritative_following_execution_approval(case: dict[str, object]) -> obje
                 predecessor.employee,
                 "ok",
             ),
+        ),
+        synthetic_continuation_facts(
+            workflow_id=workflow.id,
+            predecessor_step_id=predecessor.id,
+            predecessor_step_index=8,
+            predecessor_employee_id=predecessor.employee,
+            completed_step_ids=tuple(item.id for item in workflow.steps[:8]),
+            output_text="ok",
+            response_id="resp_123",
+            request_id="request_123",
+            next_step_index=9,
         ),
     )
     return approve_model_invocation_execution(

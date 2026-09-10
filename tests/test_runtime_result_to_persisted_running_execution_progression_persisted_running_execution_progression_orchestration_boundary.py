@@ -37,6 +37,7 @@ from ai_office.invocation import (
     approve_model_invocation_execution,
 )
 from ai_office.storage import load_workflow_execution_state, serialize_runtime_step_event_jsonl
+from tests._phase260_test_support import synthetic_continuation_facts
 
 _HARNESS_PATH = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary.py"
@@ -77,6 +78,17 @@ def _second_context(case: dict[str, object]) -> dict[str, object]:
                 workflow.steps[6].employee,  # type: ignore[union-attr]
                 "ok",
             ),
+        ),
+        synthetic_continuation_facts(
+            workflow_id=workflow.id,
+            predecessor_step_id=workflow.steps[6].id,
+            predecessor_step_index=7,
+            predecessor_employee_id=workflow.steps[6].employee,
+            completed_step_ids=tuple(item.id for item in workflow.steps[:7]),
+            output_text="ok",
+            response_id="resp_123",
+            request_id="request_123",
+            next_step_index=8,
         ),
     )
     return {

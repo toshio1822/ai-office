@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 
@@ -106,13 +107,33 @@ def load_workflow_execution_history(
     targets: WorkflowExecutionPersistenceTargets,
 ) -> LoadedWorkflowExecutionHistory:
     """Read, strictly reconstruct, and cross-check one persisted history."""
+    history, _state_source_sha256, _events_source_sha256 = (
+        load_workflow_execution_history_with_source_digests(targets)
+    )
+    return history
+
+
+def load_workflow_execution_history_with_source_digests(
+    targets: WorkflowExecutionPersistenceTargets,
+) -> tuple[LoadedWorkflowExecutionHistory, str, str]:
+    """Load history and return SHA-256 digests of the exact source bytes.
+
+    The digests are boundary evidence, not persisted schema fields.  Reading
+    and hashing happen beside the strict loader so a caller can bind a pure
+    derived value to the exact bytes it just loaded without adding filesystem
+    access to ``LoadedWorkflowExecutionHistory``.
+    """
     _validate_targets(targets)
     state_bytes = _read_bytes(targets.state_path, "state_read")
     event_bytes = _read_bytes(targets.events_path, "events_read")
     state = parse_workflow_execution_state(_decode_state_json(state_bytes))
     events = _parse_runtime_step_events(event_bytes)
     _validate_history_consistency(state, events)
-    return LoadedWorkflowExecutionHistory(state=state, events=events)
+    return (
+        LoadedWorkflowExecutionHistory(state=state, events=events),
+        sha256(state_bytes).hexdigest(),
+        sha256(event_bytes).hexdigest(),
+    )
 
 
 def load_workflow_execution_state(state_path: Path) -> WorkflowExecutionState:

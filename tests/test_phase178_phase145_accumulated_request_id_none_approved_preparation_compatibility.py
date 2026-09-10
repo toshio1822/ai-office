@@ -57,6 +57,7 @@ from ai_office.storage import (
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
+from tests._phase260_test_support import synthetic_continuation_facts
 
 _HARNESS178 = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_orchestration_boundary.py"
@@ -88,6 +89,17 @@ def _full_execution_approval(harness, workflow):
                 "output",
             ),
         ),
+        synthetic_continuation_facts(
+            workflow_id=workflow.id,
+            predecessor_step_id=workflow.steps[5].id,
+            predecessor_step_index=6,
+            predecessor_employee_id=workflow.steps[5].employee,
+            completed_step_ids=tuple(item.id for item in workflow.steps[:6]),
+            output_text="output",
+            response_id="response-step-6",
+            request_id=None,
+            next_step_index=7,
+        ),
     )
     return approve_model_invocation_execution(
         request,
@@ -109,6 +121,7 @@ def _phase178_prepare_step8(tmp_path: Path) -> tuple[dict, WorkflowProgressionDe
     state_path: Path = values["state_path"]  # type: ignore[assignment]
     events_path: Path = values["events_path"]  # type: ignore[assignment]
     result = harness.runtime_success(wf, 6, request_id_none=True)
+    values["result"] = result
     decision = harness.prepare_decision(wf, 6)
     approval = harness.approval_for(decision)
     employee = harness.employee_for(decision)

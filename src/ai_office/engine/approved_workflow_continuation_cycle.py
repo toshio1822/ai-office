@@ -24,6 +24,9 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_cha
     ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
 )
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.engine.persisted_continuation_runtime_facts import (
+    build_persisted_continuation_runtime_facts,
+)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
@@ -85,6 +88,7 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
+    EMPTY_RUNTIME_FACTS,
     ModelInvocationExecutionApproval,
     ModelInvocationFailureCategory,
     ModelInvocationRequest,
@@ -101,7 +105,7 @@ from ai_office.runtime import (
 from ai_office.storage import (
     RunningStatePersistenceResult,
     WorkflowExecutionPersistenceTargets,
-    load_workflow_execution_history,
+    load_workflow_execution_history_with_source_digests,
     load_workflow_execution_state,
     parse_runtime_step_event,
     serialize_runtime_step_event_jsonl,
@@ -625,8 +629,10 @@ def _check_authoritative_pre_persistence(
 ) -> object:
     """Reload terminal history and validate the complete approved request."""
     try:
-        history = load_workflow_execution_history(
-            WorkflowExecutionPersistenceTargets(state_path, events_path)
+        history, state_source_sha256, _events_source_sha256 = (
+            load_workflow_execution_history_with_source_digests(
+                WorkflowExecutionPersistenceTargets(state_path, events_path)
+            )
         )
         authoritative_upstream = build_immediate_predecessor_upstream_inputs(
             prepared_start.running_state.workflow_id,
@@ -637,6 +643,36 @@ def _check_authoritative_pre_persistence(
         _fail("approval_contract")
     if prepared_start.request.upstream_inputs != authoritative_upstream:
         _fail("phase146_contract")
+    # The production persisted-continuation preparation boundary supplies a
+    # non-empty snapshot.  Empty snapshots remain a lower-boundary seam
+    # compatibility contract for injected pre-Phase-260 starts; they do not
+    # opt the production path out of fact validation because that path cannot
+    # produce an empty request.
+    if prepared_start.request.runtime_facts != EMPTY_RUNTIME_FACTS:
+        try:
+            authoritative_runtime_facts = build_persisted_continuation_runtime_facts(
+                prepared_start.running_state.workflow_id,
+                prepared_start.running_state.current_step_index,
+                history,
+                state_source_sha256=state_source_sha256,
+            )
+        except Exception:
+            _fail("approval_contract")
+        if prepared_start.request.runtime_facts != authoritative_runtime_facts:
+            _fail("approval_contract")
+        try:
+            authoritative_request = ModelInvocationRequest(
+                model=prepared_start.request.model,
+                system_instructions=prepared_start.request.system_instructions,
+                task_instructions=prepared_start.request.task_instructions,
+                allowed_tools=prepared_start.request.allowed_tools,
+                upstream_inputs=authoritative_upstream,
+                runtime_facts=authoritative_runtime_facts,
+            )
+        except (TypeError, ValueError):
+            _fail("phase146_contract")
+        if prepared_start.request != authoritative_request:
+            _fail("phase146_contract")
     if type(resolved_tools) is not tuple:
         _fail("approval_contract")
     if type(execution_approval) is not ModelInvocationExecutionApproval:

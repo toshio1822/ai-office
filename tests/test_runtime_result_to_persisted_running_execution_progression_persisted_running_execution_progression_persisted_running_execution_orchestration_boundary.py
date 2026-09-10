@@ -107,6 +107,7 @@ from ai_office.invocation import (
     UpstreamStepOutput,
     approve_model_invocation_execution,
 )
+from tests._phase260_test_support import synthetic_continuation_facts
 
 _HARNESS = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py"
@@ -153,6 +154,17 @@ def _following_execution_approval(case: dict[str, object]) -> object:
                 workflow.steps[7].employee,  # type: ignore[union-attr]
                 "ok",
             ),
+        ),
+        synthetic_continuation_facts(
+            workflow_id=workflow.id,
+            predecessor_step_id=workflow.steps[7].id,
+            predecessor_step_index=8,
+            predecessor_employee_id=workflow.steps[7].employee,
+            completed_step_ids=tuple(item.id for item in workflow.steps[:8]),
+            output_text="ok",
+            response_id="resp_123",
+            request_id="request_123",
+            next_step_index=9,
         ),
     )
     return approve_model_invocation_execution(

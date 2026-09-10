@@ -57,11 +57,15 @@ def _case(tmp_path: Path, *, steps: int = 8, current: int = 6, request_none: boo
     else:
         next_approval = None
         next_employee = None
+    result = h.runtime_success(wf, current, request_id_none=request_none)
+    # Bind the first execution approval to the exact runtime result used by
+    # this case, including the non-contiguous request-id variant.
+    values["result"] = result
     return {
         "h": h,
         "values": values,
         "workflow": wf,
-        "result": h.runtime_success(wf, current, request_id_none=request_none),
+        "result": result,
         "approval": first_approval,
         "employee": first_employee,
         "next_approval": next_approval,

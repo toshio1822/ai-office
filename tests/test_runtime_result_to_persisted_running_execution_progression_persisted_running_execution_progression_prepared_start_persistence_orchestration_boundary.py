@@ -65,6 +65,7 @@ from ai_office.storage import (
     load_workflow_execution_state,
     serialize_workflow_execution_state_json,
 )
+from tests._phase260_test_support import synthetic_continuation_facts
 
 _PHASE185_TEST_PATH = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py"
@@ -111,6 +112,25 @@ def _authoritative_execution_approval(case: dict[str, object], index: int) -> ob
                 predecessor.employee,
                 "output" if index == 7 else "ok",
             ),
+        ),
+        synthetic_continuation_facts(
+            workflow_id=workflow.id,
+            predecessor_step_id=predecessor.id,
+            predecessor_step_index=index - 1,
+            predecessor_employee_id=predecessor.employee,
+            completed_step_ids=tuple(item.id for item in workflow.steps[: index - 1]),
+            output_text="output" if index == 7 else "ok",
+            response_id="response-step-6" if index == 7 else "resp_123",
+            request_id=(
+                getattr(
+                    getattr(case.get("result"), "invocation_result", None),
+                    "request_id",
+                    None,
+                )
+                if index == 7
+                else "request_123"
+            ),
+            next_step_index=index,
         ),
     )
     return approve_model_invocation_execution(

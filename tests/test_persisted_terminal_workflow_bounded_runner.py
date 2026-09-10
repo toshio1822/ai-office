@@ -85,6 +85,7 @@ from ai_office.storage import (
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
+from tests._phase260_test_support import synthetic_continuation_facts
 
 _MODULE_PATH = Path(route_persisted_terminal_workflow_bounded.__code__.co_filename)
 _MODULE_SOURCE = _MODULE_PATH.read_text(encoding="utf-8")
@@ -277,6 +278,17 @@ def _continuation_context(
         next_step.instructions,
         (),
         (upstream,),
+        synthetic_continuation_facts(
+            workflow_id=workflow.id,
+            predecessor_step_id=workflow.steps[index - 2].id,
+            predecessor_step_index=index - 1,
+            predecessor_employee_id=workflow.steps[index - 2].employee,
+            completed_step_ids=tuple(step.id for step in workflow.steps[: index - 1]),
+            output_text="ok",
+            response_id=f"response-step-{index - 1}",
+            request_id=f"request-step-{index - 1}",
+            next_step_index=index,
+        ),
     )
     approval = approve_model_invocation_execution(
         request,

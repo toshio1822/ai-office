@@ -22,6 +22,9 @@ from ai_office.engine.approved_workflow_continuation_cycle import (
     route_approved_workflow_continuation_cycle,
 )
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.engine.persisted_continuation_runtime_facts import (
+    build_persisted_continuation_runtime_facts,
+)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
@@ -157,6 +160,15 @@ def _phase190_decision() -> WorkflowProgressionDecision:
 def _phase190_start(
     upstream: tuple[UpstreamStepOutput, ...],
 ) -> PreparedStepExecutionStart:
+    history = _history("authoritative")
+    facts = build_persisted_continuation_runtime_facts(
+        "workflow",
+        2,
+        history,
+        state_source_sha256=hashlib.sha256(
+            serialize_workflow_execution_state_json(history.state).encode("utf-8")
+        ).hexdigest(),
+    )
     return PreparedStepExecutionStart(
         request=ModelInvocationRequest(
             model="model",
@@ -164,6 +176,7 @@ def _phase190_start(
             task_instructions="second task",
             allowed_tools=(),
             upstream_inputs=upstream,
+            runtime_facts=facts,
         ),
         running_state=WorkflowExecutionState(
             workflow_id="workflow",
@@ -426,7 +439,7 @@ def test_13_approval_validation_rejects_changed_upstream() -> None:
 
 def test_14_prepared_step_start_reconstructs_exact_predecessor_output() -> None:
     result = prepare_prepared_step_execution_start(
-        _prepared_next(), _history("handoff")
+        _prepared_next(), _history("handoff"), state_source_sha256="a" * 64
     )
 
     assert result.request.upstream_inputs == (

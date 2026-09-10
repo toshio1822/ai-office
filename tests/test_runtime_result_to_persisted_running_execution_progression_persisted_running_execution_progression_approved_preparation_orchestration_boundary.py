@@ -40,6 +40,7 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
 )
 from ai_office.runtime import StepRuntimeExecutionSuccess
 from ai_office.storage import load_workflow_execution_state
+from tests._phase260_test_support import synthetic_continuation_facts
 
 _HARNESS_PATH = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary.py"
@@ -86,6 +87,19 @@ def _execution_approval(wf: object, index: int) -> object:
                 wf.steps[index - 2].employee,
                 "output" if index == 7 else "ok",
             ),
+        ),
+        synthetic_continuation_facts(
+            workflow_id=wf.id,
+            predecessor_step_id=wf.steps[index - 2].id,
+            predecessor_step_index=index - 1,
+            predecessor_employee_id=wf.steps[index - 2].employee,
+            completed_step_ids=tuple(step.id for step in wf.steps[: index - 1]),
+            output_text="output" if index == 7 else "ok",
+            response_id=(
+                "response-step-6" if index == 7 else "resp_123"
+            ),
+            request_id=None if index == 7 else "request_123",
+            next_step_index=index,
         ),
     )
     return h.approve_model_invocation_execution(

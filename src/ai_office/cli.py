@@ -23,6 +23,7 @@ from ai_office.engine import (
     InitialStepPreparationApproval,
     NextStepPreparationApproval,
     build_immediate_predecessor_upstream_inputs,
+    build_persisted_continuation_runtime_facts,
     classify_persisted_execution_outcome_reentry,
     route_approved_fresh_workflow_bounded,
     route_persisted_execution_outcome_reentry,
@@ -38,11 +39,15 @@ from ai_office.execution_target import (
     execution_target_for_name,
 )
 from ai_office.invocation import (
+    EMPTY_RUNTIME_FACTS,
     ModelInvocationRequest,
+    RuntimeFactsSnapshot,
     approve_model_invocation_execution,
     build_model_invocation_execution_fingerprint,
     build_model_invocation_request,
     build_model_invocation_task_input,
+    runtime_facts_snapshot_digest,
+    serialize_runtime_facts_snapshot_canonical,
 )
 from ai_office.planning.execution_plan import (
     ExecutionPlan,
@@ -76,6 +81,7 @@ from ai_office.providers.openai.responses_dict_payload import JsonValue
 from ai_office.storage import (
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
+    load_workflow_execution_history_with_source_digests,
 )
 from ai_office.tools import (
     DEFAULT_TOOL_CATALOG,
@@ -464,6 +470,7 @@ def _build_workflow_step_preview(
     step_index: int,
     upstream_inputs: tuple[object, ...] = (),
     execution_target: ModelExecutionTarget | None = None,
+    runtime_facts: RuntimeFactsSnapshot = EMPTY_RUNTIME_FACTS,
 ) -> tuple[object, _WorkflowStepPreview]:
     """Construct one exact step request through the existing public seams."""
     try:
@@ -474,6 +481,7 @@ def _build_workflow_step_preview(
         invocation_request = build_model_invocation_request(
             step_request,
             upstream_inputs=upstream_inputs,  # type: ignore[arg-type]
+            runtime_facts=runtime_facts,
         )
         resolved_tools = resolve_tool_names(
             DEFAULT_TOOL_CATALOG, invocation_request.allowed_tools
@@ -592,6 +600,14 @@ def _step_preview_json(
             }
             for upstream in invocation.upstream_inputs
         ]
+    if invocation.runtime_facts != EMPTY_RUNTIME_FACTS:
+        runtime_facts = json.loads(
+            serialize_runtime_facts_snapshot_canonical(invocation.runtime_facts)
+        )
+        runtime_facts["snapshot_sha256"] = runtime_facts_snapshot_digest(
+            invocation.runtime_facts
+        )
+        value["runtime_facts"] = runtime_facts
     return value
 
 
@@ -1109,13 +1125,21 @@ def continue_workflow(
 
     assert routed.next_step_index is not None
     try:
-        history = load_workflow_execution_history(
-            WorkflowExecutionPersistenceTargets(state_path, events_path)
+        history, state_source_sha256, _events_source_sha256 = (
+            load_workflow_execution_history_with_source_digests(
+                WorkflowExecutionPersistenceTargets(state_path, events_path)
+            )
         )
         upstream_inputs = build_immediate_predecessor_upstream_inputs(
             workflow_id,
             routed.next_step_index,
             history,
+        )
+        runtime_facts = build_persisted_continuation_runtime_facts(
+            workflow_id,
+            routed.next_step_index,
+            history,
+            state_source_sha256=state_source_sha256,
         )
     except Exception:
         _workflow_cli_error("persisted workflow handoff is invalid")
@@ -1126,6 +1150,7 @@ def continue_workflow(
         routed.next_step_index,
         upstream_inputs,
         execution_target=target,
+        runtime_facts=runtime_facts,
     )
     if preview_only:
         _emit_json(_step_preview_json("continue", preview))
