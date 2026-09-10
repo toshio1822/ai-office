@@ -711,6 +711,8 @@ def _validate_publication_readiness_assessment(
         "business_output_digest",
         error=_raise_readiness,
     )
+    if assessment.readiness == "ready" and assessment.claim_contract_sha256 is None:
+        _raise_readiness("ready_without_claim_contract")
     if assessment.claim_contract_sha256 is not None:
         _raise_readiness("claim_contract_deferred")
 

@@ -14,6 +14,7 @@ from ai_office.engine.post_terminal_facts import (
     PersistedTerminalSnapshot,
     PersistedTerminalSnapshotError,
     PostTerminalFactsError,
+    PublicationReadinessAssessment,
     PublicationReadinessError,
     assess_terminal_publication_readiness,
     build_post_terminal_facts,
@@ -230,6 +231,23 @@ def test_exact_output_match_is_insufficient_evidence_not_ready(
     assert assessment.claim_contract_sha256 is None
     assert assessment.business_output_sha256 == facts.final_output_sha256
     assert "ready" not in assessment.reason_codes
+
+
+def test_ready_assessment_without_claim_contract_is_rejected_at_model_boundary(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+
+    with pytest.raises(PublicationReadinessError):
+        PublicationReadinessAssessment(
+            schema_version="publication-readiness.v1",
+            execution_status="workflow_complete",
+            readiness="ready",
+            reason_codes=("claim_contract_missing",),
+            post_terminal_facts=facts,
+            business_output_sha256=facts.final_output_sha256,
+            claim_contract_sha256=None,
+        )
 
 
 def test_missing_or_mismatched_output_is_stale_or_inconsistent(
