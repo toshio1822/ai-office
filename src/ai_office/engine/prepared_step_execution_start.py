@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.engine.persisted_continuation_runtime_facts import (
+    PersistedContinuationRuntimeFactsError,
+    build_persisted_continuation_runtime_facts,
+)
 from ai_office.engine.upstream_step_output_handoff import (
     UpstreamStepOutputHandoffError,
     build_immediate_predecessor_upstream_inputs,
@@ -48,6 +52,8 @@ class PreparedStepExecutionStartCompatibilityError(PreparedStepExecutionStartErr
 def prepare_prepared_step_execution_start(
     prepared_step: PreparedWorkflowStep,
     history: LoadedWorkflowExecutionHistory,
+    *,
+    state_source_sha256: str,
 ) -> PreparedStepExecutionStart:
     """Return immutable request data and a proposed running state without I/O."""
     state = history.state
@@ -69,7 +75,16 @@ def prepare_prepared_step_execution_start(
             prepared_step.step_index,
             history,
         )
-    except UpstreamStepOutputHandoffError:
+        runtime_facts = build_persisted_continuation_runtime_facts(
+            prepared_step.workflow_id,
+            prepared_step.step_index,
+            history,
+            state_source_sha256=state_source_sha256,
+        )
+    except (
+        UpstreamStepOutputHandoffError,
+        PersistedContinuationRuntimeFactsError,
+    ):
         _raise("request_data")
     request = ModelInvocationRequest(
         model=prepared_step.model,
@@ -77,6 +92,7 @@ def prepare_prepared_step_execution_start(
         task_instructions=prepared_step.step_instructions,
         allowed_tools=tuple(prepared_step.allowed_tool_names),
         upstream_inputs=upstream_inputs,
+        runtime_facts=runtime_facts,
     )
     return PreparedStepExecutionStart(
         request,

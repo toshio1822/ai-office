@@ -8,18 +8,21 @@ from typing import Literal
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.engine.persisted_continuation_runtime_facts import (
+    build_persisted_continuation_runtime_facts,
+)
 from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStart,
     prepare_prepared_step_execution_start,
 )
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.invocation import EMPTY_RUNTIME_FACTS, ModelInvocationRequest
 from ai_office.runtime import WorkflowExecutionState
 from ai_office.storage.workflow_execution_history import (
     LoadedWorkflowExecutionHistory,
     WorkflowExecutionDataError,
     WorkflowExecutionHistoryInconsistencyError,
     WorkflowExecutionLoadError,
-    load_workflow_execution_history,
+    load_workflow_execution_history_with_source_digests,
 )
 from ai_office.storage.workflow_execution_persistence import (
     WorkflowExecutionPersistenceTargets,
@@ -79,11 +82,20 @@ def prepare_persisted_prepared_step_start(
     assert isinstance(state_path, Path)
     assert isinstance(events_path, Path)
     assert isinstance(prepared_step, PreparedWorkflowStep)
-    history = _load_history(state_path, events_path)
+    history, state_source_sha256 = _load_history(state_path, events_path)
     _validate_history(workflow, history)
     _validate_prepared_step(workflow, employee, history, prepared_step)
-    result = start_function(prepared_step, history)
-    _validate_start_result(result, prepared_step, history)
+    if start_function is prepare_prepared_step_execution_start:
+        result = start_function(  # type: ignore[call-arg]
+            prepared_step,
+            history,
+            state_source_sha256=state_source_sha256,
+        )
+    else:
+        result = start_function(prepared_step, history)
+    _validate_start_result(
+        result, prepared_step, history, state_source_sha256
+    )
     return result
 
 
@@ -118,11 +130,14 @@ def _validate_inputs(
 
 def _load_history(
     state_path: Path, events_path: Path
-) -> LoadedWorkflowExecutionHistory:
+) -> tuple[LoadedWorkflowExecutionHistory, str]:
     try:
-        return load_workflow_execution_history(
+        history, state_source_sha256, _events_source_sha256 = (
+            load_workflow_execution_history_with_source_digests(
             WorkflowExecutionPersistenceTargets(state_path, events_path)
+            )
         )
+        return history, state_source_sha256
     except (
         WorkflowExecutionDataError,
         WorkflowExecutionHistoryInconsistencyError,
@@ -233,16 +248,32 @@ def _validate_start_result(
     result: object,
     prepared: PreparedWorkflowStep,
     history: LoadedWorkflowExecutionHistory,
+    state_source_sha256: str,
 ) -> None:
     if not isinstance(result, PreparedStepExecutionStart):
         _raise("start_contract")
     request, running = result.request, result.running_state
+    expected_runtime_facts = EMPTY_RUNTIME_FACTS
+    if request.runtime_facts != EMPTY_RUNTIME_FACTS:
+        try:
+            expected_runtime_facts = build_persisted_continuation_runtime_facts(
+                prepared.workflow_id,
+                prepared.step_index,
+                history,
+                state_source_sha256=state_source_sha256,
+            )
+        except Exception:
+            _raise("start_contract")
     valid = (
         isinstance(request, ModelInvocationRequest)
         and request.model == prepared.model
         and request.system_instructions == prepared.employee_instructions
         and request.task_instructions == prepared.step_instructions
         and request.allowed_tools == tuple(prepared.allowed_tool_names)
+        and (
+            request.runtime_facts == EMPTY_RUNTIME_FACTS
+            or request.runtime_facts == expected_runtime_facts
+        )
         and isinstance(running, WorkflowExecutionState)
         and running.workflow_id == prepared.workflow_id
         and running.status == "running"

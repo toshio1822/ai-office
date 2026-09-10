@@ -3051,7 +3051,7 @@ def test_workflows_start_failure_executes_once_and_stops_without_retry(
     assert paths["events"].read_text(encoding="utf-8").count("step_failed") == 1
 
 
-def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step(
+def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = workflow_command_paths(tmp_path)
@@ -3072,9 +3072,88 @@ def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step(
     assert preview["step_index"] == 2
     assert preview["employee_id"] == "general-researcher"
     assert preview["request_fingerprint"] == (
-        "204b54796a383bb795f337816a099f07225c24e61d4483dc20f28f81595e9fb2"
+        "10b8d3b5465fcff2c83a5539dd7784f882a4b611a53d6bc834476eb01b7a91c4"
     )
+    assert [fact["key"] for fact in preview["runtime_facts"]["facts"]] == [
+        "predecessor.employee_id",
+        "predecessor.provider",
+        "predecessor.step_id",
+        "predecessor.step_index",
+        "workflow.completed_step_count",
+        "workflow.status",
+    ]
     assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+    assert calls == []
+    assert key_calls == []
+
+
+def test_workflows_continue_preview_is_byte_deterministic_and_provider_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_succeeded_prefix(paths, 1)
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+
+    first_result, first = preview_command(
+        "continue", "research-and-summarize", paths
+    )
+    second_result, second = preview_command(
+        "continue", "research-and-summarize", paths
+    )
+
+    assert first_result.stdout == second_result.stdout
+    assert first == second
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+    assert calls == []
+    assert key_calls == []
+
+
+def test_workflows_continue_preview_event_source_change_changes_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_succeeded_prefix(paths, 1)
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+
+    _, first = preview_command("continue", "research-and-summarize", paths)
+    records = [
+        json.loads(line)
+        for line in paths["events"].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    records[-1]["response_id"] = "changed-response-id"
+    paths["events"].write_text(
+        "".join(
+            serialize_runtime_step_event_jsonl(
+                RuntimeStepEvent(**record)  # type: ignore[arg-type]
+            )
+            for record in records
+        ),
+        encoding="utf-8",
+    )
+    _, second = preview_command("continue", "research-and-summarize", paths)
+
+    assert first["request_fingerprint"] != second["request_fingerprint"]
+    assert first["upstream_inputs"] == second["upstream_inputs"]
+    first_facts = {
+        item["key"]: (item["value_kind"], item["value"])
+        for item in first["runtime_facts"]["facts"]
+    }
+    second_facts = {
+        item["key"]: (item["value_kind"], item["value"])
+        for item in second["runtime_facts"]["facts"]
+    }
+    assert first_facts == second_facts
+    assert first["runtime_facts"] != second["runtime_facts"]
     assert calls == []
     assert key_calls == []
 
@@ -3321,6 +3400,7 @@ def test_workflows_continue_preview_displays_exact_upstream_provenance_text_dige
     )
     task_input = json.dumps(
         {
+            "runtime_facts": preview["runtime_facts"],
             "task_instructions": "Summarize the information.",
             "upstream_inputs": [provenance],
         },

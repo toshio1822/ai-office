@@ -1,6 +1,7 @@
 """Tests for the read-only Phase 33 prepared-step start reentry boundary."""
 
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -94,6 +95,10 @@ def write_history(
     return targets
 
 
+def state_digest(targets: WorkflowExecutionPersistenceTargets) -> str:
+    return sha256(targets.state_path.read_bytes()).hexdigest()
+
+
 def prepared() -> PreparedWorkflowStep:
     return PreparedWorkflowStep(
         "workflow",
@@ -110,7 +115,9 @@ def prepared() -> PreparedWorkflowStep:
 def test_valid_reentry_delegates_once_and_returns_exact_result(tmp_path: Path) -> None:
     targets = write_history(tmp_path, state())
     expected = prepare_prepared_step_execution_start(
-        prepared(), load_workflow_execution_history(targets)
+        prepared(),
+        load_workflow_execution_history(targets),
+        state_source_sha256=state_digest(targets),
     )
     before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
     calls = 0
@@ -240,7 +247,9 @@ def test_invalid_start_result_is_rejected_after_one_call(
 ) -> None:
     targets = write_history(tmp_path, state())
     expected = prepare_prepared_step_execution_start(
-        prepared(), load_workflow_execution_history(targets)
+        prepared(),
+        load_workflow_execution_history(targets),
+        state_source_sha256=state_digest(targets),
     )
     returned = changed(expected)  # type: ignore[operator]
     calls = 0

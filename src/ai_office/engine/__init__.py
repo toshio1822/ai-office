@@ -242,6 +242,10 @@ from ai_office.engine.next_step_preparation import (
     PreparedWorkflowStep,
     prepare_approved_next_workflow_step,
 )
+from ai_office.engine.persisted_continuation_runtime_facts import (
+    PersistedContinuationRuntimeFactsError,
+    build_persisted_continuation_runtime_facts,
+)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
     PersistedExecutionOutcomeCompatibilityError,
@@ -1078,6 +1082,8 @@ __all__ = [
     "PreparedStepExecutionStartCompatibilityError",
     "PreparedStepExecutionStartError",
     "prepare_prepared_step_execution_start",
+    "PersistedContinuationRuntimeFactsError",
+    "build_persisted_continuation_runtime_facts",
     "UpstreamStepOutputHandoffClassification",
     "UpstreamStepOutput",
     "UpstreamStepOutputHandoffCompatibilityError",

@@ -7,6 +7,8 @@ from __future__ import annotations
 import ast
 import inspect
 from dataclasses import replace
+from hashlib import sha256
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,9 @@ from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     PreparedWorkflowStep,
 )
+from ai_office.engine.persisted_continuation_runtime_facts import (
+    build_persisted_continuation_runtime_facts,
+)
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase145Error,
 )
@@ -34,6 +39,7 @@ from ai_office.engine.persisted_execution_outcome_reentry import PersistedExecut
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
+    EMPTY_RUNTIME_FACTS,
     ModelInvocationFailure,
     ModelInvocationRequest,
     ModelInvocationSuccess,
@@ -48,6 +54,7 @@ from ai_office.runtime import (
     WorkflowExecutionState,
 )
 from ai_office.storage import (
+    LoadedWorkflowExecutionHistory,
     RunningStatePersistenceResult,
     load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
@@ -300,7 +307,56 @@ def prepared(wf: WorkflowDefinition, index: int) -> PreparedWorkflowStep:
 
 def started(wf: WorkflowDefinition, index: int) -> PreparedStepExecutionStart:
     p = prepared(wf, index)
-    return PreparedStepExecutionStart(ModelInvocationRequest(p.model, p.employee_instructions, p.step_instructions, (), (UpstreamStepOutput(wf.id, wf.steps[index - 2].id, index - 1, wf.steps[index - 2].employee, "output"),)), WorkflowExecutionState(wf.id, "running", p.step_id, index, p.employee_id, tuple(s.id for s in wf.steps[:index - 1]), None))
+    predecessor = wf.steps[index - 2]
+    predecessor_state = WorkflowExecutionState(
+        wf.id,
+        "succeeded",
+        predecessor.id,
+        index - 1,
+        predecessor.employee,
+        tuple(s.id for s in wf.steps[: index - 1]),
+        None,
+    )
+    predecessor_event = _history_event(wf, index - 1, output_text="output")
+    predecessor_history = LoadedWorkflowExecutionHistory(
+        predecessor_state, (predecessor_event,)
+    )
+    facts = build_persisted_continuation_runtime_facts(
+        wf.id,
+        index,
+        predecessor_history,
+        state_source_sha256=sha256(
+            serialize_workflow_execution_state_json(predecessor_state).encode()
+        ).hexdigest(),
+    )
+    request = ModelInvocationRequest(
+        p.model,
+        p.employee_instructions,
+        p.step_instructions,
+        (),
+        (
+            UpstreamStepOutput(
+                wf.id,
+                predecessor.id,
+                index - 1,
+                predecessor.employee,
+                "output",
+            ),
+        ),
+        facts,
+    )
+    return PreparedStepExecutionStart(
+        request,
+        WorkflowExecutionState(
+            wf.id,
+            "running",
+            p.step_id,
+            index,
+            p.employee_id,
+            tuple(s.id for s in wf.steps[: index - 1]),
+            None,
+        ),
+    )
 
 
 def write_running(path: Path, start: PreparedStepExecutionStart) -> RunningStatePersistenceResult:
@@ -671,3 +727,113 @@ def test_20_real_default_invalid_execution_approval_rejected_before_running_pers
     assert (v["state_path"].read_bytes(),v["events_path"].read_bytes()) == before
     assert load_workflow_execution_state(v["state_path"]).status == "succeeded"
     assert len([line for line in v["events_path"].read_text().splitlines() if line.strip()]) == 9 and calls==[]
+
+
+def test_21_empty_runtime_facts_injected_start_rejected_before_persistence_or_provider(
+    tmp_path: Path,
+) -> None:
+    v = setup(tmp_path, current=9, count=11)
+    wf = v["workflow"]
+    assert isinstance(wf, WorkflowDefinition)
+    ctx = execution_context(wf, 10)
+    valid_start = started(wf, 10)
+    empty_start = replace(
+        valid_start,
+        request=replace(valid_start.request, runtime_facts=EMPTY_RUNTIME_FACTS),
+    )
+    empty_approval = approve_model_invocation_execution(
+        empty_start.request,
+        ctx["resolved_tools"],  # type: ignore[arg-type]
+        provider="openai",
+        approved_by="reviewer",
+        approval_id="empty-facts-approval",
+    )
+    before = (v["state_path"].read_bytes(), v["events_path"].read_bytes())
+    phase147_calls: list[object] = []
+    phase155_calls: list[object] = []
+    transport_calls: list[object] = []
+
+    with pytest.raises(Phase190Error) as caught:
+        phase190(
+            decision(wf, 9),
+            wf,
+            preparation_approval(wf, 10),
+            ctx["employee"],
+            v["state_path"],
+            v["events_path"],
+            ctx["resolved_tools"],
+            ctx["api_key"],
+            empty_approval,
+            transport(transport_calls),
+            phase145_function=lambda *_args: prepared(wf, 10),
+            phase146_function=lambda *_args: empty_start,
+            phase147_function=lambda *_args: phase147_calls.append(1),
+            phase155_function=lambda *_args: phase155_calls.append(1),
+        )
+
+    assert caught.value.detail.classification == "approval_contract"
+    assert phase147_calls == []
+    assert phase155_calls == []
+    assert transport_calls == []
+    assert (v["state_path"].read_bytes(), v["events_path"].read_bytes()) == before
+
+
+def test_21_authoritative_runtime_fact_changes_stop_before_running_or_provider(
+    tmp_path: Path,
+) -> None:
+    for mode in ("provider", "completed_count"):
+        v = setup(tmp_path / mode, current=9, count=11)
+        wf = v["workflow"]
+        assert isinstance(wf, WorkflowDefinition)
+        p = prepared(wf, 10)
+        st = started(wf, 10)
+        ctx = execution_context(wf, 10)
+        state_path = v["state_path"]
+        events_path = v["events_path"]
+        assert isinstance(state_path, Path) and isinstance(events_path, Path)
+        if mode == "provider":
+            records = events_path.read_bytes().splitlines(keepends=True)
+            last = RuntimeStepEvent(**json.loads(records[-1]))
+            records[-1] = serialize_runtime_step_event_jsonl(
+                replace(last, provider="omniroute")
+            ).encode("utf-8")
+            events_path.write_bytes(b"".join(records))
+        else:
+            changed_state = replace(
+                v["state"],
+                completed_step_ids=(
+                    "extra",
+                    *v["state"].completed_step_ids,
+                ),
+            )
+            state_path.write_bytes(
+                serialize_workflow_execution_state_json(changed_state).encode(
+                    "utf-8"
+                )
+            )
+        before = state_path.read_bytes(), events_path.read_bytes()
+        phase147_calls: list[object] = []
+        provider_calls: list[object] = []
+
+        with pytest.raises(Phase190Error) as caught:
+            phase190(
+                decision(wf, 9),
+                wf,
+                preparation_approval(wf, 10),
+                ctx["employee"],
+                state_path,
+                events_path,
+                ctx["resolved_tools"],
+                ctx["api_key"],
+                ctx["execution_approval"],
+                object(),
+                phase145_function=lambda *_args: p,
+                phase146_function=lambda *_args: st,
+                phase147_function=lambda *_args: phase147_calls.append(1),
+                phase155_function=lambda *_args: provider_calls.append(1),
+            )
+
+        assert caught.value.detail.classification == "approval_contract"
+        assert phase147_calls == []
+        assert provider_calls == []
+        assert (state_path.read_bytes(), events_path.read_bytes()) == before

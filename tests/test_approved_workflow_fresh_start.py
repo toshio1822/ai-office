@@ -100,6 +100,7 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from ai_office.tools import ToolDefinition
+from tests._phase260_test_support import synthetic_continuation_facts
 
 MODULE_PATH = (
     Path(route_approved_workflow_fresh_start.__code__.co_filename)
@@ -241,6 +242,17 @@ def real_context_for(
         wf.steps[index - 1].instructions,
         (),
         (upstream,),
+        synthetic_continuation_facts(
+            workflow_id=wf.id,
+            predecessor_step_id=wf.steps[index - 2].id,
+            predecessor_step_index=index - 1,
+            predecessor_employee_id=wf.steps[index - 2].employee,
+            completed_step_ids=tuple(step.id for step in wf.steps[: index - 1]),
+            output_text="ok",
+            response_id="resp-1",
+            request_id="request-1",
+            next_step_index=index,
+        ),
     )
     approval = approve_model_invocation_execution(
         request,

@@ -4580,9 +4580,52 @@ to return the generic approval error without exposing fact values. Empty
 request/task/fingerprint bytes, including target-bound and upstream-input
 compatibility fixtures, remain unchanged.
 
-No workflow engine or CLI path derives or injects non-empty runtime facts yet;
-current prepared-step and preview paths continue to construct the empty
-snapshot. Persisted-history fact construction, authoritative source
-revalidation, terminal freshness, and publication-readiness assessment remain
-deferred to the next Phase. State/event schemas, providers, provider-specific
-logic, retries, replay, and regeneration are unchanged.
+Persisted-history fact construction, authoritative source revalidation,
+terminal freshness, and publication-readiness assessment remain deferred to the
+next Phase. State/event schemas, providers, provider-specific logic, retries,
+replay, and regeneration are unchanged.
+
+## Phase 260: Authoritative pre-step facts for persisted continuation
+
+Phase 260 wires the Phase 258/259 contract into the persisted continuation
+boundary. A provider-independent pure builder derives exactly six selected
+facts from one strict persisted success history for the next step:
+
+```text
+workflow.status                 enum      persisted state
+workflow.completed_step_count   integer   len(completed_step_ids)
+predecessor.step_id             identifier
+predecessor.step_index          integer
+predecessor.employee_id         identifier
+predecessor.provider            enum      immediate predecessor event
+```
+
+The two state facts use `origin="persisted_state"`, `source_ref="state"`, and
+the SHA-256 of the exact authoritative state bytes read at the persistence
+boundary. The four predecessor facts use `origin="persisted_event"`,
+`source_ref="event:<step_index>"`, and the SHA-256 of the repository's existing
+canonical JSONL serializer for exactly that event. Observation times are
+absent. Output text, request/response IDs, diagnostics, raw provider payloads,
+credentials, paths, and other history are never runtime-fact values.
+
+`UpstreamStepOutput` remains Policy A's immediate predecessor business-output
+channel. Its exact untrusted `output_text` is still rendered only as upstream
+task data; it is not summarized or copied into runtime facts. Persisted
+continuation preparation builds both channels independently from the same
+strict history and attaches the non-empty facts snapshot to the invocation
+request. Fresh-start step 1 retains `EMPTY_RUNTIME_FACTS`.
+
+Immediately before running-state persistence, the approved continuation
+boundary reloads state/events, recomputes both source digests, reconstructs
+Policy A and the exact runtime-facts snapshot, and validates the prepared
+request plus existing task-input/fingerprint/approval contract against that
+fresh view. Any stale source bytes, completed-step count, predecessor identity,
+index, employee, provider, or canonical event bytes stops before persistence
+and before provider execution. No approval is refreshed and no retry, replay,
+or automatic continuation is introduced; state/events remain byte-for-byte
+unchanged on this rejection.
+
+Persisted `continue --preview-only` therefore exposes the deterministic facts
+and intentionally has a new fingerprint because the facts are now part of the
+approved request. Terminal post-completion facts and publication-readiness
+assessment are not implemented by this Phase.

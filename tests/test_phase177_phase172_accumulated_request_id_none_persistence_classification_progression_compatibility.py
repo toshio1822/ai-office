@@ -91,6 +91,7 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from ai_office.tools import ToolDefinition
+from tests._phase260_test_support import synthetic_continuation_facts
 
 phase177 = route_runtime_result_to_persisted_running_execution_orchestration_boundary
 phase176 = route_runtime_result_to_prepared_start_persistence_orchestration_boundary
@@ -435,6 +436,23 @@ def constructed_start(values: dict[str, object]) -> PreparedStepExecutionStart:
     decision = prepare_decision(wf, 6)
     employee = employee_for(decision)
     prepared = prepared_for(wf, decision, employee)
+    invocation = getattr(values.get("result"), "invocation_result", None)
+    provider = getattr(invocation, "provider", "openai")
+    response_id = getattr(invocation, "response_id", "response-step-6")
+    request_id = getattr(invocation, "request_id", None)
+    output_text = getattr(invocation, "text", "output") or "output"
+    facts = synthetic_continuation_facts(
+        workflow_id=wf.id,
+        predecessor_step_id=wf.steps[5].id,
+        predecessor_step_index=6,
+        predecessor_employee_id=wf.steps[5].employee,
+        completed_step_ids=tuple(step.id for step in wf.steps[:6]),
+        output_text=output_text,
+        response_id=response_id,
+        request_id=request_id,
+        next_step_index=7,
+        provider=provider,
+    )
     return PreparedStepExecutionStart(
         ModelInvocationRequest(
             prepared.model,
@@ -450,6 +468,7 @@ def constructed_start(values: dict[str, object]) -> PreparedStepExecutionStart:
                     "output",
                 ),
             ),
+            facts,
         ),
         WorkflowExecutionState(
             prepared.workflow_id,

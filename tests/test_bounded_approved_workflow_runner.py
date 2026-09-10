@@ -49,6 +49,7 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
+from tests._phase260_test_support import synthetic_continuation_facts
 
 
 def workflow(count: int = 4) -> WorkflowDefinition:
@@ -186,7 +187,25 @@ def real_context(
     )
     prepared_request = ModelInvocationRequest(
         emp.model, emp.instructions, wf.steps[index - 1].instructions, ()
-        , (upstream,)
+        , (upstream,), synthetic_continuation_facts(
+            workflow_id=wf.id,
+            predecessor_step_id=wf.steps[index - 2].id,
+            predecessor_step_index=index - 1,
+            predecessor_employee_id=wf.steps[index - 2].employee,
+            completed_step_ids=tuple(step.id for step in wf.steps[: index - 1]),
+            output_text="output" if index == 10 else "ok",
+            response_id=(
+                "resp_123"
+                if index == 11
+                else f"response-{wf.steps[index - 2].id}"
+            ),
+            request_id=(
+                "request_123"
+                if index == 11
+                else f"request-{wf.steps[index - 2].id}"
+            ),
+            next_step_index=index,
+        )
     )
     approval = approve_model_invocation_execution(
         prepared_request, (), provider="openai", approved_by="reviewer", approval_id="approval-1"
