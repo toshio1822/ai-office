@@ -4695,3 +4695,28 @@ boundary, so a directly constructed forged `ready` assessment cannot bypass
 contract validation. Phase 262 still persists no readiness/claim sidecar or
 event, changes no state/events schema, and introduces no provider execution,
 retry, replay, continuation, regeneration, or workflow-result change.
+
+## Phase 263: Immutable publication-readiness audit sidecar
+
+Phase 263 persists one already-derived Phase 262 evaluation as a separate,
+frozen `PublicationReadinessAuditRecord`. The record binds the exact
+`PostTerminalFacts`, its canonical digest, the candidate business-output
+digest, the exact assessment and its canonical digest, and the explicitly
+supplied `PublicationClaimContract` plus its safe canonical digest when one
+was evaluated. A mismatching contract is retained as structured identity in
+the audit metadata even when Phase 262 returns the generic
+`stale_or_inconsistent` / `claim_contract_mismatch` assessment; raw output is
+never retained.
+
+The sidecar is an explicitly caller-supplied path and is not workflow
+execution state, `events.jsonl`, or the business output. Its compact canonical
+UTF-8 JSON is created with exclusive create-only semantics and no trailing
+newline. Re-persisting byte-identical canonical bytes is an idempotent no-op;
+different existing bytes are rejected without overwrite, truncation, rename,
+or deletion. Strict reload rejects invalid UTF-8/JSON, duplicate or unknown
+keys, missing fields, invalid nested contracts/digests, and noncanonical bytes,
+then requires byte-for-byte canonical reserialization. No sidecar is generated
+automatically after execution, no readiness event or `workflows result` field
+is added, and no provider/network call, timestamp, claim-contract generation,
+publication action, or regeneration is introduced. Human-approved
+regeneration remains future work.

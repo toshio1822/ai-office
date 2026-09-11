@@ -45,8 +45,12 @@ PublicationReadiness = Literal[
 _POST_TERMINAL_FACTS_SCHEMA_VERSION = "post-terminal-facts.v1"
 _PUBLICATION_READINESS_SCHEMA_VERSION = "publication-readiness.v1"
 _PUBLICATION_CLAIM_CONTRACT_SCHEMA_VERSION = "publication-claims.v1"
+_PUBLICATION_READINESS_AUDIT_SCHEMA_VERSION = "publication-readiness-audit.v1"
 _PUBLICATION_CLAIM_CONTRACT_SCOPE = "post_terminal_runtime_consistency"
 _ERROR_MESSAGE = "post-terminal evidence is invalid"
+_AUDIT_ERROR_MESSAGE = "publication-readiness audit is invalid"
+_AUDIT_PERSISTENCE_ERROR_MESSAGE = "publication-readiness audit persistence failed"
+_AUDIT_LOAD_ERROR_MESSAGE = "publication-readiness audit could not be loaded"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 _REASON_ORDER = (
@@ -57,6 +61,55 @@ _REASON_ORDER = (
     "claim_contract_mismatch",
 )
 _REASON_CODES = frozenset(_REASON_ORDER)
+_AUDIT_KEYS = frozenset(
+    {
+        "assessment",
+        "assessment_sha256",
+        "evaluated_claim_contract",
+        "evaluated_claim_contract_sha256",
+        "post_terminal_facts",
+        "post_terminal_facts_sha256",
+        "schema_version",
+    }
+)
+_FACTS_KEYS = frozenset(
+    {
+        "completed_step_ids",
+        "events_sha256",
+        "final_output_sha256",
+        "schema_version",
+        "state_sha256",
+        "terminal_employee_id",
+        "terminal_provider",
+        "terminal_reason",
+        "terminal_status",
+        "terminal_step_id",
+        "terminal_step_index",
+        "workflow_id",
+    }
+)
+_CLAIM_CONTRACT_KEYS = frozenset(
+    {
+        "asserted_terminal_status",
+        "business_output_sha256",
+        "post_terminal_facts_sha256",
+        "schema_version",
+        "scope",
+        "workflow_id",
+    }
+)
+_ASSESSMENT_KEYS = frozenset(
+    {
+        "business_output_sha256",
+        "claim_contract_sha256",
+        "execution_status",
+        "post_terminal_facts",
+        "readiness",
+        "reason_codes",
+        "schema_version",
+    }
+)
+_ASSESSMENT_KEYS_WITH_CONTRACT = _ASSESSMENT_KEYS | {"claim_contract"}
 
 
 @dataclass(frozen=True)
@@ -88,6 +141,41 @@ class PublicationClaimContractError(PostTerminalEvidenceError):
 
 class PublicationReadinessError(PostTerminalEvidenceError):
     """Raised when a readiness assessment input is not exactly typed."""
+
+
+@dataclass(frozen=True)
+class PublicationReadinessAuditFailureDetail:
+    """Safe classification for a rejected readiness audit operation."""
+
+    classification: str
+
+
+class PublicationReadinessAuditError(ValueError):
+    """Raised when a publication-readiness audit record is invalid."""
+
+    def __init__(self, classification: str = "audit") -> None:
+        super().__init__(_AUDIT_ERROR_MESSAGE)
+        self.detail = PublicationReadinessAuditFailureDetail(classification)
+
+
+class PublicationReadinessAuditPersistenceError(PublicationReadinessAuditError):
+    """Raised when an explicit audit sidecar cannot be created safely."""
+
+    def __init__(self, classification: str = "persistence") -> None:
+        ValueError.__init__(self, _AUDIT_PERSISTENCE_ERROR_MESSAGE)
+        self.detail = PublicationReadinessAuditFailureDetail(classification)
+
+
+class PublicationReadinessAuditConflictError(PublicationReadinessAuditPersistenceError):
+    """Raised when an existing sidecar has different bytes."""
+
+
+class PublicationReadinessAuditLoadError(PublicationReadinessAuditError):
+    """Raised when an audit sidecar is not an exact canonical record."""
+
+    def __init__(self, classification: str = "load") -> None:
+        ValueError.__init__(self, _AUDIT_LOAD_ERROR_MESSAGE)
+        self.detail = PublicationReadinessAuditFailureDetail(classification)
 
 
 @dataclass(frozen=True)
@@ -170,6 +258,216 @@ class PublicationReadinessAssessment:
     def digest(self) -> str:
         """Return the SHA-256 identity of canonical assessment JSON."""
         return publication_readiness_assessment_digest(self)
+
+
+@dataclass(frozen=True)
+class PublicationReadinessAuditRecord:
+    """One immutable, separately persisted readiness evaluation."""
+
+    schema_version: Literal["publication-readiness-audit.v1"]
+    post_terminal_facts: PostTerminalFacts
+    evaluated_claim_contract: PublicationClaimContract | None
+    assessment: PublicationReadinessAssessment
+
+    def __post_init__(self) -> None:
+        _validate_publication_readiness_audit_record(self)
+
+    @property
+    def digest(self) -> str:
+        """Return the SHA-256 identity of canonical audit JSON."""
+        return publication_readiness_audit_digest(self)
+
+    @property
+    def evaluated_claim_contract_sha256(self) -> str | None:
+        """Return the safe identity of the explicitly evaluated contract."""
+        if self.evaluated_claim_contract is None:
+            return None
+        return publication_claim_contract_digest(self.evaluated_claim_contract)
+
+    @property
+    def post_terminal_facts_sha256(self) -> str:
+        """Return the exact nested facts canonical digest."""
+        return post_terminal_facts_digest(self.post_terminal_facts)
+
+    @property
+    def assessment_sha256(self) -> str:
+        """Return the exact nested assessment canonical digest."""
+        return publication_readiness_assessment_digest(self.assessment)
+
+
+@dataclass(frozen=True)
+class PublicationReadinessAuditPersistenceResult:
+    """Result of an explicit create-only audit-sidecar persistence attempt."""
+
+    bytes_written: int
+    idempotent: bool
+
+
+def build_publication_readiness_audit_record(
+    post_terminal_facts: PostTerminalFacts,
+    business_output: str | None,
+    *,
+    claim_contract: PublicationClaimContract | None = None,
+) -> PublicationReadinessAuditRecord:
+    """Evaluate readiness once and bind the supplied inputs to an audit record.
+
+    This is deliberately the only builder for the audit record.  The supplied
+    contract is retained even when Phase 262's precedence rules omit it from
+    the returned assessment, which preserves safe mismatch identity without
+    storing the candidate output itself.
+    """
+    if type(post_terminal_facts) is not PostTerminalFacts:
+        _raise_audit("facts_type")
+    if business_output is not None and type(business_output) is not str:
+        _raise_audit("business_output_type")
+    if claim_contract is not None and type(claim_contract) is not (
+        PublicationClaimContract
+    ):
+        _raise_audit("claim_contract_type")
+    try:
+        assessment = assess_terminal_publication_readiness(
+            post_terminal_facts,
+            business_output,
+            claim_contract=claim_contract,
+        )
+        return PublicationReadinessAuditRecord(
+            schema_version=_PUBLICATION_READINESS_AUDIT_SCHEMA_VERSION,
+            post_terminal_facts=post_terminal_facts,
+            evaluated_claim_contract=claim_contract,
+            assessment=assessment,
+        )
+    except PublicationReadinessAuditError:
+        raise
+    except PostTerminalEvidenceError:
+        raise
+    except Exception:
+        _raise_audit("audit_build")
+
+
+def serialize_publication_readiness_audit_canonical(
+    record: PublicationReadinessAuditRecord,
+) -> str:
+    """Serialize one readiness audit as compact deterministic JSON text."""
+    if type(record) is not PublicationReadinessAuditRecord:
+        _raise_audit("record_type")
+    _validate_publication_readiness_audit_record(record)
+    try:
+        value = {
+            "assessment": json.loads(
+                serialize_publication_readiness_assessment_canonical(
+                    record.assessment
+                )
+            ),
+            "assessment_sha256": record.assessment_sha256,
+            "evaluated_claim_contract": (
+                json.loads(
+                    serialize_publication_claim_contract_canonical(
+                        record.evaluated_claim_contract
+                    )
+                )
+                if record.evaluated_claim_contract is not None
+                else None
+            ),
+            "evaluated_claim_contract_sha256": (
+                record.evaluated_claim_contract_sha256
+            ),
+            "post_terminal_facts": json.loads(
+                serialize_post_terminal_facts_canonical(record.post_terminal_facts)
+            ),
+            "post_terminal_facts_sha256": record.post_terminal_facts_sha256,
+            "schema_version": record.schema_version,
+        }
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        _raise_audit("audit_serialization")
+
+
+def publication_readiness_audit_canonical_bytes(
+    record: PublicationReadinessAuditRecord,
+) -> bytes:
+    """Return canonical readiness-audit JSON encoded as UTF-8 bytes."""
+    return serialize_publication_readiness_audit_canonical(record).encode("utf-8")
+
+
+def publication_readiness_audit_digest(record: PublicationReadinessAuditRecord) -> str:
+    """Return the SHA-256 identity of canonical readiness-audit bytes."""
+    return sha256(publication_readiness_audit_canonical_bytes(record)).hexdigest()
+
+
+def persist_publication_readiness_audit(
+    path: Path,
+    record: PublicationReadinessAuditRecord,
+) -> PublicationReadinessAuditPersistenceResult:
+    """Create one explicit immutable audit sidecar without overwriting it."""
+    _validate_audit_path(path, _raise_audit_persistence)
+    if type(record) is not PublicationReadinessAuditRecord:
+        _raise_audit_persistence("record_type")
+    contents = publication_readiness_audit_canonical_bytes(record)
+    created = False
+    try:
+        with path.open("xb") as handle:
+            created = True
+            written = handle.write(contents)
+            if written != len(contents):
+                raise OSError
+            handle.flush()
+    except FileExistsError:
+        try:
+            existing = path.read_bytes()
+        except OSError:
+            _raise_audit_persistence("target")
+        if existing == contents:
+            return PublicationReadinessAuditPersistenceResult(
+                bytes_written=len(contents),
+                idempotent=True,
+            )
+        raise PublicationReadinessAuditConflictError("conflict") from None
+    except OSError:
+        if created:
+            try:
+                path.unlink()
+            except OSError:
+                _raise_audit_persistence("rollback")
+        _raise_audit_persistence("write")
+    return PublicationReadinessAuditPersistenceResult(
+        bytes_written=len(contents),
+        idempotent=False,
+    )
+
+
+def load_publication_readiness_audit(
+    path: Path,
+) -> PublicationReadinessAuditRecord:
+    """Read, strictly validate, and canonically revalidate one audit sidecar."""
+    _validate_audit_path(path, _raise_audit_load)
+    try:
+        contents = path.read_bytes()
+    except OSError:
+        _raise_audit_load("target")
+    try:
+        text = contents.decode("utf-8")
+        value = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_audit_keys,
+        )
+        record = _parse_publication_readiness_audit(value)
+        if publication_readiness_audit_canonical_bytes(record) != contents:
+            _raise_audit_load("noncanonical")
+        return record
+    except PublicationReadinessAuditLoadError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, _DuplicateAuditKeyError):
+        _raise_audit_load("parse")
+    except PublicationReadinessAuditError:
+        _raise_audit_load("record")
+    except Exception:
+        _raise_audit_load("record")
 
 
 def load_persisted_terminal_snapshot(
@@ -930,6 +1228,357 @@ def _validate_publication_readiness_assessment(
             _raise_readiness("claim_contract_digest_mismatch")
 
 
+def _validate_publication_readiness_audit_record(
+    record: PublicationReadinessAuditRecord,
+) -> None:
+    if type(record) is not PublicationReadinessAuditRecord:
+        _raise_audit("record_type")
+    if type(record.schema_version) is not str or (
+        record.schema_version != _PUBLICATION_READINESS_AUDIT_SCHEMA_VERSION
+    ):
+        _raise_audit("schema_version")
+    if type(record.post_terminal_facts) is not PostTerminalFacts:
+        _raise_audit("facts_type")
+    if type(record.assessment) is not PublicationReadinessAssessment:
+        _raise_audit("assessment_type")
+    if record.evaluated_claim_contract is not None and type(
+        record.evaluated_claim_contract
+    ) is not PublicationClaimContract:
+        _raise_audit("claim_contract_type")
+    try:
+        _validate_post_terminal_facts(record.post_terminal_facts)
+        if record.evaluated_claim_contract is not None:
+            _validate_publication_claim_contract_model(
+                record.evaluated_claim_contract
+            )
+        _validate_publication_readiness_assessment(record.assessment)
+        if record.assessment.post_terminal_facts != record.post_terminal_facts:
+            _raise_audit("assessment_facts_mismatch")
+        if (
+            record.assessment.claim_contract is not None
+            and record.evaluated_claim_contract != record.assessment.claim_contract
+        ):
+            _raise_audit("assessment_contract_mismatch")
+        if record.assessment.readiness == "ready":
+            if record.evaluated_claim_contract is None:
+                _raise_audit("ready_without_claim_contract")
+            if record.assessment.claim_contract != record.evaluated_claim_contract:
+                _raise_audit("ready_contract_mismatch")
+        elif record.assessment.claim_contract is not None:
+            _raise_audit("assessment_contract_unexpected")
+        elif record.assessment.reason_codes == ("claim_contract_missing",):
+            if record.evaluated_claim_contract is not None:
+                _raise_audit("claim_contract_binding")
+        elif record.assessment.reason_codes == ("claim_contract_mismatch",):
+            if record.evaluated_claim_contract is None:
+                _raise_audit("claim_contract_missing")
+        _validate_audit_assessment_evaluation(record)
+    except PublicationReadinessAuditError:
+        raise
+    except PostTerminalEvidenceError:
+        _raise_audit("nested_contract")
+    except Exception:
+        _raise_audit("nested_contract")
+
+
+def _validate_audit_assessment_evaluation(
+    record: PublicationReadinessAuditRecord,
+) -> None:
+    """Reject a structurally valid audit that contradicts Phase 262 output."""
+    facts = record.post_terminal_facts
+    assessment = record.assessment
+    output_digest = assessment.business_output_sha256
+    if facts.terminal_status == "persisted_failure":
+        expected_reasons = ("execution_not_workflow_complete",) + (
+            ("final_output_missing",)
+            if facts.final_output_sha256 is None
+            else ()
+        )
+        if (
+            assessment.readiness != "insufficient_evidence"
+            or assessment.reason_codes != expected_reasons
+        ):
+            _raise_audit("failure_assessment")
+        return
+
+    declared_output_digest = facts.final_output_sha256
+    if declared_output_digest is None:
+        if (
+            assessment.readiness != "stale_or_inconsistent"
+            or assessment.reason_codes != ("final_output_missing",)
+        ):
+            _raise_audit("missing_output_assessment")
+        return
+    if assessment.reason_codes == ("final_output_missing",):
+        if (
+            assessment.readiness != "stale_or_inconsistent"
+            or output_digest is not None
+        ):
+            _raise_audit("missing_output_assessment")
+        return
+    if assessment.reason_codes == ("final_output_mismatch",):
+        if (
+            assessment.readiness != "stale_or_inconsistent"
+            or output_digest is None
+            or output_digest == declared_output_digest
+        ):
+            _raise_audit("output_mismatch_assessment")
+        return
+    if assessment.reason_codes == ("claim_contract_missing",):
+        if (
+            assessment.readiness != "insufficient_evidence"
+            or output_digest != declared_output_digest
+        ):
+            _raise_audit("missing_claim_assessment")
+        return
+    if assessment.reason_codes == ("claim_contract_mismatch",):
+        if (
+            assessment.readiness != "stale_or_inconsistent"
+            or output_digest != declared_output_digest
+            or record.evaluated_claim_contract is None
+        ):
+            _raise_audit("claim_mismatch_assessment")
+        try:
+            validate_publication_claim_contract(
+                record.evaluated_claim_contract,
+                facts,
+                output_digest or "",
+            )
+        except PublicationClaimContractError:
+            return
+        _raise_audit("claim_mismatch_assessment")
+    if assessment.reason_codes == ():
+        if (
+            assessment.readiness != "ready"
+            or output_digest != declared_output_digest
+            or record.evaluated_claim_contract is None
+        ):
+            _raise_audit("ready_assessment")
+        return
+    _raise_audit("assessment_evaluation")
+
+
+def _parse_publication_readiness_audit(
+    value: object,
+) -> PublicationReadinessAuditRecord:
+    data = _audit_object(value, _AUDIT_KEYS, "audit_parse")
+    schema_version = _audit_string(data["schema_version"], "audit_parse")
+    facts = _parse_audit_facts(data["post_terminal_facts"])
+    assessment = _parse_audit_assessment(data["assessment"])
+    contract_value = data["evaluated_claim_contract"]
+    contract = (
+        None
+        if contract_value is None
+        else _parse_audit_claim_contract(contract_value)
+    )
+    facts_digest = _audit_digest(data["post_terminal_facts_sha256"], "audit_parse")
+    assessment_digest = _audit_digest(data["assessment_sha256"], "audit_parse")
+    contract_digest_value = data["evaluated_claim_contract_sha256"]
+    contract_digest = (
+        None
+        if contract_digest_value is None
+        else _audit_digest(contract_digest_value, "audit_parse")
+    )
+    try:
+        record = PublicationReadinessAuditRecord(
+            schema_version=schema_version,
+            post_terminal_facts=facts,
+            evaluated_claim_contract=contract,
+            assessment=assessment,
+        )
+    except (PostTerminalEvidenceError, PublicationReadinessAuditError):
+        _raise_audit_load("record")
+    if facts_digest != post_terminal_facts_digest(record.post_terminal_facts):
+        _raise_audit_load("facts_digest")
+    if assessment_digest != publication_readiness_assessment_digest(record.assessment):
+        _raise_audit_load("assessment_digest")
+    if contract_digest != record.evaluated_claim_contract_sha256:
+        _raise_audit_load("claim_contract_digest")
+    return record
+
+
+def _parse_audit_facts(value: object) -> PostTerminalFacts:
+    data = _audit_object(value, _FACTS_KEYS, "facts_parse")
+    completed = _audit_string_array(data["completed_step_ids"], "facts_parse")
+    try:
+        return PostTerminalFacts(
+            schema_version=_audit_string(data["schema_version"], "facts_parse"),
+            workflow_id=_audit_string(data["workflow_id"], "facts_parse"),
+            terminal_status=_audit_status(data["terminal_status"], "facts_parse"),
+            terminal_reason=_audit_string(data["terminal_reason"], "facts_parse"),
+            terminal_step_id=_audit_string(data["terminal_step_id"], "facts_parse"),
+            terminal_step_index=_audit_positive_int(
+                data["terminal_step_index"], "facts_parse"
+            ),
+            terminal_employee_id=_audit_string(
+                data["terminal_employee_id"], "facts_parse"
+            ),
+            terminal_provider=_audit_optional_string(
+                data["terminal_provider"], "facts_parse"
+            ),
+            completed_step_ids=completed,
+            state_sha256=_audit_digest(data["state_sha256"], "facts_parse"),
+            events_sha256=_audit_digest(data["events_sha256"], "facts_parse"),
+            final_output_sha256=_audit_optional_digest(
+                data["final_output_sha256"], "facts_parse"
+            ),
+        )
+    except PostTerminalEvidenceError:
+        _raise_audit_load("facts_parse")
+
+
+def _parse_audit_claim_contract(value: object) -> PublicationClaimContract:
+    data = _audit_object(value, _CLAIM_CONTRACT_KEYS, "claim_contract_parse")
+    try:
+        return PublicationClaimContract(
+            schema_version=_audit_string(
+                data["schema_version"], "claim_contract_parse"
+            ),
+            scope=_audit_string(data["scope"], "claim_contract_parse"),
+            workflow_id=_audit_string(data["workflow_id"], "claim_contract_parse"),
+            business_output_sha256=_audit_digest(
+                data["business_output_sha256"], "claim_contract_parse"
+            ),
+            post_terminal_facts_sha256=_audit_digest(
+                data["post_terminal_facts_sha256"], "claim_contract_parse"
+            ),
+            asserted_terminal_status=_audit_string(
+                data["asserted_terminal_status"], "claim_contract_parse"
+            ),
+        )
+    except PostTerminalEvidenceError:
+        _raise_audit_load("claim_contract_parse")
+
+
+def _parse_audit_assessment(value: object) -> PublicationReadinessAssessment:
+    if type(value) is not dict or frozenset(value) not in {
+        _ASSESSMENT_KEYS,
+        _ASSESSMENT_KEYS_WITH_CONTRACT,
+    }:
+        _raise_audit_load("assessment_parse")
+    data = value
+    contract_value = data.get("claim_contract")
+    contract = (
+        None
+        if contract_value is None
+        else _parse_audit_claim_contract(contract_value)
+    )
+    reasons = _audit_string_array(data["reason_codes"], "assessment_parse")
+    try:
+        return PublicationReadinessAssessment(
+            schema_version=_audit_string(
+                data["schema_version"], "assessment_parse"
+            ),
+            execution_status=_audit_status(
+                data["execution_status"], "assessment_parse"
+            ),
+            readiness=_audit_readiness(data["readiness"], "assessment_parse"),
+            reason_codes=reasons,
+            post_terminal_facts=_parse_audit_facts(data["post_terminal_facts"]),
+            business_output_sha256=_audit_optional_digest(
+                data["business_output_sha256"], "assessment_parse"
+            ),
+            claim_contract_sha256=_audit_optional_digest(
+                data["claim_contract_sha256"], "assessment_parse"
+            ),
+            claim_contract=contract,
+        )
+    except PostTerminalEvidenceError:
+        _raise_audit_load("assessment_parse")
+
+
+def _audit_object(
+    value: object,
+    keys: frozenset[str],
+    classification: str,
+) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != keys:
+        _raise_audit_load(classification)
+    return value
+
+
+def _audit_string(value: object, classification: str) -> str:
+    if type(value) is not str or not value:
+        _raise_audit_load(classification)
+    return value
+
+
+def _audit_optional_string(value: object, classification: str) -> str | None:
+    if value is None:
+        return None
+    return _audit_string(value, classification)
+
+
+def _audit_string_array(value: object, classification: str) -> tuple[str, ...]:
+    if type(value) is not list or any(
+        type(item) is not str or not item for item in value
+    ):
+        _raise_audit_load(classification)
+    return tuple(value)
+
+
+def _audit_positive_int(value: object, classification: str) -> int:
+    if type(value) is not int or value < 1:
+        _raise_audit_load(classification)
+    return value
+
+
+def _audit_digest(value: object, classification: str) -> str:
+    if type(value) is not str or _SHA256_PATTERN.fullmatch(value) is None:
+        _raise_audit_load(classification)
+    return value
+
+
+def _audit_optional_digest(value: object, classification: str) -> str | None:
+    if value is None:
+        return None
+    return _audit_digest(value, classification)
+
+
+def _audit_status(value: object, classification: str) -> PostTerminalTerminalStatus:
+    if type(value) is not str or value not in {
+        "workflow_complete",
+        "persisted_failure",
+    }:
+        _raise_audit_load(classification)
+    return value
+
+
+def _audit_readiness(value: object, classification: str) -> PublicationReadiness:
+    if type(value) is not str or value not in {
+        "ready",
+        "stale_or_inconsistent",
+        "insufficient_evidence",
+    }:
+        _raise_audit_load(classification)
+    return value
+
+
+class _DuplicateAuditKeyError(ValueError):
+    pass
+
+
+def _reject_duplicate_audit_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateAuditKeyError
+        result[key] = value
+    return result
+
+
+def _validate_audit_path(path: Path, error: Callable[[str], None]) -> None:
+    if type(path) is not type(Path()):
+        error("path_type")
+    try:
+        if path.is_dir():
+            error("target")
+    except OSError:
+        error("target")
+
+
 def _raw_output_digest(output_text: str | None) -> str:
     if output_text is None or type(output_text) is not str:
         _raise_facts("output_type")
@@ -967,6 +1616,18 @@ def _raise_readiness(classification: str) -> None:
     raise PublicationReadinessError(classification) from None
 
 
+def _raise_audit(classification: str) -> None:
+    raise PublicationReadinessAuditError(classification) from None
+
+
+def _raise_audit_persistence(classification: str) -> None:
+    raise PublicationReadinessAuditPersistenceError(classification) from None
+
+
+def _raise_audit_load(classification: str) -> None:
+    raise PublicationReadinessAuditLoadError(classification) from None
+
+
 __all__ = [
     "PersistedTerminalSnapshot",
     "PersistedTerminalSnapshotError",
@@ -980,17 +1641,30 @@ __all__ = [
     "PublicationReadiness",
     "PublicationReadinessAssessment",
     "PublicationReadinessError",
+    "PublicationReadinessAuditConflictError",
+    "PublicationReadinessAuditError",
+    "PublicationReadinessAuditFailureDetail",
+    "PublicationReadinessAuditLoadError",
+    "PublicationReadinessAuditPersistenceError",
+    "PublicationReadinessAuditPersistenceResult",
+    "PublicationReadinessAuditRecord",
     "assess_terminal_publication_readiness",
+    "build_publication_readiness_audit_record",
     "build_post_terminal_facts",
+    "load_publication_readiness_audit",
     "load_persisted_terminal_snapshot",
     "post_terminal_facts_canonical_bytes",
     "post_terminal_facts_digest",
     "publication_claim_contract_canonical_bytes",
     "publication_claim_contract_digest",
+    "publication_readiness_audit_canonical_bytes",
+    "publication_readiness_audit_digest",
     "publication_readiness_assessment_canonical_bytes",
     "publication_readiness_assessment_digest",
+    "persist_publication_readiness_audit",
     "serialize_post_terminal_facts_canonical",
     "serialize_publication_claim_contract_canonical",
+    "serialize_publication_readiness_audit_canonical",
     "serialize_publication_readiness_assessment_canonical",
     "validate_publication_claim_contract",
 ]
