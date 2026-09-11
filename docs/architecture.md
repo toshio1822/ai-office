@@ -4753,3 +4753,47 @@ is generated automatically, and no state/event/audit/workflow-result schema
 is changed. A future execution boundary must consume or retire one approved
 plan for at most one external-side-effect attempt, including an ambiguous
 provider attempt; Phase 264 does not implement that durable one-use boundary.
+
+## Phase 265: Durable one-use publication-regeneration attempt claim
+
+Phase 265 keeps the Phase 264 `PublicationRegenerationApproval` fields and
+validation semantics unchanged, and adds only its canonical compact UTF-8 JSON
+identity and SHA-256 digest. It also adds one exact, frozen
+`PublicationRegenerationAttemptClaim` that is built deterministically from the
+exact Phase 264 plan and outer approval. The claim records only structured
+identities: the approval-derived consumption key, regeneration and source-audit
+identities, approval identity, provider, execution-target fingerprint, and
+invocation-request fingerprint. It contains no raw request, business output,
+provider payload, credential, path, timestamp, or random value.
+
+The consumption key is the lowercase SHA-256 digest of the exact approval ID.
+The authoritative ledger path is derived only from one caller-supplied,
+already-existing ledger directory and that key; no default or hidden directory
+is selected or created, and the raw approval ID is not used in the filename.
+The claim operation validates and builds the complete claim before attempting a
+filesystem write, then uses exclusive create, writes only canonical claim
+bytes, flushes and fsyncs the claim file, and fsyncs the parent directory where
+the platform supports it. Only that first invocation that completes durable
+creation succeeds.
+
+An existing marker is consumption, regardless of whether it is identical,
+different, corrupt, or truncated. Identical replay therefore never returns an
+authorization that could be used for another provider call, and reusing the
+same approval ID for a different plan is blocked by the same consumption key.
+If writing, flushing, file fsync, or directory fsync becomes ambiguous after
+exclusive creation, the marker is not deleted and the operation reports a safe
+persistence error rather than returning a claim or restoring reusable state.
+Claims can be loaded read-only only when their UTF-8, JSON keys, exact types,
+schema/state, digests, approval-derived key, and canonical bytes all validate.
+Loading never repairs or deletes a marker. There is no claim deletion, reset,
+reopen, retry, or replay API.
+
+The future execution order remains provider-free in this phase: fresh
+authoritative Phase 263 audit validation, Phase 264 plan revalidation, outer
+approval validation, future inner model-invocation approval validation,
+provider-independent credential/preflight checks, then this Phase 265 durable
+claim immediately before transport. Only a future phase may attempt a provider,
+and any success, failure, timeout, SIGTERM, or ambiguous termination after the
+claim must leave the outer approval consumed with no automatic retry. Provider
+execution, regenerated output, state/events/business-output/audit-sidecar
+mutation, CLI execution, and reconciliation remain future work.
