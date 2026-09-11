@@ -1226,6 +1226,151 @@ def test_write_or_fsync_ambiguity_leaves_marker_and_never_returns_claim(
         claim_publication_regeneration_attempt(ledger, plan, approval)
 
 
+def test_write_failure_after_exclusive_create_is_ambiguous_and_consumed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    marker = ledger / f"{claim.consumption_key}.json"
+    canonical = publication_regeneration_attempt_claim_canonical_bytes(claim)
+    original_open = Path.open
+    exclusive_create_succeeded = False
+
+    class FailingWriteHandle:
+        def __init__(self, handle: object) -> None:
+            self.handle = handle
+
+        def __enter__(self) -> FailingWriteHandle:
+            self.handle.__enter__()  # type: ignore[attr-defined]
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self.handle.__exit__(*args)  # type: ignore[attr-defined]
+
+        def write(self, contents: bytes) -> int:
+            self.handle.write(contents[:1])  # type: ignore[attr-defined]
+            raise OSError("simulated write failure")
+
+        def flush(self) -> None:
+            raise AssertionError("write failure must happen before flush")
+
+        def fileno(self) -> int:
+            return self.handle.fileno()  # type: ignore[attr-defined]
+
+    def fail_write(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal exclusive_create_succeeded
+        handle = original_open(path, *args, **kwargs)
+        if path == marker and args and args[0] == "xb":
+            exclusive_create_succeeded = True
+            return FailingWriteHandle(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", fail_write)
+    with pytest.raises(
+        PublicationRegenerationAttemptClaimPersistenceError
+    ) as error:
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+    assert exclusive_create_succeeded is True
+    assert error.value.detail.classification == "ambiguous"
+    assert marker.exists()
+    assert marker.read_bytes() == canonical[:1]
+    with pytest.raises(PublicationRegenerationAttemptAlreadyConsumedError):
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+
+
+def test_flush_failure_after_write_is_ambiguous_and_consumed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    marker = ledger / f"{claim.consumption_key}.json"
+    canonical = publication_regeneration_attempt_claim_canonical_bytes(claim)
+    original_open = Path.open
+    exclusive_create_succeeded = False
+
+    class FailingFlushHandle:
+        def __init__(self, handle: object) -> None:
+            self.handle = handle
+
+        def __enter__(self) -> FailingFlushHandle:
+            self.handle.__enter__()  # type: ignore[attr-defined]
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            self.handle.close()  # type: ignore[attr-defined]
+            return False
+
+        def write(self, contents: bytes) -> int:
+            return self.handle.write(contents)  # type: ignore[attr-defined]
+
+        def flush(self) -> None:
+            raise OSError("simulated flush failure")
+
+        def fileno(self) -> int:
+            return self.handle.fileno()  # type: ignore[attr-defined]
+
+    def fail_flush(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal exclusive_create_succeeded
+        handle = original_open(path, *args, **kwargs)
+        if path == marker and args and args[0] == "xb":
+            exclusive_create_succeeded = True
+            return FailingFlushHandle(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", fail_flush)
+    with pytest.raises(
+        PublicationRegenerationAttemptClaimPersistenceError
+    ) as error:
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+    assert exclusive_create_succeeded is True
+    assert error.value.detail.classification == "ambiguous"
+    assert marker.exists()
+    assert marker.read_bytes() == canonical
+    with pytest.raises(PublicationRegenerationAttemptAlreadyConsumedError):
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+
+
+def test_parent_directory_fsync_failure_leaves_canonical_consumed_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    marker = ledger / f"{claim.consumption_key}.json"
+    canonical = publication_regeneration_attempt_claim_canonical_bytes(claim)
+    original_fsync = publication_regeneration_module.os.fsync
+    fsync_calls = 0
+
+    def fail_parent_fsync(descriptor: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 1:
+            original_fsync(descriptor)
+            return
+        raise OSError("simulated parent-directory fsync failure")
+
+    monkeypatch.setattr(
+        publication_regeneration_module.os,
+        "fsync",
+        fail_parent_fsync,
+    )
+    with pytest.raises(
+        PublicationRegenerationAttemptClaimPersistenceError
+    ) as error:
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+    assert fsync_calls == 2
+    assert error.value.detail.classification == "ambiguous"
+    assert marker.exists()
+    assert marker.read_bytes() == canonical
+    with pytest.raises(PublicationRegenerationAttemptAlreadyConsumedError):
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+
+
 def test_strict_claim_loader_accepts_exact_record_and_rejects_tampering(
     tmp_path: Path,
 ) -> None:
