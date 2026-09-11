@@ -9,11 +9,12 @@ import socket
 import subprocess
 import sys
 import time
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 
 import pytest
 
+import ai_office.engine.publication_regeneration as publication_regeneration_module
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.post_terminal_facts import (
     PublicationClaimContract,
@@ -26,12 +27,29 @@ from ai_office.engine.post_terminal_facts import (
 from ai_office.engine.publication_regeneration import (
     PublicationRegenerationApproval,
     PublicationRegenerationApprovalError,
+    PublicationRegenerationAttemptAlreadyConsumedError,
+    PublicationRegenerationAttemptClaim,
+    PublicationRegenerationAttemptClaimError,
+    PublicationRegenerationAttemptClaimLoadError,
+    PublicationRegenerationAttemptClaimPersistenceError,
     PublicationRegenerationPlan,
     PublicationRegenerationPlanError,
     approve_publication_regeneration,
+    build_publication_regeneration_attempt_claim,
     build_publication_regeneration_plan,
+    claim_publication_regeneration_attempt,
+    load_publication_regeneration_attempt_claim,
+    publication_regeneration_approval_canonical_bytes,
+    publication_regeneration_approval_digest,
+    publication_regeneration_attempt_claim_canonical_bytes,
+    publication_regeneration_attempt_claim_digest,
+    publication_regeneration_attempt_claim_path,
+    publication_regeneration_consumption_key,
+    publication_regeneration_consumption_key_from_approval_id,
     publication_regeneration_plan_canonical_bytes,
     publication_regeneration_plan_digest,
+    serialize_publication_regeneration_approval_canonical,
+    serialize_publication_regeneration_attempt_claim_canonical,
     serialize_publication_regeneration_plan_canonical,
     validate_publication_regeneration_approval,
     validate_publication_regeneration_plan,
@@ -64,6 +82,10 @@ class PublicationRegenerationPlanChild(PublicationRegenerationPlan):
 
 
 class PublicationRegenerationApprovalChild(PublicationRegenerationApproval):
+    pass
+
+
+class PublicationRegenerationAttemptClaimChild(PublicationRegenerationAttemptClaim):
     pass
 
 
@@ -263,6 +285,27 @@ def plan_for(tmp_path: Path, target=DIRECT_OPENAI_EXECUTION_TARGET):
         target,
     )
     return facts, audit, invocation, tools, plan
+
+
+def approval_for(
+    plan: PublicationRegenerationPlan,
+    approval_id: str = "regeneration-approval-1",
+) -> PublicationRegenerationApproval:
+    return approve_publication_regeneration(
+        plan,
+        approved_by="human-reviewer",
+        approval_id=approval_id,
+    )
+
+
+def claim_fixture(
+    tmp_path: Path,
+    approval_id: str = "regeneration-approval-1",
+):
+    _facts, audit, invocation, tools, plan = plan_for(tmp_path)
+    approval = approval_for(plan, approval_id)
+    claim = build_publication_regeneration_attempt_claim(plan, approval)
+    return audit, invocation, tools, plan, approval, claim
 
 
 def test_non_ready_audit_builds_frozen_plan_with_existing_fingerprints(
@@ -869,3 +912,364 @@ print(publication_regeneration_plan_canonical_bytes(plan).decode("utf-8"))
     digest, canonical = result.stdout.splitlines()
     assert digest == plan.digest
     assert canonical == serialize_publication_regeneration_plan_canonical(plan)
+
+
+def test_approval_canonical_identity_preserves_phase264_fields_and_semantics(
+    tmp_path: Path,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, _claim = claim_fixture(tmp_path)
+
+    assert tuple(field.name for field in fields(PublicationRegenerationApproval)) == (
+        "approved",
+        "regeneration_plan_sha256",
+        "approved_by",
+        "approval_id",
+    )
+    canonical = serialize_publication_regeneration_approval_canonical(approval)
+    expected = (
+        '{"approval_id":"regeneration-approval-1","approved":true,'
+        f'"approved_by":"human-reviewer","regeneration_plan_sha256":"{plan.digest}"'
+        "}"
+    )
+    assert canonical == expected
+    assert publication_regeneration_approval_canonical_bytes(approval) == (
+        expected.encode("utf-8")
+    )
+    assert publication_regeneration_approval_digest(approval) == hashlib.sha256(
+        expected.encode("utf-8")
+    ).hexdigest()
+    assert (
+        publication_regeneration_approval_digest(approval)
+        == "da7f86e47492062b6acd0170b564e3c1161593585699f57045978bda65db2807"
+    )
+    assert approval.digest == publication_regeneration_approval_digest(approval)
+    validate_publication_regeneration_approval(plan, approval)
+
+
+def test_attempt_claim_is_exact_frozen_and_contains_only_safe_identity(
+    tmp_path: Path,
+) -> None:
+    _audit, invocation, tools, plan, approval, claim = claim_fixture(tmp_path)
+
+    assert tuple(
+        field.name for field in fields(PublicationRegenerationAttemptClaim)
+    ) == (
+        "schema_version",
+        "consumption_key",
+        "regeneration_id",
+        "regeneration_plan_sha256",
+        "regeneration_approval_sha256",
+        "approval_id",
+        "approved_by",
+        "source_audit_sha256",
+        "provider",
+        "execution_target_sha256",
+        "invocation_request_sha256",
+        "state",
+    )
+    assert claim.schema_version == "publication-regeneration-attempt.v1"
+    assert claim.state == "claimed"
+    assert claim.regeneration_plan_sha256 == plan.digest
+    assert claim.regeneration_approval_sha256 == approval.digest
+    canonical = serialize_publication_regeneration_attempt_claim_canonical(claim)
+    assert canonical == (
+        '{"approval_id":"regeneration-approval-1","approved_by":"human-reviewer",'
+        '"consumption_key":"8903ff50a60b437fda6d73426bfb02c0c14f27e9b88a692ed6bab4c2228ccb80",'
+        '"execution_target_sha256":"f8d7bc1febd55eeb8cd53563b0348a87930836c688dcf930df4a50e3cef744e9",'
+        '"invocation_request_sha256":"1f92dff9be787d5f9adb8394eee514009f7d31f1d224d6b84ffd8afc3257637e",'
+        '"provider":"openai",'
+        '"regeneration_approval_sha256":"da7f86e47492062b6acd0170b564e3c1161593585699f57045978bda65db2807",'
+        '"regeneration_id":"regen-20260911-01",'
+        '"regeneration_plan_sha256":"528eecdfe39ec89e22da2a7c6af9358896115320f08df09a93b0546883be3e03",'
+        '"schema_version":"publication-regeneration-attempt.v1",'
+        '"source_audit_sha256":"6f0d017958a8623c0661663fd1fc9946012c5a9c3ddc4e06a13cbbd6adb9955f",'
+        '"state":"claimed"}'
+    )
+    assert publication_regeneration_attempt_claim_canonical_bytes(claim) == (
+        canonical.encode("utf-8")
+    )
+    assert publication_regeneration_attempt_claim_digest(claim) == hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+    assert (
+        publication_regeneration_attempt_claim_digest(claim)
+        == "2a50cc28827b02178b691890242d4fcd7b444ce2833bd3ef6017c142de4a8b81"
+    )
+    assert claim.digest == publication_regeneration_attempt_claim_digest(claim)
+    for unsafe in (
+        invocation.system_instructions,
+        invocation.task_instructions,
+        tools[0].description,
+        "ORIGINAL BUSINESS OUTPUT 日本語",
+        "state.json",
+        "credential",
+    ):
+        assert unsafe not in canonical
+    with pytest.raises(FrozenInstanceError):
+        claim.state = "other"  # type: ignore[misc]
+    with pytest.raises(PublicationRegenerationAttemptClaimError):
+        PublicationRegenerationAttemptClaimChild(**claim.__dict__)
+    with pytest.raises(TypeError):
+        PublicationRegenerationAttemptClaim(**claim.__dict__, extra="unknown")
+
+
+def test_claim_builder_binds_exact_plan_approval_and_consumption_identity(
+    tmp_path: Path,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, first_claim = claim_fixture(tmp_path)
+    different_id_approval = approval_for(plan, "different-approval")
+    different_id_claim = build_publication_regeneration_attempt_claim(
+        plan,
+        different_id_approval,
+    )
+    assert (
+        publication_regeneration_consumption_key(approval)
+        == publication_regeneration_consumption_key_from_approval_id(
+            approval.approval_id
+        )
+    )
+    assert different_id_claim.consumption_key != first_claim.consumption_key
+    assert different_id_claim.digest != first_claim.digest
+
+    changed_plan = replace(plan, regeneration_id="different-regeneration")
+    changed_approval = approval_for(changed_plan, approval.approval_id)
+    changed_claim = build_publication_regeneration_attempt_claim(
+        changed_plan,
+        changed_approval,
+    )
+    assert changed_claim.consumption_key == first_claim.consumption_key
+    assert (
+        changed_claim.regeneration_plan_sha256
+        != first_claim.regeneration_plan_sha256
+    )
+    assert changed_claim.digest != first_claim.digest
+
+    with pytest.raises(PublicationRegenerationAttemptClaimError):
+        build_publication_regeneration_attempt_claim(plan, changed_approval)
+
+
+def test_claim_builder_makes_no_filesystem_provider_network_env_or_clock_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, _claim = claim_fixture(tmp_path)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("external dependency was called")
+
+    monkeypatch.setattr(publication_regeneration_module.os, "getenv", forbidden)
+    monkeypatch.setattr(publication_regeneration_module.os, "open", forbidden)
+    monkeypatch.setattr(publication_regeneration_module.os, "fsync", forbidden)
+    monkeypatch.setattr(socket, "socket", forbidden)
+    monkeypatch.setattr(time, "time", forbidden)
+    monkeypatch.setattr(time, "time_ns", forbidden)
+    monkeypatch.setattr(Path, "read_bytes", forbidden)
+    monkeypatch.setattr(Path, "write_bytes", forbidden)
+    built = build_publication_regeneration_attempt_claim(plan, approval)
+    assert built == _claim
+
+
+def test_claim_path_requires_existing_caller_directory_and_hides_raw_approval_id(
+    tmp_path: Path,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    missing = tmp_path / "missing-ledger"
+    with pytest.raises(PublicationRegenerationAttemptClaimPersistenceError):
+        publication_regeneration_attempt_claim_path(missing, claim.consumption_key)
+
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    marker = publication_regeneration_attempt_claim_path(
+        ledger,
+        publication_regeneration_consumption_key(approval),
+    )
+    assert marker.parent == ledger
+    assert marker.name == f"{claim.consumption_key}.json"
+    assert approval.approval_id not in marker.name
+    assert not marker.exists()
+    claim_publication_regeneration_attempt(ledger, plan, approval)
+    assert marker.read_bytes() == (
+        publication_regeneration_attempt_claim_canonical_bytes(claim)
+    )
+
+
+def test_first_claim_is_durable_exclusive_create_and_identical_replay_rejects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    fsync_calls: list[int] = []
+    original_fsync = publication_regeneration_module.os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        fsync_calls.append(descriptor)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(publication_regeneration_module.os, "fsync", record_fsync)
+    created = claim_publication_regeneration_attempt(ledger, plan, approval)
+    marker = ledger / f"{claim.consumption_key}.json"
+    before = marker.read_bytes()
+    assert created == claim
+    assert before == publication_regeneration_attempt_claim_canonical_bytes(claim)
+    assert len(fsync_calls) == 2
+
+    with pytest.raises(PublicationRegenerationAttemptAlreadyConsumedError) as error:
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+    assert error.value.detail.classification == "already_consumed"
+    assert marker.read_bytes() == before
+
+
+def test_fresh_process_rejects_second_claim_from_same_authoritative_ledger(
+    tmp_path: Path,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, _claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    claim_publication_regeneration_attempt(ledger, plan, approval)
+    source = """
+import json
+import sys
+from pathlib import Path
+from ai_office.engine.publication_regeneration import (
+    PublicationRegenerationApproval,
+    PublicationRegenerationAttemptAlreadyConsumedError,
+    PublicationRegenerationPlan,
+    claim_publication_regeneration_attempt,
+)
+
+plan_value = json.loads(sys.argv[2])
+plan_value["source_reason_codes"] = tuple(plan_value["source_reason_codes"])
+plan = PublicationRegenerationPlan(**plan_value)
+approval = PublicationRegenerationApproval(**json.loads(sys.argv[3]))
+try:
+    claim_publication_regeneration_attempt(Path(sys.argv[1]), plan, approval)
+except PublicationRegenerationAttemptAlreadyConsumedError as error:
+    print(error.detail.classification)
+    raise SystemExit(0)
+raise SystemExit(1)
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            source,
+            str(ledger),
+            json.dumps(plan.__dict__),
+            json.dumps(approval.__dict__),
+        ],
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+        env={"PYTHONPATH": str(Path.cwd() / "src")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "already_consumed"
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [b"", b"truncated", b"not-json", b"different", b"\\xff"],
+)
+def test_existing_corrupt_or_truncated_marker_rejects_reuse_and_remains_unchanged(
+    tmp_path: Path,
+    existing: bytes,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    marker = ledger / f"{claim.consumption_key}.json"
+    marker.write_bytes(existing)
+    with pytest.raises(PublicationRegenerationAttemptAlreadyConsumedError):
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+    assert marker.read_bytes() == existing
+
+
+def test_different_plan_with_same_approval_id_is_blocked_by_same_ledger_key(
+    tmp_path: Path,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, first_claim = claim_fixture(tmp_path)
+    changed_plan = replace(plan, regeneration_id="different-regeneration")
+    changed_approval = approval_for(changed_plan, approval.approval_id)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    claim_publication_regeneration_attempt(ledger, plan, approval)
+    marker = ledger / f"{first_claim.consumption_key}.json"
+    before = marker.read_bytes()
+    with pytest.raises(PublicationRegenerationAttemptAlreadyConsumedError):
+        claim_publication_regeneration_attempt(ledger, changed_plan, changed_approval)
+    assert marker.read_bytes() == before
+
+
+def test_write_or_fsync_ambiguity_leaves_marker_and_never_returns_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("simulated durability failure")
+
+    monkeypatch.setattr(publication_regeneration_module.os, "fsync", fail_fsync)
+    with pytest.raises(PublicationRegenerationAttemptClaimPersistenceError) as error:
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+    assert error.value.detail.classification == "ambiguous"
+    marker = ledger / f"{claim.consumption_key}.json"
+    assert marker.exists()
+    assert marker.read_bytes() == (
+        publication_regeneration_attempt_claim_canonical_bytes(claim)
+    )
+    with pytest.raises(PublicationRegenerationAttemptAlreadyConsumedError):
+        claim_publication_regeneration_attempt(ledger, plan, approval)
+
+
+def test_strict_claim_loader_accepts_exact_record_and_rejects_tampering(
+    tmp_path: Path,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    marker = ledger / f"{claim.consumption_key}.json"
+    marker.write_bytes(publication_regeneration_attempt_claim_canonical_bytes(claim))
+    assert load_publication_regeneration_attempt_claim(marker) == claim
+
+    valid = json.loads(marker.read_text(encoding="utf-8"))
+    invalid_contents = (
+        marker.read_bytes() + b"\n",
+        json.dumps({**valid, "unknown": "field"}, separators=(",", ":")).encode(),
+        json.dumps(
+            {key: value for key, value in valid.items() if key != "state"},
+            separators=(",", ":"),
+        ).encode(),
+        json.dumps(
+            {**valid, "approved_by": "tampered"}, separators=(",", ":")
+        ).encode(),
+        b"\xff",
+        b"{",
+    )
+    original = marker.read_bytes()
+    for contents in invalid_contents:
+        marker.write_bytes(contents)
+        with pytest.raises(PublicationRegenerationAttemptClaimLoadError):
+            load_publication_regeneration_attempt_claim(marker)
+    marker.write_bytes(original)
+    assert load_publication_regeneration_attempt_claim(marker) == claim
+
+
+def test_strict_claim_loader_rejects_duplicate_keys_without_repair_or_delete(
+    tmp_path: Path,
+) -> None:
+    _audit, _invocation, _tools, plan, approval, claim = claim_fixture(tmp_path)
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    marker = ledger / f"{claim.consumption_key}.json"
+    canonical = serialize_publication_regeneration_attempt_claim_canonical(claim)
+    duplicate = canonical[:-1] + ',"state":"claimed"}'
+    marker.write_bytes(duplicate.encode("utf-8"))
+    before = marker.read_bytes()
+    with pytest.raises(PublicationRegenerationAttemptClaimLoadError):
+        load_publication_regeneration_attempt_claim(marker)
+    assert marker.read_bytes() == before
