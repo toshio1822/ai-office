@@ -783,6 +783,11 @@ from ai_office.engine.publication_regeneration import (
     validate_publication_regeneration_approval,
     validate_publication_regeneration_plan,
 )
+from ai_office.engine.publication_regeneration_execution import (
+    PublicationRegenerationExecutionError,
+    PublicationRegenerationExecutionFailureDetail,
+    execute_approved_publication_regeneration,
+)
 from ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary import (  # noqa: E501
     RuntimeResultToApprovedPreparationOrchestrationBoundaryCompatibilityError,
     RuntimeResultToApprovedPreparationOrchestrationBoundaryError,
@@ -1184,6 +1189,8 @@ __all__ = [
     "PublicationRegenerationAttemptClaimLoadError",
     "PublicationRegenerationAttemptClaimPersistenceError",
     "PublicationRegenerationError",
+    "PublicationRegenerationExecutionError",
+    "PublicationRegenerationExecutionFailureDetail",
     "PublicationRegenerationFailureDetail",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
@@ -1192,6 +1199,7 @@ __all__ = [
     "build_publication_readiness_audit_record",
     "build_publication_regeneration_attempt_claim",
     "build_publication_regeneration_plan",
+    "execute_approved_publication_regeneration",
     "build_post_terminal_facts",
     "load_publication_readiness_audit",
     "load_persisted_terminal_snapshot",

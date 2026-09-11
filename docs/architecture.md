@@ -4797,3 +4797,33 @@ and any success, failure, timeout, SIGTERM, or ambiguous termination after the
 claim must leave the outer approval consumed with no automatic retry. Provider
 execution, regenerated output, state/events/business-output/audit-sidecar
 mutation, CLI execution, and reconciliation remain future work.
+
+## Phase 266: One-shot publication-regeneration provider execution
+
+Phase 266 is the first provider-execution boundary for publication regeneration.
+It connects the Phase 263 audit, Phase 264 plan and outer approval, and Phase
+265 durable claim to the existing Responses-compatible provider executor without
+creating a second provider stack. Each invocation first reloads the explicit
+Phase 263 audit sidecar, revalidates the exact plan, validates the outer
+regeneration approval, validates the separate inner model-invocation approval,
+and validates the canonical execution target plus its target-aware credential
+before entering provider execution. Neither approval is generated or replaced
+automatically.
+
+The boundary injects a guarded transport into
+`execute_openai_model_invocation(...)`; it does not duplicate that executor.
+The existing executor constructs the request, payload, and authentication first.
+When its transport dependency is entered, the wrapper durably creates the Phase
+265 claim as the final write-ahead gate, then delegates the supplied transport
+at most once. A failed or ambiguous claim never reaches transport. A transport
+failure, timeout, unexpected termination, or process death after a successful
+claim leaves the outer approval consumed; no retry, replay, fallback, automatic
+continuation, deletion, reset, reopen, or reconciliation is performed.
+
+The attempted provider result is returned using the existing
+`ModelInvocationResult` success/failure contracts, but it is not durably
+persisted. The original workflow state, events, business output, and Phase 263
+audit sidecar remain byte-for-byte immutable. Phase 266 adds no CLI execution
+surface, regenerated-output sidecar, execution-result sidecar, or automatic
+claim-contract generation. Tests use only explicit synthetic transports and do
+not call a real provider or network.
