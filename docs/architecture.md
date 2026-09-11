@@ -4720,3 +4720,36 @@ automatically after execution, no readiness event or `workflows result` field
 is added, and no provider/network call, timestamp, claim-contract generation,
 publication action, or regeneration is introduced. Human-approved
 regeneration remains future work.
+
+## Phase 264: Human-approved publication regeneration control contract
+
+Phase 264 adds only a provider-free control plane for a future human-approved
+publication regeneration. A `PublicationRegenerationPlan` may be built only
+from a Phase 263 audit whose readiness is `stale_or_inconsistent` or
+`insufficient_evidence`; a `ready` audit is rejected at the plan boundary.
+The plan derives the source audit, post-terminal-facts, business-output,
+readiness, and reason-code identities from the exact audit record, and binds
+them to a caller-supplied future `ModelInvocationRequest`, resolved tools, and
+canonical `ModelExecutionTarget`. Its request identity reuses
+`build_model_invocation_execution_fingerprint(...)`, and its target identity
+reuses `execution_target_fingerprint(...)`.
+
+The plan stores only safe structured identities: it contains no raw task or
+system instructions, business output, provider payload, credential, path,
+timestamp, or arbitrary mapping. Its compact canonical UTF-8 JSON and
+SHA-256 digest represent a new output lineage; regeneration is not a
+continuation, repair, retry, replay, or mutation of the original workflow.
+The original state/events, business output, and Phase 263 audit sidecar remain
+read-only historical evidence.
+
+`PublicationRegenerationApproval` is a separate outer human decision bound to
+the exact plan digest. The existing `ModelInvocationExecutionApproval` is not
+used as a substitute: a future provider-execution phase may additionally use
+that inner request/target approval, while Phase 264's outer approval binds the
+source-audit-to-regeneration decision itself. Durable approval consumption,
+one-use retirement, provider execution, regenerated output persistence, and a
+CLI execution surface are not implemented yet. No request or claim contract
+is generated automatically, and no state/event/audit/workflow-result schema
+is changed. A future execution boundary must consume or retire one approved
+plan for at most one external-side-effect attempt, including an ambiguous
+provider attempt; Phase 264 does not implement that durable one-use boundary.
