@@ -1,9 +1,14 @@
-"""Focused provider-free tests for Phase 261/262 post-terminal evidence."""
+"""Focused provider-free tests for Phase 261/262/263 post-terminal evidence."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import socket
+import subprocess
+import sys
+import time
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
@@ -17,17 +22,27 @@ from ai_office.engine.post_terminal_facts import (
     PublicationClaimContract,
     PublicationClaimContractError,
     PublicationReadinessAssessment,
+    PublicationReadinessAuditConflictError,
+    PublicationReadinessAuditError,
+    PublicationReadinessAuditLoadError,
+    PublicationReadinessAuditRecord,
     PublicationReadinessError,
     assess_terminal_publication_readiness,
     build_post_terminal_facts,
+    build_publication_readiness_audit_record,
     load_persisted_terminal_snapshot,
+    load_publication_readiness_audit,
+    persist_publication_readiness_audit,
     post_terminal_facts_digest,
     publication_claim_contract_canonical_bytes,
     publication_claim_contract_digest,
     publication_readiness_assessment_digest,
+    publication_readiness_audit_canonical_bytes,
+    publication_readiness_audit_digest,
     serialize_post_terminal_facts_canonical,
     serialize_publication_claim_contract_canonical,
     serialize_publication_readiness_assessment_canonical,
+    serialize_publication_readiness_audit_canonical,
     validate_publication_claim_contract,
 )
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
@@ -43,6 +58,10 @@ class StringChild(str):
 
 
 class PublicationClaimContractChild(PublicationClaimContract):
+    pass
+
+
+class PublicationReadinessAuditRecordChild(PublicationReadinessAuditRecord):
     pass
 
 
@@ -693,6 +712,434 @@ def test_supplied_claim_contract_cannot_upgrade_persisted_failure(
     )
     assert assessment.claim_contract is None
     assert assessment.claim_contract_sha256 is None
+
+
+def test_audit_record_builds_without_claim_and_omits_sensitive_values(
+    tmp_path: Path,
+) -> None:
+    targets, _snapshot, facts = load_facts(tmp_path)
+
+    record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+    canonical = serialize_publication_readiness_audit_canonical(record)
+    value = json.loads(canonical)
+
+    assert record.post_terminal_facts is facts
+    assert record.evaluated_claim_contract is None
+    assert record.assessment.readiness == "insufficient_evidence"
+    assert record.assessment.reason_codes == ("claim_contract_missing",)
+    assert value["evaluated_claim_contract"] is None
+    assert value["evaluated_claim_contract_sha256"] is None
+    assert value["post_terminal_facts_sha256"] == facts.digest
+    assert value["assessment_sha256"] == record.assessment.digest
+    assert set(value) == {
+        "assessment",
+        "assessment_sha256",
+        "evaluated_claim_contract",
+        "evaluated_claim_contract_sha256",
+        "post_terminal_facts",
+        "post_terminal_facts_sha256",
+        "schema_version",
+    }
+    assert "FINAL 日本語 😀" not in canonical
+    assert "response-terminal-secret-like" not in canonical
+    assert "request-terminal-secret-like" not in canonical
+    assert str(targets.state_path) not in canonical
+    assert "approval" not in canonical
+    assert "timestamp" not in canonical
+
+
+def test_audit_builder_uses_no_filesystem_environment_clock_or_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("forbidden external dependency was called")
+
+    monkeypatch.setattr(os, "getenv", forbidden)
+    monkeypatch.setattr(socket, "socket", forbidden)
+    monkeypatch.setattr(time, "time", forbidden)
+    monkeypatch.setattr(time, "time_ns", forbidden)
+    monkeypatch.setattr(Path, "read_bytes", forbidden)
+    monkeypatch.setattr(Path, "write_bytes", forbidden)
+
+    record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+
+    assert record.assessment.reason_codes == ("claim_contract_missing",)
+
+
+def test_ready_audit_record_binds_exact_contract_and_assessment(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+
+    record = build_publication_readiness_audit_record(
+        facts,
+        "FINAL 日本語 😀",
+        claim_contract=contract,
+    )
+
+    assert record.assessment.readiness == "ready"
+    assert record.evaluated_claim_contract is contract
+    assert record.assessment.claim_contract is contract
+    assert record.evaluated_claim_contract_sha256 == contract.digest
+    assert json.loads(serialize_publication_readiness_audit_canonical(record))[
+        "assessment"
+    ]["claim_contract"] == json.loads(
+        serialize_publication_claim_contract_canonical(contract)
+    )
+
+
+def test_mismatching_contract_identity_is_retained_only_in_audit_metadata(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = replace(claim_contract_for(facts), workflow_id="other-workflow")
+
+    record = build_publication_readiness_audit_record(
+        facts,
+        "FINAL 日本語 😀",
+        claim_contract=contract,
+    )
+    canonical = serialize_publication_readiness_audit_canonical(record)
+    value = json.loads(canonical)
+
+    assert record.assessment.readiness == "stale_or_inconsistent"
+    assert record.assessment.reason_codes == ("claim_contract_mismatch",)
+    assert record.assessment.claim_contract is None
+    assert record.evaluated_claim_contract is contract
+    assert value["evaluated_claim_contract"] == json.loads(
+        serialize_publication_claim_contract_canonical(contract)
+    )
+    assert value["evaluated_claim_contract_sha256"] == contract.digest
+    assert "FINAL 日本語 😀" not in canonical
+
+    other_contract = replace(contract, business_output_sha256="a" * 64)
+    other_record = build_publication_readiness_audit_record(
+        facts,
+        "FINAL 日本語 😀",
+        claim_contract=other_contract,
+    )
+    assert other_record.assessment.reason_codes == ("claim_contract_mismatch",)
+    assert other_record.digest != record.digest
+
+
+def test_output_mismatch_and_persisted_failure_retain_supplied_contract_safely(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+    output_mismatch = build_publication_readiness_audit_record(
+        facts,
+        "different output",
+        claim_contract=contract,
+    )
+
+    state, events = failed_history()
+    failure_path = tmp_path / "failure"
+    failure_path.mkdir()
+    failure_targets = write_history(failure_path, state, events)
+    failure_facts = build_post_terminal_facts(
+        load_persisted_terminal_snapshot(workflow(), failure_targets)
+    )
+    failure_contract = PublicationClaimContract(
+        schema_version="publication-claims.v1",
+        scope="post_terminal_runtime_consistency",
+        workflow_id=failure_facts.workflow_id,
+        business_output_sha256="a" * 64,
+        post_terminal_facts_sha256=failure_facts.digest,
+        asserted_terminal_status="workflow_complete",
+    )
+    failure = build_publication_readiness_audit_record(
+        failure_facts,
+        "candidate",
+        claim_contract=failure_contract,
+    )
+
+    assert output_mismatch.assessment.reason_codes == ("final_output_mismatch",)
+    assert output_mismatch.evaluated_claim_contract is contract
+    assert output_mismatch.assessment.claim_contract is None
+    assert failure.assessment.readiness == "insufficient_evidence"
+    assert failure.assessment.reason_codes == (
+        "execution_not_workflow_complete",
+        "final_output_missing",
+    )
+    assert failure.evaluated_claim_contract is failure_contract
+    assert failure.assessment.claim_contract is None
+
+
+def test_audit_record_rejects_forged_nested_facts_or_contract(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    contract = claim_contract_for(facts)
+    record = build_publication_readiness_audit_record(
+        facts,
+        "FINAL 日本語 😀",
+        claim_contract=contract,
+    )
+
+    with pytest.raises(PublicationReadinessAuditError):
+        replace(
+            record,
+            post_terminal_facts=replace(facts, state_sha256="a" * 64),
+        )
+    with pytest.raises(PublicationReadinessAuditError):
+        replace(
+            record,
+            evaluated_claim_contract=replace(contract, workflow_id="other-workflow"),
+        )
+    with pytest.raises(PublicationReadinessAuditError):
+        PublicationReadinessAuditRecordChild(
+            schema_version=record.schema_version,
+            post_terminal_facts=record.post_terminal_facts,
+            evaluated_claim_contract=record.evaluated_claim_contract,
+            assessment=record.assessment,
+        )
+    with pytest.raises(TypeError):
+        PublicationReadinessAuditRecord(
+            **record.__dict__,
+            extra="not allowed",
+        )
+
+
+def test_audit_canonical_fixture_is_deterministic_and_digest_bound(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+
+    first = serialize_publication_readiness_audit_canonical(record)
+    second = serialize_publication_readiness_audit_canonical(record)
+    expected = (
+        '{"assessment":{"business_output_sha256":"075d0db2e91e812458d6769792b43c2c0d64bcf77a3203fd94ba8c84a8f39790",'
+        '"claim_contract_sha256":null,"execution_status":"workflow_complete",'
+        '"post_terminal_facts":{"completed_step_ids":["research","publish"],'
+        '"events_sha256":"eff3503f7ad7cc321aa5944d48a2475d5d8eeae3f78e3654fbd938f036136c33",'
+        '"final_output_sha256":"075d0db2e91e812458d6769792b43c2c0d64bcf77a3203fd94ba8c84a8f39790",'
+        '"schema_version":"post-terminal-facts.v1",'
+        '"state_sha256":"ee261bce686e19f3bd421d1c78f31d609263eb990381077feca8c4757f7f61d4",'
+        '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
+        '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
+        '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase261-workflow"},'
+        '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
+        '"schema_version":"publication-readiness.v1"},'
+        '"assessment_sha256":"c0be7b28ea62357099e2c784ed4d43413752fcb6913677d4c0b445218914198d",'
+        '"evaluated_claim_contract":null,"evaluated_claim_contract_sha256":null,'
+        '"post_terminal_facts":{"completed_step_ids":["research","publish"],'
+        '"events_sha256":"eff3503f7ad7cc321aa5944d48a2475d5d8eeae3f78e3654fbd938f036136c33",'
+        '"final_output_sha256":"075d0db2e91e812458d6769792b43c2c0d64bcf77a3203fd94ba8c84a8f39790",'
+        '"schema_version":"post-terminal-facts.v1",'
+        '"state_sha256":"ee261bce686e19f3bd421d1c78f31d609263eb990381077feca8c4757f7f61d4",'
+        '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
+        '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
+        '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase261-workflow"},'
+        '"post_terminal_facts_sha256":"967c35093c4ac3ece19a06d8f1878c73b457ad9329a026359fd225a32dc49a13",'
+        '"schema_version":"publication-readiness-audit.v1"}'
+    )
+    assert first == second
+    assert first == expected
+    assert publication_readiness_audit_canonical_bytes(record) == first.encode(
+        "utf-8"
+    )
+    assert publication_readiness_audit_digest(record) == hashlib.sha256(
+        first.encode("utf-8")
+    ).hexdigest()
+    assert publication_readiness_audit_digest(record) == (
+        "47993de25ed109a11cc630b84f28afa3ceadba251d6902d0b92e13ce652bde1e"
+    )
+    assert record.digest == publication_readiness_audit_digest(record)
+    changed_facts = replace(facts, state_sha256="a" * 64)
+    changed_record = build_publication_readiness_audit_record(
+        changed_facts,
+        "FINAL 日本語 😀",
+    )
+    assert changed_record.digest != record.digest
+
+
+def test_audit_sidecar_create_is_exact_and_identical_repersist_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+    path = tmp_path / "audit.json"
+    expected = publication_readiness_audit_canonical_bytes(record)
+
+    first = persist_publication_readiness_audit(path, record)
+    before = path.read_bytes()
+    second = persist_publication_readiness_audit(path, record)
+
+    assert first.bytes_written == len(expected)
+    assert first.idempotent is False
+    assert second.bytes_written == len(expected)
+    assert second.idempotent is True
+    assert before == expected
+    assert path.read_bytes() == expected
+
+
+def test_audit_sidecar_conflict_never_overwrites_original_bytes(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    path = tmp_path / "audit.json"
+    first_record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+    second_record = build_publication_readiness_audit_record(
+        facts,
+        "FINAL 日本語 😀",
+        claim_contract=claim_contract_for(facts),
+    )
+    persist_publication_readiness_audit(path, first_record)
+    before = path.read_bytes()
+
+    with pytest.raises(PublicationReadinessAuditConflictError):
+        persist_publication_readiness_audit(path, second_record)
+
+    assert path.read_bytes() == before
+
+
+def test_audit_sidecar_requires_explicit_path(tmp_path: Path) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+
+    with pytest.raises(PublicationReadinessAuditError):
+        persist_publication_readiness_audit(str(tmp_path / "audit.json"), record)  # type: ignore[arg-type]
+
+
+def test_audit_sidecar_strict_reload_preserves_bytes_and_digest(
+    tmp_path: Path,
+) -> None:
+    targets, _snapshot, facts = load_facts(tmp_path)
+    record = build_publication_readiness_audit_record(
+        facts,
+        "FINAL 日本語 😀",
+        claim_contract=claim_contract_for(facts),
+    )
+    path = tmp_path / "audit.json"
+    before_state = targets.state_path.read_bytes()
+    before_events = targets.events_path.read_bytes()
+    persist_publication_readiness_audit(path, record)
+    before = path.read_bytes()
+
+    loaded = load_publication_readiness_audit(path)
+
+    assert loaded == record
+    assert loaded.digest == record.digest
+    assert publication_readiness_audit_canonical_bytes(loaded) == before
+    assert targets.state_path.read_bytes() == before_state
+    assert targets.events_path.read_bytes() == before_events
+    assert b"readiness" not in before_events
+    assert not (tmp_path / "publication-readiness.json").exists()
+
+
+def test_audit_sidecar_reload_is_deterministic_in_a_fresh_process(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+    path = tmp_path / "audit.json"
+    persist_publication_readiness_audit(path, record)
+
+    source = """
+import sys
+from pathlib import Path
+
+from ai_office.engine.post_terminal_facts import (
+    load_publication_readiness_audit,
+    publication_readiness_audit_canonical_bytes,
+)
+
+path = Path(sys.argv[1])
+record = load_publication_readiness_audit(path)
+print(record.digest)
+print(publication_readiness_audit_canonical_bytes(record) == path.read_bytes())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", source, str(path)],
+        capture_output=True,
+        check=False,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [record.digest, "True"]
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        b"{",
+        b"\xff",
+    ],
+)
+def test_audit_sidecar_rejects_corrupt_json_or_invalid_utf8(
+    tmp_path: Path,
+    contents: bytes,
+) -> None:
+    path = tmp_path / "audit.json"
+    path.write_bytes(contents)
+
+    with pytest.raises(PublicationReadinessAuditLoadError):
+        load_publication_readiness_audit(path)
+
+
+def test_audit_sidecar_rejects_truncated_unknown_missing_noncanonical_and_duplicate(
+    tmp_path: Path,
+) -> None:
+    _targets, _snapshot, facts = load_facts(tmp_path)
+    record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+    canonical = publication_readiness_audit_canonical_bytes(record)
+    path = tmp_path / "audit.json"
+
+    for contents in (
+        canonical[:-1],
+        json.dumps(
+            {**json.loads(canonical), "unknown": "value"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8"),
+        json.dumps(
+            {
+                key: value
+                for key, value in json.loads(canonical).items()
+                if key != "assessment_sha256"
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8"),
+        canonical + b"\n",
+        b'{"schema_version":"publication-readiness-audit.v1",'
+        b'"schema_version":"publication-readiness-audit.v1"}',
+    ):
+        path.write_bytes(contents)
+        with pytest.raises(PublicationReadinessAuditLoadError):
+            load_publication_readiness_audit(path)
+
+
+def test_audit_sidecar_rejects_nested_digest_tampering_and_preserves_history(
+    tmp_path: Path,
+) -> None:
+    targets, _snapshot, facts = load_facts(tmp_path)
+    record = build_publication_readiness_audit_record(facts, "FINAL 日本語 😀")
+    path = tmp_path / "audit.json"
+    persist_publication_readiness_audit(path, record)
+    before_state = targets.state_path.read_bytes()
+    before_events = targets.events_path.read_bytes()
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["post_terminal_facts_sha256"] = "a" * 64
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PublicationReadinessAuditLoadError):
+        load_publication_readiness_audit(path)
+
+    assert targets.state_path.read_bytes() == before_state
+    assert targets.events_path.read_bytes() == before_events
 
 
 def test_missing_or_mismatched_output_is_stale_or_inconsistent(
