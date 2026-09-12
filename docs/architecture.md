@@ -4827,3 +4827,41 @@ audit sidecar remain byte-for-byte immutable. Phase 266 adds no CLI execution
 surface, regenerated-output sidecar, execution-result sidecar, or automatic
 claim-contract generation. Tests use only explicit synthetic transports and do
 not call a real provider or network.
+
+## Phase 267: Immutable publication-regeneration result evidence
+
+Phase 267 persists the exact normalized `ModelInvocationResult` returned by
+Phase 266 as a separate, immutable new-lineage result sidecar. It does not
+replace the original workflow business output, state, events, or Phase 263
+audit sidecar. Success evidence intentionally stores the normalized regenerated
+business-output text and its UTF-8 SHA-256 digest; failure evidence stores only
+the existing normalized `ModelInvocationFailure` fields, including safe
+response diagnostics when present. Neither form stores credentials,
+Authorization, raw request/response bodies or headers, environment values, or
+filesystem paths.
+
+The result record embeds the exact Phase 265 attempt claim and binds its
+canonical digest, regeneration/source/target/request identities, outcome, and
+normalized result digest to that claim. Its canonical compact UTF-8 JSON is
+strictly loaded and revalidated read-only; duplicate/unknown/missing keys,
+invalid nested claims/results, tampering, and noncanonical bytes are rejected.
+The result path is explicit and is preflighted before Phase 266: its parent must
+already exist, it must not be a directory or existing target, and no hidden
+parent or default path is created.
+
+The execute-and-persist boundary calls Phase 266 exactly once. After Phase 266
+returns, it strictly reloads the durable Phase 265 claim, rebuilds the expected
+claim from the exact plan and outer approval, and requires byte-bound claim
+identity before building or persisting result evidence. Result-sidecar
+persistence uses exclusive create, exact canonical bytes, file flush/fsync, and
+parent-directory fsync. Identical already-valid evidence may be re-persisted
+idempotently with durability re-established; conflicting, corrupt, truncated,
+or ambiguous writes never overwrite, delete, reset, or repair the sidecar.
+
+Result persistence is evidence, not provider authorization. A result-sidecar
+failure after Phase 266 leaves the Phase 265 outer approval consumed, never
+reopens or deletes the claim, and never invokes Phase 266 or transport again.
+A claimed attempt whose result evidence is missing or ambiguous remains
+conservatively unresolved until a future reconciliation phase. Phase 267 adds
+no publication-claim contract generation, readiness promotion, reconciliation
+API, CLI execution surface, retry, replay, fallback, or automatic continuation.
