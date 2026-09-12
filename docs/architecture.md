@@ -4912,3 +4912,39 @@ output digest, and successful regeneration-lineage claim validation. The
 boundary performs no writes, readiness-sidecar persistence, claim-ledger
 change, provider/model/network/environment/credential access, retry, replay,
 fallback, regeneration, or CLI change.
+
+## Phase 269: Immutable regeneration-readiness evidence sidecar
+
+Phase 269 persists one exact Phase 268 `PublicationRegenerationReadinessAssessment`
+inside a separate frozen `PublicationRegenerationReadinessRecord`. The record
+only duplicates the assessment digest, regeneration/source/result identities,
+readiness state, and reason codes; every duplicate is derived from and
+cross-bound to the exact assessment. Construction calls the public Phase 268
+canonical assessment digest, so all Phase 268 public-model invariants are
+revalidated without changing their meaning. All four valid Phase 268 states —
+`ready`, `insufficient_evidence`, `stale_or_inconsistent`, and `result_failure`
+— remain valid audit evidence, including a mismatching evaluated claim retained
+by a stale assessment.
+
+The sidecar path is caller-supplied only. The compact canonical UTF-8 JSON uses
+`ensure_ascii=False`, sorted keys, compact separators, no trailing newline, and
+SHA-256 over those exact bytes. Persistence validates and canonicalizes the
+complete record before exclusive creation. The parent directory must already
+exist; no default or hidden path is selected. File write, flush, file fsync,
+close, and parent-directory fsync must all complete before success. A
+byte-identical pure re-persist may re-establish durability, while a conflicting,
+corrupt, truncated, or symlink target is rejected without overwrite, repair, or
+delete. Any write/flush/fsync ambiguity after exclusive creation retains the
+artifact and reports a safe `ambiguous` persistence error.
+
+The strict read-only loader rejects invalid UTF-8/JSON, duplicate keys at every
+object level, unknown or missing keys, wrong primitive/collection types,
+invalid nested Phase 268 assessment data, digest/cross-bind violations, and
+noncanonical bytes. It never normalizes, repairs, rewrites, deletes, or adopts
+an artifact. The record stores no regenerated text, original business output,
+provider payload, credentials, paths, timestamps, randomness, or workflow
+events beyond the exact structured claim retained inside the Phase 268
+assessment. Phase 269 adds no provider/model/network/environment access,
+claim generation, regeneration, retry/replay/fallback, reconciliation, CLI,
+state/event/workflow-result change, or runtime event; original, Phase 263,
+Phase 265, and Phase 267 evidence remains byte-for-byte separate and unchanged.
