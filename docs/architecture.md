@@ -4865,3 +4865,38 @@ A claimed attempt whose result evidence is missing or ambiguous remains
 conservatively unresolved until a future reconciliation phase. Phase 267 adds
 no publication-claim contract generation, readiness promotion, reconciliation
 API, CLI execution surface, retry, replay, fallback, or automatic continuation.
+
+## Phase 268: Read-only regeneration-result publication readiness projection
+
+Phase 268 reconnects one durable Phase 267 result to publication readiness
+without executing a provider or changing either lineage. Its explicit inputs
+are a Phase 267 result sidecar and a Phase 263 readiness-audit sidecar. Both
+are strict-loaded first; the result record's `source_audit_sha256` must equal
+the freshly loaded Phase 263 audit's canonical digest exactly. The source
+audit's exact `PostTerminalFacts` is the only runtime evidence used for the
+assessment, and a Phase 267 success contributes only its exact
+`ModelInvocationSuccess.text` as candidate business output. No mutable state,
+events, workflow result, or original business output is read directly by this
+boundary.
+
+`assess_publication_regeneration_result_readiness(...)` reuses
+`assess_terminal_publication_readiness(...)` and the Phase 262 structured
+`PublicationClaimContract` semantics. The claim contract is caller-supplied
+only: no claim produces `insufficient_evidence` / `claim_contract_missing`, an
+exact contract can produce the existing scope-limited `ready`, and a
+mismatching contract produces `stale_or_inconsistent` /
+`claim_contract_mismatch`. A failed Phase 267 result is never passed to the
+Phase 262 business-output assessment; it returns `result_failure` with no
+publication assessment and no claim digest. Supplying a claim for a failed
+result is rejected as inapplicable, rather than validating the failure message
+as business output.
+
+The frozen `PublicationRegenerationReadinessAssessment` binds the result-record
+digest, source-audit digest, source `PostTerminalFacts` digest, regeneration
+ID, outcome, exact nested Phase 262 assessment, readiness, claim digest, and
+safe reason codes. Its canonical compact UTF-8 JSON contains no raw regenerated
+text, credentials, provider payloads, paths, or timestamps. Direct construction
+cannot create `ready` without an exact nested Phase 262 ready assessment and
+verified claim binding. The boundary performs no writes, readiness-sidecar
+persistence, claim-ledger change, provider/model/network/environment/
+credential access, retry, replay, fallback, regeneration, or CLI change.

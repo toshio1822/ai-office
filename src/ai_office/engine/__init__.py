@@ -788,6 +788,15 @@ from ai_office.engine.publication_regeneration_execution import (
     PublicationRegenerationExecutionFailureDetail,
     execute_approved_publication_regeneration,
 )
+from ai_office.engine.publication_regeneration_readiness import (
+    PublicationRegenerationReadinessAssessment,
+    PublicationRegenerationReadinessError,
+    PublicationRegenerationReadinessFailureDetail,
+    assess_publication_regeneration_result_readiness,
+    publication_regeneration_readiness_assessment_canonical_bytes,
+    publication_regeneration_readiness_assessment_digest,
+    serialize_publication_regeneration_readiness_assessment_canonical,
+)
 from ai_office.engine.publication_regeneration_result import (
     PublicationRegenerationResultConflictError,
     PublicationRegenerationResultError,
@@ -1223,6 +1232,9 @@ __all__ = [
     "PublicationRegenerationResultLoadError",
     "PublicationRegenerationResultPersistenceError",
     "PublicationRegenerationResultRecord",
+    "PublicationRegenerationReadinessAssessment",
+    "PublicationRegenerationReadinessError",
+    "PublicationRegenerationReadinessFailureDetail",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
     "PublicationRegenerationReadiness",
@@ -1232,6 +1244,7 @@ __all__ = [
     "build_publication_regeneration_plan",
     "execute_approved_publication_regeneration",
     "execute_and_persist_approved_publication_regeneration",
+    "assess_publication_regeneration_result_readiness",
     "build_publication_regeneration_result_record",
     "build_post_terminal_facts",
     "load_publication_readiness_audit",
@@ -1257,6 +1270,9 @@ __all__ = [
     "publication_regeneration_result_digest",
     "publication_regeneration_result_record_canonical_bytes",
     "publication_regeneration_result_record_digest",
+    "publication_regeneration_readiness_assessment_canonical_bytes",
+    "publication_regeneration_readiness_assessment_digest",
+    "serialize_publication_regeneration_readiness_assessment_canonical",
     "persist_publication_readiness_audit",
     "persist_publication_regeneration_result",
     "preflight_publication_regeneration_result_path",
