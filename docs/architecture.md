@@ -4865,3 +4865,50 @@ A claimed attempt whose result evidence is missing or ambiguous remains
 conservatively unresolved until a future reconciliation phase. Phase 267 adds
 no publication-claim contract generation, readiness promotion, reconciliation
 API, CLI execution surface, retry, replay, fallback, or automatic continuation.
+
+## Phase 268: Read-only regeneration-result publication readiness projection
+
+Phase 268 reconnects one durable Phase 267 result to publication readiness
+without executing a provider or changing either lineage. Its explicit inputs
+are a Phase 267 result sidecar and a Phase 263 readiness-audit sidecar. Both
+are strict-loaded first; the result record's `source_audit_sha256` must equal
+the freshly loaded Phase 263 audit's canonical digest exactly. The source
+audit's exact `PostTerminalFacts` is the only runtime evidence used for the
+assessment, and a Phase 267 success contributes only its exact
+`ModelInvocationSuccess.text` and SHA-256 as the new candidate output
+identity. No mutable state, events, workflow result, or original business
+output is read directly by this boundary.
+
+Phase 262's `assess_terminal_publication_readiness(...)` remains unchanged and
+continues to enforce original-lineage identity:
+`candidate_output_sha256 == PostTerminalFacts.final_output_sha256`. Phase 268
+does not use that original-lineage validator as its final authority. Instead,
+`validate_publication_regeneration_claim_contract(...)` validates the same
+structured `PublicationClaimContract` shape against the regeneration lineage:
+the source terminal status must be `workflow_complete`, the workflow ID and
+source `PostTerminalFacts` digest must match exactly, the asserted terminal
+status must match, and the claim's business-output digest must equal the exact
+regenerated result digest. The original source `final_output_sha256` remains
+only the identity of the original terminal output and is not required to equal
+the regenerated output digest.
+
+The claim contract is caller-supplied only: no claim produces
+`insufficient_evidence` / `claim_contract_missing`, an exact regeneration
+claim can produce `ready`, and a structurally valid mismatching claim produces
+`stale_or_inconsistent` / `claim_contract_mismatch` without repair or silent
+dropping. A failed Phase 267 result is never passed to either claim validator;
+it returns `result_failure` with no business-output digest or evaluated claim.
+Supplying a claim for a failed result is rejected as inapplicable, rather than
+validating the failure message as business output.
+
+The frozen `PublicationRegenerationReadinessAssessment` binds the result-record
+digest, source-audit digest, exact embedded source `PostTerminalFacts` and its
+digest, regeneration ID, outcome, regenerated business-output digest,
+evaluated caller claim and its digest, readiness, and safe reason codes. Its
+canonical compact UTF-8 JSON contains no raw regenerated text, credentials,
+provider payloads, paths, or timestamps. Direct construction cannot create
+`ready` without an exact embedded claim, source-facts digest, regenerated
+output digest, and successful regeneration-lineage claim validation. The
+boundary performs no writes, readiness-sidecar persistence, claim-ledger
+change, provider/model/network/environment/credential access, retry, replay,
+fallback, regeneration, or CLI change.
