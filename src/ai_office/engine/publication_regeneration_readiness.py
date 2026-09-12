@@ -58,13 +58,6 @@ _CLAIM_MISMATCH_CLASSIFICATIONS = frozenset(
         "terminal_status_mismatch",
     }
 )
-_SUCCESS_REASON_BINDINGS = frozenset(
-    {
-        (),
-        ("claim_contract_missing",),
-        ("claim_contract_mismatch",),
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -447,13 +440,11 @@ def _validate_publication_regeneration_readiness(
         _raise_readiness("success_business_output")
     if assessment.readiness not in _SUCCESS_READINESS_VALUES:
         _raise_readiness("success_readiness")
-    if assessment.reason_codes not in _SUCCESS_REASON_BINDINGS:
-        _raise_readiness("reason_codes")
     if assessment.readiness == "ready":
         if (
-            assessment.evaluated_claim_contract is None
+            assessment.reason_codes != ()
+            or assessment.evaluated_claim_contract is None
             or assessment.claim_contract_sha256 is None
-            or assessment.reason_codes
         ):
             _raise_readiness("ready_without_claim")
         try:
@@ -464,10 +455,18 @@ def _validate_publication_regeneration_readiness(
             )
         except Exception:
             _raise_readiness("ready_claim_contract_binding")
+    elif assessment.readiness == "insufficient_evidence":
+        if (
+            assessment.reason_codes != ("claim_contract_missing",)
+            or assessment.evaluated_claim_contract is not None
+            or assessment.claim_contract_sha256 is not None
+        ):
+            _raise_readiness("insufficient_evidence_binding")
     elif assessment.readiness == "stale_or_inconsistent":
         if (
             assessment.reason_codes != ("claim_contract_mismatch",)
             or assessment.evaluated_claim_contract is None
+            or assessment.claim_contract_sha256 is None
         ):
             _raise_readiness("stale_claim_binding")
         try:
@@ -481,9 +480,6 @@ def _validate_publication_regeneration_readiness(
                 _raise_readiness("stale_claim_binding")
         else:
             _raise_readiness("stale_claim_binding")
-    elif assessment.reason_codes == ("claim_contract_missing",):
-        if assessment.evaluated_claim_contract is not None:
-            _raise_readiness("claim_contract_binding")
 
 
 def _validate_digest(value: object, classification: str) -> None:

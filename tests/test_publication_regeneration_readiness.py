@@ -612,6 +612,61 @@ def test_wrapper_rejects_direct_forged_ready_and_subclasses(
         )
 
 
+def test_wrapper_rejects_impossible_insufficient_evidence_mappings(
+    tmp_path: Path,
+) -> None:
+    fixture = readiness_fixture(tmp_path)
+    ready = assess_publication_regeneration_result_readiness(
+        result_path=fixture.result_path,
+        source_audit_path=fixture.audit_path,
+        claim_contract=exact_contract(fixture),
+    )
+    values = {
+        "schema_version": ready.schema_version,
+        "regeneration_id": ready.regeneration_id,
+        "result_record_sha256": ready.result_record_sha256,
+        "source_audit_sha256": ready.source_audit_sha256,
+        "source_post_terminal_facts": ready.source_post_terminal_facts,
+        "source_post_terminal_facts_sha256": ready.source_post_terminal_facts_sha256,
+        "outcome": ready.outcome,
+        "business_output_sha256": ready.business_output_sha256,
+        "evaluated_claim_contract": ready.evaluated_claim_contract,
+        "claim_contract_sha256": ready.claim_contract_sha256,
+        "readiness": ready.readiness,
+        "reason_codes": ready.reason_codes,
+    }
+    impossible_missing = dict(values)
+    impossible_missing.update(
+        readiness="insufficient_evidence",
+        reason_codes=(),
+    )
+
+    with pytest.raises(PublicationRegenerationReadinessError) as missing_reason:
+        PublicationRegenerationReadinessAssessment(**impossible_missing)
+
+    assert missing_reason.value.detail.classification == (
+        "insufficient_evidence_binding"
+    )
+
+    mismatching_claim = replace(
+        exact_contract(fixture),
+        workflow_id="other-workflow",
+    )
+    impossible_mismatch = dict(values)
+    impossible_mismatch.update(
+        readiness="insufficient_evidence",
+        reason_codes=("claim_contract_mismatch",),
+        evaluated_claim_contract=mismatching_claim,
+        claim_contract_sha256=mismatching_claim.digest,
+    )
+    with pytest.raises(PublicationRegenerationReadinessError) as mismatch_reason:
+        PublicationRegenerationReadinessAssessment(**impossible_mismatch)
+
+    assert mismatch_reason.value.detail.classification == (
+        "insufficient_evidence_binding"
+    )
+
+
 def test_wrapper_is_frozen_and_mirrors_nested_assessment_exactly(
     tmp_path: Path,
 ) -> None:
