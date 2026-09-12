@@ -497,33 +497,6 @@ def _raise_readiness(classification: str) -> NoReturn:
     raise PublicationRegenerationReadinessError(classification) from None
 
 
-_READINESS_RECORD_EXPORTS = frozenset(
-    {
-        "PublicationRegenerationReadinessRecord",
-        "PublicationRegenerationReadinessRecordConflictError",
-        "PublicationRegenerationReadinessRecordError",
-        "PublicationRegenerationReadinessRecordFailureDetail",
-        "PublicationRegenerationReadinessRecordLoadError",
-        "PublicationRegenerationReadinessRecordPersistenceError",
-        "build_publication_regeneration_readiness_record",
-        "load_publication_regeneration_readiness_record",
-        "persist_publication_regeneration_readiness_record",
-        "publication_regeneration_readiness_record_canonical_bytes",
-        "publication_regeneration_readiness_record_digest",
-        "serialize_publication_regeneration_readiness_record_canonical",
-    }
-)
-
-
-def __getattr__(name: str) -> object:
-    """Lazily expose Phase 269 APIs from the dedicated record module."""
-    if name in _READINESS_RECORD_EXPORTS:
-        from ai_office.engine import publication_regeneration_readiness_record
-
-        return getattr(publication_regeneration_readiness_record, name)
-    raise AttributeError(name)
-
-
 __all__ = [
     "PublicationRegenerationReadinessAssessment",
     "PublicationRegenerationReadinessError",
@@ -533,5 +506,4 @@ __all__ = [
     "publication_regeneration_readiness_assessment_digest",
     "serialize_publication_regeneration_readiness_assessment_canonical",
     "validate_publication_regeneration_claim_contract",
-    *_READINESS_RECORD_EXPORTS,
 ]
