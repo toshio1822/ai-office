@@ -1,10 +1,11 @@
-"""Provider-free publication-readiness projection for regeneration evidence.
+"""Provider-free, read-only publication readiness for regeneration evidence.
 
 Phase 268 reads one strict Phase 267 result sidecar and one strict Phase 263
-readiness-audit sidecar.  It evaluates only the exact regenerated success text
-against the source audit's exact post-terminal facts through the existing Phase
-262 readiness contract.  This module never writes, calls a provider, reads
-configuration, or changes any predecessor artifact.
+readiness-audit sidecar.  It binds the regenerated output to the source
+``PostTerminalFacts`` through a dedicated new-lineage claim validator.  The
+Phase 262 original-lineage readiness boundary is intentionally not used as the
+final authority here: its ``final_output_sha256`` identity belongs only to the
+original workflow terminal output.
 """
 
 from __future__ import annotations
@@ -17,15 +18,15 @@ from pathlib import Path
 from typing import Literal, NoReturn
 
 from ai_office.engine.post_terminal_facts import (
+    PostTerminalFacts,
     PublicationClaimContract,
-    PublicationReadinessAssessment,
     PublicationReadinessAuditRecord,
-    assess_terminal_publication_readiness,
     load_publication_readiness_audit,
     post_terminal_facts_digest,
     publication_claim_contract_digest,
     publication_readiness_audit_digest,
-    serialize_publication_readiness_assessment_canonical,
+    serialize_post_terminal_facts_canonical,
+    serialize_publication_claim_contract_canonical,
 )
 from ai_office.engine.publication_regeneration_result import (
     PublicationRegenerationResultRecord,
@@ -48,6 +49,22 @@ _SUCCESS_READINESS_VALUES = {
     "stale_or_inconsistent",
 }
 _FAILURE_REASON_CODES = ("regeneration_result_failure",)
+_CLAIM_MISMATCH_CLASSIFICATIONS = frozenset(
+    {
+        "source_terminal_status",
+        "workflow_mismatch",
+        "business_output_mismatch",
+        "post_terminal_facts_mismatch",
+        "terminal_status_mismatch",
+    }
+)
+_SUCCESS_REASON_BINDINGS = frozenset(
+    {
+        (),
+        ("claim_contract_missing",),
+        ("claim_contract_mismatch",),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -67,22 +84,24 @@ class PublicationRegenerationReadinessError(ValueError):
 
 @dataclass(frozen=True)
 class PublicationRegenerationReadinessAssessment:
-    """Immutable readiness identity bound to one result and source audit."""
+    """Immutable readiness identity for one regenerated output lineage."""
 
     schema_version: Literal["publication-regeneration-readiness.v1"]
     regeneration_id: str
     result_record_sha256: str
     source_audit_sha256: str
+    source_post_terminal_facts: PostTerminalFacts
     source_post_terminal_facts_sha256: str
     outcome: Literal["success", "failure"]
-    publication_assessment: PublicationReadinessAssessment | None
+    business_output_sha256: str | None
+    evaluated_claim_contract: PublicationClaimContract | None
+    claim_contract_sha256: str | None
     readiness: Literal[
         "ready",
         "insufficient_evidence",
         "stale_or_inconsistent",
         "result_failure",
     ]
-    claim_contract_sha256: str | None
     reason_codes: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -94,18 +113,57 @@ class PublicationRegenerationReadinessAssessment:
         return publication_regeneration_readiness_assessment_digest(self)
 
 
+def validate_publication_regeneration_claim_contract(
+    contract: PublicationClaimContract,
+    source_post_terminal_facts: PostTerminalFacts,
+    regenerated_business_output_sha256: str,
+) -> None:
+    """Validate a caller claim against regenerated output and source facts.
+
+    This validator intentionally differs from Phase 262's original-lineage
+    ``validate_publication_claim_contract``: the source facts' final-output
+    digest identifies the original terminal output and is not compared with
+    the regenerated output digest here.
+    """
+    if type(contract) is not PublicationClaimContract:
+        _raise_readiness("claim_contract_type")
+    if type(source_post_terminal_facts) is not PostTerminalFacts:
+        _raise_readiness("source_facts_type")
+    try:
+        serialize_publication_claim_contract_canonical(contract)
+    except Exception:
+        _raise_readiness("claim_contract")
+    try:
+        source_facts_sha256 = post_terminal_facts_digest(source_post_terminal_facts)
+    except Exception:
+        _raise_readiness("source_facts")
+    _validate_digest(regenerated_business_output_sha256, "business_output_digest")
+
+    if source_post_terminal_facts.terminal_status != "workflow_complete":
+        _raise_readiness("source_terminal_status")
+    if contract.workflow_id != source_post_terminal_facts.workflow_id:
+        _raise_readiness("workflow_mismatch")
+    if contract.business_output_sha256 != regenerated_business_output_sha256:
+        _raise_readiness("business_output_mismatch")
+    if contract.post_terminal_facts_sha256 != source_facts_sha256:
+        _raise_readiness("post_terminal_facts_mismatch")
+    if contract.asserted_terminal_status != source_post_terminal_facts.terminal_status:
+        _raise_readiness("terminal_status_mismatch")
+
+
 def assess_publication_regeneration_result_readiness(
     *,
     result_path: Path,
     source_audit_path: Path,
     claim_contract: PublicationClaimContract | None = None,
 ) -> PublicationRegenerationReadinessAssessment:
-    """Reassess one durable regeneration result without any provider or writes.
+    """Assess one durable regeneration result without providers or writes.
 
     The result and source audit are strict-loaded in that order.  A success
-    result contributes only its exact ``result.text``; the source audit's
-    immutable ``PostTerminalFacts`` are the only runtime evidence.  A failure
-    result is represented as ``result_failure`` and never evaluates a claim.
+    result contributes only its exact ``result.text`` and digest; the source
+    audit's immutable ``PostTerminalFacts`` are the only runtime evidence.  A
+    failure result is represented as ``result_failure`` and never evaluates a
+    claim.
     """
     result_record = _load_result(result_path)
     source_audit = _load_source_audit(source_audit_path)
@@ -120,19 +178,18 @@ def assess_publication_regeneration_result_readiness(
         and type(claim_contract) is not PublicationClaimContract
     ):
         _raise_readiness("claim_contract_type")
+
     if type(result_record.result) is ModelInvocationFailure:
         if claim_contract is not None:
             _raise_readiness("claim_contract_inapplicable")
-        return PublicationRegenerationReadinessAssessment(
-            schema_version=_READINESS_SCHEMA_VERSION,
-            regeneration_id=result_record.regeneration_id,
-            result_record_sha256=result_record.digest,
+        return _build_assessment(
+            result_record=result_record,
             source_audit_sha256=source_audit_sha256,
+            source_post_terminal_facts=facts,
             source_post_terminal_facts_sha256=facts_sha256,
-            outcome="failure",
-            publication_assessment=None,
+            business_output_sha256=None,
+            evaluated_claim_contract=None,
             readiness="result_failure",
-            claim_contract_sha256=None,
             reason_codes=_FAILURE_REASON_CODES,
         )
 
@@ -140,89 +197,86 @@ def assess_publication_regeneration_result_readiness(
         _raise_readiness("result_type")
     if result_record.outcome != "success":
         _raise_readiness("result_outcome")
-    if result_record.business_output_sha256 != _text_digest(result_record.result.text):
-        _raise_readiness("business_output_binding")
-    if claim_contract is not None:
-        try:
-            supplied_claim_sha256 = publication_claim_contract_digest(claim_contract)
-        except Exception:
-            _raise_readiness("claim_contract")
-    else:
-        supplied_claim_sha256 = None
 
-    try:
-        publication_assessment = assess_terminal_publication_readiness(
-            facts,
-            result_record.result.text,
-            claim_contract=claim_contract,
+    regenerated_business_output_sha256 = _text_digest(result_record.result.text)
+    if result_record.business_output_sha256 != regenerated_business_output_sha256:
+        _raise_readiness("business_output_binding")
+
+    if claim_contract is None:
+        return _build_assessment(
+            result_record=result_record,
+            source_audit_sha256=source_audit_sha256,
+            source_post_terminal_facts=facts,
+            source_post_terminal_facts_sha256=facts_sha256,
+            business_output_sha256=regenerated_business_output_sha256,
+            evaluated_claim_contract=None,
+            readiness="insufficient_evidence",
+            reason_codes=("claim_contract_missing",),
         )
-    except Exception:
-        _raise_readiness("publication_assessment")
 
-    if type(publication_assessment) is not PublicationReadinessAssessment:
-        _raise_readiness("publication_assessment_type")
-    if publication_assessment.post_terminal_facts != facts:
-        _raise_readiness("facts_binding")
-    if publication_assessment.business_output_sha256 != (
-        result_record.business_output_sha256
-    ):
-        _raise_readiness("business_output_binding")
-    if supplied_claim_sha256 is None:
-        if publication_assessment.claim_contract_sha256 is not None:
-            _raise_readiness("claim_contract_binding")
-    elif publication_assessment.claim_contract_sha256 not in {
-        None,
-        supplied_claim_sha256,
-    }:
-        _raise_readiness("claim_contract_binding")
+    _claim_digest(claim_contract)
+    try:
+        validate_publication_regeneration_claim_contract(
+            claim_contract,
+            facts,
+            regenerated_business_output_sha256,
+        )
+    except PublicationRegenerationReadinessError as error:
+        if error.detail.classification not in _CLAIM_MISMATCH_CLASSIFICATIONS:
+            raise
+        return _build_assessment(
+            result_record=result_record,
+            source_audit_sha256=source_audit_sha256,
+            source_post_terminal_facts=facts,
+            source_post_terminal_facts_sha256=facts_sha256,
+            business_output_sha256=regenerated_business_output_sha256,
+            evaluated_claim_contract=claim_contract,
+            readiness="stale_or_inconsistent",
+            reason_codes=("claim_contract_mismatch",),
+        )
 
-    # Phase 262 deliberately omits a mismatching contract from its nested
-    # assessment.  Preserve the caller-supplied contract digest at this outer
-    # lineage boundary so a rejected claim is never silently dropped.
-    wrapper_claim_contract_sha256 = (
-        supplied_claim_sha256
-        if publication_assessment.reason_codes == ("claim_contract_mismatch",)
-        else publication_assessment.claim_contract_sha256
-    )
-
-    return PublicationRegenerationReadinessAssessment(
-        schema_version=_READINESS_SCHEMA_VERSION,
-        regeneration_id=result_record.regeneration_id,
-        result_record_sha256=result_record.digest,
+    return _build_assessment(
+        result_record=result_record,
         source_audit_sha256=source_audit_sha256,
+        source_post_terminal_facts=facts,
         source_post_terminal_facts_sha256=facts_sha256,
-        outcome="success",
-        publication_assessment=publication_assessment,
-        readiness=publication_assessment.readiness,
-        claim_contract_sha256=wrapper_claim_contract_sha256,
-        reason_codes=publication_assessment.reason_codes,
+        business_output_sha256=regenerated_business_output_sha256,
+        evaluated_claim_contract=claim_contract,
+        readiness="ready",
+        reason_codes=(),
     )
 
 
 def serialize_publication_regeneration_readiness_assessment_canonical(
     assessment: PublicationRegenerationReadinessAssessment,
 ) -> str:
-    """Serialize one wrapper as compact canonical JSON."""
+    """Serialize one regeneration-readiness wrapper as canonical JSON."""
     _validate_publication_regeneration_readiness(assessment)
     try:
         value = {
+            "business_output_sha256": assessment.business_output_sha256,
             "claim_contract_sha256": assessment.claim_contract_sha256,
-            "outcome": assessment.outcome,
-            "publication_assessment": (
+            "evaluated_claim_contract": (
                 json.loads(
-                    serialize_publication_readiness_assessment_canonical(
-                        assessment.publication_assessment
+                    serialize_publication_claim_contract_canonical(
+                        assessment.evaluated_claim_contract
                     )
                 )
-                if assessment.publication_assessment is not None
+                if assessment.evaluated_claim_contract is not None
                 else None
             ),
+            "outcome": assessment.outcome,
             "readiness": assessment.readiness,
             "reason_codes": list(assessment.reason_codes),
             "regeneration_id": assessment.regeneration_id,
             "result_record_sha256": assessment.result_record_sha256,
             "schema_version": assessment.schema_version,
             "source_audit_sha256": assessment.source_audit_sha256,
+            "source_post_terminal_facts": json.loads(
+                serialize_post_terminal_facts_canonical(
+                    assessment.source_post_terminal_facts
+                )
+            ),
             "source_post_terminal_facts_sha256": (
                 assessment.source_post_terminal_facts_sha256
             ),
@@ -256,6 +310,42 @@ def publication_regeneration_readiness_assessment_digest(
     ).hexdigest()
 
 
+def _build_assessment(
+    *,
+    result_record: PublicationRegenerationResultRecord,
+    source_audit_sha256: str,
+    source_post_terminal_facts: PostTerminalFacts,
+    source_post_terminal_facts_sha256: str,
+    business_output_sha256: str | None,
+    evaluated_claim_contract: PublicationClaimContract | None,
+    readiness: Literal[
+        "ready",
+        "insufficient_evidence",
+        "stale_or_inconsistent",
+        "result_failure",
+    ],
+    reason_codes: tuple[str, ...],
+) -> PublicationRegenerationReadinessAssessment:
+    return PublicationRegenerationReadinessAssessment(
+        schema_version=_READINESS_SCHEMA_VERSION,
+        regeneration_id=result_record.regeneration_id,
+        result_record_sha256=result_record.digest,
+        source_audit_sha256=source_audit_sha256,
+        source_post_terminal_facts=source_post_terminal_facts,
+        source_post_terminal_facts_sha256=source_post_terminal_facts_sha256,
+        outcome=result_record.outcome,
+        business_output_sha256=business_output_sha256,
+        evaluated_claim_contract=evaluated_claim_contract,
+        claim_contract_sha256=(
+            _claim_digest(evaluated_claim_contract)
+            if evaluated_claim_contract is not None
+            else None
+        ),
+        readiness=readiness,
+        reason_codes=reason_codes,
+    )
+
+
 def _load_result(path: Path) -> PublicationRegenerationResultRecord:
     try:
         result = load_publication_regeneration_result(path)
@@ -274,6 +364,13 @@ def _load_source_audit(path: Path) -> PublicationReadinessAuditRecord:
     if type(audit) is not PublicationReadinessAuditRecord:
         _raise_readiness("source_audit_type")
     return audit
+
+
+def _claim_digest(contract: PublicationClaimContract) -> str:
+    try:
+        return publication_claim_contract_digest(contract)
+    except Exception:
+        _raise_readiness("claim_contract")
 
 
 def _validate_publication_regeneration_readiness(
@@ -297,6 +394,14 @@ def _validate_publication_regeneration_readiness(
         ),
     ):
         _validate_digest(value, classification)
+    if type(assessment.source_post_terminal_facts) is not PostTerminalFacts:
+        _raise_readiness("source_facts_type")
+    try:
+        facts_digest = post_terminal_facts_digest(assessment.source_post_terminal_facts)
+    except Exception:
+        _raise_readiness("source_facts")
+    if assessment.source_post_terminal_facts_sha256 != facts_digest:
+        _raise_readiness("source_facts_binding")
     if type(assessment.outcome) is not str or assessment.outcome not in {
         "success",
         "failure",
@@ -311,54 +416,74 @@ def _validate_publication_regeneration_readiness(
         type(reason) is not str or not reason for reason in assessment.reason_codes
     ):
         _raise_readiness("reason_codes")
+    if assessment.business_output_sha256 is not None:
+        _validate_digest(assessment.business_output_sha256, "business_output_digest")
+    if assessment.evaluated_claim_contract is not None:
+        if type(assessment.evaluated_claim_contract) is not PublicationClaimContract:
+            _raise_readiness("claim_contract_type")
+        _claim_digest(assessment.evaluated_claim_contract)
     if assessment.claim_contract_sha256 is not None:
         _validate_digest(assessment.claim_contract_sha256, "claim_contract_digest")
+    if assessment.evaluated_claim_contract is None:
+        if assessment.claim_contract_sha256 is not None:
+            _raise_readiness("claim_contract_binding")
+    elif assessment.claim_contract_sha256 != _claim_digest(
+        assessment.evaluated_claim_contract
+    ):
+        _raise_readiness("claim_contract_binding")
 
     if assessment.outcome == "failure":
         if (
-            assessment.publication_assessment is not None
-            or assessment.readiness != "result_failure"
+            assessment.business_output_sha256 is not None
+            or assessment.evaluated_claim_contract is not None
             or assessment.claim_contract_sha256 is not None
+            or assessment.readiness != "result_failure"
             or assessment.reason_codes != _FAILURE_REASON_CODES
         ):
             _raise_readiness("failure_binding")
         return
 
+    if assessment.business_output_sha256 is None:
+        _raise_readiness("success_business_output")
     if assessment.readiness not in _SUCCESS_READINESS_VALUES:
         _raise_readiness("success_readiness")
-    if type(assessment.publication_assessment) is not PublicationReadinessAssessment:
-        _raise_readiness("publication_assessment_type")
-    try:
-        serialize_publication_readiness_assessment_canonical(
-            assessment.publication_assessment
-        )
-    except Exception:
-        _raise_readiness("publication_assessment")
-    if assessment.readiness != assessment.publication_assessment.readiness:
-        _raise_readiness("readiness_binding")
-    if assessment.source_post_terminal_facts_sha256 != post_terminal_facts_digest(
-        assessment.publication_assessment.post_terminal_facts
-    ):
-        _raise_readiness("source_facts_binding")
-    if assessment.reason_codes != assessment.publication_assessment.reason_codes:
-        _raise_readiness("reason_binding")
-    if assessment.publication_assessment.reason_codes == ("claim_contract_mismatch",):
-        if (
-            assessment.claim_contract_sha256 is None
-            or assessment.publication_assessment.claim_contract is not None
-        ):
-            _raise_readiness("claim_contract_binding")
-    elif (
-        assessment.claim_contract_sha256
-        != assessment.publication_assessment.claim_contract_sha256
-    ):
-        _raise_readiness("claim_contract_binding")
+    if assessment.reason_codes not in _SUCCESS_REASON_BINDINGS:
+        _raise_readiness("reason_codes")
     if assessment.readiness == "ready":
         if (
-            assessment.publication_assessment.claim_contract is None
+            assessment.evaluated_claim_contract is None
             or assessment.claim_contract_sha256 is None
+            or assessment.reason_codes
         ):
             _raise_readiness("ready_without_claim")
+        try:
+            validate_publication_regeneration_claim_contract(
+                assessment.evaluated_claim_contract,
+                assessment.source_post_terminal_facts,
+                assessment.business_output_sha256,
+            )
+        except Exception:
+            _raise_readiness("ready_claim_contract_binding")
+    elif assessment.readiness == "stale_or_inconsistent":
+        if (
+            assessment.reason_codes != ("claim_contract_mismatch",)
+            or assessment.evaluated_claim_contract is None
+        ):
+            _raise_readiness("stale_claim_binding")
+        try:
+            validate_publication_regeneration_claim_contract(
+                assessment.evaluated_claim_contract,
+                assessment.source_post_terminal_facts,
+                assessment.business_output_sha256,
+            )
+        except PublicationRegenerationReadinessError as error:
+            if error.detail.classification not in _CLAIM_MISMATCH_CLASSIFICATIONS:
+                _raise_readiness("stale_claim_binding")
+        else:
+            _raise_readiness("stale_claim_binding")
+    elif assessment.reason_codes == ("claim_contract_missing",):
+        if assessment.evaluated_claim_contract is not None:
+            _raise_readiness("claim_contract_binding")
 
 
 def _validate_digest(value: object, classification: str) -> None:
@@ -384,4 +509,5 @@ __all__ = [
     "publication_regeneration_readiness_assessment_canonical_bytes",
     "publication_regeneration_readiness_assessment_digest",
     "serialize_publication_regeneration_readiness_assessment_canonical",
+    "validate_publication_regeneration_claim_contract",
 ]

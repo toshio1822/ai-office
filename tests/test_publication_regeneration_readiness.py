@@ -18,6 +18,7 @@ from ai_office.cli import app
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.post_terminal_facts import (
     PublicationClaimContract,
+    assess_terminal_publication_readiness,
     build_post_terminal_facts,
     build_publication_readiness_audit_record,
     load_persisted_terminal_snapshot,
@@ -38,6 +39,7 @@ from ai_office.engine.publication_regeneration_readiness import (
     publication_regeneration_readiness_assessment_canonical_bytes,
     publication_regeneration_readiness_assessment_digest,
     serialize_publication_regeneration_readiness_assessment_canonical,
+    validate_publication_regeneration_claim_contract,
 )
 from ai_office.engine.publication_regeneration_result import (
     PublicationRegenerationResultLoadError,
@@ -315,11 +317,9 @@ def test_success_without_claim_is_insufficient_evidence_and_uses_exact_text(
     assert assessment.readiness == "insufficient_evidence"
     assert assessment.reason_codes == ("claim_contract_missing",)
     assert assessment.claim_contract_sha256 is None
-    assert assessment.publication_assessment is not None
-    assert (
-        assessment.publication_assessment.business_output_sha256
-        == fixture.record.business_output_sha256
-    )
+    assert assessment.evaluated_claim_contract is None
+    assert assessment.business_output_sha256 == fixture.record.business_output_sha256
+    assert assessment.source_post_terminal_facts == fixture.audit.post_terminal_facts
     assert fixture.record.result.text not in (
         serialize_publication_regeneration_readiness_assessment_canonical(assessment)
     )
@@ -346,21 +346,39 @@ def test_success_with_exact_caller_claim_is_ready_and_cross_bound(
         fixture.audit.post_terminal_facts
     )
     assert assessment.claim_contract_sha256 == contract.digest
-    assert assessment.publication_assessment is not None
-    assert assessment.publication_assessment.claim_contract is contract
-    assert assessment.publication_assessment.post_terminal_facts == (
-        fixture.audit.post_terminal_facts
-    )
-    assert assessment.publication_assessment.business_output_sha256 == (
-        fixture.record.business_output_sha256
-    )
+    assert assessment.evaluated_claim_contract is contract
+    assert assessment.source_post_terminal_facts == fixture.audit.post_terminal_facts
+    assert assessment.business_output_sha256 == fixture.record.business_output_sha256
 
 
 def test_success_with_mismatching_caller_claim_is_stale_without_auto_repair(
     tmp_path: Path,
 ) -> None:
-    fixture = readiness_fixture(tmp_path)
-    mismatch = replace(exact_contract(fixture), workflow_id="other-workflow")
+    fixture = readiness_fixture(
+        tmp_path,
+        source_output="ORIGINAL BUSINESS OUTPUT 日本語",
+    )
+    changed_result = ModelInvocationSuccess(
+        provider=fixture.record.result.provider,
+        response_id="response-268-changed-mismatch",
+        request_id="request-268-changed-mismatch",
+        status="completed",
+        text_parts=("REGENERATED CANDIDATE",),
+        text="REGENERATED CANDIDATE",
+    )
+    changed_record = build_publication_regeneration_result_record(
+        fixture.record.attempt_claim,
+        changed_result,
+    )
+    fixture.result_path.unlink()
+    persist_publication_regeneration_result(fixture.result_path, changed_record)
+    mismatch = replace(
+        claim_contract_for(
+            fixture.audit.post_terminal_facts,
+            output=changed_result.text,
+        ),
+        workflow_id="other-workflow",
+    )
 
     assessment = assess_publication_regeneration_result_readiness(
         result_path=fixture.result_path,
@@ -370,10 +388,13 @@ def test_success_with_mismatching_caller_claim_is_stale_without_auto_repair(
 
     assert assessment.readiness == "stale_or_inconsistent"
     assert assessment.reason_codes == ("claim_contract_mismatch",)
+    assert assessment.business_output_sha256 == changed_record.business_output_sha256
     assert assessment.claim_contract_sha256 == mismatch.digest
-    assert assessment.publication_assessment is not None
-    assert assessment.publication_assessment.claim_contract is None
+    assert assessment.evaluated_claim_contract is mismatch
     assert mismatch.digest in (
+        serialize_publication_regeneration_readiness_assessment_canonical(assessment)
+    )
+    assert "other-workflow" in (
         serialize_publication_regeneration_readiness_assessment_canonical(assessment)
     )
 
@@ -405,12 +426,76 @@ def test_success_uses_regenerated_text_against_exact_source_facts(
         source_audit_path=fixture.audit_path,
     )
 
-    assert assessment.readiness == "stale_or_inconsistent"
-    assert assessment.reason_codes == ("final_output_mismatch",)
-    assert assessment.publication_assessment is not None
-    assert assessment.publication_assessment.business_output_sha256 == (
-        changed_record.business_output_sha256
+    assert assessment.readiness == "insufficient_evidence"
+    assert assessment.reason_codes == ("claim_contract_missing",)
+    assert assessment.business_output_sha256 == changed_record.business_output_sha256
+    assert assessment.evaluated_claim_contract is None
+
+    original_lineage_claim = claim_contract_for(
+        fixture.audit.post_terminal_facts,
+        output=changed_result.text,
     )
+    original_lineage_assessment = assess_terminal_publication_readiness(
+        fixture.audit.post_terminal_facts,
+        changed_result.text,
+        claim_contract=original_lineage_claim,
+    )
+    assert original_lineage_assessment.readiness == "stale_or_inconsistent"
+    assert original_lineage_assessment.reason_codes == ("final_output_mismatch",)
+
+
+def test_changed_regenerated_output_with_exact_claim_is_ready_in_new_lineage(
+    tmp_path: Path,
+) -> None:
+    fixture = readiness_fixture(
+        tmp_path,
+        source_output="ORIGINAL BUSINESS OUTPUT 日本語",
+    )
+    changed_result = ModelInvocationSuccess(
+        provider=fixture.record.result.provider,
+        response_id="response-268-changed-ready",
+        request_id="request-268-changed-ready",
+        status="completed",
+        text_parts=("REGENERATED CANDIDATE",),
+        text="REGENERATED CANDIDATE",
+    )
+    changed_record = build_publication_regeneration_result_record(
+        fixture.record.attempt_claim,
+        changed_result,
+    )
+    fixture.result_path.unlink()
+    persist_publication_regeneration_result(fixture.result_path, changed_record)
+    contract = claim_contract_for(
+        fixture.audit.post_terminal_facts,
+        output=changed_result.text,
+    )
+
+    validate_publication_regeneration_claim_contract(
+        contract,
+        fixture.audit.post_terminal_facts,
+        changed_record.business_output_sha256,
+    )
+    assessment = assess_publication_regeneration_result_readiness(
+        result_path=fixture.result_path,
+        source_audit_path=fixture.audit_path,
+        claim_contract=contract,
+    )
+
+    assert assessment.readiness == "ready"
+    assert assessment.reason_codes == ()
+    assert assessment.business_output_sha256 == changed_record.business_output_sha256
+    assert assessment.evaluated_claim_contract is contract
+    assert assessment.claim_contract_sha256 == contract.digest
+    assert changed_record.business_output_sha256 != (
+        fixture.audit.post_terminal_facts.final_output_sha256
+    )
+    original_lineage_assessment = assess_terminal_publication_readiness(
+        fixture.audit.post_terminal_facts,
+        changed_result.text,
+        claim_contract=contract,
+    )
+    assert original_lineage_assessment.readiness == "stale_or_inconsistent"
+    assert original_lineage_assessment.reason_codes == ("final_output_mismatch",)
 
 
 def test_failure_result_is_result_failure_and_never_uses_failure_message(
@@ -426,8 +511,9 @@ def test_failure_result_is_result_failure_and_never_uses_failure_message(
     assert assessment.outcome == "failure"
     assert assessment.readiness == "result_failure"
     assert assessment.reason_codes == ("regeneration_result_failure",)
-    assert assessment.publication_assessment is None
     assert assessment.claim_contract_sha256 is None
+    assert assessment.business_output_sha256 is None
+    assert assessment.evaluated_claim_contract is None
     assert "safe message" not in (
         serialize_publication_regeneration_readiness_assessment_canonical(assessment)
     )
@@ -506,11 +592,13 @@ def test_wrapper_rejects_direct_forged_ready_and_subclasses(
         "regeneration_id": fixture.record.regeneration_id,
         "result_record_sha256": fixture.record.digest,
         "source_audit_sha256": fixture.audit.digest,
+        "source_post_terminal_facts": fixture.audit.post_terminal_facts,
         "source_post_terminal_facts_sha256": fixture.audit.post_terminal_facts.digest,
         "outcome": "success",
-        "publication_assessment": None,
-        "readiness": "ready",
+        "business_output_sha256": fixture.record.business_output_sha256,
+        "evaluated_claim_contract": None,
         "claim_contract_sha256": contract.digest,
+        "readiness": "ready",
         "reason_codes": (),
     }
 
@@ -536,10 +624,11 @@ def test_wrapper_is_frozen_and_mirrors_nested_assessment_exactly(
 
     with pytest.raises(FrozenInstanceError):
         assessment.readiness = "stale_or_inconsistent"  # type: ignore[misc]
-    assert assessment.readiness == assessment.publication_assessment.readiness
-    assert assessment.reason_codes == assessment.publication_assessment.reason_codes
-    assert assessment.claim_contract_sha256 == (
-        assessment.publication_assessment.claim_contract_sha256
+    assert assessment.business_output_sha256 == fixture.record.business_output_sha256
+    assert assessment.source_post_terminal_facts == fixture.audit.post_terminal_facts
+    assert assessment.evaluated_claim_contract == exact_contract(fixture)
+    assert (
+        assessment.claim_contract_sha256 == assessment.evaluated_claim_contract.digest
     )
 
 
@@ -577,10 +666,14 @@ def test_canonical_wrapper_fixture_is_compact_and_digest_bound(tmp_path: Path) -
         assessment
     ) == canonical.encode("utf-8")
     expected = (
-        '{"claim_contract_sha256":null,"outcome":"success",'
-        '"publication_assessment":{"business_output_sha256":"f5a064be281eea4db190ed7268f4a1e005ca05227654bbfa260a6c5684da743e",'
-        '"claim_contract_sha256":null,"execution_status":"workflow_complete",'
-        '"post_terminal_facts":{"completed_step_ids":["research","publish"],'
+        '{"business_output_sha256":"f5a064be281eea4db190ed7268f4a1e005ca05227654bbfa260a6c5684da743e",'
+        '"claim_contract_sha256":null,"evaluated_claim_contract":null,"outcome":"success",'
+        '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
+        '"regeneration_id":"regen-20260912-01",'
+        '"result_record_sha256":"ded25e22fb8c1fac42db443c4e5a60682b10b9697ddb749bebacecd708624eda",'
+        '"schema_version":"publication-regeneration-readiness.v1",'
+        '"source_audit_sha256":"34d656c42f0b15d74b8d92babe0d361fa0a1c0a69a221b68e985ba87cfe68926",'
+        '"source_post_terminal_facts":{"completed_step_ids":["research","publish"],'
         '"events_sha256":"1232505d7388720951336b434fe00df5474cefd0d659a99283c52a72d29ad6c8",'
         '"final_output_sha256":"f5a064be281eea4db190ed7268f4a1e005ca05227654bbfa260a6c5684da743e",'
         '"schema_version":"post-terminal-facts.v1",'
@@ -588,13 +681,6 @@ def test_canonical_wrapper_fixture_is_compact_and_digest_bound(tmp_path: Path) -
         '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
         '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
         '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase268-workflow"},'
-        '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
-        '"schema_version":"publication-readiness.v1"},'
-        '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
-        '"regeneration_id":"regen-20260912-01",'
-        '"result_record_sha256":"ded25e22fb8c1fac42db443c4e5a60682b10b9697ddb749bebacecd708624eda",'
-        '"schema_version":"publication-regeneration-readiness.v1",'
-        '"source_audit_sha256":"34d656c42f0b15d74b8d92babe0d361fa0a1c0a69a221b68e985ba87cfe68926",'
         '"source_post_terminal_facts_sha256":"c3e68c8c60eee1b1e7a41a7df2dc338a3e0d7eca6838916a68396ff511aec6dd"}'
     )
     assert canonical == expected
@@ -602,7 +688,7 @@ def test_canonical_wrapper_fixture_is_compact_and_digest_bound(tmp_path: Path) -
         hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     )
     assert assessment.digest == (
-        "ad65b40bb48a2885ac3b0cb62d360c4a801f05df3431151a783dde55af8a5595"
+        "b2cbe77da22a1d2dda2555b5262ab76b9bc5548ee8786c2e620c7073e0372798"
     )
 
 

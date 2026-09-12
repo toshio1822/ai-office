@@ -796,6 +796,7 @@ from ai_office.engine.publication_regeneration_readiness import (
     publication_regeneration_readiness_assessment_canonical_bytes,
     publication_regeneration_readiness_assessment_digest,
     serialize_publication_regeneration_readiness_assessment_canonical,
+    validate_publication_regeneration_claim_contract,
 )
 from ai_office.engine.publication_regeneration_result import (
     PublicationRegenerationResultConflictError,
@@ -1273,6 +1274,7 @@ __all__ = [
     "publication_regeneration_readiness_assessment_canonical_bytes",
     "publication_regeneration_readiness_assessment_digest",
     "serialize_publication_regeneration_readiness_assessment_canonical",
+    "validate_publication_regeneration_claim_contract",
     "persist_publication_readiness_audit",
     "persist_publication_regeneration_result",
     "preflight_publication_regeneration_result_path",
