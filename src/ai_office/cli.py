@@ -24,11 +24,14 @@ from ai_office.engine import (
     NextStepPreparationApproval,
     PublicationRegenerationExportError,
     PublicationRegenerationExportReceipt,
+    PublicationRegenerationExportReconciliation,
     build_immediate_predecessor_upstream_inputs,
     build_persisted_continuation_runtime_facts,
     classify_persisted_execution_outcome_reentry,
     export_publication_regeneration_output,
+    load_publication_regeneration_export_reconciliation,
     project_publication_regeneration_output,
+    publication_regeneration_export_reconciliation_digest,
     route_approved_fresh_workflow_bounded,
     route_persisted_execution_outcome_reentry,
     route_persisted_terminal_workflow_bounded,
@@ -1301,6 +1304,54 @@ def publication_export_workflow(
             "output_byte_length": receipt.output_byte_length,
         }
     )
+
+
+@workflows_app.command("publication-reconciliation-evidence")
+def publication_reconciliation_evidence_workflow(
+    evidence_path: Path = typer.Option(..., "--evidence-path"),
+) -> None:
+    """Read one exact Phase 276 reconciliation-evidence sidecar."""
+    try:
+        reconciliation = load_publication_regeneration_export_reconciliation(
+            evidence_path
+        )
+        if type(reconciliation) is not PublicationRegenerationExportReconciliation:
+            raise TypeError
+        if reconciliation.status not in (
+            "matched",
+            "missing",
+            "content_mismatch",
+        ):
+            raise ValueError
+        evidence_sha256 = publication_regeneration_export_reconciliation_digest(
+            reconciliation
+        )
+        if type(evidence_sha256) is not str:
+            raise TypeError
+        value: dict[str, object] = {
+            "evidence_sha256": evidence_sha256,
+            "expected_business_output_sha256": (
+                reconciliation.expected_business_output_sha256
+            ),
+            "expected_output_byte_length": reconciliation.expected_output_byte_length,
+            "observed_business_output_sha256": (
+                reconciliation.observed_business_output_sha256
+            ),
+            "observed_output_byte_length": reconciliation.observed_output_byte_length,
+            "operation": "publication-reconciliation-evidence",
+            "receipt_sha256": reconciliation.receipt_sha256,
+            "regeneration_id": reconciliation.regeneration_id,
+            "schema_version": reconciliation.schema_version,
+            "status": reconciliation.status,
+        }
+    except Exception:
+        _workflow_cli_error(
+            "publication reconciliation evidence could not be read"
+        )
+
+    _emit_json(value)
+    if reconciliation.status != "matched":
+        raise typer.Exit(code=1)
 
 
 @workflows_app.command("plan")
