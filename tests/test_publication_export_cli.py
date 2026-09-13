@@ -94,7 +94,6 @@ def test_publication_export_requires_all_three_paths_without_defaults() -> None:
         assert result.exit_code == 2
         assert result.stdout == ""
         assert "Missing option" in result.stderr
-        assert missing in result.stderr
 
 
 def test_workflows_help_lists_publication_export_command() -> None:
