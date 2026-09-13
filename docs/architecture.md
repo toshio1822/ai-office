@@ -5081,3 +5081,50 @@ provider/network execution, or additional filesystem mutation; Phase 272
 remains the sole owner of output preflight and durable write/fsync semantics.
 The existing `publication-result`, `result`, `start`, and `continue` command
 contracts remain unchanged.
+
+## Phase 274: Canonical durable publication export receipt evidence
+
+Phase 274 adds one narrow provider-free receipt sidecar boundary:
+`serialize_publication_regeneration_export_receipt_canonical(...)`,
+`publication_regeneration_export_receipt_canonical_bytes(...)`,
+`publication_regeneration_export_receipt_digest(...)`,
+`persist_publication_regeneration_export_receipt(...)`, and
+`load_publication_regeneration_export_receipt(...)`. Its only input model is the
+already-derived exact Phase 272 `PublicationRegenerationExportReceipt`. It never
+calls the Phase 272 export, Phase 270 projection, Phase 267/268/269 loaders or
+assessors, and it never inspects or reconciles the exported business-output file.
+
+The durable record is the receipt itself, with exactly these eight keys and no
+wrapper or metadata: `schema_version`, `regeneration_id`,
+`projection_sha256`, `readiness_record_sha256`, `result_record_sha256`,
+`source_audit_sha256`, `business_output_sha256`, and `output_byte_length`.
+Serialization is deterministic compact JSON with `ensure_ascii=False`, sorted
+keys, `(',', ':')` separators, and `allow_nan=False`; canonical bytes are the
+exact UTF-8 encoding without BOM or trailing newline, and the digest is SHA-256
+of those bytes. The Phase 272 exact model remains authoritative for schema,
+non-empty regeneration ID, lowercase 64-hex identities, and non-negative
+built-in integer byte length excluding `bool`.
+
+Persistence accepts only an exact repository `Path`, an existing directory
+parent, and a non-directory/non-symlink target. It derives and validates all
+canonical bytes before filesystem mutation, uses one exclusive `open("xb")`,
+then performs exactly write, flush, file fsync, close, and parent-directory
+fsync before returning. A caller-supplied existing target is successful only
+when its bytes are exactly identical; it is never rewritten or truncated and
+is only file-/parent-fsynced. A race-created identical target follows the same
+read-only idempotent path, while different bytes raise a fixed conflict. Any
+failure after exclusive creation is conservatively classified as ambiguous,
+retains the artifact, and does not retry, repair, rename, overwrite, or delete.
+
+The strict loader is read-only. It rejects directories and symlinks, decodes
+UTF-8 exactly, parses JSON once with duplicate-key and non-standard-constant
+rejection, requires the exact eight-key object, constructs one exact Phase 272
+receipt, and requires byte-for-byte equality with its canonical reserialization.
+Missing/extra keys, malformed JSON or UTF-8, noncanonical whitespace/order,
+invalid model values, and non-standard JSON representations produce fixed
+detail-safe errors without exposing paths, receipt data, digests, provider
+text, or internal exception details. No workflow state/events, audit/claim/
+result/readiness/projection evidence, original output, provider boundary,
+environment, credentials, clock, CLI, or runtime event is changed. Whether the
+exported business-output file still exists or matches the receipt remains the
+responsibility of a later explicit reconciliation phase.
