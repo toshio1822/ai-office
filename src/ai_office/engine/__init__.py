@@ -788,6 +788,12 @@ from ai_office.engine.publication_regeneration_execution import (
     PublicationRegenerationExecutionFailureDetail,
     execute_approved_publication_regeneration,
 )
+from ai_office.engine.publication_regeneration_export import (
+    PublicationRegenerationExportError,
+    PublicationRegenerationExportFailureDetail,
+    PublicationRegenerationExportReceipt,
+    export_publication_regeneration_output,
+)
 from ai_office.engine.publication_regeneration_projection import (
     PublicationRegenerationProjection,
     PublicationRegenerationProjectionError,
@@ -1268,6 +1274,9 @@ __all__ = [
     "PublicationRegenerationProjection",
     "PublicationRegenerationProjectionError",
     "PublicationRegenerationProjectionFailureDetail",
+    "PublicationRegenerationExportError",
+    "PublicationRegenerationExportFailureDetail",
+    "PublicationRegenerationExportReceipt",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
     "PublicationRegenerationReadiness",
@@ -1335,6 +1344,7 @@ __all__ = [
     "load_publication_regeneration_result",
     "load_publication_regeneration_readiness_record",
     "project_publication_regeneration_output",
+    "export_publication_regeneration_output",
     "load_publication_regeneration_attempt_claim",
     "UpstreamStepOutputHandoffClassification",
     "UpstreamStepOutput",
