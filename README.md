@@ -4703,7 +4703,7 @@ export output、Phase 272 export、Phase 270 projectionを再実行・再観測�
 しません。
 
 validな`matched`、`missing`、`content_mismatch`では、`operation`、Phase 276の
-全model fields、`evidence_sha256`だけを含むexact ten-key compact JSONを1行出力
+全model fields、`evidence_sha256`だけを含むexact ten-key deterministic JSONを1行出力
 します。`matched`は終了コード0、`missing`と`content_mismatch`は同じJSONを出力して
 終了コード1です。invalid・tampered・unreadable evidence、unsafe target、wrong
 dependency return type、digest failure、unexpected exceptionはstdoutを空にし、
