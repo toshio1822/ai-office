@@ -5054,3 +5054,30 @@ artifact is retained, and no retry, repair, deletion, overwrite, second Phase
 event/original-workflow artifacts remain byte-for-byte unchanged; Phase 272
 adds no runtime event, provider/network/environment access, credential lookup,
 regeneration, claim/readiness mutation, fallback, continuation, or manifest.
+
+## Phase 273: Provider-free publication-export CLI adapter
+
+Phase 273 adds only the explicit command
+`ai-office workflows publication-export --readiness-record-path PATH
+--result-path PATH --output-path PATH`. All three paths are required and are
+parsed as caller-supplied `Path` values without CLI-side discovery,
+normalization, resolution, preflight, directory creation, or reinterpretation.
+The command calls the existing Phase 272
+`export_publication_regeneration_output(...)` public boundary exactly once,
+passing the three values in their authoritative keyword roles. It does not
+call Phase 270 directly or load/reassess Phase 267/268/269 evidence.
+
+On an exact Phase 272 `PublicationRegenerationExportReceipt`, the adapter emits
+one deterministic compact JSON line containing only `operation`, the receipt
+schema and identities, and `output_byte_length`; `operation` is
+`publication-export`. It does not include the output path, business text,
+provider data, credentials, timestamps, random values, or arbitrary metadata,
+and it persists no receipt or manifest. `not_publishable` maps to the fixed
+safe stderr and exit code 1. `ambiguous` maps to its distinct fixed stderr and
+exit code 2. Every other Phase 272 rejection, unexpected dependency exception,
+or non-exact receipt return maps to the fixed invalid-export stderr and exit
+code 2. The adapter performs no retry, fallback, repair, reconciliation,
+provider/network execution, or additional filesystem mutation; Phase 272
+remains the sole owner of output preflight and durable write/fsync semantics.
+The existing `publication-result`, `result`, `start`, and `continue` command
+contracts remain unchanged.
