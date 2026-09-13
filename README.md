@@ -4681,3 +4681,37 @@ key、非canonical JSON、Phase 275 modelの不正なstatus・digest・length・
 組合せを拒否します。receipt/outputの再観測、CLI変更、reconciliation resultの
 再計算、workflow state/events等のlineage mutation、provider/network/credential/
 clock accessはありません。
+
+## Phase 277: publication reconciliation evidence の read-only CLI
+
+Phase 276が永続化したreconciliation-evidence sidecarを、明示されたpathから
+provider-freeにstrict loadして確認するread-only CLI commandを追加しています。
+commandは次の1つだけです。
+
+```bash
+ai-office workflows publication-reconciliation-evidence \
+  --evidence-path path/to/reconciliation-evidence.json
+```
+
+`--evidence-path`は必須で、既定値、discovery、scanning、workflow-derived pathは
+ありません。CLIはcallerが指定した`Path`をPhase 276の
+`load_publication_regeneration_export_reconciliation(...)`へ一度だけ渡し、strict
+loaderが返した同じmodel objectを
+`publication_regeneration_export_reconciliation_digest(...)`へ一度だけ渡します。
+sidecar JSONをCLIで再parseしたり、Phase 275 reconciliation、Phase 274 receipt、
+export output、Phase 272 export、Phase 270 projectionを再実行・再観測したりは
+しません。
+
+validな`matched`、`missing`、`content_mismatch`では、`operation`、Phase 276の
+全model fields、`evidence_sha256`だけを含むexact ten-key deterministic JSONを1行出力
+します。`matched`は終了コード0、`missing`と`content_mismatch`は同じJSONを出力して
+終了コード1です。invalid・tampered・unreadable evidence、unsafe target、wrong
+dependency return type、digest failure、unexpected exceptionはstdoutを空にし、
+固定detail-safe stderrと終了コード2だけを返します。path、raw evidence bytes、
+business output、exception detail、digest failure detailは出力しません。
+
+このcommandはfilesystem mutation、repair、retry、fallback、persistence、workflow
+state/events・audit・claim・readiness・resultの変更、provider/runtime/network/
+credential実行、publication permissionの推測を行いません。既存の
+`publication-result`、`publication-export`、`result`、`start`、`continue`の契約も
+変更しません。

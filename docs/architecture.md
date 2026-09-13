@@ -5189,3 +5189,35 @@ constants, invalid UTF-8, invalid Phase 275 values, and unsafe targets without
 mutation. No CLI command, runtime event, lineage mutation, receipt/output
 re-observation, repair, adoption, overwrite, retry, fallback, publication,
 network, credential, environment, or clock access is added.
+
+## Phase 277: Read-only publication reconciliation evidence CLI
+
+Phase 277 adds exactly one provider-free command:
+`ai-office workflows publication-reconciliation-evidence --evidence-path PATH`.
+The option is required and is the only source of the evidence target; the CLI does
+not discover, scan, normalize, or derive a path from workflow inputs.
+
+The command passes the caller-supplied `Path` unchanged exactly once to the Phase
+276 strict `load_publication_regeneration_export_reconciliation(...)` loader. It
+requires the exact `PublicationRegenerationExportReconciliation` model type, then
+passes that exact loaded object unchanged exactly once to
+`publication_regeneration_export_reconciliation_digest(...)`. The CLI does not
+parse the sidecar itself and does not call Phase 275 reconciliation, the Phase 274
+receipt loader or receipt digest, exported-output observation, Phase 272 export,
+Phase 270 projection, or any earlier publication boundary.
+
+For each valid Phase 276 status, the command emits one deterministic JSON line via
+the existing `_emit_json` behavior. The exact ten keys are `operation`, the eight
+Phase 276 model fields, and `evidence_sha256`; no path, raw business output, or
+filesystem metadata is emitted. `operation` is
+`publication-reconciliation-evidence`. `matched` returns JSON with exit code 0;
+`missing` and `content_mismatch` return the same JSON with exit code 1 because they
+are valid persisted observations.
+
+Invalid or tampered evidence, unreadable or unsafe targets, wrong dependency return
+types, digest failure, and unexpected exceptions fail closed with empty stdout, one
+fixed detail-safe stderr line, and exit code 2. The command performs no filesystem
+mutation, repair, retry, fallback, persistence, state/event/audit/claim/readiness/
+result change, provider/runtime/network/credential execution, or publication
+authorization inference. Existing `publication-result`, `publication-export`,
+`result`, `start`, and `continue` contracts remain unchanged.
