@@ -806,6 +806,12 @@ from ai_office.engine.publication_regeneration_export_receipt import (
     publication_regeneration_export_receipt_digest,
     serialize_publication_regeneration_export_receipt_canonical,
 )
+from ai_office.engine.publication_regeneration_export_reconciliation import (
+    PublicationRegenerationExportReconciliation,
+    PublicationRegenerationExportReconciliationError,
+    PublicationRegenerationExportReconciliationFailureDetail,
+    reconcile_publication_regeneration_export,
+)
 from ai_office.engine.publication_regeneration_projection import (
     PublicationRegenerationProjection,
     PublicationRegenerationProjectionError,
@@ -1294,6 +1300,9 @@ __all__ = [
     "PublicationRegenerationExportReceiptFailureDetail",
     "PublicationRegenerationExportReceiptLoadError",
     "PublicationRegenerationExportReceiptPersistenceError",
+    "PublicationRegenerationExportReconciliation",
+    "PublicationRegenerationExportReconciliationError",
+    "PublicationRegenerationExportReconciliationFailureDetail",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
     "PublicationRegenerationReadiness",
@@ -1347,6 +1356,7 @@ __all__ = [
     "persist_publication_regeneration_readiness_record",
     "persist_publication_regeneration_export_receipt",
     "load_publication_regeneration_export_receipt",
+    "reconcile_publication_regeneration_export",
     "preflight_publication_regeneration_result_path",
     "approve_publication_regeneration",
     "serialize_post_terminal_facts_canonical",
