@@ -5016,3 +5016,41 @@ retry, fallback, recovery, adoption, persistence, export, clock, or
 publication side effect. `workflows result` remains the original persisted
 workflow execution-lineage inspection command and is not redirected to this
 projection.
+
+## Phase 272: Explicit durable export of a ready projection
+
+Phase 272 adds one provider-free engine boundary,
+`export_publication_regeneration_output(output_path=..., readiness_record_path=...,`
+`result_path=...)`, and one frozen in-memory
+`PublicationRegenerationExportReceipt`. It is a local export-to-file boundary,
+not external publication and not adoption into `workflows result`; no CLI is
+added. The boundary preflights the exact caller-supplied `Path` target before
+calling Phase 270: its parent must already be an existing directory, the
+target must not be a directory or symlink, and any existing target is rejected.
+It then calls `project_publication_regeneration_output(...)` exactly once with
+the exact readiness/result paths. Phase 270 remains the sole owner of
+Phase 267/268/269 loading, cross-binding, and readiness validation.
+
+Only an exact `PublicationRegenerationProjection` with `readiness="ready"` and
+`publishable=True` can cross the export boundary. The target bytes are exactly
+`projection.business_output_text.encode("utf-8")`, including empty output,
+Unicode, whitespace, and newlines, with no cleanup, newline, BOM, wrapper, or
+encoding fallback. The boundary recomputes that byte digest, checks the
+Phase-270 business-output digest, derives the canonical projection digest using
+the existing Phase-270 helper, and creates the explicit target exclusively.
+It writes exactly once, flushes, fsyncs the file, closes it, fsyncs the parent
+directory, and returns the receipt only after all durability steps succeed.
+
+The receipt contains only the fixed schema version, regeneration identity,
+projection/readiness/result/source-audit/business-output SHA-256 identities,
+and exact output byte length. It is not persisted and contains no path, raw
+text, provider data, credentials, request IDs, timestamps, randomness, or
+arbitrary metadata. Non-ready projections and invalid/tampered Phase-270
+evidence create no target and expose no success or provider-failure text.
+If exclusive creation succeeds but writing, flushing, file fsync, or parent
+directory fsync becomes ambiguous, the fixed safe export error is raised, the
+artifact is retained, and no retry, repair, deletion, overwrite, second Phase
+270 call, or receipt occurs. Pre-existing readiness/result/audit/claim/state/
+event/original-workflow artifacts remain byte-for-byte unchanged; Phase 272
+adds no runtime event, provider/network/environment access, credential lookup,
+regeneration, claim/readiness mutation, fallback, continuation, or manifest.
