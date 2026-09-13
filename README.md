@@ -4599,3 +4599,40 @@ receipt/manifestは出力・永続化しません。not-publishableは固定stde
 永続化結果がambiguousな場合は専用の固定stderrと終了コード2、それ以外の拒否や
 予期しない依存失敗は固定invalidエラーと終了コード2になります。既存の
 `workflows publication-result`はread-only projection inspectionのまま変更されません。
+
+## Phase 274: publication export receipt のcanonical durable evidence
+
+Phase 272 がすでに返した正確な
+`PublicationRegenerationExportReceipt` を、callerが明示したreceipt sidecarへ
+provider-freeに永続化・strict reloadするengine boundaryを追加しています。
+Phase 274はexportを再実行せず、Phase 270 projectionやPhase 267/268/269の
+loaderを呼ばず、export済みbusiness outputの検査・reconciliationも行いません。
+CLI、workflow state/events、既存lineage、provider/network、credential、clock、
+retry、fallback、automatic continuationは追加・変更されません。
+
+receiptは次の8キーだけを、`ensure_ascii=False`、compact separators、sorted keys、
+`allow_nan=False`でcanonical JSON化します。
+
+```text
+schema_version
+regeneration_id
+projection_sha256
+readiness_record_sha256
+result_record_sha256
+source_audit_sha256
+business_output_sha256
+output_byte_length
+```
+
+canonical JSONのUTF-8 bytesと、そのbytesのSHA-256 digestをin-memory helperで
+取得できます。明示pathのsidecarはparentを作成せずexclusive createし、write、
+flush、file fsync、close、parent-directory fsyncの全てが完了した後だけ成功します。
+同一canonical bytesの既存targetだけはread-onlyに再fsyncするidempotent再保存を
+許可し、異なるbytes、directory、symlink、short write、durability ambiguityは
+既存artifactを変更・削除・修復せず固定detail-safe errorで拒否します。
+
+strict loaderはUTF-8、JSON、duplicate key、非標準constant、完全な8-key set、
+Phase 272 receiptのモデル検証、canonical byte-for-byte一致を順に確認します。
+receipt sidecarはbusiness-output path/text、provider payload、credentials、
+timestamp、randomness、metadataを保存せず、export fileが後から存在するか・一致
+するかの証明は将来の明示reconciliation phaseに委譲します。
