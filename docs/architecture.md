@@ -5128,3 +5128,32 @@ result/readiness/projection evidence, original output, provider boundary,
 environment, credentials, clock, CLI, or runtime event is changed. Whether the
 exported business-output file still exists or matches the receipt remains the
 responsibility of a later explicit reconciliation phase.
+
+## Phase 275: Read-only publication-export receipt reconciliation
+
+Phase 275 adds the provider-free engine boundary
+`reconcile_publication_regeneration_export(receipt_path=..., output_path=...)` and
+the frozen `PublicationRegenerationExportReconciliation` result. It consumes only
+the exact durable Phase 274 receipt evidence and one explicit caller-supplied
+output `Path`. The Phase 274 public strict loader is called exactly once with the
+caller object, and its exact receipt is passed to
+`publication_regeneration_export_receipt_digest(...)` to bind the result to the
+canonical receipt. Phase 275 does not parse receipt JSON itself and does not call
+Phase 272 export, Phase 270 projection, Phase 267/268/269 loaders or assessors, or
+any provider/runtime boundary.
+
+The output target is required to be the repository's exact `Path` type. Directory,
+symlink, special-file, permission, and other unsafe observation cases produce one
+fixed `PublicationRegenerationExportReconciliationError` with frozen,
+detail-safe classification. An actually absent target is a normal `missing`
+result. One ordinary readable file is read at most once; its exact bytes are
+hashed with SHA-256 and measured with `len(bytes)`. `matched` requires both digest
+and byte length to equal the receipt, while every other readable byte sequence is
+`content_mismatch` with exact observed digest and length. Neither raw bytes nor a
+filesystem path belongs to the result model.
+
+This phase is an in-memory observation only. It never persists a reconciliation
+result or mutates the receipt sidecar, output file, workflow state/events, audit,
+claim, result, readiness, projection, or original workflow artifacts. It adds no
+CLI command and no retry, fallback, repair, adoption, overwrite, re-export,
+publication, network, credential, clock, or automatic-continuation behavior.

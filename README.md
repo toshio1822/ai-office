@@ -4636,3 +4636,23 @@ Phase 272 receiptのモデル検証、canonical byte-for-byte一致を順に確�
 receipt sidecarはbusiness-output path/text、provider payload、credentials、
 timestamp、randomness、metadataを保存せず、export fileが後から存在するか・一致
 するかの証明は将来の明示reconciliation phaseに委譲します。
+
+## Phase 275: publication export receipt と明示 output file の read-only reconciliation
+
+Phase 274 が永続化した canonical receipt sidecar と、callerが明示した output
+fileを比較するprovider-freeなengine boundaryを追加しています。
+`reconcile_publication_regeneration_export(...)` はPhase 274の
+`load_publication_regeneration_export_receipt(...)`を一度だけ使い、同じloaded
+receiptを`publication_regeneration_export_receipt_digest(...)`へ渡してreceiptの
+identityを固定します。receipt JSONを直接parseしたり、Phase 272 export、Phase 270
+projection、Phase 267/268/269 loader、provider/runtime boundaryを呼び出したりは
+しません。
+
+output fileはcaller指定のexact `Path`としてread-onlyに一度だけ観測します。
+directory、symlink、special file、permissionやその他のread failureは固定の
+detail-safe errorです。存在しないfileは正常な`missing` result、読み取れた
+bytesがreceiptのSHA-256とbyte lengthの両方を満たす場合だけ`matched`、それ以外は
+観測したdigestとlengthを含む`content_mismatch`になります。bytesはdecode・改行変換・
+正規化せず、結果はfrozenなin-memory modelだけで、reconciliation resultやsidecarを
+永続化しません。repair、adopt、overwrite、retry、fallback、re-export、CLI変更、
+workflow state/events等のlineage mutationはありません。
