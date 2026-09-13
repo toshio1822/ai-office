@@ -4656,3 +4656,28 @@ bytesがreceiptのSHA-256とbyte lengthの両方を満たす場合だけ`matched
 正規化せず、結果はfrozenなin-memory modelだけで、reconciliation resultやsidecarを
 永続化しません。repair、adopt、overwrite、retry、fallback、re-export、CLI変更、
 workflow state/events等のlineage mutationはありません。
+
+## Phase 276: publication export reconciliation のcanonical durable evidence
+
+Phase 275がすでに導出した
+`PublicationRegenerationExportReconciliation`を、再reconciliationせず、Phase 274
+receipt sidecarやexport fileも再読込せずに、callerが明示したevidence pathへ
+provider-freeに永続化・strict reloadするengine boundaryを追加しています。
+`matched`、`missing`、`content_mismatch`のstatusと、expected/observed digest・
+byte lengthを再解釈せずそのまま保存します。`missing`では両observed fieldをJSON
+`null`として保存します。
+
+canonical evidenceは8-keyのcompact JSONを`ensure_ascii=False`でUTF-8化し、その
+exact bytesのSHA-256 digestを取得できます。parent directoryは作成せず、explicit
+`Path`へのexclusive create、write、flush、file fsync、close、parent-directory
+fsyncが成功した場合だけ完了します。同一canonical bytesの既存targetだけは
+rewriteなしでfile/parent fsyncするidempotent再保存を許可し、異なるbytes、破損、
+directory、symlink、special file、durability ambiguityは固定detail-safe errorで
+拒否します。ambiguous failure後のartifactは保持し、retry、repair、overwrite、
+adoption、rename、deleteは行いません。
+
+strict loaderはduplicate key、非標準JSON constant、invalid UTF-8、missing/extra
+key、非canonical JSON、Phase 275 modelの不正なstatus・digest・length・cross-field
+組合せを拒否します。receipt/outputの再観測、CLI変更、reconciliation resultの
+再計算、workflow state/events等のlineage mutation、provider/network/credential/
+clock accessはありません。

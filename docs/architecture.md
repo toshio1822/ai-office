@@ -5157,3 +5157,35 @@ result or mutates the receipt sidecar, output file, workflow state/events, audit
 claim, result, readiness, projection, or original workflow artifacts. It adds no
 CLI command and no retry, fallback, repair, adoption, overwrite, re-export,
 publication, network, credential, clock, or automatic-continuation behavior.
+
+## Phase 276: Canonical durable publication-export reconciliation evidence
+
+Phase 276 persists an already-derived exact
+`PublicationRegenerationExportReconciliation` from Phase 275 through
+`persist_publication_regeneration_export_reconciliation(...)` and reloads it
+through `load_publication_regeneration_export_reconciliation(...)`. The boundary
+does not call Phase 275 reconciliation, the Phase 274 receipt loader or digest,
+Phase 272 export, Phase 270 projection, any predecessor loader, or any
+provider/runtime boundary. It does not read the receipt sidecar or the exported
+business-output file.
+
+The evidence sidecar is the exact eight-field Phase 275 result: schema version,
+regeneration ID, receipt digest, status, expected business-output digest and
+length, and observed business-output digest and length. `matched`, `missing`, and
+`content_mismatch` are copied without reinterpretation; missing observed values
+remain JSON `null`. Canonical serialization is compact sorted JSON with
+`ensure_ascii=False`, exact UTF-8 bytes, and SHA-256 over those bytes. The exact
+Phase 275 model is reconstructed before bytes are accepted so its invariants
+remain authoritative.
+
+Persistence accepts only an explicit repository `Path` whose parent already
+exists. It uses exclusive creation followed by write, flush, file fsync, close,
+and parent-directory fsync. An existing byte-identical target is idempotent
+without rewrite and fsyncs both file and parent; any different or corrupt target
+is a fixed conflict. Post-create write, flush, fsync, close, or parent-fsync
+failure is ambiguous, retains the artifact, and never retries or repairs it.
+The strict loader rejects noncanonical JSON, duplicate keys, non-standard
+constants, invalid UTF-8, invalid Phase 275 values, and unsafe targets without
+mutation. No CLI command, runtime event, lineage mutation, receipt/output
+re-observation, repair, adoption, overwrite, retry, fallback, publication,
+network, credential, environment, or clock access is added.
