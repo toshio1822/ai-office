@@ -4549,3 +4549,27 @@ execution approval、provider、retry、replay、automatic continuation、
 recovery、repairを行わず、`OPENAI_API_KEY`も要求しません。provider、
 request_id、response_id、failure event message、credential、approval、
 raw provider payloadはresult JSONへ出力しません。
+
+## Phase 271: publication-result の read-only projection inspection
+
+Phase 270 が作成する再生成 publication projection を、provider-freeに確認
+するには、readiness recordとresult recordのパスを明示して次を実行します。
+
+```bash
+ai-office workflows publication-result \
+  --readiness-record-path path/to/readiness-record.json \
+  --result-path path/to/result-record.json
+```
+
+両パスは必須で、既定artifact、workflow discovery、state/events lookup、
+再生成、retry、fallback、adoption、export、publication side effectはありません。
+コマンドは既存のPhase 270 `project_publication_regeneration_output`を一度だけ
+呼び出し、その返却projectionを決定的なJSON一行へ変換します。`ready`では
+保存されたbusiness textを改変せずに返し、終了コードは0です。
+
+`insufficient_evidence`、`stale_or_inconsistent`、`result_failure`では、
+business textとdigestを`null`にしたprojectionを返して終了コード1になります。
+証拠が不正・破損・不一致の場合は通常のJSONを出力せず、安全な固定エラーを
+stderrへ出して終了コード2になります。既存の`workflows result`は元のworkflow
+execution lineageを読む契約のままで、再生成されたpublication outputへ切り替わり
+ません。どのケースでもprovider、network、credential、clock、書込みは行いません。

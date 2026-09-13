@@ -25,6 +25,7 @@ from ai_office.engine import (
     build_immediate_predecessor_upstream_inputs,
     build_persisted_continuation_runtime_facts,
     classify_persisted_execution_outcome_reentry,
+    project_publication_regeneration_output,
     route_approved_fresh_workflow_bounded,
     route_persisted_execution_outcome_reentry,
     route_persisted_terminal_workflow_bounded,
@@ -1217,6 +1218,37 @@ def result_workflow(
         )
     _emit_json(_persisted_result_json(routed, history))
     if type(routed) is PersistedExecutionOutcome:
+        raise typer.Exit(code=1)
+
+
+@workflows_app.command("publication-result")
+def publication_result_workflow(
+    readiness_record_path: Path = typer.Option(..., "--readiness-record-path"),
+    result_path: Path = typer.Option(..., "--result-path"),
+) -> None:
+    """Read the exact Phase 270 publication-regeneration projection."""
+    try:
+        projection = project_publication_regeneration_output(
+            readiness_record_path=readiness_record_path,
+            result_path=result_path,
+        )
+        value: dict[str, object] = {
+            "business_output_sha256": projection.business_output_sha256,
+            "business_output_text": projection.business_output_text,
+            "operation": "publication-result",
+            "publishable": projection.publishable,
+            "readiness": projection.readiness,
+            "readiness_record_sha256": projection.readiness_record_sha256,
+            "reason_codes": list(projection.reason_codes),
+            "regeneration_id": projection.regeneration_id,
+            "result_record_sha256": projection.result_record_sha256,
+            "source_audit_sha256": projection.source_audit_sha256,
+        }
+    except Exception:
+        _workflow_cli_error("publication regeneration evidence is invalid")
+
+    _emit_json(value)
+    if projection.publishable is not True:
         raise typer.Exit(code=1)
 
 

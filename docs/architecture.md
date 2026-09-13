@@ -4989,3 +4989,30 @@ effect, CLI, state, event, workflow-result, or original-output mutation. The
 Phase 267 result sidecar, Phase 269 readiness sidecar, Phase 263 audit sidecar,
 Phase 265 claim ledger, workflow state/events, and original business output
 remain byte-for-byte unchanged.
+
+## Phase 271: Provider-free publication-result CLI boundary
+
+Phase 271 adds only the read-side command
+`ai-office workflows publication-result --readiness-record-path PATH
+--result-path PATH`. Both artifact paths are explicit required inputs. The
+command calls the existing Phase 270
+`project_publication_regeneration_output(readiness_record_path=..., result_path=...)`
+public boundary exactly once, then copies only its safe public projection into
+one deterministic `ensure_ascii=False`, sorted-key JSON line. It does not load
+or validate Phase 267/268/269 artifacts directly and does not duplicate their
+contracts in CLI code.
+
+The JSON includes the operation name, regeneration and source identities,
+readiness, ordered reason codes, publishability, and the two business-output
+fields. A ready projection preserves the exact regenerated text and its
+UTF-8 SHA-256 and exits 0. A valid non-ready projection emits no business text
+or digest and exits 1. Any Phase 270 load, cross-binding, or projection error
+emits no normal stdout JSON, emits only the fixed safe error
+`publication regeneration evidence is invalid` on stderr, and exits 2.
+
+This command is inspection-only: it has no default artifact discovery,
+workflow-result lookup, provider/network/credential access, regeneration,
+retry, fallback, recovery, adoption, persistence, export, clock, or
+publication side effect. `workflows result` remains the original persisted
+workflow execution-lineage inspection command and is not redirected to this
+projection.
