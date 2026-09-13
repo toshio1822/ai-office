@@ -22,9 +22,12 @@ from ai_office.engine import (
     ApprovedWorkflowContinuationContext,
     InitialStepPreparationApproval,
     NextStepPreparationApproval,
+    PublicationRegenerationExportError,
+    PublicationRegenerationExportReceipt,
     build_immediate_predecessor_upstream_inputs,
     build_persisted_continuation_runtime_facts,
     classify_persisted_execution_outcome_reentry,
+    export_publication_regeneration_output,
     project_publication_regeneration_output,
     route_approved_fresh_workflow_bounded,
     route_persisted_execution_outcome_reentry,
@@ -1250,6 +1253,54 @@ def publication_result_workflow(
     _emit_json(value)
     if projection.publishable is not True:
         raise typer.Exit(code=1)
+
+
+@workflows_app.command("publication-export")
+def publication_export_workflow(
+    readiness_record_path: Path = typer.Option(..., "--readiness-record-path"),
+    result_path: Path = typer.Option(..., "--result-path"),
+    output_path: Path = typer.Option(..., "--output-path"),
+) -> None:
+    """Durably export one ready Phase 272 publication projection."""
+    try:
+        receipt = export_publication_regeneration_output(
+            output_path=output_path,
+            readiness_record_path=readiness_record_path,
+            result_path=result_path,
+        )
+    except PublicationRegenerationExportError as error:
+        try:
+            classification = error.detail.classification
+        except Exception:
+            classification = None
+        if classification == "not_publishable":
+            _workflow_cli_error(
+                "publication regeneration output is not exportable", code=1
+            )
+        if classification == "ambiguous":
+            _workflow_cli_error(
+                "publication regeneration export outcome is ambiguous", code=2
+            )
+        _workflow_cli_error("publication regeneration export is invalid")
+    except Exception:
+        _workflow_cli_error("publication regeneration export is invalid")
+
+    if type(receipt) is not PublicationRegenerationExportReceipt:
+        _workflow_cli_error("publication regeneration export is invalid")
+
+    _emit_json(
+        {
+            "operation": "publication-export",
+            "schema_version": receipt.schema_version,
+            "regeneration_id": receipt.regeneration_id,
+            "projection_sha256": receipt.projection_sha256,
+            "readiness_record_sha256": receipt.readiness_record_sha256,
+            "result_record_sha256": receipt.result_record_sha256,
+            "source_audit_sha256": receipt.source_audit_sha256,
+            "business_output_sha256": receipt.business_output_sha256,
+            "output_byte_length": receipt.output_byte_length,
+        }
+    )
 
 
 @workflows_app.command("plan")

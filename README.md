@@ -4573,3 +4573,29 @@ business textとdigestを`null`にしたprojectionを返して終了コード1�
 stderrへ出して終了コード2になります。既存の`workflows result`は元のworkflow
 execution lineageを読む契約のままで、再生成されたpublication outputへ切り替わり
 ません。どのケースでもprovider、network、credential、clock、書込みは行いません。
+
+## Phase 273: publication-export の provider-free CLI boundary
+
+Phase 272のready projectionを、callerが指定した新しいファイルへ明示的に
+exportするには、次を使用します。
+
+```bash
+ai-office workflows publication-export \
+  --readiness-record-path path/to/readiness-record.json \
+  --result-path path/to/result-record.json \
+  --output-path path/to/export.txt
+```
+
+3つのパスはすべて必須で、既定値、workflow IDからの推測、directory discovery、
+hidden export directoryはありません。CLIはパスをそのまま既存のPhase 272
+`export_publication_regeneration_output(...)`へ一度だけ渡し、preflight、ready判定、
+exact UTF-8 bytesのcreate-only書込み、flush、file/parent-directory fsyncはPhase 272
+だけが行います。外部publication、provider/network、credential、再生成、retry、
+fallback、automatic continuationは行いません。
+
+成功時はreceiptの安全なidentityとbyte lengthだけを含むcompact JSONを1行出力し、
+終了コード0です。output path、business text、provider failure、timestamp、credential、
+receipt/manifestは出力・永続化しません。not-publishableは固定stderrと終了コード1、
+永続化結果がambiguousな場合は専用の固定stderrと終了コード2、それ以外の拒否や
+予期しない依存失敗は固定invalidエラーと終了コード2になります。既存の
+`workflows publication-result`はread-only projection inspectionのまま変更されません。
