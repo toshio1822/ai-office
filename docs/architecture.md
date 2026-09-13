@@ -4948,3 +4948,44 @@ assessment. Phase 269 adds no provider/model/network/environment access,
 claim generation, regeneration, retry/replay/fallback, reconciliation, CLI,
 state/event/workflow-result change, or runtime event; original, Phase 263,
 Phase 265, and Phase 267 evidence remains byte-for-byte separate and unchanged.
+
+## Phase 270: Read-only projection of publishable regenerated output
+
+Phase 270 adds one in-memory `PublicationRegenerationProjection` and one
+provider-free read boundary. The boundary loads an explicit Phase 269
+`PublicationRegenerationReadinessRecord` first and an explicit Phase 267
+`PublicationRegenerationResultRecord` second, using each predecessor's strict
+loader without reassessing readiness or reading mutable workflow state. It
+requires exact regeneration-ID, result-record-digest, source-audit-digest, and
+outcome bindings between the readiness record, its embedded Phase 268
+assessment, and the result record. A stale, forged, tampered, or otherwise
+cross-lineage combination is rejected safely; it is never silently downgraded
+to a non-ready projection.
+
+Only a strict readiness state of `ready`, an exact successful
+`ModelInvocationSuccess`, and matching UTF-8 SHA-256 values from the Phase 267
+result and Phase 268/269 assessment can produce `publishable=True`. The
+projection returns the exact stored `ModelInvocationSuccess.text` value,
+including all Unicode, whitespace, and newline characters. It performs no
+trim, normalization, joining, cleanup, rewriting, inference, or adoption.
+The text digest is recomputed from those exact UTF-8 bytes and must match both
+the Phase 267 `business_output_sha256` and the readiness assessment digest.
+
+`insufficient_evidence`, `stale_or_inconsistent`, and `result_failure` always
+produce `publishable=False` with both business-output fields set to `None`.
+Non-ready success text and provider failure messages are never exposed through
+the projection. The frozen model enforces exact types, schema/digest shapes,
+Phase 269 reason-code mappings, `publishable`/readiness consistency, and
+ready/non-ready output invariants. A private boundary-only construction token
+prevents direct callers from forging a publishable ready projection. Its
+canonical compact UTF-8 JSON and
+SHA-256 identity are deterministic in-memory helpers only; Phase 270 does not
+persist or export the projection.
+
+The boundary performs no provider/model/network execution, credential or
+environment lookup, claim generation, regeneration, readiness reassessment,
+retry/replay/fallback, reconciliation/adoption, output persistence, side
+effect, CLI, state, event, workflow-result, or original-output mutation. The
+Phase 267 result sidecar, Phase 269 readiness sidecar, Phase 263 audit sidecar,
+Phase 265 claim ledger, workflow state/events, and original business output
+remain byte-for-byte unchanged.
