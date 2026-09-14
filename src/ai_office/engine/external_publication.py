@@ -9,6 +9,7 @@ provider call, or publication side effect.
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -31,6 +32,16 @@ _EXTERNAL_PUBLICATION_PLAN_SCHEMA_VERSION = "external-publication-plan.v1"
 _TARGET_ERROR_MESSAGE = "external publication target is invalid"
 _PLAN_ERROR_MESSAGE = "external publication plan is invalid"
 _APPROVAL_ERROR_MESSAGE = "external publication approval is invalid"
+_ATTEMPT_CLAIM_ERROR_MESSAGE = "external publication attempt claim is invalid"
+_ATTEMPT_CLAIM_PERSISTENCE_ERROR_MESSAGE = (
+    "external publication attempt claim persistence failed"
+)
+_ATTEMPT_ALREADY_CONSUMED_ERROR_MESSAGE = (
+    "external publication approval is already consumed"
+)
+_ATTEMPT_CLAIM_LOAD_ERROR_MESSAGE = (
+    "external publication attempt claim could not be loaded"
+)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MAX_PROVIDER_LENGTH = 128
@@ -38,6 +49,28 @@ _MAX_DESTINATION_LENGTH = 256
 _MAX_APPROVAL_METADATA_LENGTH = 256
 _MAX_REGENERATION_ID_LENGTH = 128
 _PATH_TYPE = type(Path())
+_EXTERNAL_PUBLICATION_ATTEMPT_SCHEMA_VERSION = (
+    "external-publication-attempt.v1"
+)
+_EXTERNAL_PUBLICATION_ATTEMPT_STATE = "claimed"
+_ATTEMPT_CLAIM_KEYS = frozenset(
+    {
+        "approval_id",
+        "approved_by",
+        "business_output_sha256",
+        "consumption_key",
+        "output_byte_length",
+        "provider",
+        "publication_approval_sha256",
+        "publication_plan_sha256",
+        "publication_target_sha256",
+        "receipt_sha256",
+        "reconciliation_evidence_sha256",
+        "regeneration_id",
+        "schema_version",
+        "state",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +106,36 @@ class ExternalPublicationApprovalError(ExternalPublicationError):
     """Raised when an external publication approval is not exact and safe."""
 
     _message = _APPROVAL_ERROR_MESSAGE
+
+
+class ExternalPublicationAttemptClaimError(ExternalPublicationError):
+    """Raised when an external publication claim is not exact and safe."""
+
+    _message = _ATTEMPT_CLAIM_ERROR_MESSAGE
+
+
+class ExternalPublicationAttemptClaimPersistenceError(
+    ExternalPublicationAttemptClaimError
+):
+    """Raised when a durable claim cannot be committed safely."""
+
+    _message = _ATTEMPT_CLAIM_PERSISTENCE_ERROR_MESSAGE
+
+
+class ExternalPublicationAttemptAlreadyConsumedError(
+    ExternalPublicationAttemptClaimPersistenceError
+):
+    """Raised whenever the authoritative approval marker already exists."""
+
+    _message = _ATTEMPT_ALREADY_CONSUMED_ERROR_MESSAGE
+
+
+class ExternalPublicationAttemptClaimLoadError(
+    ExternalPublicationAttemptClaimError
+):
+    """Raised when a persisted claim is not an exact canonical record."""
+
+    _message = _ATTEMPT_CLAIM_LOAD_ERROR_MESSAGE
 
 
 @dataclass(frozen=True)
@@ -130,6 +193,34 @@ class ExternalPublicationApproval:
     def digest(self) -> str:
         """Return the SHA-256 identity of canonical approval JSON."""
         return external_publication_approval_digest(self)
+
+
+@dataclass(frozen=True)
+class ExternalPublicationAttemptClaim:
+    """Immutable write-ahead identity for one consumed approval."""
+
+    schema_version: Literal["external-publication-attempt.v1"]
+    consumption_key: str
+    regeneration_id: str
+    publication_plan_sha256: str
+    publication_approval_sha256: str
+    approval_id: str
+    approved_by: str
+    reconciliation_evidence_sha256: str
+    receipt_sha256: str
+    business_output_sha256: str
+    output_byte_length: int
+    provider: str
+    publication_target_sha256: str
+    state: Literal["claimed"]
+
+    def __post_init__(self) -> None:
+        _validate_attempt_claim(self)
+
+    @property
+    def digest(self) -> str:
+        """Return the SHA-256 identity of canonical claim JSON."""
+        return external_publication_attempt_claim_digest(self)
 
 
 def serialize_external_publication_target_canonical(
@@ -434,6 +525,530 @@ def external_publication_approval_digest(
         _raise_approval("digest")
 
 
+def external_publication_consumption_key(
+    approval: ExternalPublicationApproval,
+) -> str:
+    """Derive the deterministic one-use key from one exact approval ID."""
+    if type(approval) is not ExternalPublicationApproval:
+        _raise_attempt_claim("approval_type")
+    try:
+        _validate_approval(approval)
+    except ExternalPublicationApprovalError:
+        _raise_attempt_claim("approval_binding")
+    try:
+        key = sha256(approval.approval_id.encode("utf-8")).hexdigest()
+    except Exception:
+        _raise_attempt_claim("consumption_key")
+    if not _is_sha256(key):
+        _raise_attempt_claim("consumption_key")
+    return key
+
+
+def build_external_publication_attempt_claim(
+    plan: ExternalPublicationPlan,
+    approval: ExternalPublicationApproval,
+) -> ExternalPublicationAttemptClaim:
+    """Build one deterministic claim without reloading any predecessor input."""
+    if type(plan) is not ExternalPublicationPlan:
+        _raise_attempt_claim("plan_type")
+    if type(approval) is not ExternalPublicationApproval:
+        _raise_attempt_claim("approval_type")
+    try:
+        _validate_plan(plan)
+    except ExternalPublicationPlanError:
+        _raise_attempt_claim("plan_binding")
+
+    try:
+        validate_external_publication_approval(plan, approval)
+    except ExternalPublicationApprovalError:
+        _raise_attempt_claim("approval_binding")
+
+    try:
+        consumption_key = external_publication_consumption_key(approval)
+    except ExternalPublicationAttemptClaimError:
+        raise
+    except Exception:
+        _raise_attempt_claim("consumption_key")
+    if not _is_sha256(consumption_key):
+        _raise_attempt_claim("consumption_key")
+
+    plan_sha256 = approval.publication_plan_sha256
+    if not _is_sha256(plan_sha256):
+        _raise_attempt_claim("plan_binding")
+    try:
+        approval_sha256 = external_publication_approval_digest(approval)
+    except ExternalPublicationError:
+        _raise_attempt_claim("approval_binding")
+    except Exception:
+        _raise_attempt_claim("approval_binding")
+    if not _is_sha256(approval_sha256):
+        _raise_attempt_claim("approval_binding")
+
+    try:
+        return ExternalPublicationAttemptClaim(
+            schema_version=_EXTERNAL_PUBLICATION_ATTEMPT_SCHEMA_VERSION,
+            consumption_key=consumption_key,
+            regeneration_id=plan.regeneration_id,
+            publication_plan_sha256=plan_sha256,
+            publication_approval_sha256=approval_sha256,
+            approval_id=approval.approval_id,
+            approved_by=approval.approved_by,
+            reconciliation_evidence_sha256=(
+                plan.reconciliation_evidence_sha256
+            ),
+            receipt_sha256=plan.receipt_sha256,
+            business_output_sha256=plan.business_output_sha256,
+            output_byte_length=plan.output_byte_length,
+            provider=plan.provider,
+            publication_target_sha256=plan.publication_target_sha256,
+            state=_EXTERNAL_PUBLICATION_ATTEMPT_STATE,
+        )
+    except ExternalPublicationAttemptClaimError:
+        raise
+    except Exception:
+        _raise_attempt_claim("build")
+
+
+def serialize_external_publication_attempt_claim_canonical(
+    claim: ExternalPublicationAttemptClaim,
+) -> str:
+    """Serialize one exact claim as compact deterministic JSON."""
+    _validate_attempt_claim(claim)
+    try:
+        return json.dumps(
+            {
+                "approval_id": claim.approval_id,
+                "approved_by": claim.approved_by,
+                "business_output_sha256": claim.business_output_sha256,
+                "consumption_key": claim.consumption_key,
+                "output_byte_length": claim.output_byte_length,
+                "provider": claim.provider,
+                "publication_approval_sha256": (
+                    claim.publication_approval_sha256
+                ),
+                "publication_plan_sha256": claim.publication_plan_sha256,
+                "publication_target_sha256": claim.publication_target_sha256,
+                "receipt_sha256": claim.receipt_sha256,
+                "reconciliation_evidence_sha256": (
+                    claim.reconciliation_evidence_sha256
+                ),
+                "regeneration_id": claim.regeneration_id,
+                "schema_version": claim.schema_version,
+                "state": claim.state,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except ExternalPublicationAttemptClaimError:
+        raise
+    except Exception:
+        _raise_attempt_claim("serialization")
+
+
+def external_publication_attempt_claim_canonical_bytes(
+    claim: ExternalPublicationAttemptClaim,
+) -> bytes:
+    """Return exact canonical claim JSON encoded as UTF-8 bytes."""
+    try:
+        return serialize_external_publication_attempt_claim_canonical(
+            claim
+        ).encode("utf-8")
+    except ExternalPublicationAttemptClaimError:
+        raise
+    except Exception:
+        _raise_attempt_claim("serialization")
+
+
+def external_publication_attempt_claim_digest(
+    claim: ExternalPublicationAttemptClaim,
+) -> str:
+    """Return SHA-256 over exact canonical claim UTF-8 bytes."""
+    try:
+        return sha256(
+            external_publication_attempt_claim_canonical_bytes(claim)
+        ).hexdigest()
+    except ExternalPublicationAttemptClaimError:
+        raise
+    except Exception:
+        _raise_attempt_claim("serialization")
+
+
+def external_publication_attempt_claim_path(
+    ledger_directory: Path,
+    consumption_key: str,
+) -> Path:
+    """Return the canonical marker path in an existing caller ledger."""
+    _validate_existing_ledger_directory(
+        ledger_directory,
+        _raise_claim_persistence,
+    )
+    _validate_claim_consumption_key(
+        consumption_key,
+        _raise_claim_persistence,
+    )
+    return ledger_directory / f"{consumption_key}.json"
+
+
+def claim_external_publication_attempt(
+    ledger_directory: Path,
+    plan: ExternalPublicationPlan,
+    approval: ExternalPublicationApproval,
+) -> ExternalPublicationAttemptClaim:
+    """Durably create one exclusive write-ahead approval marker."""
+    claim = build_external_publication_attempt_claim(plan, approval)
+    path = external_publication_attempt_claim_path(
+        ledger_directory,
+        claim.consumption_key,
+    )
+    contents = external_publication_attempt_claim_canonical_bytes(claim)
+
+    try:
+        handle = path.open("xb")
+    except FileExistsError:
+        _raise_attempt_already_consumed()
+    except Exception:
+        _raise_claim_persistence("create")
+
+    try:
+        _write_and_close_claim_handle(handle, contents)
+    except Exception:
+        # Once exclusive creation succeeds, the marker is always retained.
+        _raise_claim_persistence("ambiguous")
+    try:
+        _fsync_claim_directory(ledger_directory)
+    except Exception:
+        # Once exclusive creation succeeds, the marker is always retained.
+        _raise_claim_persistence("ambiguous")
+    return claim
+
+
+def _write_and_close_claim_handle(handle: object, contents: bytes) -> None:
+    """Write, flush, file-sync, and close one exclusively-created handle."""
+    enter = getattr(handle, "__enter__", None)
+    exit_ = getattr(handle, "__exit__", None)
+    close = getattr(handle, "close", None)
+    if not callable(close) and callable(enter) and callable(exit_):
+        with handle:  # type: ignore[union-attr]
+            written = handle.write(contents)  # type: ignore[attr-defined]
+            if written != len(contents):
+                raise OSError("short claim write")
+            handle.flush()  # type: ignore[attr-defined]
+            os.fsync(handle.fileno())  # type: ignore[attr-defined]
+        return
+
+    try:
+        written = handle.write(contents)  # type: ignore[attr-defined]
+        if written != len(contents):
+            raise OSError("short claim write")
+        handle.flush()  # type: ignore[attr-defined]
+        os.fsync(handle.fileno())  # type: ignore[attr-defined]
+    finally:
+        close()  # type: ignore[operator]
+
+
+def load_external_publication_attempt_claim(
+    path: Path,
+) -> ExternalPublicationAttemptClaim:
+    """Read and strictly revalidate one immutable canonical claim marker."""
+    _validate_claim_path(path, _raise_claim_load)
+    try:
+        contents = path.read_bytes()
+    except Exception:
+        _raise_claim_load("target")
+
+    try:
+        value = json.loads(
+            contents.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_attempt_claim_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+        claim = _parse_external_publication_attempt_claim(value)
+        if (
+            external_publication_attempt_claim_canonical_bytes(claim)
+            != contents
+        ):
+            _raise_claim_load("noncanonical")
+        return claim
+    except ExternalPublicationAttemptClaimLoadError:
+        raise
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        _DuplicateAttemptClaimKeyError,
+        _NonStandardJSONConstantError,
+    ):
+        _raise_claim_load("parse")
+    except ExternalPublicationAttemptClaimError:
+        _raise_claim_load("record")
+    except (TypeError, ValueError, AttributeError):
+        _raise_claim_load("record")
+
+
+def _validate_attempt_claim(claim: object) -> None:
+    if type(claim) is not ExternalPublicationAttemptClaim:
+        _raise_attempt_claim("claim_type")
+    try:
+        if (
+            type(claim.schema_version) is not str
+            or claim.schema_version != _EXTERNAL_PUBLICATION_ATTEMPT_SCHEMA_VERSION
+        ):
+            _raise_attempt_claim("schema_version")
+        _validate_claim_consumption_key(
+            claim.consumption_key,
+            _raise_attempt_claim,
+        )
+        _validate_claim_regeneration_id(claim.regeneration_id)
+        _validate_claim_digest(
+            claim.publication_plan_sha256,
+            "plan_binding",
+        )
+        _validate_claim_digest(
+            claim.publication_approval_sha256,
+            "approval_binding",
+        )
+        _validate_claim_metadata(claim.approval_id, "approval_id")
+        _validate_claim_metadata(claim.approved_by, "approved_by")
+        _validate_claim_digest(
+            claim.reconciliation_evidence_sha256,
+            "claim_binding",
+        )
+        _validate_claim_digest(claim.receipt_sha256, "claim_binding")
+        _validate_claim_digest(
+            claim.business_output_sha256,
+            "claim_binding",
+        )
+        if (
+            type(claim.output_byte_length) is not int
+            or type(claim.output_byte_length) is bool
+            or claim.output_byte_length < 0
+        ):
+            _raise_attempt_claim("claim_binding")
+        _validate_claim_provider(claim.provider)
+        _validate_claim_digest(
+            claim.publication_target_sha256,
+            "claim_binding",
+        )
+        if (
+            type(claim.state) is not str
+            or claim.state != _EXTERNAL_PUBLICATION_ATTEMPT_STATE
+        ):
+            _raise_attempt_claim("state")
+    except ExternalPublicationAttemptClaimError:
+        raise
+    except Exception:
+        _raise_attempt_claim("claim_type")
+
+    try:
+        reconstructed_plan = ExternalPublicationPlan(
+            schema_version=_EXTERNAL_PUBLICATION_PLAN_SCHEMA_VERSION,
+            regeneration_id=claim.regeneration_id,
+            reconciliation_evidence_sha256=(
+                claim.reconciliation_evidence_sha256
+            ),
+            receipt_sha256=claim.receipt_sha256,
+            business_output_sha256=claim.business_output_sha256,
+            output_byte_length=claim.output_byte_length,
+            provider=claim.provider,
+            publication_target_sha256=claim.publication_target_sha256,
+        )
+        reconstructed_plan_digest = external_publication_plan_digest(
+            reconstructed_plan
+        )
+    except Exception:
+        _raise_attempt_claim("claim_binding")
+    if (
+        type(reconstructed_plan_digest) is not str
+        or not _is_sha256(reconstructed_plan_digest)
+        or reconstructed_plan_digest != claim.publication_plan_sha256
+    ):
+        _raise_attempt_claim("plan_binding")
+
+    try:
+        reconstructed_approval = ExternalPublicationApproval(
+            approved=True,
+            publication_plan_sha256=claim.publication_plan_sha256,
+            approved_by=claim.approved_by,
+            approval_id=claim.approval_id,
+        )
+    except Exception:
+        _raise_attempt_claim("claim_binding")
+    try:
+        reconstructed_consumption_key = external_publication_consumption_key(
+            reconstructed_approval
+        )
+    except Exception:
+        _raise_attempt_claim("consumption_key")
+    if reconstructed_consumption_key != claim.consumption_key:
+        _raise_attempt_claim("consumption_key")
+
+    try:
+        reconstructed_approval_digest = external_publication_approval_digest(
+            reconstructed_approval
+        )
+    except Exception:
+        _raise_attempt_claim("approval_binding")
+    if (
+        type(reconstructed_approval_digest) is not str
+        or not _is_sha256(reconstructed_approval_digest)
+        or reconstructed_approval_digest != claim.publication_approval_sha256
+    ):
+        _raise_attempt_claim("approval_binding")
+
+
+def _validate_claim_provider(value: object) -> None:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > _MAX_PROVIDER_LENGTH
+        or _SLUG_PATTERN.fullmatch(value) is None
+    ):
+        _raise_attempt_claim("claim_binding")
+
+
+def _validate_claim_regeneration_id(value: object) -> None:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > _MAX_REGENERATION_ID_LENGTH
+        or _SLUG_PATTERN.fullmatch(value) is None
+    ):
+        _raise_attempt_claim("claim_binding")
+
+
+def _validate_claim_metadata(value: object, classification: str) -> None:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or len(value) > _MAX_APPROVAL_METADATA_LENGTH
+        or any(
+            unicodedata.category(character) in {"Cc", "Cs"}
+            for character in value
+        )
+    ):
+        _raise_attempt_claim(classification)
+
+
+def _validate_claim_digest(value: object, classification: str) -> None:
+    if type(value) is not str or _SHA256_PATTERN.fullmatch(value) is None:
+        _raise_attempt_claim(classification)
+
+
+def _validate_claim_consumption_key(
+    value: object,
+    error: object,
+) -> None:
+    if type(value) is not str or _SHA256_PATTERN.fullmatch(value) is None:
+        if error is _raise_claim_persistence:
+            _raise_claim_persistence("consumption_key")
+        if error is _raise_claim_load:
+            _raise_claim_load("consumption_key")
+        _raise_attempt_claim("consumption_key")
+
+
+def _validate_existing_ledger_directory(
+    path: Path,
+    error: object,
+) -> None:
+    if type(path) is not _PATH_TYPE:
+        if error is _raise_claim_persistence:
+            _raise_claim_persistence("ledger_directory_type")
+        _raise_attempt_claim("ledger_directory_type")
+    try:
+        if path.is_symlink() or not path.exists() or not path.is_dir():
+            if error is _raise_claim_persistence:
+                _raise_claim_persistence("ledger_directory")
+            _raise_attempt_claim("ledger_directory")
+    except OSError:
+        if error is _raise_claim_persistence:
+            _raise_claim_persistence("ledger_directory")
+        _raise_attempt_claim("ledger_directory")
+
+
+def _validate_claim_path(path: Path, error: object) -> None:
+    if type(path) is not _PATH_TYPE:
+        if error is _raise_claim_load:
+            _raise_claim_load("path_type")
+        _raise_attempt_claim("path_type")
+    try:
+        if path.is_symlink() or not path.exists() or not path.is_file():
+            if error is _raise_claim_load:
+                _raise_claim_load("target")
+            _raise_attempt_claim("target")
+    except OSError:
+        if error is _raise_claim_load:
+            _raise_claim_load("target")
+        _raise_attempt_claim("target")
+
+
+def _fsync_claim_directory(directory: Path) -> None:
+    flags = os.O_RDONLY
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    if directory_flag:
+        flags |= directory_flag
+    descriptor = os.open(os.fspath(directory), flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _reject_duplicate_attempt_claim_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateAttemptClaimKeyError
+        result[key] = value
+    return result
+
+
+def _reject_nonstandard_json_constant(value: str) -> NoReturn:
+    del value
+    raise _NonStandardJSONConstantError
+
+
+class _DuplicateAttemptClaimKeyError(ValueError):
+    pass
+
+
+class _NonStandardJSONConstantError(ValueError):
+    pass
+
+
+def _parse_external_publication_attempt_claim(
+    value: object,
+) -> ExternalPublicationAttemptClaim:
+    if type(value) is not dict or frozenset(value) != _ATTEMPT_CLAIM_KEYS:
+        _raise_claim_load("keys")
+    try:
+        return ExternalPublicationAttemptClaim(
+            schema_version=value["schema_version"],
+            consumption_key=value["consumption_key"],
+            regeneration_id=value["regeneration_id"],
+            publication_plan_sha256=value["publication_plan_sha256"],
+            publication_approval_sha256=value["publication_approval_sha256"],
+            approval_id=value["approval_id"],
+            approved_by=value["approved_by"],
+            reconciliation_evidence_sha256=(
+                value["reconciliation_evidence_sha256"]
+            ),
+            receipt_sha256=value["receipt_sha256"],
+            business_output_sha256=value["business_output_sha256"],
+            output_byte_length=value["output_byte_length"],
+            provider=value["provider"],
+            publication_target_sha256=value["publication_target_sha256"],
+            state=value["state"],
+        )
+    except ExternalPublicationAttemptClaimError as error:
+        _raise_claim_load(error.detail.classification)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        _raise_claim_load("record")
+
+
 def _validate_target_for_plan(target: object) -> None:
     try:
         _validate_target(target)
@@ -584,19 +1199,45 @@ def _raise_approval(classification: str) -> NoReturn:
     raise ExternalPublicationApprovalError(classification) from None
 
 
+def _raise_attempt_claim(classification: str) -> NoReturn:
+    raise ExternalPublicationAttemptClaimError(classification) from None
+
+
+def _raise_claim_persistence(classification: str) -> NoReturn:
+    raise ExternalPublicationAttemptClaimPersistenceError(classification) from None
+
+
+def _raise_attempt_already_consumed() -> NoReturn:
+    raise ExternalPublicationAttemptAlreadyConsumedError("already_consumed") from None
+
+
+def _raise_claim_load(classification: str) -> NoReturn:
+    raise ExternalPublicationAttemptClaimLoadError(classification) from None
+
+
 __all__ = [
     "ExternalPublicationError",
     "ExternalPublicationFailureDetail",
     "ExternalPublicationApproval",
     "ExternalPublicationApprovalError",
+    "ExternalPublicationAttemptAlreadyConsumedError",
+    "ExternalPublicationAttemptClaim",
+    "ExternalPublicationAttemptClaimError",
+    "ExternalPublicationAttemptClaimLoadError",
+    "ExternalPublicationAttemptClaimPersistenceError",
     "ExternalPublicationPlan",
     "ExternalPublicationPlanError",
     "ExternalPublicationTarget",
     "ExternalPublicationTargetError",
     "build_external_publication_plan",
+    "build_external_publication_attempt_claim",
     "approve_external_publication",
     "external_publication_approval_canonical_bytes",
     "external_publication_approval_digest",
+    "external_publication_attempt_claim_canonical_bytes",
+    "external_publication_attempt_claim_digest",
+    "external_publication_attempt_claim_path",
+    "external_publication_consumption_key",
     "external_publication_plan_canonical_bytes",
     "external_publication_plan_digest",
     "external_publication_target_canonical_bytes",
@@ -604,6 +1245,9 @@ __all__ = [
     "serialize_external_publication_plan_canonical",
     "serialize_external_publication_target_canonical",
     "serialize_external_publication_approval_canonical",
+    "serialize_external_publication_attempt_claim_canonical",
+    "claim_external_publication_attempt",
+    "load_external_publication_attempt_claim",
     "validate_external_publication_approval",
     "validate_external_publication_plan",
 ]
