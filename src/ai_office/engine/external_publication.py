@@ -1,8 +1,9 @@
-"""Provider-free external publication target and planning contracts.
+"""Provider-free external publication planning and approval contracts.
 
 Phase 278 binds one exact, durable Phase 276 reconciliation evidence record
-with one explicit secret-free publication target.  It creates no approval,
-claim, persistence, provider call, or publication side effect.
+with one explicit secret-free publication target.  Phase 279 binds explicit
+human approval to the exact plan digest without creating a claim, persistence,
+provider call, or publication side effect.
 """
 
 from __future__ import annotations
@@ -29,10 +30,12 @@ _EXTERNAL_PUBLICATION_TARGET_SCHEMA_VERSION = (
 _EXTERNAL_PUBLICATION_PLAN_SCHEMA_VERSION = "external-publication-plan.v1"
 _TARGET_ERROR_MESSAGE = "external publication target is invalid"
 _PLAN_ERROR_MESSAGE = "external publication plan is invalid"
+_APPROVAL_ERROR_MESSAGE = "external publication approval is invalid"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MAX_PROVIDER_LENGTH = 128
 _MAX_DESTINATION_LENGTH = 256
+_MAX_APPROVAL_METADATA_LENGTH = 256
 _MAX_REGENERATION_ID_LENGTH = 128
 _PATH_TYPE = type(Path())
 
@@ -64,6 +67,12 @@ class ExternalPublicationPlanError(ExternalPublicationError):
     """Raised when an external publication plan cannot be safely built."""
 
     _message = _PLAN_ERROR_MESSAGE
+
+
+class ExternalPublicationApprovalError(ExternalPublicationError):
+    """Raised when an external publication approval is not exact and safe."""
+
+    _message = _APPROVAL_ERROR_MESSAGE
 
 
 @dataclass(frozen=True)
@@ -103,6 +112,24 @@ class ExternalPublicationPlan:
     def digest(self) -> str:
         """Return the SHA-256 identity of canonical plan JSON."""
         return external_publication_plan_digest(self)
+
+
+@dataclass(frozen=True)
+class ExternalPublicationApproval:
+    """Immutable human approval bound to one exact publication plan digest."""
+
+    approved: Literal[True]
+    publication_plan_sha256: str
+    approved_by: str
+    approval_id: str
+
+    def __post_init__(self) -> None:
+        _validate_approval(self)
+
+    @property
+    def digest(self) -> str:
+        """Return the SHA-256 identity of canonical approval JSON."""
+        return external_publication_approval_digest(self)
 
 
 def serialize_external_publication_target_canonical(
@@ -290,6 +317,123 @@ def external_publication_plan_digest(plan: ExternalPublicationPlan) -> str:
     return sha256(external_publication_plan_canonical_bytes(plan)).hexdigest()
 
 
+def approve_external_publication(
+    plan: ExternalPublicationPlan,
+    *,
+    approved_by: str,
+    approval_id: str,
+) -> ExternalPublicationApproval:
+    """Create one in-memory approval bound to one exact publication plan."""
+    if type(plan) is not ExternalPublicationPlan:
+        _raise_approval("plan_type")
+    try:
+        _validate_plan(plan)
+    except ExternalPublicationPlanError:
+        _raise_approval("plan")
+
+    _validate_approval_metadata(approved_by, approval_id)
+    try:
+        plan_sha256 = external_publication_plan_digest(plan)
+    except Exception:
+        _raise_approval("digest")
+    if not _is_sha256(plan_sha256):
+        _raise_approval("digest")
+
+    try:
+        return ExternalPublicationApproval(
+            approved=True,
+            publication_plan_sha256=plan_sha256,
+            approved_by=approved_by,
+            approval_id=approval_id,
+        )
+    except ExternalPublicationApprovalError:
+        raise
+    except Exception:
+        _raise_approval("validation")
+
+
+def validate_external_publication_approval(
+    plan: ExternalPublicationPlan,
+    approval: ExternalPublicationApproval,
+) -> None:
+    """Validate one approval against the exact supplied plan digest."""
+    if type(plan) is not ExternalPublicationPlan:
+        _raise_approval("plan_type")
+    if type(approval) is not ExternalPublicationApproval:
+        _raise_approval("approval_type")
+    try:
+        _validate_plan(plan)
+    except ExternalPublicationPlanError:
+        _raise_approval("plan")
+    _validate_approval(approval)
+
+    try:
+        plan_sha256 = external_publication_plan_digest(plan)
+    except Exception:
+        _raise_approval("digest")
+    if not _is_sha256(plan_sha256):
+        _raise_approval("digest")
+    if approval.publication_plan_sha256 != plan_sha256:
+        _raise_approval("plan_binding")
+
+
+def serialize_external_publication_approval_canonical(
+    approval: ExternalPublicationApproval,
+) -> str:
+    """Serialize one exact approval as compact deterministic JSON."""
+    if type(approval) is not ExternalPublicationApproval:
+        _raise_approval("approval_type")
+    try:
+        _validate_approval(approval)
+    except ExternalPublicationApprovalError:
+        raise
+    except Exception:
+        _raise_approval("validation")
+    try:
+        return json.dumps(
+            {
+                "approved": approval.approved,
+                "approved_by": approval.approved_by,
+                "approval_id": approval.approval_id,
+                "publication_plan_sha256": approval.publication_plan_sha256,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except Exception:
+        _raise_approval("serialization")
+
+
+def external_publication_approval_canonical_bytes(
+    approval: ExternalPublicationApproval,
+) -> bytes:
+    """Return exact canonical approval JSON encoded as UTF-8 bytes."""
+    try:
+        return serialize_external_publication_approval_canonical(approval).encode(
+            "utf-8"
+        )
+    except ExternalPublicationApprovalError:
+        raise
+    except Exception:
+        _raise_approval("serialization")
+
+
+def external_publication_approval_digest(
+    approval: ExternalPublicationApproval,
+) -> str:
+    """Return SHA-256 over exact canonical approval UTF-8 bytes."""
+    try:
+        return sha256(
+            external_publication_approval_canonical_bytes(approval)
+        ).hexdigest()
+    except ExternalPublicationApprovalError:
+        raise
+    except Exception:
+        _raise_approval("digest")
+
+
 def _validate_target_for_plan(target: object) -> None:
     try:
         _validate_target(target)
@@ -387,6 +531,43 @@ def _validate_evidence_path(path: object) -> None:
         _raise_plan("evidence_loading")
 
 
+def _validate_approval(approval: object) -> None:
+    if type(approval) is not ExternalPublicationApproval:
+        _raise_approval("approval_type")
+    try:
+        if type(approval.approved) is not bool or approval.approved is not True:
+            _raise_approval("approval_metadata")
+        if not _is_sha256(approval.publication_plan_sha256):
+            _raise_approval("digest")
+        _validate_approval_metadata(approval.approved_by, approval.approval_id)
+    except ExternalPublicationApprovalError:
+        raise
+    except Exception:
+        _raise_approval("validation")
+
+
+def _validate_approval_metadata(
+    approved_by: object,
+    approval_id: object,
+) -> None:
+    for value, classification in (
+        (approved_by, "approved_by"),
+        (approval_id, "approval_id"),
+    ):
+        if (
+            type(value) is not str
+            or not value
+            or value != value.strip()
+            or len(value) > _MAX_APPROVAL_METADATA_LENGTH
+        ):
+            _raise_approval(classification)
+        if any(
+            unicodedata.category(character) in {"Cc", "Cs"}
+            for character in value
+        ):
+            _raise_approval("approval_metadata")
+
+
 def _is_sha256(value: object) -> bool:
     return type(value) is str and _SHA256_PATTERN.fullmatch(value) is not None
 
@@ -399,19 +580,30 @@ def _raise_plan(classification: str) -> NoReturn:
     raise ExternalPublicationPlanError(classification) from None
 
 
+def _raise_approval(classification: str) -> NoReturn:
+    raise ExternalPublicationApprovalError(classification) from None
+
+
 __all__ = [
     "ExternalPublicationError",
     "ExternalPublicationFailureDetail",
+    "ExternalPublicationApproval",
+    "ExternalPublicationApprovalError",
     "ExternalPublicationPlan",
     "ExternalPublicationPlanError",
     "ExternalPublicationTarget",
     "ExternalPublicationTargetError",
     "build_external_publication_plan",
+    "approve_external_publication",
+    "external_publication_approval_canonical_bytes",
+    "external_publication_approval_digest",
     "external_publication_plan_canonical_bytes",
     "external_publication_plan_digest",
     "external_publication_target_canonical_bytes",
     "external_publication_target_digest",
     "serialize_external_publication_plan_canonical",
     "serialize_external_publication_target_canonical",
+    "serialize_external_publication_approval_canonical",
+    "validate_external_publication_approval",
     "validate_external_publication_plan",
 ]

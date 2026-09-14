@@ -4748,3 +4748,37 @@ inputsから同じplanning contractを再導出して一致しないplanを拒�
 retry、repair、fallback、automatic continuation、workflow state/events/audit/readiness/
 result mutationを追加しません。既存のPhase 274/275/276/277のreceipt、reconciliation、
 evidence、CLI契約は変更されません。
+
+## Phase 279: exact external publication plan への human approval binding
+
+Phase 279は、Phase 278がすでにcallerから受け取った exact
+`ExternalPublicationPlan` に対するprovider-freeなhuman approval boundaryだけを
+追加します。`ExternalPublicationApproval`はfrozenな4-field valueで、
+`approved=True`、canonical plan digest、callerが明示した`approved_by`、
+`approval_id`だけを保持します。approval metadataはexactなbuiltin `str`、non-empty、
+trim済み、最大256文字で、Unicodeの`Cc`/`Cs`を拒否します。値のnormalization、生成、
+推測、timestamp、random IDの追加はありません。
+
+`approve_external_publication(...)`はexactな`ExternalPublicationPlan`を受け取り、
+既存plan invariantとmetadataを検証した後、同じcaller-supplied plan objectを既存の
+`external_publication_plan_digest(...)`へ一度だけ渡します。lowercase 64-hexのdigest
+だけをapprovalへ保存し、Phase 276 evidenceの再読込、Phase 278 planの再構築・fresh
+revalidation、receipt/outputの読込は行いません。`validate_external_publication_approval`
+もexactなplanとapprovalを検証し、同じplan objectでdigestを一度だけ再計算して、保存済み
+digestとの一致をfail closedで確認します。provider、destination、evidence、receipt、
+business outputのidentityはplan digestを通じてtransitively bindingされます。
+
+approvalのcanonical identityは、exact four keys
+`approved`、`approved_by`、`approval_id`、`publication_plan_sha256`を、
+`ensure_ascii=False`、sorted keys、compact separators、`allow_nan=False`でJSON化し、
+trailing newlineなしのexact UTF-8 bytesへSHA-256を適用します。fixed
+`ExternalPublicationApprovalError`と`ExternalPublicationFailureDetail`は、plan type、
+approval type、metadata、digest、binding、serialization、validationの分類だけを
+detail-safeに返し、ID、approver、digest、path、destination、business data、内部例外を
+漏らしません。
+
+このphaseではapprovalを永続化せず、one-use claim、consumption key、external
+publication、provider/runtime/network/credential access、filesystem mutation、CLI
+command、workflow state/events/audit/readiness/result mutation、retry、repair、fallback、
+automatic continuationを追加しません。Ready化、merge、Issue closeは後続の人間レビュー
+まで行いません。
