@@ -5,6 +5,12 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
+import random
+import secrets
+import socket
+import time
+import uuid
 from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +18,9 @@ from types import SimpleNamespace
 import pytest
 
 import ai_office.engine.external_publication as external_module
+import ai_office.engine.publication_regeneration_export as export_module
+import ai_office.engine.publication_regeneration_export_receipt as receipt_module
+import ai_office.engine.publication_regeneration_projection as projection_module
 from ai_office.engine import (
     ExternalPublicationApproval,
     ExternalPublicationApprovalError,
@@ -23,6 +32,9 @@ from ai_office.engine import (
     external_publication_plan_digest,
     serialize_external_publication_approval_canonical,
     validate_external_publication_approval,
+)
+from ai_office.engine import (
+    publication_regeneration_export_reconciliation as reconciliation_module,
 )
 
 _PLAN_SCHEMA = "external-publication-plan.v1"
@@ -608,6 +620,145 @@ def test_approval_helpers_do_not_mutate_filesystem_or_use_output_receipt_paths(
 
     assert sorted(path.name for path in tmp_path.iterdir()) == before
     assert calls == []
+
+
+def test_approval_boundaries_do_not_call_forbidden_predecessor_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+    forbidden_boundaries = (
+        (reconciliation_module, "reconcile_publication_regeneration_export"),
+        (
+            receipt_module,
+            "load_publication_regeneration_export_receipt",
+        ),
+        (
+            receipt_module,
+            "publication_regeneration_export_receipt_digest",
+        ),
+        (export_module, "export_publication_regeneration_output"),
+        (projection_module, "project_publication_regeneration_output"),
+    )
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("forbidden predecessor boundary was called")
+
+    for module, name in forbidden_boundaries:
+        monkeypatch.setattr(module, name, forbidden)
+        monkeypatch.setattr(external_module, name, forbidden, raising=False)
+
+    approval = approve_external_publication(
+        plan,
+        approved_by="reviewer",
+        approval_id="approval-predecessor-audit",
+    )
+    validate_external_publication_approval(plan, approval)
+    serialize_external_publication_approval_canonical(approval)
+    external_publication_approval_canonical_bytes(approval)
+    external_publication_approval_digest(approval)
+
+
+def test_approval_boundaries_do_not_access_environment_clock_random_or_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("forbidden runtime access was called")
+
+    with monkeypatch.context() as runtime_guard:
+        class ForbiddenEnvironment:
+            def __getitem__(self, key: object) -> object:
+                forbidden(key)
+                return None
+
+            def __contains__(self, key: object) -> bool:
+                forbidden(key)
+                return False
+
+            def get(self, key: object, default: object = None) -> object:
+                forbidden(key, default)
+                return None
+
+            def __getattr__(self, name: str) -> object:
+                forbidden(name)
+                return None
+
+        runtime_guard.setattr(os, "environ", ForbiddenEnvironment())
+        runtime_guard.setattr(os, "getenv", forbidden)
+        for name in ("putenv", "unsetenv", "urandom"):
+            if hasattr(os, name):
+                runtime_guard.setattr(os, name, forbidden)
+
+        for name in (
+            "time",
+            "time_ns",
+            "monotonic",
+            "monotonic_ns",
+            "perf_counter",
+            "perf_counter_ns",
+            "process_time",
+            "process_time_ns",
+            "thread_time",
+            "thread_time_ns",
+            "sleep",
+        ):
+            if hasattr(time, name):
+                runtime_guard.setattr(time, name, forbidden)
+
+        for name in (
+            "choice",
+            "choices",
+            "getrandbits",
+            "randint",
+            "random",
+            "randrange",
+            "sample",
+            "seed",
+            "shuffle",
+            "uniform",
+            "Random",
+            "SystemRandom",
+        ):
+            if hasattr(random, name):
+                runtime_guard.setattr(random, name, forbidden)
+        for name in (
+            "choice",
+            "randbelow",
+            "randbits",
+            "token_bytes",
+            "token_hex",
+        ):
+            if hasattr(secrets, name):
+                runtime_guard.setattr(secrets, name, forbidden)
+        for name in ("uuid1", "uuid3", "uuid4", "uuid5"):
+            runtime_guard.setattr(uuid, name, forbidden)
+        for name in (
+            "socket",
+            "create_connection",
+            "getaddrinfo",
+            "gethostbyaddr",
+            "gethostbyname",
+            "gethostbyname_ex",
+            "getnameinfo",
+        ):
+            if hasattr(socket, name):
+                runtime_guard.setattr(socket, name, forbidden)
+
+        approval = approve_external_publication(
+            plan,
+            approved_by="reviewer",
+            approval_id="approval-runtime-audit",
+        )
+        validate_external_publication_approval(plan, approval)
+        canonical = serialize_external_publication_approval_canonical(approval)
+        canonical_bytes = external_publication_approval_canonical_bytes(approval)
+        digest = external_publication_approval_digest(approval)
+        property_digest = approval.digest
+
+    assert canonical_bytes == canonical.encode("utf-8")
+    assert digest == hashlib.sha256(canonical_bytes).hexdigest()
+    assert property_digest == digest
 
 
 def test_public_engine_exports_are_available() -> None:
