@@ -4715,3 +4715,36 @@ state/events・audit・claim・readiness・resultの変更、provider/runtime/ne
 credential実行、publication permissionの推測を行いません。既存の
 `publication-result`、`publication-export`、`result`、`start`、`continue`の契約も
 変更しません。
+
+## Phase 278: matched reconciliation evidence からの external publication plan
+
+Phase 278は、将来のexternal publicationに向けたprovider-freeなplanning boundary
+だけを追加します。`ExternalPublicationTarget`は、exact schema version、明示された
+lowercase provider slug、callerが指定したtrim済み・non-secretなdestination identity
+だけを持つfrozen targetです。providerのallowlist、URL discovery、DNS、credential、
+environment、provider/network呼び出しはありません。destination IDのcontrol
+character、型、長さ、余分な空白は拒否し、identityを変更するnormalizationは行いません。
+
+targetのcanonical identityは、`schema_version`、`provider`、`destination_id`の
+exact three keysを、`ensure_ascii=False`、sorted keys、compact separators、
+`allow_nan=False`でJSON化し、exact UTF-8 bytesへSHA-256を適用します。
+`build_external_publication_plan(...)`はcallerが明示したPhase 276 evidence `Path`を
+strict loaderへ一度だけ渡し、返されたexact
+`PublicationRegenerationExportReconciliation`が`matched`である場合だけ、同じ
+objectをevidence digest helperへ一度だけ渡します。`missing`と
+`content_mismatch`はfail closedで、planを返しません。
+
+生成される`ExternalPublicationPlan`は、regeneration ID、reconciliation evidence
+digest、receipt digest、expected business-output digest/byte length、provider、
+publication target digestだけを保持します。raw business output、output path、
+evidence path、destination text、credential、provider payload、timestamp、random IDは
+含みません。planもtargetも永続化せず、output file・Phase 274 receiptを再読込せず、
+Phase 275 reconciliation、Phase 272 export、Phase 270 projectionを呼びません。
+planのcanonical JSONはexact eight keysのdeterministic UTF-8/SHA-256 identityです。
+`validate_external_publication_plan(...)`はcachedなlineageを信頼せず、freshな明示
+inputsから同じplanning contractを再導出して一致しないplanを拒否します。
+
+このphaseではhuman approval、one-use claim、external publication、CLI command、
+retry、repair、fallback、automatic continuation、workflow state/events/audit/readiness/
+result mutationを追加しません。既存のPhase 274/275/276/277のreceipt、reconciliation、
+evidence、CLI契約は変更されません。
