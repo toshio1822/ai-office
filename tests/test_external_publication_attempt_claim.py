@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import random
+import secrets
 import socket
 import time
 import uuid
@@ -16,7 +17,14 @@ from types import SimpleNamespace
 import pytest
 
 import ai_office.engine.external_publication as module
+import ai_office.engine.publication_regeneration_export as export_module
+import ai_office.engine.publication_regeneration_export_receipt as receipt_module
+import ai_office.engine.publication_regeneration_projection as projection_module
+from ai_office.engine import (
+    publication_regeneration_export_reconciliation as reconciliation_module,
+)
 from ai_office.engine.external_publication import (
+    ExternalPublicationApproval,
     ExternalPublicationAttemptAlreadyConsumedError,
     ExternalPublicationAttemptClaim,
     ExternalPublicationAttemptClaimError,
@@ -107,6 +115,38 @@ def test_exact_types_binding_and_malformed_helpers_fail_closed(
     with pytest.raises(ExternalPublicationAttemptClaimError) as raised:
         build_external_publication_attempt_claim(plan, approval)
     assert raised.value.detail.classification == "approval_binding"
+    monkeypatch.undo()
+
+    claim = build_external_publication_attempt_claim(plan, approval)
+    substitute = SimpleNamespace(**dataclasses.asdict(claim))
+    with pytest.raises(ExternalPublicationAttemptClaimError) as raised:
+        serialize_external_publication_attempt_claim_canonical(
+            substitute  # type: ignore[arg-type]
+        )
+    assert raised.value.detail.classification == "claim_type"
+
+    class PlanChild(ExternalPublicationPlan):
+        pass
+
+    class ApprovalChild(ExternalPublicationApproval):
+        pass
+
+    plan_child = object.__new__(PlanChild)
+    for field in dataclasses.fields(plan):
+        object.__setattr__(plan_child, field.name, getattr(plan, field.name))
+    approval_child = object.__new__(ApprovalChild)
+    for field in dataclasses.fields(approval):
+        object.__setattr__(
+            approval_child, field.name, getattr(approval, field.name)
+        )
+    with pytest.raises(ExternalPublicationAttemptClaimError):
+        build_external_publication_attempt_claim(
+            plan_child, approval  # type: ignore[arg-type]
+        )
+    with pytest.raises(ExternalPublicationAttemptClaimError):
+        build_external_publication_attempt_claim(
+            plan, approval_child  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize(
@@ -294,6 +334,10 @@ def test_loader_rejects_bad_targets_and_reads_valid_bytes_once(
     link.symlink_to(path)
     with pytest.raises(ExternalPublicationAttemptClaimLoadError):
         load_external_publication_attempt_claim(link)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(ExternalPublicationAttemptClaimLoadError):
+        load_external_publication_attempt_claim(fifo)
     reads = 0
     real_read = Path.read_bytes
 
@@ -302,7 +346,11 @@ def test_loader_rejects_bad_targets_and_reads_valid_bytes_once(
         reads += self == path
         return real_read(self)
 
+    def forbidden_write(self: Path, data: bytes) -> int:
+        raise AssertionError("loader must not repair")
+
     monkeypatch.setattr(Path, "read_bytes", counted)
+    monkeypatch.setattr(Path, "write_bytes", forbidden_write)
     assert load_external_publication_attempt_claim(path) == claim
     assert reads == 1
 
@@ -353,24 +401,46 @@ def test_no_predecessor_environment_clock_random_uuid_or_network_access(
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("forbidden access")
 
+    predecessor_boundaries = (
+        (reconciliation_module, "reconcile_publication_regeneration_export"),
+        (receipt_module, "load_publication_regeneration_export_receipt"),
+        (export_module, "export_publication_regeneration_output"),
+        (projection_module, "project_publication_regeneration_output"),
+    )
+    for owner, name in predecessor_boundaries:
+        monkeypatch.setattr(owner, name, forbidden)
+        monkeypatch.setattr(module, name, forbidden, raising=False)
     for name in (
         "load_publication_regeneration_export_reconciliation",
         "build_external_publication_plan",
         "validate_external_publication_plan",
     ):
         monkeypatch.setattr(module, name, forbidden)
-    monkeypatch.setattr(os, "getenv", forbidden)
-    for owner, names in (
-        (time, ("time", "monotonic", "sleep")),
-        (random, ("random", "getrandbits")),
-        (uuid, ("uuid1", "uuid4")),
-        (socket, ("socket", "create_connection", "getaddrinfo")),
-    ):
-        for name in names:
-            monkeypatch.setattr(owner, name, forbidden)
-    claim = claim_external_publication_attempt(tmp_path, plan, approval)
-    path = external_publication_attempt_claim_path(tmp_path, claim.consumption_key)
-    assert load_external_publication_attempt_claim(path) == claim
+
+    class ForbiddenEnvironment:
+        def get(self, key: object, default: object = None) -> object:
+            forbidden(key, default)
+
+        def __getitem__(self, key: object) -> object:
+            forbidden(key)
+
+    with monkeypatch.context() as runtime_guard:
+        runtime_guard.setattr(os, "environ", ForbiddenEnvironment())
+        runtime_guard.setattr(os, "getenv", forbidden)
+        for owner, names in (
+            (time, ("time", "monotonic", "sleep")),
+            (random, ("random", "getrandbits")),
+            (secrets, ("token_bytes", "token_hex", "randbelow")),
+            (uuid, ("uuid1", "uuid4")),
+            (socket, ("socket", "create_connection", "getaddrinfo")),
+        ):
+            for name in names:
+                runtime_guard.setattr(owner, name, forbidden)
+        claim = claim_external_publication_attempt(tmp_path, plan, approval)
+        path = external_publication_attempt_claim_path(
+            tmp_path, claim.consumption_key
+        )
+        assert load_external_publication_attempt_claim(path) == claim
 
 
 def test_fixed_errors_do_not_leak_approval_id_or_path(tmp_path: Path) -> None:
