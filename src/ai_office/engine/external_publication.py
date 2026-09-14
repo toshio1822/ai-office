@@ -466,7 +466,9 @@ def external_publication_approval_canonical_bytes(
 ) -> bytes:
     """Return exact canonical approval JSON encoded as UTF-8 bytes."""
     try:
-        return serialize_external_publication_approval_canonical(approval).encode("utf-8")
+        return serialize_external_publication_approval_canonical(approval).encode(
+            "utf-8"
+        )
     except ExternalPublicationApprovalError:
         raise
     except Exception:
@@ -476,7 +478,9 @@ def external_publication_approval_canonical_bytes(
 def external_publication_approval_digest(approval: ExternalPublicationApproval) -> str:
     """Return SHA-256 over exact canonical approval UTF-8 bytes."""
     try:
-        return sha256(external_publication_approval_canonical_bytes(approval)).hexdigest()
+        return sha256(
+            external_publication_approval_canonical_bytes(approval)
+        ).hexdigest()
     except ExternalPublicationApprovalError:
         raise
     except Exception:
@@ -608,7 +612,9 @@ def external_publication_attempt_claim_digest(
 ) -> str:
     """Return SHA-256 over exact canonical claim bytes."""
     try:
-        return sha256(external_publication_attempt_claim_canonical_bytes(claim)).hexdigest()
+        return sha256(
+            external_publication_attempt_claim_canonical_bytes(claim)
+        ).hexdigest()
     except ExternalPublicationAttemptClaimError:
         raise
     except Exception:
@@ -831,7 +837,10 @@ def _validate_attempt_claim(claim: object) -> None:
         _raise_attempt_claim("schema_version")
     if not _is_sha256(claim.consumption_key):
         _raise_attempt_claim("consumption_key")
-    if type(claim.state) is not str or claim.state != _EXTERNAL_PUBLICATION_ATTEMPT_STATE:
+    if (
+        type(claim.state) is not str
+        or claim.state != _EXTERNAL_PUBLICATION_ATTEMPT_STATE
+    ):
         _raise_attempt_claim("state")
     if not _is_sha256(claim.publication_plan_sha256):
         _raise_attempt_claim("plan_binding")
