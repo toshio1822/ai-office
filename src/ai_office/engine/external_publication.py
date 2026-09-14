@@ -1,0 +1,417 @@
+"""Provider-free external publication target and planning contracts.
+
+Phase 278 binds one exact, durable Phase 276 reconciliation evidence record
+with one explicit secret-free publication target.  It creates no approval,
+claim, persistence, provider call, or publication side effect.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import unicodedata
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
+from typing import Literal, NoReturn
+
+from ai_office.engine.publication_regeneration_export_reconciliation import (
+    PublicationRegenerationExportReconciliation,
+)
+from ai_office.engine.publication_regeneration_export_reconciliation_evidence import (
+    load_publication_regeneration_export_reconciliation,
+    publication_regeneration_export_reconciliation_digest,
+)
+
+_EXTERNAL_PUBLICATION_TARGET_SCHEMA_VERSION = (
+    "external-publication-target.v1"
+)
+_EXTERNAL_PUBLICATION_PLAN_SCHEMA_VERSION = "external-publication-plan.v1"
+_TARGET_ERROR_MESSAGE = "external publication target is invalid"
+_PLAN_ERROR_MESSAGE = "external publication plan is invalid"
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_MAX_PROVIDER_LENGTH = 128
+_MAX_DESTINATION_LENGTH = 256
+_MAX_REGENERATION_ID_LENGTH = 128
+_PATH_TYPE = type(Path())
+
+
+@dataclass(frozen=True)
+class ExternalPublicationFailureDetail:
+    """Detail-safe classification for a rejected publication contract."""
+
+    classification: str
+
+
+class ExternalPublicationError(ValueError):
+    """Base class for fixed-message external publication contract errors."""
+
+    _message = "external publication contract is invalid"
+
+    def __init__(self, classification: str = "contract") -> None:
+        super().__init__(self._message)
+        self.detail = ExternalPublicationFailureDetail(classification)
+
+
+class ExternalPublicationTargetError(ExternalPublicationError):
+    """Raised when an external publication target is not exact and safe."""
+
+    _message = _TARGET_ERROR_MESSAGE
+
+
+class ExternalPublicationPlanError(ExternalPublicationError):
+    """Raised when an external publication plan cannot be safely built."""
+
+    _message = _PLAN_ERROR_MESSAGE
+
+
+@dataclass(frozen=True)
+class ExternalPublicationTarget:
+    """Immutable, explicit, secret-free identity of one publication target."""
+
+    schema_version: Literal["external-publication-target.v1"]
+    provider: str
+    destination_id: str
+
+    def __post_init__(self) -> None:
+        _validate_target(self)
+
+    @property
+    def digest(self) -> str:
+        """Return the SHA-256 identity of canonical target JSON."""
+        return external_publication_target_digest(self)
+
+
+@dataclass(frozen=True)
+class ExternalPublicationPlan:
+    """Immutable identity of one future external publication decision."""
+
+    schema_version: Literal["external-publication-plan.v1"]
+    regeneration_id: str
+    reconciliation_evidence_sha256: str
+    receipt_sha256: str
+    business_output_sha256: str
+    output_byte_length: int
+    provider: str
+    publication_target_sha256: str
+
+    def __post_init__(self) -> None:
+        _validate_plan(self)
+
+    @property
+    def digest(self) -> str:
+        """Return the SHA-256 identity of canonical plan JSON."""
+        return external_publication_plan_digest(self)
+
+
+def serialize_external_publication_target_canonical(
+    target: ExternalPublicationTarget,
+) -> str:
+    """Serialize one exact target as compact deterministic JSON."""
+    _validate_target(target)
+    try:
+        return json.dumps(
+            {
+                "destination_id": target.destination_id,
+                "provider": target.provider,
+                "schema_version": target.schema_version,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except Exception:
+        _raise_target("serialization")
+
+
+def external_publication_target_canonical_bytes(
+    target: ExternalPublicationTarget,
+) -> bytes:
+    """Return exact canonical target JSON encoded as UTF-8 bytes."""
+    try:
+        return serialize_external_publication_target_canonical(target).encode(
+            "utf-8"
+        )
+    except ExternalPublicationTargetError:
+        raise
+    except Exception:
+        _raise_target("encoding")
+
+
+def external_publication_target_digest(
+    target: ExternalPublicationTarget,
+) -> str:
+    """Return SHA-256 over exact canonical target UTF-8 bytes."""
+    return sha256(
+        external_publication_target_canonical_bytes(target)
+    ).hexdigest()
+
+
+def build_external_publication_plan(
+    *,
+    reconciliation_evidence_path: Path,
+    target: ExternalPublicationTarget,
+) -> ExternalPublicationPlan:
+    """Build one plan from one strict matched evidence record and target.
+
+    The Phase 276 loader and evidence digest are each invoked once.  The
+    caller's path and the loader's returned reconciliation object are passed
+    through unchanged; this function never observes an output or receipt.
+    """
+    _validate_evidence_path(reconciliation_evidence_path)
+
+    try:
+        reconciliation = load_publication_regeneration_export_reconciliation(
+            reconciliation_evidence_path
+        )
+    except Exception:
+        _raise_plan("evidence_loading")
+    if type(reconciliation) is not PublicationRegenerationExportReconciliation:
+        _raise_plan("evidence_loading")
+    try:
+        status = reconciliation.status
+    except Exception:
+        _raise_plan("evidence_loading")
+    if type(status) is not str:
+        _raise_plan("evidence_loading")
+    if status != "matched":
+        _raise_plan("non_matched_evidence")
+
+    try:
+        evidence_sha256 = publication_regeneration_export_reconciliation_digest(
+            reconciliation
+        )
+    except Exception:
+        _raise_plan("digest")
+    if type(evidence_sha256) is not str or not _is_sha256(evidence_sha256):
+        _raise_plan("digest")
+
+    _validate_target_for_plan(target)
+    try:
+        target_sha256 = external_publication_target_digest(target)
+    except ExternalPublicationTargetError:
+        raise
+    except Exception:
+        _raise_plan("target_metadata")
+    if type(target_sha256) is not str or not _is_sha256(target_sha256):
+        _raise_plan("target_metadata")
+
+    try:
+        regeneration_id = reconciliation.regeneration_id
+        receipt_sha256 = reconciliation.receipt_sha256
+        business_output_sha256 = (
+            reconciliation.expected_business_output_sha256
+        )
+        output_byte_length = reconciliation.expected_output_byte_length
+        return ExternalPublicationPlan(
+            schema_version=_EXTERNAL_PUBLICATION_PLAN_SCHEMA_VERSION,
+            regeneration_id=regeneration_id,
+            reconciliation_evidence_sha256=evidence_sha256,
+            receipt_sha256=receipt_sha256,
+            business_output_sha256=business_output_sha256,
+            output_byte_length=output_byte_length,
+            provider=target.provider,
+            publication_target_sha256=target_sha256,
+        )
+    except ExternalPublicationPlanError:
+        _raise_plan("plan_construction")
+    except Exception:
+        _raise_plan("plan_construction")
+
+
+def validate_external_publication_plan(
+    plan: ExternalPublicationPlan,
+    *,
+    reconciliation_evidence_path: Path,
+    target: ExternalPublicationTarget,
+) -> None:
+    """Re-derive and validate one plan from fresh explicit inputs."""
+    if type(plan) is not ExternalPublicationPlan:
+        _raise_plan("plan_type")
+    _validate_plan(plan)
+
+    try:
+        expected = build_external_publication_plan(
+            reconciliation_evidence_path=reconciliation_evidence_path,
+            target=target,
+        )
+    except ExternalPublicationError:
+        raise
+    except Exception:
+        _raise_plan("plan_validation")
+    if plan != expected:
+        _raise_plan("plan_validation")
+
+
+def serialize_external_publication_plan_canonical(
+    plan: ExternalPublicationPlan,
+) -> str:
+    """Serialize one exact plan as compact deterministic JSON."""
+    _validate_plan(plan)
+    try:
+        return json.dumps(
+            {
+                "business_output_sha256": plan.business_output_sha256,
+                "output_byte_length": plan.output_byte_length,
+                "provider": plan.provider,
+                "publication_target_sha256": plan.publication_target_sha256,
+                "receipt_sha256": plan.receipt_sha256,
+                "reconciliation_evidence_sha256": (
+                    plan.reconciliation_evidence_sha256
+                ),
+                "regeneration_id": plan.regeneration_id,
+                "schema_version": plan.schema_version,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except Exception:
+        _raise_plan("serialization")
+
+
+def external_publication_plan_canonical_bytes(
+    plan: ExternalPublicationPlan,
+) -> bytes:
+    """Return exact canonical plan JSON encoded as UTF-8 bytes."""
+    try:
+        return serialize_external_publication_plan_canonical(plan).encode("utf-8")
+    except ExternalPublicationPlanError:
+        raise
+    except Exception:
+        _raise_plan("encoding")
+
+
+def external_publication_plan_digest(plan: ExternalPublicationPlan) -> str:
+    """Return SHA-256 over exact canonical plan UTF-8 bytes."""
+    return sha256(external_publication_plan_canonical_bytes(plan)).hexdigest()
+
+
+def _validate_target_for_plan(target: object) -> None:
+    try:
+        _validate_target(target)
+    except ExternalPublicationTargetError:
+        raise
+    except Exception:
+        _raise_plan("target_metadata")
+
+
+def _validate_target(target: object) -> None:
+    if type(target) is not ExternalPublicationTarget:
+        _raise_target("target_type")
+    try:
+        if (
+            type(target.schema_version) is not str
+            or target.schema_version != _EXTERNAL_PUBLICATION_TARGET_SCHEMA_VERSION
+        ):
+            _raise_target("target_metadata")
+        _validate_provider(target.provider, _raise_target)
+        if (
+            type(target.destination_id) is not str
+            or not target.destination_id
+            or target.destination_id != target.destination_id.strip()
+            or len(target.destination_id) > _MAX_DESTINATION_LENGTH
+            or any(
+                unicodedata.category(character) in {"Cc", "Cs"}
+                for character in target.destination_id
+            )
+        ):
+            _raise_target("target_metadata")
+    except ExternalPublicationTargetError:
+        raise
+    except Exception:
+        _raise_target("target_metadata")
+
+
+def _validate_plan(plan: object) -> None:
+    if type(plan) is not ExternalPublicationPlan:
+        _raise_plan("plan_type")
+    try:
+        if (
+            type(plan.schema_version) is not str
+            or plan.schema_version != _EXTERNAL_PUBLICATION_PLAN_SCHEMA_VERSION
+        ):
+            _raise_plan("plan_metadata")
+        _validate_regeneration_id(plan.regeneration_id)
+        for value in (
+            plan.reconciliation_evidence_sha256,
+            plan.receipt_sha256,
+            plan.business_output_sha256,
+            plan.publication_target_sha256,
+        ):
+            if not _is_sha256(value):
+                _raise_plan("plan_metadata")
+        if (
+            type(plan.output_byte_length) is not int
+            or type(plan.output_byte_length) is bool
+            or plan.output_byte_length < 0
+        ):
+            _raise_plan("plan_metadata")
+        _validate_provider(plan.provider, _raise_plan)
+    except ExternalPublicationPlanError:
+        raise
+    except Exception:
+        _raise_plan("plan_metadata")
+
+
+def _validate_provider(
+    value: object,
+    error: object,
+) -> None:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > _MAX_PROVIDER_LENGTH
+        or _SLUG_PATTERN.fullmatch(value) is None
+    ):
+        if error is _raise_target:
+            _raise_target("target_metadata")
+        _raise_plan("plan_metadata")
+
+
+def _validate_regeneration_id(value: object) -> None:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > _MAX_REGENERATION_ID_LENGTH
+        or _SLUG_PATTERN.fullmatch(value) is None
+    ):
+        _raise_plan("plan_metadata")
+
+
+def _validate_evidence_path(path: object) -> None:
+    if type(path) is not _PATH_TYPE:
+        _raise_plan("evidence_loading")
+
+
+def _is_sha256(value: object) -> bool:
+    return type(value) is str and _SHA256_PATTERN.fullmatch(value) is not None
+
+
+def _raise_target(classification: str) -> NoReturn:
+    raise ExternalPublicationTargetError(classification) from None
+
+
+def _raise_plan(classification: str) -> NoReturn:
+    raise ExternalPublicationPlanError(classification) from None
+
+
+__all__ = [
+    "ExternalPublicationError",
+    "ExternalPublicationFailureDetail",
+    "ExternalPublicationPlan",
+    "ExternalPublicationPlanError",
+    "ExternalPublicationTarget",
+    "ExternalPublicationTargetError",
+    "build_external_publication_plan",
+    "external_publication_plan_canonical_bytes",
+    "external_publication_plan_digest",
+    "external_publication_target_canonical_bytes",
+    "external_publication_target_digest",
+    "serialize_external_publication_plan_canonical",
+    "serialize_external_publication_target_canonical",
+    "validate_external_publication_plan",
+]

@@ -5221,3 +5221,53 @@ mutation, repair, retry, fallback, persistence, state/event/audit/claim/readines
 result change, provider/runtime/network/credential execution, or publication
 authorization inference. Existing `publication-result`, `publication-export`,
 `result`, `start`, and `continue` contracts remain unchanged.
+
+## Phase 278: Exact external publication planning from matched evidence
+
+Phase 278 adds a provider-free planning boundary in
+`external_publication.py`. It introduces the frozen, secret-free
+`ExternalPublicationTarget` with the exact schema version
+`external-publication-target.v1`, an explicit lowercase provider slug, and an
+already-trimmed caller-supplied destination identity. Target validation uses
+exact runtime types, rejects subclasses and attribute-compatible substitutes at
+public validation boundaries, rejects control characters and invalid lengths,
+and performs no identity-changing normalization. There is deliberately no
+supported-provider allowlist: future execution adapters must reject unsupported
+providers before credential or network work.
+
+Target canonicalization is exactly the three-key JSON object
+`schema_version`, `provider`, and `destination_id`, serialized with
+`ensure_ascii=False`, sorted keys, compact separators, `allow_nan=False`, exact
+UTF-8 encoding, and SHA-256 over those bytes. The frozen
+`ExternalPublicationPlan` uses schema version `external-publication-plan.v1`
+and contains only the regeneration ID, reconciliation evidence digest, receipt
+digest, expected business-output digest and byte length, provider, and
+publication-target digest. It contains no raw business output, output/evidence
+paths, destination text, credentials, provider payload, timestamp, or random ID.
+
+`build_external_publication_plan(...)` first requires the exact Phase 276
+`Path` convention, then calls
+`load_publication_regeneration_export_reconciliation(...)` exactly once with the
+caller object. Only an exact
+`PublicationRegenerationExportReconciliation` whose status is `matched` may
+continue. The exact loaded object is passed to
+`publication_regeneration_export_reconciliation_digest(...)` exactly once, and
+the returned lowercase 64-hex digest is validated before the target digest and
+plan are constructed. `missing` and `content_mismatch` fail closed. The module
+does not parse evidence JSON itself and does not rerun reconciliation, reload a
+receipt or output, or persist either object.
+
+`validate_external_publication_plan(...)` requires the exact plan type and
+invariants, then re-derives the expected plan from fresh explicit evidence-path
+and target inputs through the same public builder. Any binding mismatch is
+rejected with fixed, detail-safe errors. Frozen classification details
+distinguish target/type/metadata, evidence loading, non-matched evidence,
+digest, construction, and validation failures without exposing paths,
+destination IDs, raw evidence, business output, digests, or underlying
+exception text.
+
+This phase adds no human approval, one-use claim, provider execution,
+publication, CLI command, filesystem mutation, retry, fallback, repair,
+automatic continuation, environment/credential access, clock/randomness,
+workflow-state/event/audit/readiness/result mutation, or external side effect.
+Existing Phase 274, 275, 276, and 277 contracts remain unchanged.
