@@ -5314,3 +5314,54 @@ provider/runtime/network/credential boundary, publish externally, mutate
 workflow state/events/audit/readiness/results, add a CLI command, or add retry,
 repair, fallback, or automatic continuation. Later phases own durable claim
 and execution behavior.
+
+## Phase 280: Durable one-use claim for an external publication approval
+
+Phase 280 adds only the provider-free durable claim boundary in
+`external_publication.py`. It accepts one exact Phase 278
+`ExternalPublicationPlan` and one exact Phase 279
+`ExternalPublicationApproval`, validates their existing in-memory contracts,
+and builds the frozen 14-field `ExternalPublicationAttemptClaim`. The claim
+contains the plan fields needed to reconstruct and digest the exact plan after
+restart, the approval metadata and canonical approval digest, the deterministic
+consumption key, and `state="claimed"`. It contains no destination text, raw
+business output, credential, path, timestamp, random ID, provider response, or
+execution result.
+
+`external_publication_consumption_key(...)` accepts only the exact approval
+type and returns the lowercase SHA-256 hex digest of the exact UTF-8 bytes of
+`approval_id`. The same approval ID therefore maps to one marker name within a
+caller-supplied ledger directory, regardless of plan changes. An existing
+marker is authoritative: `claim_external_publication_attempt(...)` performs
+exclusive create and immediately raises the fixed
+`ExternalPublicationAttemptAlreadyConsumedError` on `FileExistsError`. It
+never reads, compares, adopts, repairs, replaces, truncates, or overwrites the
+existing marker, including when a retry would produce identical bytes.
+
+The ledger directory must be an already-existing, non-symlink concrete `Path`
+directory supplied by the caller. The boundary does not create a directory,
+resolve aliases, discover a default, or use an environment path. Before any
+filesystem mutation, claim construction and canonical serialization complete.
+The authoritative marker itself is then created with exclusive create and
+durabilized in this exact order: full write check, flush, file `fsync`, close,
+and parent-directory `fsync`. Any failure after exclusive creation is an
+ambiguous durability failure; the marker remains untouched by cleanup or
+repair, and a later claim attempt observes the existing name and returns
+already-consumed without reading it.
+
+`load_external_publication_attempt_claim(...)` is a strict inspection boundary
+for an exact non-symlink regular `Path`. It reads bytes at most once, requires
+strict UTF-8 and a JSON object with exactly the 14 allowed keys, rejects
+duplicate keys and non-standard constants such as NaN and Infinity, constructs
+the exact claim type, reconstructs the embedded Phase 278 plan and Phase 279
+approval, and verifies plan digest, approval digest, consumption key, state,
+and byte-for-byte canonical serialization. It never normalizes, rewrites,
+repairs, retries, or deletes a marker.
+
+Claim construction and loading do not reload Phase 276 evidence, rebuild or
+revalidate a Phase 278 plan from evidence/target inputs, read receipt/output or
+reconciliation artifacts, rerun export/projection, call providers/runtime/
+network/socket boundaries, load credentials or environment values, use clocks,
+randomness, or UUIDs, add a CLI command, publish externally, or mutate
+workflow state/events/audit/readiness/results. External execution remains a
+future explicit phase.

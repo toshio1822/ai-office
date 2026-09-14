@@ -4782,3 +4782,43 @@ publication、provider/runtime/network/credential access、filesystem mutation�
 command、workflow state/events/audit/readiness/result mutation、retry、repair、fallback、
 automatic continuationを追加しません。Ready化、merge、Issue closeは後続の人間レビュー
 まで行いません。
+
+## Phase 280: external publication approval の durable one-use claim
+
+Phase 280は、exactなPhase 278 `ExternalPublicationPlan`とPhase 279
+`ExternalPublicationApproval`から、将来のexternal executionに先行するprovider-freeな
+write-ahead claim markerだけを作成します。`ExternalPublicationAttemptClaim`はfrozenな
+14-field identityで、planの再構成に必要なregeneration ID、reconciliation evidence /
+receipt / business-output / publication-targetの各digestとoutput byte length、approval
+digest、approval metadata、`state="claimed"`を保持します。destination text、raw output、
+credential、path、timestamp、random ID、provider response、execution resultは保存しません。
+
+`external_publication_consumption_key(approval)`は、exactなbuiltin
+`ExternalPublicationApproval`の`approval_id.encode("utf-8")`へSHA-256を一度適用した
+lowercase 64-hexを返します。同じcaller-supplied ledger directoryでは、同じapproval ID
+のmarker pathを必ず同じ`<consumption_key>.json`へ束ねます。markerが既に存在する場合は、
+内容が同一でも破損していてもread/compare/adopt/repair/overwriteせず、固定メッセージの
+`ExternalPublicationAttemptAlreadyConsumedError`を直ちに返します。
+
+ledger directoryはcallerが明示した、既存かつ非symlinkのexact `Path` directoryだけを
+受け付けます。欠落directoryの自動作成、default pathのdiscovery、aliasのresolveは行い
+ません。claim constructionは既存plan invariantとapproval bindingだけを検証し、Phase 276
+evidenceを再読込せず、Phase 278 planをevidence/targetから再構築せず、receipt/output/
+reconciliation/export/projectionを読まず、provider/runtime/network/credential/environment/
+clock/random/UUIDへアクセスしません。
+
+claim persistenceはcanonical JSON bytesをmutation前に確定し、authoritative marker自身を
+exclusive createして、`write → full-write check → flush → file fsync → close → parent
+directory fsync`の順で耐久化します。exclusive create成功後のwrite、flush、file fsync、
+close、directory fsyncのどの失敗も`ambiguous`として扱い、markerを削除・truncate・repair・
+retryせず保持します。その後の再試行はmarker bytesを読まずにalready-consumedとなります。
+
+`load_external_publication_attempt_claim(...)`はexactなregular non-symlink `Path`からbytesを
+一度だけ読み、strict UTF-8、duplicate-key拒否、NaN/Infinity拒否、exact 14-key set、全構造
+validation、plan/approval/consumption-keyの内部binding、canonical byte-for-byte equalityを
+検証します。loaderはnormalization、repair、rewrite、retryを行いません。
+
+このphaseはexternal publication、provider/runtime/network/credential実行、CLI command、
+workflow state/events/audit/readiness/result mutation、別approval file、retry、fallback、
+automatic continuation、Ready化、merge、Issue closeを追加しません。次の明示phaseがclaim
+後のexternal executionを所有します。
