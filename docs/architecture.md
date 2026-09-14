@@ -5271,3 +5271,46 @@ publication, CLI command, filesystem mutation, retry, fallback, repair,
 automatic continuation, environment/credential access, clock/randomness,
 workflow-state/event/audit/readiness/result mutation, or external side effect.
 Existing Phase 274, 275, 276, and 277 contracts remain unchanged.
+
+## Phase 279: Exact external-publication-plan human approval
+
+Phase 279 adds only the provider-free human-approval boundary for one exact
+Phase 278 `ExternalPublicationPlan`. `ExternalPublicationApproval` is a frozen
+four-field value containing `approved=True`, the canonical publication-plan
+SHA-256, and the caller-supplied `approved_by` and `approval_id` metadata. The
+approval stores no provider, destination, evidence, receipt, or business-output
+fields because those identities are transitively bound by the exact plan digest.
+
+The public creation and validation boundaries require exact runtime types for
+both the plan and approval; subclasses and attribute-compatible substitutes are
+rejected. `approved` must be the builtin boolean `True`. Approval metadata must
+be exact, non-empty, already trimmed strings of at most 256 characters, with
+Unicode `Cc` and `Cs` characters rejected. Caller metadata is preserved exactly;
+the boundary does not normalize, infer, generate, timestamp, or randomize it.
+
+`approve_external_publication(...)` validates the existing plan invariants and
+metadata without calling the public plan revalidation boundary. It passes the
+exact caller-supplied plan object to
+`external_publication_plan_digest(...)` exactly once and accepts only a lowercase
+64-hex result. `validate_external_publication_approval(...)` performs the same
+exact-type and invariant checks, passes the exact supplied plan object to the
+same digest helper exactly once, and requires equality with the approval's
+stored digest. Neither operation reloads Phase 276 evidence, rebuilds or
+revalidates a Phase 278 plan from evidence/target inputs, reads a receipt or
+output, or performs any filesystem or external side effect.
+
+Approval canonical identity is the exact four-key JSON object `approved`,
+`approved_by`, `approval_id`, and `publication_plan_sha256`, serialized with
+`ensure_ascii=False`, sorted keys, compact separators, and `allow_nan=False`.
+The canonical string is encoded as exact UTF-8 without a trailing newline, and
+the approval digest is SHA-256 over those bytes. Fixed-message
+`ExternalPublicationApprovalError` uses the existing frozen,
+detail-safe failure detail for plan/type, metadata, digest, binding,
+serialization, and validation classifications without exposing IDs, metadata,
+digests, paths, destinations, business data, or exception text.
+
+This phase does not create or persist a one-use claim or consumption key, call a
+provider/runtime/network/credential boundary, publish externally, mutate
+workflow state/events/audit/readiness/results, add a CLI command, or add retry,
+repair, fallback, or automatic continuation. Later phases own durable claim
+and execution behavior.
