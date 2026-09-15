@@ -290,6 +290,13 @@ from ai_office.engine.external_publication_execution_evidence import (
     persist_external_publication_execution_result,
     serialize_external_publication_execution_result_canonical,
 )
+from ai_office.engine.external_publication_execution_reconciliation import (
+    ExternalPublicationExecutionLineageField,
+    ExternalPublicationExecutionReconciliation,
+    ExternalPublicationExecutionReconciliationError,
+    ExternalPublicationExecutionReconciliationFailureDetail,
+    reconcile_external_publication_execution,
+)
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationApprovalError,
@@ -1400,6 +1407,11 @@ __all__ = [
     "load_external_publication_execution_result",
     "persist_external_publication_execution_result",
     "serialize_external_publication_execution_result_canonical",
+    "ExternalPublicationExecutionLineageField",
+    "ExternalPublicationExecutionReconciliation",
+    "ExternalPublicationExecutionReconciliationError",
+    "ExternalPublicationExecutionReconciliationFailureDetail",
+    "reconcile_external_publication_execution",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
     "PublicationRegenerationReadiness",
