@@ -269,6 +269,15 @@ from ai_office.engine.external_publication import (
     validate_external_publication_approval,
     validate_external_publication_plan,
 )
+from ai_office.engine.external_publication_execution import (
+    ExternalPublicationExecutionAmbiguousError,
+    ExternalPublicationExecutionError,
+    ExternalPublicationExecutionFailureDetail,
+    ExternalPublicationExecutionResult,
+    ExternalPublicationTransport,
+    ExternalPublicationTransportReceipt,
+    execute_approved_external_publication,
+)
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationApprovalError,
@@ -1362,6 +1371,13 @@ __all__ = [
     "ExternalPublicationPlanError",
     "ExternalPublicationTarget",
     "ExternalPublicationTargetError",
+    "ExternalPublicationExecutionAmbiguousError",
+    "ExternalPublicationExecutionError",
+    "ExternalPublicationExecutionFailureDetail",
+    "ExternalPublicationExecutionResult",
+    "ExternalPublicationTransport",
+    "ExternalPublicationTransportReceipt",
+    "execute_approved_external_publication",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
     "PublicationRegenerationReadiness",

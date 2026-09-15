@@ -5365,3 +5365,45 @@ network/socket boundaries, load credentials or environment values, use clocks,
 randomness, or UUIDs, add a CLI command, publish externally, or mutate
 workflow state/events/audit/readiness/results. External execution remains a
 future explicit phase.
+
+## Phase 281: Execute one approved external publication behind the durable claim gate
+
+Phase 281 adds the first provider-neutral external publication execution
+boundary in `external_publication_execution.py`. Its control sequence is
+strictly:
+
+```text
+Plan -> Human Approval -> fresh execution preflight
+     -> durable one-use Claim -> transport once -> in-memory result
+```
+
+The boundary calls `validate_external_publication_plan(...)` exactly once with
+the caller's exact plan, reconciliation evidence `Path`, and target, then calls
+`validate_external_publication_approval(...)` exactly once with the exact plan
+and approval. It builds the expected Phase 280 claim and computes its claim
+digest once, without loading a pre-existing marker. Before the final claim
+write, it requires the exact concrete output `Path` to name a present regular
+non-symlink file, reads its bytes once, and verifies both the plan's byte length
+and SHA-256. The exact verified `bytes` object is retained without decoding,
+re-encoding, normalization, or a second read. A non-callable transport is
+rejected before claim creation.
+
+Only after every preflight succeeds does the boundary call
+`claim_external_publication_attempt(...)` exactly once. Phase 281 itself owns
+this final write-ahead claim creation; it never loads, adopts, compares,
+repairs, deletes, resets, or compensates a pre-existing or newly-created
+marker. Phase 280 claim errors propagate unchanged. A malformed or mismatched
+claim return blocks transport with zero calls.
+
+After an exact successful claim, the caller-supplied transport receives the
+exact target object and exact verified bytes object and is invoked exactly once.
+Provider authentication and network behavior belong to that transport adapter;
+the execution module loads no environment variables or credentials. Any
+transport exception or invalid, subclass, or attribute-compatible receipt is
+an ambiguous external execution outcome. The claim remains retained, no retry,
+fallback, automatic continuation, replacement approval, or replacement claim
+is attempted; the approval remains consumed by that claim, and a fixed
+detail-safe ambiguous error is raised. A valid exact
+`ExternalPublicationTransportReceipt` produces only an in-memory frozen
+`ExternalPublicationExecutionResult`; this phase persists no execution result,
+receipt, or evidence and adds or changes no CLI command.
