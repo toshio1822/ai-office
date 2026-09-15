@@ -5407,3 +5407,56 @@ detail-safe ambiguous error is raised. A valid exact
 `ExternalPublicationTransportReceipt` produces only an in-memory frozen
 `ExternalPublicationExecutionResult`; this phase persists no execution result,
 receipt, or evidence and adds or changes no CLI command.
+
+## Phase 282: Persist the Phase 281 execution result as canonical durable evidence
+
+Phase 282 is a persistence-only evidence boundary. It accepts an already
+derived exact `ExternalPublicationExecutionResult` from Phase 281 and stores
+that result object itself. It does not add a wrapper, timestamp, generated or
+random identity, path metadata, approval metadata, destination text, raw
+output, provider response, credential data, or another identity field. The
+lineage is:
+
+```text
+external transport once
+  -> Phase 281 in-memory published result
+  -> Phase 282 canonical durable execution evidence
+```
+
+The canonical record has exactly the result's 11 keys. Serialization uses
+`ensure_ascii=False`, compact separators, sorted keys, `allow_nan=False`,
+UTF-8, no BOM, and no trailing newline. The digest helper is SHA-256 over
+those exact canonical UTF-8 bytes. Unicode publication IDs are preserved
+byte-for-byte without normalization. Every public serializer, byte, digest,
+and persistence boundary requires the exact builtin
+`ExternalPublicationExecutionResult` type and rejects subclasses, lookalikes,
+mappings, coercion, and forged invalid instances.
+
+`persist_external_publication_execution_result(...)` uses only an explicit
+caller-supplied concrete `Path` with an already-existing parent directory. It
+rejects symlinks, directories, and special/non-regular targets. A new target
+is created only with exclusive `xb`, followed in order by exact write, full
+write verification, flush, file fsync, close, and parent-directory fsync. Any
+failure after exclusive creation is ambiguous; the artifact remains retained
+and is never deleted, truncated, repaired, rewritten, or retried. If
+exclusive create encounters an existing target, only byte-for-byte identical
+canonical bytes are idempotently accepted. The existing file is not rewritten;
+its file and parent directory are fsynced for recovery. Different bytes,
+including semantically equivalent noncanonical bytes, produce a conflict.
+
+`load_external_publication_execution_result(...)` is read-only. It requires an
+exact regular non-symlink `Path`, reads the evidence bytes at most once, and
+requires strict UTF-8, duplicate-key rejection, rejection of NaN/Infinity/
+`-Infinity`, the exact 11-key set, exact result reconstruction, and
+byte-for-byte equality with a canonical reserialization. BOM, whitespace,
+alternate key order, escaped-vs-unescaped differences, trailing newline,
+extra/missing keys, and invalid result fields are rejected. The loader never
+normalizes, rewrites, repairs, retries, or falls back.
+
+Phase 282 never calls Phase 281 execution, Phase 280 claim creation/loading,
+Phase 278/279 plan or approval boundaries, Phase 276/275/274/272/270
+predecessors, an output-file reader, a transport, provider/network/credential/
+environment boundary, or a clock/random/UUID/socket boundary. It persists no
+other lineage, adds or changes no CLI command, and makes no real provider or
+paid API call. A later explicit phase may compose Phase 281 execution with
+this evidence persistence or reconcile the durable result with external state.

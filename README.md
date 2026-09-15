@@ -4855,3 +4855,42 @@ automatic continuation、新しいclaimやapprovalの作成は行いません。
 だけを使い、secret-freeなfrozen `ExternalPublicationExecutionResult`をin-memoryで返します。
 このphaseではexecution result/receipt/evidenceを永続化せず、execution moduleでenvironmentや
 credentialをloadせず、CLI commandも追加・変更しません。testsはfake transportのみを使います。
+
+## Phase 282: external publication execution result の canonical durable evidence
+
+Phase 282は、Phase 281で既に導出された exact な
+`ExternalPublicationExecutionResult`を、その11 fields自身としてcanonical durable
+evidenceへ保存します。wrapper、timestamp、generated ID、random ID、path、approval metadata、
+destination、raw output、provider raw response、credential、追加identityは保存しません。
+control sequenceは次のとおりです。
+
+`external transport once -> Phase 281 in-memory published result -> Phase 282 canonical durable execution evidence`
+
+canonical JSONはexact 11-key objectを`ensure_ascii=False`、compact separators、sorted keys、
+`allow_nan=False`で生成し、UTF-8 bytesへ変換します。BOM、trailing newline、余分なwhitespaceは
+ありません。Unicodeのpublication IDはnormalizeせず、canonical bytesのSHA-256 digest helperは
+そのexact bytesに適用します。serializer、bytes、digest、persistenceの各public boundaryは
+exactな`ExternalPublicationExecutionResult`だけを受け付け、subclass、lookalike、mapping、
+coercion、malformed forged instanceを拒否します。
+
+`persist_external_publication_execution_result(...)`はcaller-supplied exact `Path`と既存parent
+directoryだけを使い、targetを`xb`でexclusive createします。write、full-write check、flush、
+file fsync、close、parent-directory fsyncの順序を守ります。exclusive create後のshort write、
+flush、file fsync、close、directory fsync failureはambiguousとして扱い、artifactを削除・
+truncate・repair・rewrite・retryせず保持します。既存targetがcanonical bytesと完全一致する
+場合だけidempotent successとし、rewriteせずfile/parentをfsyncします。異なるbytes、または
+semanticには同じでもnoncanonicalなbytesはconflictです。
+
+`load_external_publication_execution_result(...)`はread-onlyのstrict loaderです。exact `Path`の
+regular non-symlink targetからbytesを最大1回だけ読み、strict UTF-8、duplicate key拒否、
+NaN/Infinity/-Infinity拒否、exact 11-key set、exact result再構築、canonical byte-for-byte
+一致を確認します。BOM、whitespace、key order、escaped表現、trailing newline、extra/missing
+keys、型・digest・schema・statusの不正は拒否し、loaderはrepair、rewrite、normalization、retry
+を行いません。
+
+このphaseはPhase 281 execution、Phase 280 claim作成・load、Phase 278以前のplan/approval/
+reconciliation/receipt/export/projection/output、transport/provider/network/credential/
+environment、clock/random/UUIDへアクセスしません。executionを再実行せず、external stateを
+reconcileせず、workflow/audit/readiness/result lineageを変更せず、CLI commandも追加・変更
+しません。execution-result evidenceは、このphaseの明示的なcaller callによってのみ作成され、
+後続phaseが明示的に組み合わせるまでcanonical durable recordに限定されます。
