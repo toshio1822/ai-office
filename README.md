@@ -4928,3 +4928,53 @@ repair、retry、fallback、automatic continuation、provider/network/credential
 clock/random/UUID/socket access、filesystem mutation、output file read、workflow stateや
 CLI behaviorの変更を行いません。`lineage_mismatch`はvalidな観測であり、execution retryの
 signalではありません。
+
+## Phase 284: external publication execution reconciliation の canonical durable evidence
+
+Phase 284は、Phase 283ですでに導出された exactな
+`ExternalPublicationExecutionReconciliation` だけを、同じ5 fields自身として
+canonical durable evidenceへ保存します。control sequenceは次のとおりです。
+
+```text
+Plan
+ ↓
+Human Approval
+ ↓
+Durable one-use Claim
+ ↓
+External Execution
+ ↓
+Durable Execution Evidence
+ ↓
+Read-only Lineage Reconciliation
+ ↓
+Canonical Durable Reconciliation Evidence
+```
+
+保存するJSONは`schema_version`、`claim_sha256`、`execution_evidence_sha256`、
+`status`、`mismatched_fields`だけのexact 5-key objectです。wrapper、timestamp、
+generated ID、provider state、publication ID、approval metadata、raw output、path、
+credentialは追加しません。`mismatched_fields`はPhase 283のcanonical tuple orderを
+そのままJSON arrayへ変換します。canonical JSONはcompactなsorted-key JSON、
+`ensure_ascii=False`、`allow_nan=False`、BOMなし、trailing newlineなしのexact UTF-8
+bytesであり、digestはそのbytesのSHA-256です。
+
+serializer、bytes、digest、persistenceはexact runtime typeの
+`ExternalPublicationExecutionReconciliation`だけを受け付け、subclass、lookalike、
+mapping、coercion、malformed forged instanceをfail-closedで拒否します。persistenceは
+caller-supplied exact `Path`、既存parent directory、exclusive `xb` create、full write
+check、flush、file fsync、close、parent-directory fsyncだけを使います。exclusive create
+後のshort write、write、flush、file fsync、close、directory open/fsync/close failureは
+ambiguousとしてartifactを保持し、delete、truncate、repair、rewrite、retry、fallbackを
+行いません。既存bytesがcanonical bytesと完全一致する場合だけfile/parent durabilityを
+確認してidempotent successとし、異なるbytesやsemanticには同じnoncanonical bytesはconflict
+です。
+
+strict loaderはtargetを一度だけ読み、strict UTF-8、duplicate key、NaN/Infinity、BOM、
+exact key set、exact model invariants、canonical byte-for-byte equalityを検証します。
+loaderはread-onlyで、repairやrewriteをしません。Phase 284はPhase 283 reconciliationを
+再実行せず、Phase 280 claim、Phase 282 execution evidence、Phase 281 execution、Phase 278
+以前のboundary、provider/network/credential/environment/clock/random/UUID/socketへアクセス
+しません。`lineage_mismatch` evidenceもvalidなdurable observationであり、retry signalでは
+ありません。これによりexternal-publication audit chainはdurably closedとなり、次の作業は
+新しいlower-level publication evidence boundaryではなくhigher-level orchestrationへ移ります。
