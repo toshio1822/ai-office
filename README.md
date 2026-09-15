@@ -4822,3 +4822,36 @@ validation、plan/approval/consumption-keyの内部binding、canonical byte-for-
 workflow state/events/audit/readiness/result mutation、別approval file、retry、fallback、
 automatic continuation、Ready化、merge、Issue closeを追加しません。次の明示phaseがclaim
 後のexternal executionを所有します。
+
+## Phase 281: durable claim 後の external publication execution
+
+Phase 281は、exactなPhase 278 `ExternalPublicationPlan`、Phase 279
+`ExternalPublicationApproval`、Phase 276 reconciliation evidence path、Phase 278の
+explicit target、export済みbusiness-output file、caller-supplied transportを、次の固定順序で
+一度だけ扱います。
+
+`Plan -> Human Approval -> fresh execution preflight -> durable one-use Claim -> transport once -> in-memory result`
+
+execution moduleはまず`validate_external_publication_plan(...)`をexactなplan、evidence
+path、targetで一度だけ呼び、次に`validate_external_publication_approval(...)`をexactなplanと
+approvalで一度だけ呼びます。その後、Phase 280 claimとclaim digestの期待identityをin-memory
+で一度だけ構築します。output pathはcaller-supplied exact `Path`であること、regularかつ非symlink
+であることを確認してからbytesを一度だけ読み、plan指定のbyte lengthとSHA-256へ照合します。
+このverified bytes objectはdecode/re-encode、normalize、再読込せず、そのままtransportへ渡します。
+transportがcallableであることもclaim作成前に確認します。
+
+全preflight成功後、`claim_external_publication_attempt(...)`をtransport直前にexactly once
+呼びます。Phase 281はpre-existing claimをloadしてexecutionするのではなく、この境界自身が
+Phase 280のwrite-ahead claim作成を所有します。claim errorは既存のfixed/detail-safe errorの
+まま伝播し、malformedまたは期待値と異なるclaim returnでもtransportは呼びません。successful
+claimをread back、delete、repair、reset、replace、compensateしません。
+
+claim成功後はexact target objectとverified bytes objectをtransportへexactly once渡します。
+transport exceptionまたは不正・subclass・attribute-compatibleなreceiptは、外部処理が既に
+行われた可能性があるため、fixed `external publication execution outcome is ambiguous`
+errorで停止し、approvalをconsumed状態のままclaimとともに保持します。retry、fallback、
+automatic continuation、新しいclaimやapprovalの作成は行いません。validな
+`ExternalPublicationTransportReceipt`のpublication ID
+だけを使い、secret-freeなfrozen `ExternalPublicationExecutionResult`をin-memoryで返します。
+このphaseではexecution result/receipt/evidenceを永続化せず、execution moduleでenvironmentや
+credentialをloadせず、CLI commandも追加・変更しません。testsはfake transportのみを使います。
