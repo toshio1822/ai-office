@@ -5509,3 +5509,65 @@ output file, contact a provider, load environment or credentials, use a
 clock/randomness/UUID/socket/network, mutate the filesystem or workflow
 state, persist its observation, retry, repair, fall back, continue
 automatically, or add/change CLI behavior.
+
+## Phase 284: Persist the Phase 283 reconciliation as canonical durable evidence
+
+Phase 284 is the final evidence-only boundary for the current
+external-publication lineage. It persists exactly one already-derived
+`ExternalPublicationExecutionReconciliation` from Phase 283; it does not rerun
+reconciliation, load either Phase 280 claim or Phase 282 execution evidence,
+inspect provider state, execute publication, or mutate a predecessor artifact.
+The resulting control sequence is:
+
+```text
+Plan
+ ↓
+Human Approval
+ ↓
+Durable one-use Claim
+ ↓
+External Execution
+ ↓
+Durable Execution Evidence
+ ↓
+Read-only Lineage Reconciliation
+ ↓
+Canonical Durable Reconciliation Evidence
+```
+
+The sidecar is exactly one five-key JSON object: `schema_version`,
+`claim_sha256`, `execution_evidence_sha256`, `status`, and `mismatched_fields`.
+There is no wrapper, timestamp, generated ID, provider value, publication ID,
+approval metadata, raw output, path, credential, or other field.
+`mismatched_fields` is the JSON-array representation of the exact Phase 283
+tuple in canonical comparison order. Serialization uses compact sorted-key
+JSON with `ensure_ascii=False`, `allow_nan=False`, exact UTF-8 encoding, no BOM,
+and no trailing newline. The digest is SHA-256 over those exact canonical
+bytes.
+
+Every serializer, bytes, digest, and persistence boundary accepts only the
+exact runtime `ExternalPublicationExecutionReconciliation` type. Subclasses,
+lookalikes, mappings, coercion, and malformed forged exact instances are
+rejected fail-closed after reconstructing and validating the Phase 283 model.
+Persistence requires an exact caller-supplied concrete `Path`, an existing
+parent directory, and exclusive `xb` creation. A new artifact is written in
+full, flushed, file-fsynced, closed, and followed by parent-directory fsync.
+Short write, write, flush, file-fsync, close/context-exit, and directory
+open/fsync/close failures after exclusive creation are ambiguous; the artifact
+is retained exactly as left and is never deleted, truncated, repaired,
+rewritten, retried, or replaced. If an existing target has byte-identical
+canonical contents, persistence confirms file and parent durability and
+returns idempotent success without rewrite. Different contents, including
+semantically equivalent noncanonical bytes, are conflicts.
+
+The strict loader reads a regular non-symlink target at most once, rejects
+invalid UTF-8, BOM, duplicate keys, NaN/Infinity/-Infinity, wrong types,
+extra/missing keys, invalid Phase 283 invariants, and every noncanonical byte
+variant, then requires byte-for-byte canonical equality. It is strictly
+read-only and never repairs or rewrites the sidecar. `lineage_mismatch` is a
+valid durable observation and never a retry signal. Phase 284 uses no provider,
+transport, network, credential, environment, clock, random, UUID, or socket
+boundary and makes no CLI change. After this sidecar is durable, the
+external-publication audit chain is durably closed; the next planned work
+should move upward into orchestration rather than add another lower-level
+publication evidence boundary.
