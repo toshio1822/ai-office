@@ -5460,3 +5460,52 @@ environment boundary, or a clock/random/UUID/socket boundary. It persists no
 other lineage, adds or changes no CLI command, and makes no real provider or
 paid API call. A later explicit phase may compose Phase 281 execution with
 this evidence persistence or reconcile the durable result with external state.
+
+## Phase 283: Read-only lineage reconciliation of the durable claim and evidence
+
+Phase 283 adds one provider-free, read-only boundary that observes whether one
+strict Phase 280 durable attempt claim and one strict Phase 282 durable
+execution-evidence record belong to the same publication-attempt lineage:
+
+```text
+Phase 280 durable one-use claim ───────┐
+                                       ├─> Phase 283 read-only lineage reconciliation
+Phase 282 durable execution evidence ─┘
+```
+
+`reconcile_external_publication_execution(...)` requires exact concrete
+caller-supplied `Path` objects. It passes each exact path object unchanged to
+the corresponding strict loader exactly once, accepts only the exact concrete
+record type, and passes each exact loaded object identity to its digest helper
+exactly once. The reconciliation module never opens or reads either sidecar
+itself and does not duplicate either strict parser.
+
+After both strict records and their lowercase 64-hex digests are validated,
+the boundary compares exactly these eight shared bindings in this order:
+`publication_attempt_claim_sha256`, `regeneration_id`,
+`publication_plan_sha256`, `publication_approval_sha256`,
+`business_output_sha256`, `output_byte_length`, `provider`, and
+`publication_target_sha256`. The first binding uses the canonical digest of
+the exact loaded Phase 280 claim as the expected value; `publication_id` is
+execution-result data and is intentionally not a claim-side lineage binding.
+
+The result is one frozen in-memory observation with only the two record
+digests, a status, and safe field-name diagnostics. Exact agreement returns
+`status="matched"` with an empty tuple. Valid disagreement returns
+`status="lineage_mismatch"` with each mismatched safe field name once in the
+canonical comparison order; it is not an exception or an execution retry
+signal. `matched` means that the strict durable execution evidence is bound to
+the exact strict durable claim and that every shared immutable lineage field
+agrees. Loader, digest, path, and result-construction failures use one fixed,
+detail-safe error message and classification without claim values, approval
+metadata, publication IDs, provider values, paths, raw output, credentials, or
+underlying exception text.
+
+Phase 283 validates local durable lineage only; it does not prove the
+provider's current external state. It does not execute Phase 281, create a
+Phase 280 claim, persist Phase 282 evidence, rebuild or reread any predecessor
+plan/approval/reconciliation/receipt/export/projection/output, inspect an
+output file, contact a provider, load environment or credentials, use a
+clock/randomness/UUID/socket/network, mutate the filesystem or workflow
+state, persist its observation, retry, repair, fall back, continue
+automatically, or add/change CLI behavior.

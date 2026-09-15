@@ -4894,3 +4894,37 @@ environment、clock/random/UUIDへアクセスしません。executionを再実�
 reconcileせず、workflow/audit/readiness/result lineageを変更せず、CLI commandも追加・変更
 しません。execution-result evidenceは、このphaseの明示的なcaller callによってのみ作成され、
 後続phaseが明示的に組み合わせるまでcanonical durable recordに限定されます。
+
+## Phase 283: durable claim と execution evidence の read-only lineage reconciliation
+
+Phase 283は、既存のstrict durable recordを2つだけ読み込んで、同じpublication attempt
+lineageに属するかをprovider-freeに観測します。control sequenceは次のとおりです。
+
+```text
+Phase 280 durable one-use claim ───────┐
+                                       ├─> Phase 283 read-only lineage reconciliation
+Phase 282 durable execution evidence ─┘
+```
+
+`reconcile_external_publication_execution(...)`は、callerが渡したexactな`Path`をそのまま
+strict Phase 280 claim loaderとstrict Phase 282 execution-evidence loaderへ渡し、それぞれの
+loaderを一度だけ呼びます。各loaderが返したexact object identityのまま対応するdigest helper
+も一度だけ呼び、claim digest、execution-evidence digest、8つの共有immutable lineage binding
+をcanonical orderで比較します。sidecar JSONをこのmodule自身がopen/readすること、値を再構築
+すること、`publication_id`やapproval metadataをlineageへ追加することはありません。
+
+完全一致だけが`status="matched"`となります。validなdurable record同士の不一致は例外では
+なく、`status="lineage_mismatch"`とsafeなfield nameだけの`mismatched_fields`を返します。
+field nameは`publication_attempt_claim_sha256`、`regeneration_id`、
+`publication_plan_sha256`、`publication_approval_sha256`、`business_output_sha256`、
+`output_byte_length`、`provider`、`publication_target_sha256`の順で、重複や値の漏えいは
+ありません。`matched`は、strict durable execution evidenceがexactなstrict durable claimに
+束縛され、共有する全immutable lineage fieldが一致したことだけを意味します。結果はfrozenな
+in-memory observationであり、永続化しません。
+
+これはlocal durable lineageの一致だけを検証し、providerの現在のexternal stateを証明
+しません。Phase 283はpublication execution、claim作成、execution evidence persistence、
+repair、retry、fallback、automatic continuation、provider/network/credential/environment/
+clock/random/UUID/socket access、filesystem mutation、output file read、workflow stateや
+CLI behaviorの変更を行いません。`lineage_mismatch`はvalidな観測であり、execution retryの
+signalではありません。
