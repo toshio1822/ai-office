@@ -4978,3 +4978,50 @@ loaderはread-onlyで、repairやrewriteをしません。Phase 284はPhase 283 
 しません。`lineage_mismatch` evidenceもvalidなdurable observationであり、retry signalでは
 ありません。これによりexternal-publication audit chainはdurably closedとなり、次の作業は
 新しいlower-level publication evidence boundaryではなくhigher-level orchestrationへ移ります。
+
+## Phase 285: approved external publication の execution evidence orchestration
+
+Phase 285は、Phase 284でlower audit chainが閉じた後の最初の上位
+external-publication orchestrationです。既存のpublic boundaryを再実装せず、Phase 282のfresh
+execution-evidence target preflight、Phase 281のapproved external publication execution、Phase
+282のcanonical durable execution-evidence persistenceだけを次の固定順序で組み合わせます。
+
+```text
+External Publication Orchestration (Phase 285)
+
+fresh Phase 282 evidence target preflight
+        ↓
+Phase 281
+  approval + durable one-use claim + external transport
+        ↓
+Phase 282
+  canonical durable execution evidence
+        ↓
+stop and return exact execution result
+```
+
+`preflight_external_publication_execution_result_path(path)`はPhase 282のpublic read-only
+helperです。exact concrete `Path`、既存のparent directory、regular non-symlink targetを
+確認し、既存targetを`target_exists`として拒否します。missing targetだけをvalidとしますが、
+pathをreserve/create/write/mkdirせず、target contentsも読みません。したがってpreflight成功は
+evidence pathの予約ではなく、後続persistenceとのfilesystem raceをなくしません。raceが発生
+した場合のPhase 282 persistence errorがauthoritativeです。
+
+成功経路は、preflightをexactly once、`execute_approved_external_publication(...)`をexactly
+once、返されたexact `ExternalPublicationExecutionResult`のsnapshot、
+`persist_external_publication_execution_result(...)`をexactly onceの順序で実行します。
+persistenceにはPhase 281が返した同一object identityだけを渡し、returnはexact `None`だけを
+受理します。persistence中のresult mutationはfail-closedに検出し、成功時はPhase 281のresult
+objectを同一identityのまま返します。Phase 283 reconciliation、Phase 284 reconciliation
+evidence persistence/load/digest、Phase 282 loader/digestの直接利用は行いません。
+
+Phase 281/Phase 280/Phase 282のknown errorは同じerror objectのまま伝播します。claim作成後、
+transportがambiguousになった後、またはpublication後のPhase 282 persistenceがconflict/
+ambiguousになった後にretry、fallback、claimのdelete/reset/repair、evidenceのdelete/repair/
+rewrite、provider stateからの結果推測、自動継続は行いません。unknown dependency exception
+とorchestration-owned contract failureだけをfixed/detail-safeなPhase 285 errorへ変換します。
+
+Phase 285はprovider/network/credential/environment/clock/random/UUID/socketへ直接アクセスせず、
+fake transportによる呼び出しだけをtestsで検証します。CLI/GUIは変更しません。Phase 286では、
+新しいlower-level evidence modelを追加するのではなく、durable post-execution reconciliation
+closureを上位からcomposeすることが予定されます。

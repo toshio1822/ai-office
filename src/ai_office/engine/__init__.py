@@ -288,7 +288,14 @@ from ai_office.engine.external_publication_execution_evidence import (
     external_publication_execution_result_digest,
     load_external_publication_execution_result,
     persist_external_publication_execution_result,
+    preflight_external_publication_execution_result_path,
     serialize_external_publication_execution_result_canonical,
+)
+from ai_office.engine.external_publication_execution_orchestration import (
+    ExternalPublicationExecutionOrchestrationCompatibilityError,
+    ExternalPublicationExecutionOrchestrationError,
+    ExternalPublicationExecutionOrchestrationFailureDetail,
+    execute_and_persist_approved_external_publication,
 )
 from ai_office.engine.external_publication_execution_reconciliation import (
     ExternalPublicationExecutionLineageField,
@@ -1417,8 +1424,13 @@ __all__ = [
     "external_publication_execution_result_canonical_bytes",
     "external_publication_execution_result_digest",
     "load_external_publication_execution_result",
+    "preflight_external_publication_execution_result_path",
     "persist_external_publication_execution_result",
     "serialize_external_publication_execution_result_canonical",
+    "ExternalPublicationExecutionOrchestrationCompatibilityError",
+    "ExternalPublicationExecutionOrchestrationError",
+    "ExternalPublicationExecutionOrchestrationFailureDetail",
+    "execute_and_persist_approved_external_publication",
     "ExternalPublicationExecutionLineageField",
     "ExternalPublicationExecutionReconciliation",
     "ExternalPublicationExecutionReconciliationError",

@@ -5571,3 +5571,66 @@ boundary and makes no CLI change. After this sidecar is durable, the
 external-publication audit chain is durably closed; the next planned work
 should move upward into orchestration rather than add another lower-level
 publication evidence boundary.
+
+## Phase 285: Orchestrate approved publication into durable execution evidence
+
+Phase 285 is the first higher-level external-publication orchestration after
+Phase 284 closed the lower audit chain. It composes the existing public Phase
+281 and Phase 282 boundaries instead of duplicating their execution,
+claim, or evidence logic:
+
+```text
+External Publication Orchestration (Phase 285)
+
+fresh Phase 282 evidence target preflight
+        ↓
+Phase 281
+  approval + durable one-use claim + external transport
+        ↓
+Phase 282
+  canonical durable execution evidence
+        ↓
+stop and return exact execution result
+```
+
+The public
+`preflight_external_publication_execution_result_path(path)` helper is a
+read-only Phase 282 check. It requires the exact concrete project `Path`, an
+already-existing parent directory, and a regular non-symlink target domain. A
+missing target is valid; an existing regular target is rejected as
+`target_exists`, and symlinks, directories, FIFOs, devices, and other
+non-regular targets are rejected. The helper never reads target contents and
+never reserves, creates, writes, truncates, deletes, repairs, or makes a
+directory. It is therefore not a reservation: a later persistence race is
+still possible and Phase 282 persistence remains authoritative.
+
+`execute_and_persist_approved_external_publication(...)` has one linear
+success route: call the Phase 282 preflight exactly once, call public Phase
+281 `execute_approved_external_publication(...)` exactly once with the
+canonical caller object identities, snapshot the exact returned
+`ExternalPublicationExecutionResult`, call public Phase 282
+`persist_external_publication_execution_result(...)` exactly once with that
+same result object, require exact `None`, verify that the result type and
+values did not change, and return that same object identity. Wrong, subclass,
+lookalike, mapping, or malformed Phase 281 results are rejected before
+persistence. No loader or digest is called after successful persistence.
+
+Known Phase 282 preflight/persistence errors, Phase 281 execution errors,
+Phase 280 already-consumed or ambiguous claim errors, transport ambiguity,
+and Phase 282 conflict/ambiguous persistence errors propagate unchanged by
+object identity. Unknown dependency exceptions and orchestration-owned
+contract failures use only the fixed, detail-safe Phase 285 orchestration
+error. Once a claim has been created, or after transport or evidence
+persistence ambiguity, Phase 285 never retries either boundary, falls back,
+deletes/resets/repairs a claim, deletes/repairs/rewrites evidence, infers
+provider state, or continues automatically.
+
+Phase 285 does not run Phase 283 reconciliation or Phase 284
+reconciliation-evidence persistence/load/digest, directly use a Phase 282
+loader/digest/serializer, rebuild Phase 278 plans, revalidate Phase 279
+approvals, read business-output files, inspect provider state, access
+environment or credentials, use clocks/randomness/UUID/socket/network
+operations, add scheduling/parallelism, mutate workflow artifacts, or change
+CLI/GUI behavior. Tests use fake transports only. Phase 286 is expected to
+compose the durable post-execution reconciliation closure, rather than add
+another lower-level evidence model.
