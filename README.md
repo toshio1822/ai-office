@@ -5079,3 +5079,50 @@ subprocessへアクセスしません。CLI/GUI変更もありません。Phase 
 後の次の設計段階では、Phase 285 + Phase 286を明示的な大きなoperationとしてcomposeするか、
 job/workflow-facing orchestrationへ外側に進むかを評価します。このIssueでは次Phaseを自動開始
 しません。
+
+## Phase 287: durable approval lineage からの reconciliation closure resumable handoff
+
+Phase 287は、Phase 285のexternal side effectが成功した可能性がある一方で、後続の
+Phase 286 closureだけを再開する必要がある場合のprovider-freeなrecovery/handoff boundary
+です。fresh publication boundaryではないため、Phase 285、Phase 281、transport/providerを
+呼び出しません。
+
+```text
+Phase 287 resumable post-execution handoff
+
+exact ExternalPublicationApproval + existing ledger directory
+        ↓
+Phase 280 deterministic consumption key / canonical claim path
+        ↓
+Phase 286 provider-free reconciliation closure
+        ↓
+matched | lineage_mismatch
+        ↓
+durable reconciliation evidence
+```
+
+`resume_external_publication_reconciliation_closure(...)`は、exactなcaller approvalの
+runtime typeを確認してから、公開済みPhase 280 helperを次の順序で各一度だけ呼びます。
+
+1. `external_publication_consumption_key(approval)`へ同じapproval objectを渡す。
+2. lowercase 64-hexのbuiltin `str`だけを受け付け、返された同じkey objectを
+   `external_publication_attempt_claim_path(ledger_directory, consumption_key)`へ渡す。
+3. exact concrete `Path`だけを受け付け、返された同じclaim path objectとcallerの
+   `execution_evidence_path`、`reconciliation_evidence_path`を
+   `reconcile_and_persist_external_publication_execution(...)`へ一度だけ渡す。
+4. exact `ExternalPublicationExecutionReconciliation`の5 fieldsを再検証し、同じPhase 286
+   result object identityを返す。
+
+Phase 280のmarker filename/path convention、Phase 283のcomparison、Phase 284のevidence
+persistenceは再実装しません。claimをcreate/load/reset/delete/repairせず、sidecarを直接
+open/read/writeせず、plan rebuildやapproval revalidationも行いません。`matched`と
+`lineage_mismatch`はともに正常returnです。mismatch、conflict、ambiguous、missing、corrupt
+の下位エラーはfresh publication retryを許可せず、authoritativeなPhase 280/286 errorを
+そのまま伝播します。
+
+同じapproval、claim、execution evidence、reconciliation targetでPhase 287を再実行すると、
+Phase 286/284の既存identical-bytes idempotent recoveryを通じて成功できます。predecessor
+sidecarは変更されず、provider実行もありません。Phase 287はCLI/GUI、schedule、retry、
+fallback、compensation、automatic continuationを追加しません。次の設計段階では、fresh
+execute + resumable closureを含むhigher-level operation/job-facing contractを評価しますが、
+このIssueから自動開始しません。
