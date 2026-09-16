@@ -5634,3 +5634,70 @@ operations, add scheduling/parallelism, mutate workflow artifacts, or change
 CLI/GUI behavior. Tests use fake transports only. Phase 286 is expected to
 compose the durable post-execution reconciliation closure, rather than add
 another lower-level evidence model.
+
+## Phase 286: Orchestrate the durable external-publication reconciliation closure
+
+Phase 286 is a provider-free post-execution orchestration boundary. It
+composes the existing public Phase 283 read-only reconciliation with the
+existing public Phase 284 canonical reconciliation-evidence persistence. It
+starts from already-durable Phase 280 claim and Phase 282 execution-evidence
+sidecars and does not invoke Phase 285 execution orchestration, Phase 281
+external execution, or any Phase 280 claim operation:
+
+```text
+Post-execution Reconciliation Closure (Phase 286)
+
+durable Phase 280 claim + durable Phase 282 execution evidence
+        ↓
+Phase 283 read-only reconciliation
+        ↓
+matched | lineage_mismatch
+        ↓
+Phase 284 canonical durable reconciliation evidence
+        ↓
+stop and return exact reconciliation result
+```
+
+The public
+`reconcile_and_persist_external_publication_execution(...)` route is exactly
+linear. It calls public
+`reconcile_external_publication_execution(claim_path=claim_path,
+execution_evidence_path=execution_evidence_path)` exactly once, preserving both
+caller `Path` identities. It requires the exact runtime
+`ExternalPublicationExecutionReconciliation` type and validates an
+authoritative snapshot of all five fields: `schema_version`, `claim_sha256`,
+`execution_evidence_sha256`, `status`, and `mismatched_fields`. It then calls
+public `persist_external_publication_execution_reconciliation(...)` exactly
+once with the exact caller `reconciliation_evidence_path` and the exact Phase
+283 result object. Only exact `None` is accepted from persistence. The five
+fields must remain value-equal and the exact Phase 283 object is returned by
+identity.
+
+Both `matched` and `lineage_mismatch` are persistable valid observations.
+`lineage_mismatch` is not an exception, execution failure, retry signal,
+publication request, or repair instruction. It is persisted once through
+Phase 284 just like `matched`. Phase 286 deliberately adds no Phase 284
+fresh-target preflight: identical existing canonical evidence remains Phase
+284's idempotent identical-bytes recovery, while differing or noncanonical
+existing evidence remains the authoritative Phase 284 conflict behavior.
+
+Known Phase 283 reconciliation errors and known Phase 284
+evidence/conflict/ambiguous errors propagate unchanged by exact object
+identity. Unknown dependency exceptions, configuration failures, wrong result
+types, non-`None` persistence returns, and persistence-time result mutation
+are handled fail-closed with the fixed, detail-safe Phase 286 orchestration
+error. Phase 286 never retries either boundary, reruns Phase 283 after a
+Phase 284 failure, repairs/deletes/rewrites/compensates, infers provider
+state, or continues automatically.
+
+Phase 286 itself does not create/load/reset/delete Phase 280 claims, persist
+or directly digest/serialize/load Phase 282 evidence, directly load/digest/
+serialize Phase 284 evidence, open/read/write predecessor sidecars, rebuild
+plans, revalidate approvals, read business output, inspect provider state, or
+access provider/network/credential/environment/clock/randomness/UUID/socket/
+subprocess boundaries. It adds no scheduling, parallel execution, workflow
+artifact mutation, or CLI/GUI behavior. After the Phase 284 sidecar is
+durable, the next design step should evaluate composing Phase 285 + Phase 286
+into one larger explicit operation versus moving outward toward
+job/workflow-facing orchestration; this Issue does not automatically start
+that next phase.

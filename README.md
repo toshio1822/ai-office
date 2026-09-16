@@ -5025,3 +5025,57 @@ Phase 285はprovider/network/credential/environment/clock/random/UUID/socketへ�
 fake transportによる呼び出しだけをtestsで検証します。CLI/GUIは変更しません。Phase 286では、
 新しいlower-level evidence modelを追加するのではなく、durable post-execution reconciliation
 closureを上位からcomposeすることが予定されます。
+
+## Phase 286: durable external publication reconciliation closure orchestration
+
+Phase 286は、Phase 283のread-only execution reconciliationとPhase 284のcanonical durable
+reconciliation evidence persistenceを組み合わせる、provider-freeなpost-execution closureです。
+Phase 285のexecution orchestration、Phase 281のexternal execution、Phase 280のclaim操作を
+呼び出さず、すでにdurableなPhase 280 claimとPhase 282 execution evidenceから開始します。
+
+```text
+Post-execution Reconciliation Closure (Phase 286)
+
+durable Phase 280 claim + durable Phase 282 execution evidence
+        ↓
+Phase 283 read-only reconciliation
+        ↓
+matched | lineage_mismatch
+        ↓
+Phase 284 canonical durable reconciliation evidence
+        ↓
+stop and return exact reconciliation result
+```
+
+`reconcile_and_persist_external_publication_execution()`の正常経路は、Phase 283
+`reconcile_external_publication_execution()`をexactly once、exact caller `claim_path`と
+`execution_evidence_path`で呼び出し、exactな`ExternalPublicationExecutionReconciliation`の
+全5 field（`schema_version`、`claim_sha256`、`execution_evidence_sha256`、`status`、
+`mismatched_fields`）をsnapshotします。その後、Phase 284
+`persist_external_publication_execution_reconciliation()`をexactly once、exact callerの
+`reconciliation_evidence_path`とPhase 283が返した同一objectで呼び出します。persistenceの
+returnはexact `None`だけを受け付け、5 fieldが変化していないことを確認した後、Phase 283の
+reconciliation objectを同じidentityのまま返します。
+
+`matched`と`lineage_mismatch`はどちらもpersist可能なvalid observationです。
+`lineage_mismatch`はretry signal、execution failure、publication許可、repair理由ではなく、
+監査可能な観測としてPhase 284へ一度だけ保存します。Phase 286にはPhase 284用のfresh-target
+preflightを追加しません。既存canonical evidenceとのidentical-bytes再実行はPhase 284の
+既存idempotent recoveryに任せ、differing/noncanonical targetのconflictおよびambiguous
+persistenceはPhase 284のauthoritative errorとして、そのerror object identityのまま伝播します。
+
+Phase 283のknown reconciliation errorとPhase 284のknown evidence/conflict/ambiguous errorは
+同じerror objectのまま伝播します。unknown dependency exception、wrong result、non-`None`
+persistence return、persistence中のresult mutationだけを、固定message/detail-safeなPhase 286
+orchestration error（`configuration`、`reconciliation_contract`、`persistence_contract`、
+`result_mutation`、`dependency_error`）としてfail-closedに扱います。どの失敗後にもretry、
+fallback、repair、delete、rewrite、compensation、Phase 283再実行、provider state inference、
+automatic continuationは行いません。
+
+Phase 286自身は、Phase 280 claim、Phase 282 persistence/digest/serializer、Phase 284
+loader/digest/serializer、sidecarの直接open/read/write、business output、plan rebuild、
+approval revalidation、provider/network/credential/environment/clock/random/UUID/socket/
+subprocessへアクセスしません。CLI/GUI変更もありません。Phase 284 evidenceがdurableになった
+後の次の設計段階では、Phase 285 + Phase 286を明示的な大きなoperationとしてcomposeするか、
+job/workflow-facing orchestrationへ外側に進むかを評価します。このIssueでは次Phaseを自動開始
+しません。

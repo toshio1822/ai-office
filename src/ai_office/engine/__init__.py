@@ -316,6 +316,12 @@ from ai_office.engine.external_publication_execution_reconciliation_evidence imp
     persist_external_publication_execution_reconciliation,
     serialize_external_publication_execution_reconciliation_canonical,
 )
+from ai_office.engine.external_publication_execution_reconciliation_orchestration import (  # noqa: E501
+    ExternalPublicationExecutionReconciliationOrchestrationCompatibilityError,
+    ExternalPublicationExecutionReconciliationOrchestrationError,
+    ExternalPublicationExecutionReconciliationOrchestrationFailureDetail,
+    reconcile_and_persist_external_publication_execution,
+)  # noqa: E501
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationApprovalError,
@@ -1446,6 +1452,10 @@ __all__ = [
     "load_external_publication_execution_reconciliation",
     "persist_external_publication_execution_reconciliation",
     "serialize_external_publication_execution_reconciliation_canonical",
+    "ExternalPublicationExecutionReconciliationOrchestrationCompatibilityError",
+    "ExternalPublicationExecutionReconciliationOrchestrationError",
+    "ExternalPublicationExecutionReconciliationOrchestrationFailureDetail",
+    "reconcile_and_persist_external_publication_execution",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
     "PublicationRegenerationReadiness",
