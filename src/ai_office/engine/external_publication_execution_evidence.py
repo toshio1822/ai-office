@@ -179,6 +179,23 @@ def persist_external_publication_execution_result(
     _persist_new(handle, path.parent, contents)
 
 
+def preflight_external_publication_execution_result_path(path: Path) -> None:
+    """Validate a fresh execution-evidence target without changing it.
+
+    This check deliberately does not reserve the target.  It only moves
+    avoidable target failures before a provider attempt; the persistence
+    boundary remains authoritative if another process wins the later race.
+    """
+    _validate_persistence_path(path)
+    try:
+        if path.exists() or path.is_symlink():
+            _raise_persistence("target_exists")
+    except ExternalPublicationExecutionEvidencePersistenceError:
+        raise
+    except Exception:
+        _raise_persistence("target")
+
+
 def load_external_publication_execution_result(
     path: Path,
 ) -> ExternalPublicationExecutionResult:
@@ -443,6 +460,7 @@ __all__ = [
     "external_publication_execution_result_canonical_bytes",
     "external_publication_execution_result_digest",
     "load_external_publication_execution_result",
+    "preflight_external_publication_execution_result_path",
     "persist_external_publication_execution_result",
     "serialize_external_publication_execution_result_canonical",
 ]
