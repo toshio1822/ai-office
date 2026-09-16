@@ -5701,3 +5701,54 @@ durable, the next design step should evaluate composing Phase 285 + Phase 286
 into one larger explicit operation versus moving outward toward
 job/workflow-facing orchestration; this Issue does not automatically start
 that next phase.
+
+## Phase 287: Resumable post-execution reconciliation handoff
+
+Phase 287 is the provider-free recovery boundary for the case where Phase 285
+may already have completed its one-use external side effect but the later
+Phase 286 closure must be resumed. It is not a fresh-publication boundary and
+never invokes Phase 285, Phase 281, or a provider transport:
+
+```text
+Phase 287 resumable post-execution handoff
+
+exact ExternalPublicationApproval + existing ledger directory
+        ↓
+Phase 280 deterministic consumption key / canonical claim path
+        ↓
+Phase 286 provider-free reconciliation closure
+        ↓
+matched | lineage_mismatch
+        ↓
+durable reconciliation evidence
+```
+
+`resume_external_publication_reconciliation_closure(...)` requires the exact
+`ExternalPublicationApproval` runtime type before lower calls. It calls
+`external_publication_consumption_key(approval)` exactly once with the exact
+approval object, validates an exact builtin lowercase 64-hex string, then
+calls `external_publication_attempt_claim_path(ledger_directory,
+consumption_key)` exactly once with the exact caller ledger directory and the
+exact returned key object. It validates the exact concrete platform `Path`,
+calls `reconcile_and_persist_external_publication_execution(...)` exactly once
+with that exact path and both exact caller evidence paths, revalidates all
+five reconciliation fields, and returns the exact Phase 286 result object by
+identity.
+
+The handoff delegates marker naming/path rules, reconciliation comparison, and
+reconciliation-evidence persistence to their authoritative public phases. It
+does not create/load/reset/delete/repair claims, directly access Phase 282,
+283, or 284, open/read/write sidecars, rebuild plans, revalidate approval
+policy, infer provider state, or use retry/fallback/compensation/automatic
+continuation. Known Phase 280 helper errors and known Phase 286
+orchestration/reconciliation/evidence errors propagate unchanged by identity;
+unexpected dependency failures are fixed and detail-safe. `matched` and
+`lineage_mismatch` are both successful observations, and mismatch/conflict/
+ambiguous errors never authorize a fresh publication retry.
+
+Re-running the handoff with unchanged durable predecessors and an identical
+reconciliation target intentionally relies on Phase 286/284 identical-bytes
+idempotent recovery. Claim and execution-evidence bytes remain unchanged and
+provider execution remains zero. After this boundary, evaluate a higher-level
+fresh execute + resumable closure operation/job-facing contract rather than
+starting one automatically. No Phase 287 CLI/GUI command is added.
