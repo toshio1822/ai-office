@@ -5182,3 +5182,45 @@ compensation、automatic continuation、provider state inference、credential/en
 clock/random/UUID/socket/subprocess/network access、CLI/GUI変更もありません。futureの
 higher-level durable job lifecycleがfresh attempt後に明示的なresumeを指示することは評価対象
 ですが、このIssueではそのlifecycleを実装せず、自動開始もしません。
+
+## Phase 289: durable explicit external-publication operation intent evidence
+
+Phase 289は、Phase 288のruntime operation choiceを、job/workflow-facing
+lifecycleが後で参照できる最初のdurable building blockとして記録します。保存するのは
+callerがその時点で明示的に選択した`fresh`または`resume`と、exactなapproval/plan
+lineageのdigestだけです。Phase 288のruntime request、transport、credential、path、
+timestamp、UUID、provider state、exception text、その他のruntime objectは保存しません。
+
+```text
+Phase 288 runtime choice
+        fresh | resume
+              ↓
+Phase 289 durable explicit intent
+              ↓
+canonical immutable intent sidecar
+```
+
+`build_external_publication_operation_intent(...)`は、exact
+`ExternalPublicationApproval`を既存のpublic approval digest contractで再検証し、
+`external_publication_approval_digest(approval)`をcaller object identityのまま一度だけ
+呼び出します。approvalが保持する`publication_plan_sha256`はそのままintentへbindし、
+planやevidenceを再構築・再読込しません。`fresh`から`resume`への変換や、claims、execution
+evidence、reconciliation evidence、provider state、previous errorからのroute推測も行い
+ません。
+
+intent sidecarは、`operation`、`publication_approval_sha256`、
+`publication_plan_sha256`、`schema_version`だけを含むUTF-8 compact canonical JSONです。
+sort keys、非ASCII保持、non-standard JSON constant拒否、duplicate key拒否、strictな
+four-key検証、canonical byte再検証を適用します。sidecarはimmutableで、同一canonical
+bytesの再保存だけをdurable idempotent successとして認め、異なるbytesにはconflictを
+返します。新規作成はexclusive creation、全bytesのwrite、flush、file fsync、parent
+directory fsyncを順に行い、作成後の不確実な失敗ではartifactを保持します。
+
+Phase 289はintentを実行せず、Phase 288、Phase 285、Phase 287、provider/transportを
+呼び出しません。persisted `fresh` intentは「その時点でcallerがfreshを選択した」という
+記録に過ぎず、freshの繰り返し実行を安全にするpermissionやexecution-start markerでは
+ありません。persisted `resume` intentもexplicit resume intentの記録に過ぎません。
+Phase 289は別artifactの存在・不在をpublish permissionとして解釈せず、fresh attemptの
+曖昧な外部副作用後にresumeへ自動chainしません。次の設計段階では、intentがPhase 288の
+executionを駆動する前に、ambiguousなfresh attemptをreplayできないcrash-safeな
+consumption/one-way state transition boundaryを評価する必要があります。

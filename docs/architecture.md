@@ -5817,3 +5817,52 @@ fallback, compensate, continue automatically, or change CLI/GUI behavior.
 After Phase 288, evaluate a durable higher-level operation/job lifecycle that
 records explicit operation state and can instruct a later resume without
 replaying fresh publication; do not implement that lifecycle in this phase.
+
+## Phase 289: Durable explicit external-publication operation intent evidence
+
+Phase 289 adds the first durable job-facing building block after the Phase 288
+runtime dispatcher. It records an explicit caller choice and binds that choice
+to the exact approval and publication-plan digests; it does not infer route
+state from filesystem, provider state, claims, evidence, or previous errors.
+
+```text
+Phase 288 runtime choice
+        fresh | resume
+              ↓
+Phase 289 durable explicit intent
+              ↓
+canonical immutable intent sidecar
+```
+
+The exact frozen `ExternalPublicationOperationIntent` contains only
+`schema_version`, `publication_approval_sha256`, `publication_plan_sha256`,
+and `operation`. The Phase 289 builder requires an exact
+`ExternalPublicationApproval`, invokes the existing public approval-digest
+contract exactly once with the caller's approval object identity, and copies
+the plan digest from that validated approval. It does not reconstruct a plan,
+reload plan/evidence files, persist a Phase 288 runtime request, or include a
+transport, credential, path, timestamp, UUID, provider value, or exception
+text in durable state.
+
+The canonical sidecar is compact UTF-8 JSON with exactly four sorted keys and
+no extra metadata. Strict loading rejects duplicate keys, non-standard JSON
+constants, malformed field types, missing or extra keys, and every
+non-canonical byte representation before returning the exact model. Persistence
+requires an existing directory and an exact concrete `Path`, creates a new
+target exclusively, writes the exact canonical bytes, flushes and fsyncs the
+file, then fsyncs its parent directory. Identical existing bytes are a durable
+idempotent success; different bytes are a fixed conflict; after exclusive
+creation, uncertain write or fsync failures retain the artifact and are
+reported as ambiguous. No cleanup, overwrite, repair, replacement, or retry
+is attempted.
+
+This record is evidence of explicit intent only. A persisted `fresh` intent
+does not authorize execution or make repeated fresh execution safe, and a
+persisted `resume` intent does not itself resume anything. Phase 289 never
+changes `fresh` to `resume`, never treats the presence or absence of another
+artifact as publication permission, and never automatically chains fresh to
+resume. It does not execute Phase 288 or call Phase 285, Phase 287, a provider,
+or a transport. Before a future lifecycle can drive Phase 288 execution, the
+next design step should evaluate an explicit crash-safe intent-consumption and
+one-way state-transition boundary so an ambiguous fresh attempt cannot be
+automatically replayed.
