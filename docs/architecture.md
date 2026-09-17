@@ -5752,3 +5752,68 @@ idempotent recovery. Claim and execution-evidence bytes remain unchanged and
 provider execution remains zero. After this boundary, evaluate a higher-level
 fresh execute + resumable closure operation/job-facing contract rather than
 starting one automatically. No Phase 287 CLI/GUI command is added.
+
+## Phase 288: Explicit fresh-vs-resume operation dispatch
+
+Phase 288 is the explicit runtime job/workflow-facing dispatcher for the two
+already-safe external-publication operations. It does not implement durable
+job state and never infers the mode from filesystem state, claim existence,
+previous errors, or durable evidence. Fresh and resume are distinct semantic
+operations, not retry modes of one opaque operation:
+
+```text
+Explicit operation selection
+
+ExternalPublicationFreshOperationRequest
+        ↓
+Phase 285 exactly once
+        ↓
+published + durable execution evidence
+
+ExternalPublicationResumeOperationRequest
+        ↓
+Phase 287 exactly once
+        ↓
+matched | lineage_mismatch + durable reconciliation evidence
+```
+
+`ExternalPublicationFreshOperationRequest` is an exact frozen runtime envelope
+containing `execution_evidence_path`,
+`plan_reconciliation_evidence_path`, `output_path`, `ledger_directory`,
+`plan`, `approval`, `target`, and `transport`. Its
+`plan_reconciliation_evidence_path` is the existing plan evidence used by the
+fresh Phase 285 route before the provider side effect.
+
+`ExternalPublicationResumeOperationRequest` is an exact frozen runtime
+envelope containing `ledger_directory`, `approval`, `execution_evidence_path`,
+and `execution_reconciliation_evidence_path`. Its
+`execution_reconciliation_evidence_path` is the separate Phase 284 target
+used by the Phase 287/286 post-execution closure. The two path fields are
+intentionally not collapsed into one ambiguous job-facing field. Neither
+request is persisted or serialized by Phase 288.
+
+`run_external_publication_operation(...)` dispatches by exact request runtime
+type. An exact fresh request calls the public Phase 285 operation exactly once,
+and an exact resume request calls the public Phase 287 operation exactly once.
+All stored caller objects are passed by identity. The dispatcher accepts only
+an exact `ExternalPublicationExecutionResult` on the fresh route and an exact
+`ExternalPublicationExecutionReconciliation` on the resume route, revalidates
+the complete existing model contract without replacing the result, and
+returns the selected lower-boundary object by identity.
+
+The dispatcher never chains Phase 285 into Phase 287 after fresh success,
+never falls back from fresh failure to resume, and never falls back from resume
+failure to fresh. `matched` and `lineage_mismatch` are both successful resume
+observations. Known errors from the selected public boundary propagate by exact
+object identity; only unexpected selected-dependency exceptions become the
+fixed, detail-safe Phase 288 dependency error. An unused malformed dependency
+does not affect the selected route.
+
+Phase 288 does not call Phase 280, 281, 282, 283, 284, or 286 directly, derive
+claim paths or consumption keys, access sidecars directly, call a provider or
+transport outside Phase 285, inspect provider state, access credentials or
+environment, use clocks/randomness/UUID/socket/subprocess/network, retry,
+fallback, compensate, continue automatically, or change CLI/GUI behavior.
+After Phase 288, evaluate a durable higher-level operation/job lifecycle that
+records explicit operation state and can instruct a later resume without
+replaying fresh publication; do not implement that lifecycle in this phase.
