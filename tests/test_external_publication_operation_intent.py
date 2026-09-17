@@ -666,6 +666,23 @@ class _FailingWriteHandle:
         self._inner.close()  # type: ignore[attr-defined]
 
 
+class _FailingFlushHandle:
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    def write(self, contents: bytes) -> int:
+        return self._inner.write(contents)  # type: ignore[attr-defined]
+
+    def flush(self) -> None:
+        raise OSError("private flush detail")
+
+    def fileno(self) -> int:
+        return self._inner.fileno()  # type: ignore[attr-defined]
+
+    def close(self) -> None:
+        self._inner.close()  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize("failure", ["write", "file_fsync", "directory_fsync"])
 def test_post_create_failures_are_ambiguous_and_retain_exact_artifact(
     tmp_path: Path,
@@ -714,6 +731,44 @@ def test_post_create_failures_are_ambiguous_and_retain_exact_artifact(
     assert path.exists()
     assert path.read_bytes() == contents
     assert all(detail not in str(raised.value) for detail in ("private", "fsync"))
+
+
+def test_flush_failure_after_exclusive_create_is_ambiguous_retained_and_not_retried(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "flush.json"
+    intent = _intent()
+    contents = external_publication_operation_intent_canonical_bytes(intent)
+    real_open = Path.open
+    create_calls = 0
+
+    def failing_open(
+        candidate: Path,
+        mode: str = "r",
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        nonlocal create_calls
+        handle = real_open(candidate, mode, *args, **kwargs)
+        if candidate == path and mode == "xb":
+            create_calls += 1
+            return _FailingFlushHandle(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", failing_open)
+
+    with pytest.raises(ExternalPublicationOperationIntentPersistenceError) as raised:
+        persist_external_publication_operation_intent(path, intent)
+
+    _assert_persistence_error(raised.value, "ambiguous")
+    assert str(raised.value) == (
+        "external publication operation intent persistence failed"
+    )
+    assert "private flush detail" not in str(raised.value)
+    assert create_calls == 1
+    assert path.exists()
+    assert path.read_bytes() == contents
 
 
 def test_persistence_does_not_retry_after_ambiguous_failure(
