@@ -5224,3 +5224,38 @@ Phase 289は別artifactの存在・不在をpublish permissionとして解釈せ
 曖昧な外部副作用後にresumeへ自動chainしません。次の設計段階では、intentがPhase 288の
 executionを駆動する前に、ambiguousなfresh attemptをreplayできないcrash-safeな
 consumption/one-way state transition boundaryを評価する必要があります。
+
+## Phase 290: crash-safe external-publication operation start acquisition fence
+
+Phase 290は、Phase 289のdurable explicit intentをstrictにloadし、そのexact intent
+digestとapproval/plan lineageを別のimmutable start markerへbindします。
+
+```text
+Phase 289 durable intent
+              ↓ strict load
+exact ExternalPublicationOperationIntent
+              ↓ exact intent digest
+Phase 290 exclusive start acquisition
+              ↓
+       acquired | already_acquired
+```
+
+`ExternalPublicationOperationStart`は、schema、intent digest、approval/plan digest、
+explicitな`fresh`または`resume`、`started` stateだけを持つexact frozen modelです。
+canonical markerは6-key compact UTF-8 JSONで、strict loaderはduplicate key、非標準
+constant、malformed field、extra/missing key、non-canonical bytesを拒否します。
+
+start targetの新規作成はexclusive create、全bytesのwrite、flush、file fsync、close、
+parent-directory fsyncの順に完了した場合だけ`acquired`を返します。exact markerが既に
+存在してdurabilityを再検証できた場合は`already_acquired`を返します。`already_acquired`
+は新しい実行許可ではなく、freshを自動replayしてはいけません。conflict、partial marker、
+non-canonical markerはfail closedし、既存artifactをoverwrite、delete、rename、repair、
+retryしません。
+
+Phase 290はPhase 280のpublication claimを複製する境界ではなく、Phase 289 intentの
+上位operation lifecycle fenceです。Phase 289 intentはimmutableでauditableなまま保持し、
+Phase 290自身はPhase 288、Phase 285、Phase 287、provider、transportを実行しません。
+post-createのwrite/flush/fsync/close/directory-fsyncがambiguousに失敗した場合もmarkerを
+保持して`acquired`を返さず、後続のexact marker確認は`already_acquired`に限ります。
+`fresh`と`resume`を相互変換せず、次の設計段階では、同じinvocationの新規`acquired`結果
+だけからPhase 288を呼ぶthin execution handoffを評価します。

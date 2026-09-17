@@ -5866,3 +5866,52 @@ or a transport. Before a future lifecycle can drive Phase 288 execution, the
 next design step should evaluate an explicit crash-safe intent-consumption and
 one-way state-transition boundary so an ambiguous fresh attempt cannot be
 automatically replayed.
+
+## Phase 290: Crash-safe external-publication operation start acquisition fence
+
+Phase 290 adds one append-only higher-level lifecycle fence on top of the
+durable Phase 289 intent. It strictly loads the exact intent, invokes the
+public Phase 289 intent digest once, and binds that digest plus the exact
+approval and publication-plan lineage into a separate immutable start marker.
+
+```text
+Phase 289 durable intent
+              ↓ strict load
+exact ExternalPublicationOperationIntent
+              ↓ exact intent digest
+Phase 290 exclusive start acquisition
+              ↓
+       acquired | already_acquired
+```
+
+`ExternalPublicationOperationStart` is an exact frozen, secret-free model
+containing only the schema version, intent/approval/plan digests, explicit
+`fresh` or `resume` operation, and `started` state. Its canonical marker is
+compact UTF-8 JSON with exactly six sorted keys. The strict loader rejects
+duplicate keys, non-standard constants, malformed values, extra or missing
+keys, and every semantically equivalent but non-canonical byte representation.
+
+New-marker acquisition validates the parent and target before mutation, then
+uses exclusive creation, exact-byte write, flush, file fsync, safe close, and
+parent-directory fsync. It returns `acquired` only when this invocation both
+wins exclusive creation and completes that durable commit. If the exact marker
+already exists, it revalidates the bytes and durability and returns
+`already_acquired`. The two statuses are intentionally distinct: an
+`already_acquired` result is evidence of a prior fence and is never new fresh
+execution permission.
+
+Different, partial, non-canonical, or otherwise conflicting occupied targets
+fail closed without overwrite, delete, rename, repair, or retry. Any uncertain
+write, flush, file-fsync, close, or directory-fsync failure after exclusive
+creation retains the artifact and is reported as ambiguous; a later exact
+marker may resolve only to `already_acquired`, never to a new `acquired` result.
+The Phase 289 intent sidecar remains immutable and auditable.
+
+Phase 290 is not a duplicate of the Phase 280 publication-claim boundary. It
+does not infer state from lower artifacts, inspect Phase 280 claims or Phase
+282/284 evidence, execute Phase 288, call Phase 285 or Phase 287, access a
+provider or transport, or convert `fresh` to `resume`. A future fresh runner
+must call Phase 288 only from a same-invocation newly acquired result; a
+restarted caller receiving `already_acquired` must not automatically replay
+fresh. The next design step should evaluate that thin execution handoff while
+preserving explicit fresh/resume semantics and zero automatic replay.
