@@ -752,6 +752,52 @@ def test_occupied_different_or_partial_target_conflicts_without_mutation(
     assert start_path.read_bytes() == before
 
 
+def test_existing_noncanonical_marker_conflicts_without_mutation_or_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start_path = tmp_path / "start.json"
+    canonical = external_publication_operation_start_canonical_bytes(_start())
+    noncanonical = b" " + canonical
+    start_path.write_bytes(noncanonical)
+    before = start_path.read_bytes()
+    open_modes: list[str] = []
+    real_open = Path.open
+
+    def spy_open(
+        candidate: Path, mode: str = "r", *args: object, **kwargs: object
+    ) -> object:
+        if candidate == start_path:
+            open_modes.append(mode)
+        return real_open(candidate, mode, *args, **kwargs)
+
+    def forbidden_mutation(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("existing noncanonical marker was mutated")
+
+    monkeypatch.setattr(Path, "open", spy_open)
+    monkeypatch.setattr(Path, "unlink", forbidden_mutation)
+    monkeypatch.setattr(Path, "rename", forbidden_mutation)
+    monkeypatch.setattr(Path, "replace", forbidden_mutation)
+    monkeypatch.setattr(
+        start_module,
+        "_fsync_operation_start_directory",
+        lambda _path: pytest.fail("conflicting marker must not directory-fsync"),
+    )
+
+    with pytest.raises(ExternalPublicationOperationStartConflictError) as raised:
+        acquire_external_publication_operation_start(
+            intent_path=tmp_path / "intent.json",
+            start_path=start_path,
+            intent_loader=lambda _path: _intent("fresh"),
+            intent_digest_function=lambda _intent: _INTENT_DIGEST,
+        )
+
+    _assert_conflict_error(raised.value)
+    assert open_modes == ["xb", "rb"]
+    assert start_path.read_bytes() == before
+    assert start_path.read_bytes() != canonical
+
+
 def test_create_failure_before_creation_leaves_target_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
