@@ -5126,3 +5126,59 @@ sidecarは変更されず、provider実行もありません。Phase 287はCLI/G
 fallback、compensation、automatic continuationを追加しません。次の設計段階では、fresh
 execute + resumable closureを含むhigher-level operation/job-facing contractを評価しますが、
 このIssueから自動開始しません。
+
+## Phase 288: explicit fresh-vs-resume external publication operation dispatch
+
+Phase 288は、job/workflow-facing callerが`fresh`と`resume`のどちらを実行するかを
+明示的に選ぶruntime dispatch contractです。durableなjob stateを実装したり、filesystemや
+claim/evidenceの状態からmodeを推測したりはしません。freshとresumeは同じopaque operationの
+retry modeではなく、異なる意味を持つ明示的なoperationです。
+
+```text
+Explicit operation selection
+
+ExternalPublicationFreshOperationRequest
+        ↓
+Phase 285 exactly once
+        ↓
+published + durable execution evidence
+
+ExternalPublicationResumeOperationRequest
+        ↓
+Phase 287 exactly once
+        ↓
+matched | lineage_mismatch + durable reconciliation evidence
+```
+
+`ExternalPublicationFreshOperationRequest`は、
+`execution_evidence_path`、`plan_reconciliation_evidence_path`、`output_path`、
+`ledger_directory`、`plan`、`approval`、`target`、`transport`を保持します。
+`plan_reconciliation_evidence_path`は、Phase 285/278がfresh publication前にplanを
+再検証するための既存artifactです。
+
+`ExternalPublicationResumeOperationRequest`は、`ledger_directory`、`approval`、
+`execution_evidence_path`、`execution_reconciliation_evidence_path`を保持します。
+`execution_reconciliation_evidence_path`は、Phase 287/286/284がpost-execution lineage
+closureを再開するための別artifactです。この2つのpath名は意図的に統合しません。
+両requestはexact frozen dataclassのruntime envelopeであり、永続化・serialization・
+filesystem access・lower-phase policy duplicationを行いません。
+
+`run_external_publication_operation(...)`はexact request runtime typeだけでrouteを選び、
+freshではPhase 285をexactly once、resumeではPhase 287をexactly once呼びます。selected
+routeへrequest内のcaller objectを同じidentityで渡し、freshではexact
+`ExternalPublicationExecutionResult`、resumeではexact
+`ExternalPublicationExecutionReconciliation`だけを受け付け、既存model contractで全fieldを
+再検証した後、lower boundaryの同じresult object identityを返します。
+
+fresh成功後にPhase 287を自動実行せず、fresh失敗後にresumeへfallbackせず、resume失敗後に
+freshへfallbackしません。`matched`と`lineage_mismatch`はどちらもresumeの正常returnです。
+下位のknown errorは同じerror object identityで伝播し、unexpected selected-dependency
+exceptionだけを固定detail-safeなPhase 288 errorへ変換します。unused dependencyのmalformed
+valueはselected routeに影響しません。
+
+Phase 288はPhase 280〜284/286を直接呼ばず、claim path/consumption keyを導出せず、sidecarを
+直接open/read/writeせず、provider/transportをPhase 285以外から呼びません。retry、fallback、
+compensation、automatic continuation、provider state inference、credential/environment/
+clock/random/UUID/socket/subprocess/network access、CLI/GUI変更もありません。futureの
+higher-level durable job lifecycleがfresh attempt後に明示的なresumeを指示することは評価対象
+ですが、このIssueではそのlifecycleを実装せず、自動開始もしません。

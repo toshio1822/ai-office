@@ -328,6 +328,14 @@ from ai_office.engine.external_publication_execution_reconciliation_resume impor
     ExternalPublicationExecutionReconciliationResumeFailureDetail,
     resume_external_publication_reconciliation_closure,
 )  # noqa: E501
+from ai_office.engine.external_publication_operation import (  # noqa: E501
+    ExternalPublicationFreshOperationRequest,
+    ExternalPublicationOperationCompatibilityError,
+    ExternalPublicationOperationError,
+    ExternalPublicationOperationFailureDetail,
+    ExternalPublicationResumeOperationRequest,
+    run_external_publication_operation,
+)  # noqa: E501
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationApprovalError,
@@ -1466,6 +1474,12 @@ __all__ = [
     "ExternalPublicationExecutionReconciliationResumeError",
     "ExternalPublicationExecutionReconciliationResumeFailureDetail",
     "resume_external_publication_reconciliation_closure",
+    "ExternalPublicationFreshOperationRequest",
+    "ExternalPublicationOperationCompatibilityError",
+    "ExternalPublicationOperationError",
+    "ExternalPublicationOperationFailureDetail",
+    "ExternalPublicationResumeOperationRequest",
+    "run_external_publication_operation",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
     "PublicationRegenerationReadiness",
