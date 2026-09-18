@@ -5399,3 +5399,94 @@ lifecycle outcomeのoverwrite/repair、Phase 291 / lifecycle persistenceのretry
 persistence失敗時のstart marker rollback、automatic continuation/schedule/loop/parallelizeは
 行いません。CLI/GUI変更もありません。次の設計段階は、freshのno-replay fenceを弱めずに
 `recovery_required`をconsumeするexplicitなoperator/recovery decision boundaryを評価します。
+
+## Phase 293: durable explicit recovery decision evidence
+
+Phase 293は、Phase 292のdurable lifecycle outcomeの上に、append-onlyでimmutableな
+**explicit operator recovery decision** boundaryを1つ追加します。消費するのはexactな
+Phase 292 lifecycle outcomeで`state`が`recovery_required`のものだけです。Phase 293は
+recoveryを実行しません。
+
+```text
+Phase 292 recovery_required
+        ↓
+Phase 293 explicit operator decision
+   ├─ stop
+   └─ authorize_resume_preparation
+        ↓
+durable append-only recovery decision evidence
+```
+
+allowed decisionは2つだけです。
+
+- `stop`: このrecovery pathを自動actionなしで終了します。Phase 293はdecisionを記録する
+  だけで、provider call、resume preparation、Phase 291/292 execution、fresh replayの
+  いずれも行いません。
+- `authorize_resume_preparation`: このexactなrecovery decisionにbindされた新しいexplicit
+  resume-operation lineageを**将来のphaseが**準備することだけをauthorizeします。provider
+  callの実行許可でも、Phase 291/292の呼び出し許可でも、Phase 290 start markerの新規取得
+  許可でも、Phase 289 resume intentの作成許可でも、automatic reconciliationの許可でも
+  fresh replayの許可でもありません。resumeが可能であることを保証もしません。
+
+`completed`のPhase 292 outcomeはPhase 293に入りません。**recovery kindはcallerから受け取らず**、
+strict-loadしたPhase 292 lifecycle modelとexactなPhase 290 start lineageだけからderiveします。
+
+- `recovery_required` + `result_kind` none + `result_sha256` None → `already_acquired`
+  （source operationはfresh/resumeいずれも可）；
+- `resume` + `recovery_required` + `result_kind` reconciliation + exact result digest →
+  `reconciliation_mismatch`；
+- その他のlifecycleの組み合わせはinvalidです。
+
+Phase 293はまず、exactな`lifecycle_outcome_path` / `start_path` /
+`recovery_decision_path`のplatform `Path`、exactな`decision`値（`stop` /
+`authorize_resume_preparation`）、explicitな`decided_by` / `decision_id` operator metadata、
+注入dependencyのcallable性、decision targetのparent/shape（mutationなし）をpreflightします。
+caller-suppliedのlifecycle/start model、recovery_kind、predecessor digest、Phase 291/292
+return objectはauthorityとして受け取りません。ambient identityやdefault decisionも使いません。
+
+preflight後、Phase 293はcallerのexactなpath identityでPhase 292 lifecycle outcomeを
+exactly once strict-loadし、exact runtime typeとcross-field invariantを再検証し、
+`state`が`recovery_required`であることを要求して`completed`をrejectし、recovery kindを
+lifecycle modelだけからderiveします。次にlifecycle digestをexactly once計算し
+（lowercase 64-hex必須）、Phase 290 startをexactly once strict-loadし、start digestを
+exactly once計算したうえで、startのoperation/approval/plan lineageとcomputed start digestが
+lifecycleと一致することを要求します。Phase 289 intentのload、Phase 280 claim、Phase 282
+execution evidence、Phase 284 reconciliation evidence、provider state、output、credentialの
+inspectは行いません。
+
+decisionはvalidated predecessor lineage + derived recovery kind + explicit decision +
+explicit `decided_by` + explicit `decision_id`だけから構築されます。decision targetが
+既に存在する場合、Phase 293はsidecarを1回strict-loadし、exact runtime decisionと
+lifecycle/start/approval/plan/source/recovery lineageおよびrequested decision/metadataの
+完全一致を要求し、一致すればそのloaded objectをそのまま（identityで）返します。差分が
+あればfixed conflictとなり、既存bytesは変更されません。1つのdecision pathは1つの
+immutableなoperator decisionであり、Phase 293はそれをrevise/supersedeしません。targetが
+absentの場合はconstructed decisionをexactly once永続化し、durable success後にそのexact
+objectを返します。retryは行いません。
+
+canonical JSONはexactly 11 key（`decision`、`decided_by`、`decision_id`、
+`lifecycle_outcome_sha256`、`operation_start_sha256`、`publication_approval_sha256`、
+`publication_plan_sha256`、`recovery_kind`、`schema_version`、`source_operation`、
+`state`）で、compact UTF-8、`sort_keys=True`、`ensure_ascii=False`、`allow_nan=False`、
+strict duplicate-key rejection、非標準JSON定数のrejectionを持ちます。loaderはexact modelと
+canonical byte equalityを要求するため、semantically equivalentでもnoncanonicalな
+whitespace/orderはrejectされ、digestはexact canonical bytesに対するdeterministic
+SHA-256です。
+
+append-only persistence helperはexclusive create → full canonical write → flush →
+file fsync → safe close → parent-directory fsyncの順で永続化します。同一bytesはidempotentな
+durable success、different/partial/noncanonical bytesはfixed conflictであり、
+overwrite/truncate/delete/rename-over/repairは行いません。exclusive create後のuncertain
+failure（write/flush/file-fsync/close/dir-fsync）はambiguousとなり、artifactは保持され
+cleanupもretryもrewriteも行いません。後からexactなretained bytesはidempotentにacceptされ、
+partial/different bytesはfail closedします。
+
+Phase 293はPhase 292 orchestration、Phase 291、Phase 290 acquisition、Phase 288/287/285、
+provider/transport/networkを呼ばず、Phase 289 intentやPhase 290 start markerを作らず、
+lower claim/evidence/provider stateをinspectせず、recovery kindをlifecycle+start lineage
+以外から推測せず、freshをresumeの実行へ変換せず、`authorize_resume_preparation`を実行許可と
+みなしません。timestamp、random、UUID、ambient identityの生成や、environment/credential/
+socket/subprocess access、automatic continuation/schedule/loop/parallelizeも行いません。
+CLI/GUI変更もありません。将来のPhase 294はexactな`authorize_resume_preparation` evidenceを
+消費して新しいexplicit resume lineageを準備できます。`stop`はterminalなno-action routeの
+ままです。

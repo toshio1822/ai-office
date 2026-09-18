@@ -6104,3 +6104,102 @@ back the start marker if lifecycle persistence fails, or automatically
 continue, schedule, loop, or parallelize. It adds no CLI or GUI behavior. The
 next design step may evaluate an explicit operator/recovery decision boundary
 that consumes `recovery_required` without weakening the fresh no-replay fence.
+
+## Phase 293: Durable explicit recovery decision evidence
+
+Phase 293 adds one append-only, immutable explicit operator recovery decision
+boundary on top of the Phase 292 durable lifecycle outcome. It consumes only an
+exact Phase 292 lifecycle outcome whose state is `recovery_required` and records
+exactly one explicit operator decision. It never executes recovery.
+
+```text
+Phase 292 recovery_required
+        ↓
+Phase 293 explicit operator decision
+   ├─ stop
+   └─ authorize_resume_preparation
+        ↓
+durable append-only recovery decision evidence
+```
+
+Two decisions are allowed. `stop` terminates this recovery path with no
+automatic action: Phase 293 records only the decision and performs no provider
+call, no resume preparation, no Phase 291/292 execution, and no fresh replay.
+`authorize_resume_preparation` authorizes only a *future* explicit phase to
+prepare a new explicit resume-operation lineage bound to this exact recovery
+decision. It is not execution permission, does not call Phase 291/292, does not
+acquire a new Phase 290 start marker, does not create a Phase 289 resume intent,
+does not reconcile automatically, and does not guarantee that a resume is
+possible.
+
+A `completed` Phase 292 outcome never enters Phase 293. The recovery kind is
+derived from the strict-loaded Phase 292 lifecycle model plus the exact Phase
+290 start lineage, and is never caller supplied: `recovery_required` with
+`result_kind` none and `result_sha256` None derives `already_acquired` (for
+either a fresh or a resume source operation), and resume `recovery_required`
+with `result_kind` reconciliation and an exact result digest derives
+`reconciliation_mismatch`. No other lifecycle combination is valid.
+
+Before any mutation, Phase 293 preflights the exact platform `Path` values for
+`lifecycle_outcome_path`, `start_path`, and `recovery_decision_path`, the exact
+`decision` value, the explicit `decided_by`/`decision_id` operator metadata, the
+callable dependencies, and the decision-target parent and shape. Caller-supplied
+lifecycle or start models, recovery kind, predecessor digests, and Phase 291/292
+return objects are never accepted as authority, and no ambient identity or
+default decision is used.
+
+Phase 293 then strict-loads the Phase 292 lifecycle outcome exactly once through
+the caller's exact path identity, revalidates its exact runtime type and
+cross-field invariants, requires `recovery_required`, rejects `completed`, and
+derives the recovery kind only from the lifecycle model. It computes the
+lifecycle digest exactly once with the exact loader-returned object identity,
+strict-loads the Phase 290 start exactly once, computes the start digest exactly
+once, and requires the start operation, approval digest, plan digest, and
+computed start digest to match the lifecycle record. It does not load the Phase
+289 intent or inspect Phase 280 claim, Phase 282 execution evidence, Phase 284
+reconciliation evidence, provider state, output, or credentials.
+
+The decision is built from only the validated predecessor lineage, the derived
+recovery kind, the explicit decision, the explicit `decided_by`, and the
+explicit `decision_id`. When a decision sidecar already exists it is
+strict-loaded once and returned by identity only when every lineage and
+requested field matches exactly; any difference is a fixed conflict and leaves
+the existing bytes unchanged. One decision path is one immutable operator
+decision, and Phase 293 never revises or supersedes it. An absent target is
+persisted exactly once with no retry.
+
+Canonical JSON has exactly 11 keys (`decision`, `decided_by`, `decision_id`,
+`lifecycle_outcome_sha256`, `operation_start_sha256`,
+`publication_approval_sha256`, `publication_plan_sha256`, `recovery_kind`,
+`schema_version`, `source_operation`, `state`) with compact UTF-8, sorted keys,
+`ensure_ascii=False`, `allow_nan=False`, strict duplicate-key rejection, and
+non-standard-constant rejection. The loader requires the exact model and
+canonical byte equality, so semantically equivalent noncanonical whitespace or
+ordering is rejected and the digest is a deterministic SHA-256 over the exact
+canonical bytes. No timestamps, clock values, generated UUIDs, randomness,
+hostname, PID, paths, credentials, transport values, exception text, or mutable
+runtime values are stored.
+
+The append-only persistence helper creates the target exclusively, writes the
+full canonical bytes, flushes, file-fsyncs, safely closes, and fsyncs the parent
+directory. Identical existing bytes are an idempotent success; different,
+partial, or noncanonical bytes are a fixed conflict and are never overwritten,
+truncated, deleted, repaired, or renamed over. Any uncertainty after exclusive
+creation at write, flush, file fsync, close, or directory fsync is ambiguous:
+the artifact is retained with no cleanup, no retry, and no rewrite, and later
+exact retained bytes may be accepted idempotently while partial or different
+bytes fail closed.
+
+Phase 293 calls no Phase 292 orchestration, no Phase 291, no Phase 290
+acquisition, no Phase 288/287/285, and no provider, transport, or network. It
+creates no Phase 289 intent and no new start marker, inspects no lower claim,
+evidence, or provider state, infers the recovery kind from nothing except the
+exact lifecycle and start lineage, never converts fresh into resume execution,
+and never treats `authorize_resume_preparation` as execution permission. It
+overwrites, deletes, or repairs no lifecycle, start, or decision artifact, retries
+no dependency or persistence, generates no timestamps, randomness, UUIDs, or
+ambient identity, accesses no environment, credentials, socket, or subprocess,
+and automatically continues, schedules, loops, or parallelizes nothing. It adds
+no CLI or GUI behavior. A future Phase 294 may consume only exact
+`authorize_resume_preparation` evidence to prepare a new explicit resume
+lineage, while `stop` remains a terminal no-action route.
