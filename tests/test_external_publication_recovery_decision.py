@@ -224,6 +224,28 @@ class _ValueCallRecorder:
         return self.value
 
 
+class _CallRecorder:
+    """Record every call and optionally delegate to a real dependency."""
+
+    def __init__(self, delegate: object = None, fault: object = None) -> None:
+        self.delegate = delegate
+        self.fault = fault
+        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.results: list[object] = []
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        self.calls.append((args, kwargs))
+        if isinstance(self.fault, BaseException):
+            raise self.fault
+        result = self.delegate(*args, **kwargs)  # type: ignore[operator]
+        self.results.append(result)
+        return result
+
+    @property
+    def first_positional(self) -> object:
+        return self.calls[0][0][0]
+
+
 class _FaultyHandle:
     """A real unbuffered file wrapper that injects one persistence fault."""
 
@@ -1224,6 +1246,54 @@ def test_lifecycle_digest_known_error_same_object_identity(tmp_path: Path) -> No
     assert info.value is error
 
 
+def test_lifecycle_digest_unexpected_error_is_detail_safe(tmp_path: Path) -> None:
+    start, lifecycle = _matched_pair()
+
+    def _boom(value: object) -> object:
+        raise RuntimeError("secret lifecycle digest detail")
+
+    with pytest.raises(ExternalPublicationRecoveryDecisionCompatibilityError) as info:
+        decide_and_persist_external_publication_recovery(
+            lifecycle_outcome_path=tmp_path / "lifecycle.json",
+            start_path=tmp_path / "start.json",
+            recovery_decision_path=tmp_path / "decision.json",
+            decision="stop",
+            decided_by="operator-293",
+            decision_id="decision-293",
+            lifecycle_loader=_LoaderRecorder(lambda path: lifecycle),
+            lifecycle_digest_function=_boom,
+            start_loader=_LoaderRecorder(lambda path: start),
+        )
+    assert info.value.detail.classification == "dependency_error"
+    assert "secret" not in str(info.value)
+    assert info.value.__cause__ is None
+    assert not (tmp_path / "decision.json").exists()
+
+
+def test_start_digest_unexpected_error_is_detail_safe(tmp_path: Path) -> None:
+    start, lifecycle = _matched_pair()
+
+    def _boom(value: object) -> object:
+        raise RuntimeError("secret start digest detail")
+
+    with pytest.raises(ExternalPublicationRecoveryDecisionCompatibilityError) as info:
+        decide_and_persist_external_publication_recovery(
+            lifecycle_outcome_path=tmp_path / "lifecycle.json",
+            start_path=tmp_path / "start.json",
+            recovery_decision_path=tmp_path / "decision.json",
+            decision="stop",
+            decided_by="operator-293",
+            decision_id="decision-293",
+            lifecycle_loader=_LoaderRecorder(lambda path: lifecycle),
+            start_loader=_LoaderRecorder(lambda path: start),
+            start_digest_function=_boom,
+        )
+    assert info.value.detail.classification == "dependency_error"
+    assert "secret" not in str(info.value)
+    assert info.value.__cause__ is None
+    assert not (tmp_path / "decision.json").exists()
+
+
 # --- decision recording ---------------------------------------------------
 
 
@@ -1249,8 +1319,8 @@ def test_decision_persists_exact_decision(tmp_path: Path, chosen: str) -> None:
     )
 
 
-def test_existing_decision_returns_exact_loaded_object_identity(
-    tmp_path: Path,
+def test_existing_decision_loader_exactly_once_exact_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lifecycle_path, start_path = _seed_predecessors(tmp_path)
     decision_path = tmp_path / "decision.json"
@@ -1263,7 +1333,18 @@ def test_existing_decision_returns_exact_loaded_object_identity(
         decision_id="decision-293",
     )
     before = decision_path.read_bytes()
-    loader = _LoaderRecorder(load_external_publication_recovery_decision)
+
+    decision_loader = _CallRecorder(load_external_publication_recovery_decision)
+    monkeypatch.setattr(
+        decision_module,
+        "load_external_publication_recovery_decision",
+        decision_loader,
+    )
+    lifecycle_loader = _LoaderRecorder(
+        load_external_publication_operation_lifecycle_outcome
+    )
+    start_loader = _LoaderRecorder(load_external_publication_operation_start)
+
     second = decide_and_persist_external_publication_recovery(
         lifecycle_outcome_path=lifecycle_path,
         start_path=start_path,
@@ -1271,14 +1352,62 @@ def test_existing_decision_returns_exact_loaded_object_identity(
         decision="stop",
         decided_by="operator-293",
         decision_id="decision-293",
-        lifecycle_loader=_LoaderRecorder(
-            load_external_publication_operation_lifecycle_outcome
-        ),
-        start_loader=_LoaderRecorder(load_external_publication_operation_start),
+        lifecycle_loader=lifecycle_loader,
+        start_loader=start_loader,
     )
+
+    # existing decision loader: exactly once, exact caller path identity, and
+    # the exact loader-returned object is what orchestration returns.
+    assert len(decision_loader.calls) == 1
+    assert decision_loader.first_positional is decision_path
+    assert len(decision_loader.results) == 1
+    assert second is decision_loader.results[0]
     assert second == first
+
+    # predecessor lifecycle/start validation still runs normally, once each.
+    assert len(lifecycle_loader.calls) == 1
+    assert lifecycle_loader.calls[0] is lifecycle_path
+    assert len(start_loader.calls) == 1
+    assert start_loader.calls[0] is start_path
+
     assert decision_path.read_bytes() == before
-    assert len(loader.calls) == 0
+
+
+@pytest.mark.parametrize(
+    "existing_overrides",
+    [
+        {"lifecycle_digest": "1" * 64},
+        {"start_digest": "2" * 64},
+        {"approval_digest": "3" * 64},
+        {"plan_digest": "4" * 64},
+        {"source_operation": "resume"},
+        {"source_operation": "resume", "recovery_kind": "reconciliation_mismatch"},
+    ],
+)
+def test_existing_decision_lineage_mismatch_conflicts_unchanged(
+    tmp_path: Path, existing_overrides: dict[str, object]
+) -> None:
+    lifecycle_path, start_path = _seed_predecessors(tmp_path)
+    decision_path = tmp_path / "decision.json"
+    stale = _decision(**existing_overrides)  # type: ignore[arg-type]
+    persist_external_publication_recovery_decision(decision_path, stale)
+    before = decision_path.read_bytes()
+    assert before == external_publication_recovery_decision_canonical_bytes(stale)
+
+    with pytest.raises(ExternalPublicationRecoveryDecisionConflictError) as info:
+        decide_and_persist_external_publication_recovery(
+            lifecycle_outcome_path=lifecycle_path,
+            start_path=start_path,
+            recovery_decision_path=decision_path,
+            decision="stop",
+            decided_by="operator-293",
+            decision_id="decision-293",
+        )
+    assert type(info.value) is ExternalPublicationRecoveryDecisionConflictError
+    assert isinstance(info.value, ExternalPublicationRecoveryDecisionPersistenceError)
+    assert str(info.value) == _PERSIST_MESSAGE
+    # no overwrite, repair, or replacement of the existing decision bytes.
+    assert decision_path.read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -1319,24 +1448,39 @@ def test_persistence_failure_never_retries_predecessor_or_persistence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lifecycle_path, start_path = _seed_predecessors(tmp_path)
+    decision_path = tmp_path / "decision.json"
     lifecycle_loader = _LoaderRecorder(
         load_external_publication_operation_lifecycle_outcome
     )
     start_loader = _LoaderRecorder(load_external_publication_operation_start)
+    persist_recorder = _CallRecorder(persist_external_publication_recovery_decision)
+    monkeypatch.setattr(
+        decision_module,
+        "persist_external_publication_recovery_decision",
+        persist_recorder,
+    )
     _install_persistence_fault(monkeypatch, "file_fsync")
-    with pytest.raises(ExternalPublicationRecoveryDecisionPersistenceError):
+    with pytest.raises(ExternalPublicationRecoveryDecisionPersistenceError) as info:
         decide_and_persist_external_publication_recovery(
             lifecycle_outcome_path=lifecycle_path,
             start_path=start_path,
-            recovery_decision_path=tmp_path / "decision.json",
+            recovery_decision_path=decision_path,
             decision="stop",
             decided_by="operator-293",
             decision_id="decision-293",
             lifecycle_loader=lifecycle_loader,
             start_loader=start_loader,
         )
+    assert info.value.detail.classification == "ambiguous"
+    # persistence helper is called exactly once with the exact caller path and
+    # never retried after the failure.
+    assert len(persist_recorder.calls) == 1
+    assert persist_recorder.first_positional is decision_path
+    # predecessor loading is not retried either.
     assert len(lifecycle_loader.calls) == 1
     assert len(start_loader.calls) == 1
+    # artifact retained; no cleanup, rewrite, or repair.
+    assert decision_path.exists()
 
 
 # --- integration regressions ---------------------------------------------
