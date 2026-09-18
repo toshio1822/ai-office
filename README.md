@@ -5490,3 +5490,99 @@ socket/subprocess access、automatic continuation/schedule/loop/parallelizeも�
 CLI/GUI変更もありません。将来のPhase 294はexactな`authorize_resume_preparation` evidenceを
 消費して新しいexplicit resume lineageを準備できます。`stop`はterminalなno-action routeの
 ままです。
+
+## Phase 294: durable recovery-authorized resume preparation evidence
+
+Phase 294は、Phase 293のdurable explicit recovery decisionの上に、append-onlyでimmutableな
+**recovery-authorized resume-lineage preparation evidence** boundaryを1つ追加します。消費するのは
+exactなPhase 293 decisionで`decision`が`authorize_resume_preparation`のものだけであり、その背後にある
+Phase 292 lifecycle outcomeとPhase 290 startのprovenanceを完全に再検証したうえで、将来の明示的な
+phaseが新しいresume lineageを準備してよいことだけをdurablyに記録します。Phase 294は実行しません。
+
+```text
+Phase 292 recovery_required
+        ↓
+Phase 293 authorize_resume_preparation
+        ↓
+Phase 294 durable resume-lineage preparation
+        ↓
+future explicit intent-construction phase
+```
+
+```text
+Phase 293 stop → Phase 294 zero preparation / reject
+```
+
+authorization provenanceは決してlifecycle、start、caller argumentから推測されません。explicitな
+recovery authorizationを持つのはexactなPhase 293 decisionだけであり、そのdigestがpreparation recordに
+bindされます。`stop`はpreparationに到達せず、target mutationの前にrejectされます。
+
+`prepared`が意味するのは次だけです。
+
+> exactなPhase 293 `authorize_resume_preparation` decisionとそのexactなrecovery provenanceが検証され、
+> 将来のtarget operation `resume`にdurably bindされた。
+
+これは、resume intentが既に存在すること、resumeが開始されたこと、provider/transportが自動実行され
+よいこと、Phase 290 acquisitionが自動でauthorizeされたこと、Phase 291/292を自動で呼んでよいこと、
+freshをreplayしてよいこと、resumeが成功することを、いずれも意味しません。
+
+Phase 294はまず、exactな`recovery_decision_path` / `lifecycle_outcome_path` / `start_path` /
+`resume_preparation_path`のplatform `Path`、注入dependencyのcallable性、preparation targetの
+parent/shape（mutationなし）をpreflightします。Phase 289 intent targetのcreate/readは行いません。
+caller-suppliedのdecision/lifecycle/start object、recovery_kind、predecessor digest、target operation、
+operation intent、approval objectはauthorityとして受け取りません。
+
+preflight後、Phase 294はcallerのexactなpath identityでPhase 293 decisionをexactly once strict-loadし、
+exact runtime typeとcross-field invariantを再検証し、`state`が`decided`であることを要求したうえで
+`decision`が`authorize_resume_preparation`であることを要求します（`stop`はpreparation target mutation
+前にrejectされ、他のfieldからtarget permissionを推測しません）。次にdecision digestをexactly once
+計算し（lowercase 64-hex必須）、Phase 292 lifecycle outcomeをexactly once strict-loadしてexact runtime
+typeとcross-field invariantを再検証し、`state`が`recovery_required`であることを要求して`completed`を
+rejectし、legacy Phase 293 semanticsどおりにrecovery kindをlifecycleからderiveし（`result_kind` none +
+`result_sha256` None → `already_acquired`、`resume` recovery_required reconciliation + exact result
+digest → `reconciliation_mismatch`）、lifecycle digestをexactly once計算します。その後、computed
+lifecycle digestがdecisionの`lifecycle_outcome_sha256`と一致し、approval/plan digest、operation、
+derived recovery kindがdecisionと一致することを要求します。最後にPhase 290 startをexactly once
+strict-loadし、start digestをexactly once計算したうえで、start digestがdecisionとlifecycleの
+`operation_start_sha256`の両方に一致し、operation/approval/plan lineageがdecisionとlifecycleの両方に
+一致することを要求します。Phase 289 intentのload、Phase 280 claim、Phase 282/284 evidence、provider
+state、output、credentialのinspectは行いません。
+
+preparationはvalidated durable provenanceだけから構築されます。`recovery_decision_sha256`、
+`lifecycle_outcome_sha256`、`operation_start_sha256`はexactにcomputedなdigest、approval/plan digestは
+exactにvalidatedなlineage、`source_operation`はexactにvalidatedなsource、`recovery_kind`はexactに
+derived/validatedなkindであり、`target_operation`は常にexactに`resume`、`state`は常にexactに
+`prepared`です。ambient valueは使いません。
+
+canonical JSONはexactly 10 key（`lifecycle_outcome_sha256`、`operation_start_sha256`、
+`publication_approval_sha256`、`publication_plan_sha256`、`recovery_decision_sha256`、
+`recovery_kind`、`schema_version`、`source_operation`、`state`、`target_operation`）で、compact
+UTF-8、`sort_keys=True`、`ensure_ascii=False`、`allow_nan=False`、strict duplicate-key rejection、
+非標準JSON定数のrejectionを持ちます。loaderはexact modelとcanonical byte equalityを要求するため、
+semantically equivalentでもnoncanonicalなwhitespace/orderはrejectされ、digestはexact canonical
+bytesに対するdeterministic SHA-256です。
+
+append-only persistence helperはexclusive create → full canonical write → flush → file fsync →
+safe close → parent-directory fsyncの順で永続化します。同一bytesはidempotentなdurable success、
+different/partial/noncanonical bytesはfixed conflictであり、overwrite/truncate/delete/rename-over/
+repairは行いません。exclusive create後のuncertain failure（write/flush/file-fsync/close/dir-fsync）は
+ambiguousとなり、artifactは保持されcleanupもretryもrewriteも行いません。後からexactなretained bytesは
+idempotentにacceptされ、partial/different bytesはfail closedします。preparation targetが既に存在する
+場合、Phase 294はsidecarを1回strict-loadし、exact runtime preparation modelとexactにconstructedな
+recordの完全一致を要求し、一致すればそのloaded objectをそのまま（identityで）返します。差分が
+あればfixed conflictとなり、既存bytesは変更されません。
+
+Phase 294はPhase 293/292 orchestration、Phase 291、Phase 290 acquisition、Phase 288/287/285、
+provider/transport/networkを呼ばず、Phase 289 intentや新しいPhase 290 start markerを作らず、
+lower claim/evidence/provider stateをinspectせず、exactなPhase 293 decisionなしにlifecycle/startから
+authorizationを推測せず、freshをreplayせず、resumeを実行せず、`prepared`を実行/start許可とみなしません。
+predecessor/preparation artifactのoverwrite/delete/repair、dependency/persistenceのretry、timestamp/
+random/UUID/ambient identityの生成、environment/credential/socket/subprocess access、automatic
+continuation/schedule/loop/parallelizeも行いません。CLI/GUI変更もありません。knownなpredecessor error
+（Phase 293 decision、Phase 292 lifecycle、Phase 290 startのloader/digest family）はexact object
+identityのまま伝播し、unexpectedなdependency exceptionはdetail-safeな`dependency_error`にsanitize
+されます。
+
+future explicit phase（たとえばPhase 295）はこのexactなpreparation evidenceを使って、recovery-decision
+provenanceを保持したまま新しいPhase 289 resume intentを構築/永続化できます。Phase 294自身はそれを
+行いません。

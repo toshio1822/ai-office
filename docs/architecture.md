@@ -6203,3 +6203,108 @@ and automatically continues, schedules, loops, or parallelizes nothing. It adds
 no CLI or GUI behavior. A future Phase 294 may consume only exact
 `authorize_resume_preparation` evidence to prepare a new explicit resume
 lineage, while `stop` remains a terminal no-action route.
+
+## Phase 294: Durable recovery-authorized resume preparation evidence
+
+Phase 294 adds one append-only, immutable recovery-authorized resume-lineage
+preparation boundary on top of the Phase 293 explicit recovery decision. It
+consumes only an exact durable Phase 293 decision whose `decision` is
+`authorize_resume_preparation`, revalidates the complete Phase 292 lifecycle and
+Phase 290 start provenance behind that decision, and durably records that a
+future explicit phase may prepare a new resume-operation lineage. Phase 294 does
+not execute anything.
+
+```text
+Phase 292 recovery_required
+        ↓
+Phase 293 authorize_resume_preparation
+        ↓
+Phase 294 durable resume-lineage preparation
+        ↓
+future explicit intent-construction phase
+```
+
+```text
+Phase 293 stop → Phase 294 zero preparation / reject
+```
+
+Authorization provenance is never inferred from the lifecycle, the start, or any
+caller argument. Only the exact Phase 293 decision carries the explicit recovery
+authorization, and its digest is bound into the preparation record. A `stop`
+decision never reaches preparation: it is rejected before any preparation-target
+mutation.
+
+`prepared` means only that the exact Phase 293 `authorize_resume_preparation`
+decision and its exact recovery provenance have been validated and durably bound
+to a future target operation of `resume`. It does not mean that a resume intent
+exists, that a resume has started, that provider or transport work may execute
+automatically, that Phase 290 acquisition is authorized, that Phase 291/292 may
+be called, that fresh may be replayed, or that a resume will succeed.
+
+Before any mutation, Phase 294 preflights the exact platform `Path` values for
+the recovery decision, lifecycle outcome, start, and resume-preparation target,
+the callability of every injected dependency, and the preparation target parent
+and shape without mutation. It creates or reads no Phase 289 intent target and
+accepts no caller-supplied decision, lifecycle, or start object, no recovery
+kind, no predecessor digest, no target operation, no operation intent, and no
+approval object as execution or preparation authority.
+
+Phase 294 then strict-loads the Phase 293 recovery decision exactly once through
+the caller's exact `recovery_decision_path` identity, requires the exact runtime
+model and `state` `decided`, and requires `decision` to be exactly
+`authorize_resume_preparation`; `stop` is rejected before the preparation target
+is mutated and target permission is never inferred from any other field. The
+decision digest is computed exactly once from the exact loaded object identity.
+The Phase 292 lifecycle outcome is strict-loaded exactly once, must be
+`recovery_required` (`completed` is rejected), and its computed digest, approval
+digest, plan digest, operation, and derived recovery kind must all match the
+decision. The Phase 290 start is strict-loaded exactly once and its computed
+digest, operation, approval digest, and plan digest must match both the decision
+and the lifecycle. Phase 289 intent is never loaded. Known Phase 293/292/290
+errors propagate by exact object identity; unexpected dependency exceptions
+become the fixed detail-safe `dependency_error`.
+
+The preparation is built only from validated durable provenance:
+`recovery_decision_sha256`, `lifecycle_outcome_sha256`, and
+`operation_start_sha256` are the exact computed digests, the approval and plan
+digests are the exact validated lineage, `source_operation` is the exact
+validated source, `recovery_kind` is the exact derived and validated kind,
+`target_operation` is always exactly `resume`, and `state` is always exactly
+`prepared`. No ambient value is used, and the model stores no operator
+duplication, timestamps, clocks, UUIDs, randomness, hostname, PID, caller paths,
+decision metadata, provider credentials, transport objects, exception text, or
+mutable runtime values.
+
+The canonical JSON has exactly ten keys and uses compact UTF-8, `sort_keys=True`,
+`ensure_ascii=False`, `allow_nan=False`, duplicate-key rejection, and
+non-standard constant rejection. The loader requires the exact key set, strict
+model reconstruction, and canonical byte equality, so semantically equivalent
+but noncanonical whitespace or ordering is rejected, and the digest is a
+deterministic SHA-256 over the exact canonical bytes.
+
+The append-only persistence helper creates the target exclusively, writes the
+full canonical bytes, flushes, file-fsyncs, safely closes, and fsyncs the parent
+directory. Identical existing bytes are an idempotent success; different,
+partial, or noncanonical bytes are a fixed conflict and are never overwritten,
+truncated, deleted, repaired, or renamed over. Any uncertainty after exclusive
+creation at write, flush, file fsync, close, or directory fsync is ambiguous:
+the artifact is retained with no cleanup, no retry, and no rewrite, and later
+exact retained bytes may be accepted idempotently while partial or different
+bytes fail closed. When the preparation target already exists, Phase 294
+strict-loads it once and returns the exact loader-returned object by identity
+only when it equals the exact constructed record; any difference is a fixed
+conflict and the existing bytes are unchanged.
+
+Phase 294 calls no Phase 293/292 orchestration, no Phase 291, no Phase 290
+acquisition, no Phase 288/287/285, and no provider, transport, or network. It
+creates no Phase 289 intent and no new Phase 290 start marker, inspects no lower
+claim, evidence, or provider state, infers no authorization from the lifecycle or
+start without the exact Phase 293 decision, never replays fresh, never executes a
+resume, and never treats `prepared` as execution or start permission. It
+overwrites, deletes, or repairs no predecessor or preparation artifact, retries no
+dependency or persistence, generates no timestamps, randomness, UUIDs, or ambient
+identity, accesses no environment, credentials, socket, or subprocess, and
+automatically continues, schedules, loops, or parallelizes nothing. It adds no
+CLI or GUI behavior. A future Phase 295 may use this exact preparation evidence
+to construct and persist a new Phase 289 resume intent together with explicit
+provenance binding; Phase 294 does not do so.
