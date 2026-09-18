@@ -5586,3 +5586,163 @@ identityのまま伝播し、unexpectedなdependency exceptionはdetail-safeな`
 future explicit phase（たとえばPhase 295）はこのexactなpreparation evidenceを使って、recovery-decision
 provenanceを保持したまま新しいPhase 289 resume intentを構築/永続化できます。Phase 294自身はそれを
 行いません。
+
+## Phase 295: recovery-bound resume intent materialization
+
+Phase 295は、Phase 294のdurableなrecovery resume preparationの上に、append-onlyでimmutableな
+**recovery resume-intent provenance binding**を1つ追加し、そのbindingがauthorizeするexactな
+Phase 289 `resume` operation intentをmaterializeします。Phase 295はPhase 290 start markerを
+取得せず、resumeを実行せず、reconciliationもprovider呼び出しも行いません。
+
+新しいrecovery authorityは「durableなPhase 294 preparation + Phase 295 binding」です。
+Phase 289 resume-intent digest **単独**はrecovery authorizationではありません。
+
+```text
+Phase 294 prepared
+    |
+Phase 295 binding authorized
+    |
+exact Phase 289 resume intent materialized
+    |
+future Phase 296 explicit start acquisition
+```
+
+### identity rule
+
+Phase 289 `ExternalPublicationOperationIntent`はapproval digest / plan digest / operationだけを
+保持するため、同じapproval/planを使った過去のresume intentとbyte/digest単位で同一になり得ます。
+したがってPhase 295はPhase 289 intent digest単独を新しいrecovery authorizationの証明として
+扱いません。recovery provenanceは、exactなPhase 294 preparation digestと期待されるPhase 289
+intent digestを含む**別個のPhase 295 durable binding**が担います。
+
+### crash-ordering rule
+
+Phase 295はPhase 289 intentのmaterialize/acceptより**先に**bindingをpersist/resolveします。
+bindingは「このexactなrecovery preparationが、このexactな期待resume intent identityを
+authorizeする」ことだけを意味するため、intentより先に安全に存在できます。binding durabilityの
+後・intent durabilityの前にcrashした場合、後続のPhase 295 invocationはexactなbindingから
+recoverしてintentをmaterialize/verifyできます。intent persistenceがambiguousな場合もbindingが
+authoritativeなまま残り、後からexactにretainされたintent bytesはacceptされ、partial/different
+bytesはfail closedします。
+
+### binding model
+
+bindingはexactなfrozen modelで、`schema_version` / `resume_preparation_sha256` /
+`recovery_decision_sha256` / `publication_approval_sha256` / `publication_plan_sha256` /
+`operation_intent_sha256` / `source_operation` / `recovery_kind` / `operation` / `state`を持ちます。
+digestはexactなbuiltin lowercase 64-hex、enumはexactなbuiltin文字列、`operation`はexactly
+`resume`、`state`はexactly `authorized`、`recovery_kind == "reconciliation_mismatch"`は
+`source_operation == "resume"`を要求します。timestamp、generated UUID、randomness、hostname、
+PID、caller path、credential、provider/transport object、exception text、mutable runtime valueは
+保持しません。
+
+`authorized`が意味するのは「このexactなPhase 294 preparationが、exactな期待Phase 289 resume
+intent identityをauthorizeする」ことだけです。intentがdurably materialize済みであること、startを
+取得済みであること、provider実行がauthorize済みであること、reconciliationが完了していること、
+freshがreplay可能であることは意味しません。bindingはcrash後にintent materialization前の状態で
+単独にdurably存在し得るため、この区別が重要です。
+
+### canonical helpers
+
+public helperとして
+`serialize_external_publication_recovery_resume_intent_binding_canonical`、
+`external_publication_recovery_resume_intent_binding_canonical_bytes`、
+`external_publication_recovery_resume_intent_binding_digest`、
+`load_external_publication_recovery_resume_intent_binding`、
+`persist_external_publication_recovery_resume_intent_binding`を追加します。canonical JSONは
+exactly 10 keysで、compact UTF-8、sorted keys、`ensure_ascii=False`、`allow_nan=False`、
+duplicate-key rejection、non-standard constant rejection、exact key set、strict reconstruction、
+canonical byte equality、deterministic SHA-256を使います。semantically equivalentでも
+noncanonicalなbytesは拒否されます。
+
+### persistence
+
+binding persistenceは既存のappend-only exclusive durable patternに従います。exactなconcrete
+platform `Path`、parentが存在しdirectoryであること、symlink/directory/non-regular targetの拒否、
+作成前のcanonical bytes、exclusive create、full write、flush、file fsync、close、
+parent-directory fsyncです。existing exact bytesはidempotent success、existing
+different/partial/noncanonical bytesはfixed conflictで変更されません。exclusive creation後の
+write/short-write/flush/file-fsync/close/dir-fsyncでのuncertaintyはambiguousとして分類し、
+artifactをretainし、cleanup・retry・rewriteを行いません。
+
+### Phase 289 intent construction rule
+
+Phase 295は期待される`ExternalPublicationOperationIntent`を、strict-loadしたPhase 294
+preparationの`publication_approval_sha256` / `publication_plan_sha256`とexactな
+`operation="resume"`だけから構築します。Phase 295はapproval objectをauthorityとして受け取る
+権限がないため、`build_external_publication_operation_intent()`を要求も呼び出しもしません。
+Phase 289のmodelとschemaは変更しません。
+
+### public orchestration API
+
+`materialize_and_bind_external_publication_recovery_resume_intent`はkeyword-onlyで
+`resume_preparation_path` / `resume_intent_binding_path` / `resume_intent_path`と、exactなpublic
+helperをdefaultに持つinjected dependency
+（`preparation_loader` / `preparation_digest_function` / `intent_loader` /
+`intent_digest_function` / `intent_persist_function`）を取ります。caller-suppliedのpreparation
+object、preparation digest、approval object、operation intent object、intent digest、recovery
+decision object、source operation、recovery kind、target operationはauthorityとして受け取りません。
+
+### required ordering
+
+preflightで3つのpathがexactなconcrete platform `Path`でありpairwise distinctであること、全
+injected dependencyがcallableであること、binding targetとintent targetのparent/shapeを
+mutationなしで検証します。start-marker pathはこのAPIに存在せず、provider/network/credential
+accessもありません。既存のregular intent targetはそれ自体ではauthorizationではなく、exactな
+Phase 295 bindingがdurably resolveされた後にのみacceptされ得ます。
+
+次にPhase 294 preparationをcallerのexactなpath identityでexactly once strict-loadし、exactな
+runtime modelとローカルで再検証した全field/cross-field invariant（exact schema、exact lowercase
+digest、exact `fresh|resume`、exact `already_acquired|reconciliation_mismatch`、
+`reconciliation_mismatch`は`source_operation == "resume"`を要求、`target_operation`はexactly
+`resume`、`state`はexactly `prepared`）を要求します。preparation digestはexactなloaded object
+identityでexactly once計算し、exactなlowercase 64-hexを要求します。knownなPhase 294 errorは
+exact object identityのまま伝播し、unexpectedなhelper errorはfixed/detail-safeな
+`dependency_error`になります。
+
+続いて期待されるPhase 289 resume intentをpreparationのapproval/plan lineageとexactなoperation
+`resume`だけから構築し、exactなmodel/schema/approval digest/plan digest/operationをローカルで
+再検証します。intent digestはinjected public helperをexactなconstructed object identityで
+exactly once呼び出して計算します。
+
+bindingはcomputedなPhase 294 preparation digest、preparationのrecovery decision digest、
+approval/plan digest、computedな期待Phase 289 intent digest、preparationのsource operation、
+recovery kind、operation `resume`、state `authorized`だけから構築し、ambient valueを使いません。
+
+**bindingのresolve/persistはPhase 289 intentのload/persist attemptより先に完了します。** binding
+targetが存在する場合、exactly once strict-loadし、exact runtime bindingとexact equalityを要求
+します。差分はfixed conflictでbindingは変更されません。binding targetがabsentの場合はconstructed
+bindingをexactly once persistし、retryしません。binding persistenceがambiguous/failedの場合は
+即座に停止し、Phase 289 intent loader/persistのcall countはzeroで、intent mutationもありません。
+
+binding durabilityが確立した後にのみPhase 289 resume intentをmaterialize/verifyします。intent
+targetが存在する場合はexactly once strict-loadし、exact modelとexact expected intent equality、
+operation `resume`を要求し、mismatch/corruptはfail closedで、overwrite/repair/deleteしません。
+absentの場合は`intent_persist_function`をexactなpath/object identityでexactly once呼び出し、
+retryしません。knownなPhase 289 errorはexact object identityのまま伝播し、unexpected errorは
+detail-safeにsanitizeされます。intent materializationが後で失敗/ambiguousになってもPhase 295
+bindingはretainedされます。
+
+returnはexactにresolvedしたbinding objectです。existing exact bindingの場合はexactな
+loader-returned object identity、newly persisted bindingの場合はexactなconstructed binding
+identityを返します。Phase 289 intentがstrict-loadされてexactかつequalであるか、durably
+persistedされた後にのみ成功を返し、bindingだけ存在してintentのexact/durableがこのinvocationで
+証明できない場合にsuccessを返しません。
+
+### forbidden behavior
+
+Phase 295はPhase 289 intent単独をrecovery authorizationとして扱わず、binding durability確立前に
+intentを作成/persistせず、Phase 294/293/292/291 orchestrationを呼ばず、Phase 290 acquisitionや
+start marker作成を行わず、Phase 288/287/285、provider/transport/networkを呼ばず、approval/plan/
+provider/target/runtime objectをauthorityとして受け取らず、freshをreplayせず、resumeを実行せず、
+Phase 280/282/284のlower evidence/provider stateをinspectせず、binding/preparation/intent
+artifactのoverwrite/delete/repairやpersistenceのretryを行わず、timestamp/random/UUID/ambient
+identityを生成せず、environment/credentials/socket/subprocessにaccessせず、auto-continue/
+schedule/loop/parallelizeせず、CLI/GUIを追加/変更しません。
+
+### next phase
+
+future Phase 296は、**新しいexplicit start marker path**を取得する前にexactなPhase 295 bindingと
+exactなbound Phase 289 intentを要求しなければならず、intent単独からauthorityを推測しては
+なりません。Phase 295自身はPhase 290 start markerを作成せず、実行/reconciliation/provider作業を
+行わず、fresh no-replayを維持します。
