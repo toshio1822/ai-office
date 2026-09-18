@@ -5259,3 +5259,55 @@ post-createのwrite/flush/fsync/close/directory-fsyncがambiguousに失敗した
 保持して`acquired`を返さず、後続のexact marker確認は`already_acquired`に限ります。
 `fresh`と`resume`を相互変換せず、次の設計段階では、同じinvocationの新規`acquired`結果
 だけからPhase 288を呼ぶthin execution handoffを評価します。
+
+## Phase 291: same-invocation acquired-start external publication handoff
+
+Phase 291は、Phase 290のcrash-safe start fenceを越えた直後のthinなexecution handoffです。
+callerが渡した/reconstructしたacquisition objectは実行許可として受け取りません。Phase 291
+自身がPhase 290をexactly once呼び、そのsame-invocationの新規`acquired`結果だけから
+Phase 288をexactly once呼びます。
+
+```text
+Phase 289 durable intent
+              ↓
+Phase 291 request preflight
+              ↓
+Phase 290 acquire exactly once
+        ↓ acquired            ↓ already_acquired
+Phase 288 exactly once   zero-call stop
+```
+
+`phase290_function`のdefaultはpublicな
+`acquire_external_publication_operation_start`、`phase288_function`のdefaultはpublicな
+`run_external_publication_operation`です。Phase 288のruntime requestを受ける前に、
+`intent_path`/`start_path`のexact concrete `Path`、requestのexact runtime type、fresh request
+のexact path/plan/approval/target/callable transport、resume requestのexact path/approval、
+およびauthoritativeなapproval↔plan validationとapproval digest、plan binding digest
+（builtin lowercase 64-hex）を検証します。malformedなrequestでdurable start fenceを
+消費しません。このpreflightはoutput/evidence fileを読まず、providerを呼びません。
+
+Phase 290の戻り値はexact runtime `ExternalPublicationOperationStartAcquisition`でなければ
+ならず、embedded `ExternalPublicationOperationStart`のschema、intent/approval/plan digest、
+operation、`started` stateを再検証します。さらにstart lineageがpreflight済みrequestと一致
+することを要求します（operation一致、approval digest一致、validated plan digest一致、
+intent digestがlowercase 64-hex）。mismatchはfixed/detail-safe Phase 291 errorとなり、
+Phase 288はzero-callのままです。
+
+`already_acquired`はrestart/no-replayのstop routeです。Phase 288 call countは0で、同一の
+acquisition objectをidentityでそのまま返し、fresh→resume変換、lower evidence/provider
+stateのinspection、Phase 290のretry、markerのmutation/delete/repair、別markerの作成を
+行いません。また、これをexternal operationの成功として扱いません。
+
+`acquired`の場合だけ、lineage検証通過後に元のrequest objectをidentityでPhase 288へ
+exactly once渡します。freshはexact `ExternalPublicationExecutionResult`、resumeはexact
+`ExternalPublicationExecutionReconciliation`を要求し、Phase 288の戻り値objectをidentityで
+返します。Phase 288がknown authoritative errorをraiseした場合は同一objectをidentityで
+propagateし、malformed/wrong/subclass resultの場合はfail closedします（second callなし）。
+このときPhase 290 start markerはauthoritativeなまま保持され、削除・rewriteしません。
+
+Phase 291はretry、fallback、automatic recovery、fresh↔resume変換、outcome inference、
+lifecycle looping、Phase 285/287/provider/transportの直接呼び出しを行いません。Phase 291
+自身は新しいdurable artifactを所有せず、Phase 280 claim、Phase 282 evidence、Phase 284
+reconciliation evidence、Phase 289/290 persistenceを複製しません。CLI/GUI変更もありません。
+次の設計段階は、このno-replay boundaryが証明された後にだけ、explicitなpost-handoff
+durable lifecycle/recovery stateを評価します。
