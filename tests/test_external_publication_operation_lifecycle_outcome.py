@@ -12,6 +12,7 @@ import pytest
 import ai_office.engine.external_publication_operation_lifecycle_outcome as lifecycle_module  # noqa: E501
 from ai_office.engine import (
     ExternalPublicationApproval,
+    ExternalPublicationApprovalError,
     ExternalPublicationError,
     ExternalPublicationExecutionEvidenceError,
     ExternalPublicationExecutionReconciliation,
@@ -279,6 +280,89 @@ class _DigestRecorder:
         if isinstance(self.value, BaseException):
             raise self.value
         return self.value
+
+
+class _FaultyHandle:
+    """A real unbuffered file wrapper that injects one persistence fault."""
+
+    def __init__(self, real: object, stage: str) -> None:
+        self._real = real
+        self._stage = stage
+
+    def __enter__(self) -> _FaultyHandle:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        self._real.close()  # type: ignore[attr-defined]
+        return False
+
+    def write(self, data: bytes) -> int:
+        if self._stage == "write_error":
+            raise OSError("write failed")
+        if self._stage == "short_write":
+            self._real.write(data[:-1])  # type: ignore[attr-defined]
+            return len(data) - 1
+        self._real.write(data)  # type: ignore[attr-defined]
+        return len(data)
+
+    def flush(self) -> None:
+        if self._stage == "flush_error":
+            raise OSError("flush failed")
+        self._real.flush()  # type: ignore[attr-defined]
+
+    def fileno(self) -> int:
+        return self._real.fileno()  # type: ignore[attr-defined]
+
+    def close(self) -> None:
+        self._real.close()  # type: ignore[attr-defined]
+
+
+class _CloseFaultHandle:
+    """A real file wrapper without context-manager support so close() fails."""
+
+    def __init__(self, real: object) -> None:
+        self._real = real
+
+    def write(self, data: bytes) -> int:
+        self._real.write(data)  # type: ignore[attr-defined]
+        return len(data)
+
+    def flush(self) -> None:
+        self._real.flush()  # type: ignore[attr-defined]
+
+    def fileno(self) -> int:
+        return self._real.fileno()  # type: ignore[attr-defined]
+
+    def close(self) -> None:
+        raise OSError("close failed")
+
+
+def _install_persistence_fault(scope: pytest.MonkeyPatch, stage: str) -> None:
+    """Fault-inject exactly one step of the append-only persistence sequence."""
+
+    def _fsync_boom(*args: object, **kwargs: object) -> None:
+        raise OSError("fsync failed")
+
+    if stage == "file_fsync":
+        scope.setattr(lifecycle_module.os, "fsync", _fsync_boom)
+        return
+    if stage == "dir_fsync":
+        scope.setattr(lifecycle_module, "_fsync_lifecycle_directory", _fsync_boom)
+        return
+
+    real_open = Path.open
+
+    def _fake_open(
+        self: Path, mode: str = "r", *args: object, **kwargs: object
+    ) -> object:
+        if mode == "xb":
+            real = real_open(self, mode, buffering=0)
+            if stage == "close_failure":
+                return _CloseFaultHandle(real)
+            return _FaultyHandle(real, stage)
+        return real_open(self, mode, *args, **kwargs)
+
+    scope.setattr(Path, "open", _fake_open)
 
 
 def _seed_start(root: Path, request: object, operation: str) -> None:
@@ -667,6 +751,8 @@ def test_persistence_ambiguous_after_write_retains_artifact(
         assert path.read_bytes() == (
             external_publication_operation_lifecycle_outcome_canonical_bytes(outcome)
         )
+        assert not (tmp_path / "outcome.json.tmp").exists()
+        assert list(tmp_path.iterdir()) == [path]
     persist_external_publication_operation_lifecycle_outcome(path, outcome)
 
 
@@ -687,7 +773,95 @@ def test_persistence_ambiguous_after_directory_fsync(
             persist_external_publication_operation_lifecycle_outcome(path, outcome)
         assert info.value.detail.classification == "ambiguous"
         assert path.exists()
+        assert path.read_bytes() == (
+            external_publication_operation_lifecycle_outcome_canonical_bytes(outcome)
+        )
+        assert list(tmp_path.iterdir()) == [path]
     persist_external_publication_operation_lifecycle_outcome(path, outcome)
+
+
+_AMBIGUOUS_STAGES = (
+    "write_error",
+    "short_write",
+    "flush_error",
+    "file_fsync",
+    "close_failure",
+    "dir_fsync",
+)
+
+
+@pytest.mark.parametrize("stage", _AMBIGUOUS_STAGES)
+def test_persistence_ambiguity_per_stage_retains_artifact_no_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    outcome = _outcome()
+    path = tmp_path / "outcome.json"
+    canonical = external_publication_operation_lifecycle_outcome_canonical_bytes(
+        outcome
+    )
+    with monkeypatch.context() as scope:
+        _install_persistence_fault(scope, stage)
+        with pytest.raises(
+            ExternalPublicationOperationLifecycleOutcomePersistenceError
+        ) as info:
+            persist_external_publication_operation_lifecycle_outcome(path, outcome)
+        assert info.value.detail.classification == "ambiguous", stage
+        assert info.value.__cause__ is None, stage
+        assert path.exists(), stage
+        assert path.read_bytes() in (canonical, canonical[:-1], b""), stage
+        assert list(tmp_path.iterdir()) == [path], stage
+
+    if path.read_bytes() == canonical:
+        persist_external_publication_operation_lifecycle_outcome(path, outcome)
+        assert path.read_bytes() == canonical, stage
+        loaded = load_external_publication_operation_lifecycle_outcome(path)
+        assert loaded == outcome, stage
+    else:
+        with pytest.raises(ExternalPublicationOperationLifecycleOutcomeConflictError):
+            persist_external_publication_operation_lifecycle_outcome(path, outcome)
+        assert path.read_bytes() in (canonical[:-1], b""), stage
+
+
+def test_persistence_ambiguity_orchestration_does_not_rerun_phase291(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _fresh_request(tmp_path)
+    _seed_start(tmp_path, request, "fresh")
+    start = lifecycle_module.load_external_publication_operation_start(
+        tmp_path / "start.json"
+    )
+    result = _fresh_result(
+        approval_digest=start.publication_approval_sha256,
+        plan_digest=start.publication_plan_sha256,
+    )
+    recorder = _Phase291Recorder(result)
+    outcome_path = tmp_path / "outcome.json"
+    with monkeypatch.context() as scope:
+        _install_persistence_fault(scope, "file_fsync")
+        with pytest.raises(
+            ExternalPublicationOperationLifecycleOutcomePersistenceError
+        ) as info:
+            run_and_persist_external_publication_operation_lifecycle_outcome(
+                intent_path=tmp_path / "intent.json",
+                start_path=tmp_path / "start.json",
+                lifecycle_outcome_path=outcome_path,
+                request=request,
+                phase291_function=recorder,
+            )
+        assert info.value.detail.classification == "ambiguous"
+    assert len(recorder.calls) == 1, "Phase 291 must not be retried"
+    assert outcome_path.exists()
+
+    second = _Phase291Recorder(AssertionError("Phase 291 must not be called"))
+    returned = run_and_persist_external_publication_operation_lifecycle_outcome(
+        intent_path=tmp_path / "intent.json",
+        start_path=tmp_path / "start.json",
+        lifecycle_outcome_path=outcome_path,
+        request=request,
+        phase291_function=second,
+    )
+    assert second.calls == []
+    assert returned.state == "completed"
 
 
 def test_persistence_rejects_symlink_target(tmp_path: Path) -> None:
@@ -749,23 +923,230 @@ def test_preflight_rejects_subclass_request(tmp_path: Path) -> None:
 
 
 def test_preflight_propagates_known_approval_error_by_identity(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     request = _fresh_request(tmp_path)
-    forged = object.__new__(ExternalPublicationFreshOperationRequest)
-    for field in dataclasses.fields(request):
-        object.__setattr__(forged, field.name, getattr(request, field.name))
-    object.__setattr__(forged, "plan", _StringChild("plan"))
-    with pytest.raises(ExternalPublicationOperationLifecycleOutcomeError):
+    error = ExternalPublicationApprovalError("approval")
+    recorder = _Phase291Recorder(AssertionError("Phase 291 must not be called"))
+    calls: list[object] = []
+
+    def _boom(plan: object, approval: object) -> None:
+        calls.append((plan, approval))
+        raise error
+
+    monkeypatch.setattr(
+        lifecycle_module, "validate_external_publication_approval", _boom
+    )
+    with pytest.raises(ExternalPublicationApprovalError) as info:
         run_and_persist_external_publication_operation_lifecycle_outcome(
             intent_path=tmp_path / "intent.json",
             start_path=tmp_path / "start.json",
             lifecycle_outcome_path=tmp_path / "outcome.json",
-            request=forged,
+            request=request,
+            phase291_function=recorder,
         )
+    assert info.value is error
+    assert len(calls) == 1
+    assert calls[0][0] is request.plan
+    assert calls[0][1] is request.approval
+    assert recorder.calls == []
+    assert not (tmp_path / "outcome.json").exists()
 
 
-def test_preflight_propagates_missing_start_error_for_absent_outcome(
+def test_preflight_propagates_unexpected_approval_error_as_detail_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _fresh_request(tmp_path)
+    recorder = _Phase291Recorder(AssertionError("Phase 291 must not be called"))
+
+    def _boom(plan: object, approval: object) -> None:
+        raise ValueError("secret validation detail")
+
+    monkeypatch.setattr(
+        lifecycle_module, "validate_external_publication_approval", _boom
+    )
+    with pytest.raises(ExternalPublicationOperationLifecycleOutcomeError) as info:
+        run_and_persist_external_publication_operation_lifecycle_outcome(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            lifecycle_outcome_path=tmp_path / "outcome.json",
+            request=request,
+            phase291_function=recorder,
+        )
+    assert info.value.detail.classification == "dependency_error"
+    assert "secret validation detail" not in str(info.value)
+    assert info.value.__cause__ is None
+    assert recorder.calls == []
+    assert not (tmp_path / "outcome.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "request_kind"),
+    [
+        ("external_publication_approval_digest", "fresh"),
+        ("external_publication_plan_digest", "fresh"),
+        ("external_publication_approval_digest", "resume"),
+    ],
+)
+def test_preflight_known_digest_helper_error_propagates_by_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    helper_name: str,
+    request_kind: str,
+) -> None:
+    request = (
+        _fresh_request(tmp_path)
+        if request_kind == "fresh"
+        else _resume_request(tmp_path)
+    )
+    error = ExternalPublicationError("digest")
+    recorder = _Phase291Recorder(AssertionError("Phase 291 must not be called"))
+    seen: list[object] = []
+
+    def _boom(value: object) -> object:
+        seen.append(value)
+        raise error
+
+    monkeypatch.setattr(lifecycle_module, helper_name, _boom)
+    with pytest.raises(ExternalPublicationError) as info:
+        run_and_persist_external_publication_operation_lifecycle_outcome(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            lifecycle_outcome_path=tmp_path / "outcome.json",
+            request=request,
+            phase291_function=recorder,
+        )
+    assert info.value is error
+    assert len(seen) == 1
+    assert recorder.calls == []
+    assert not (tmp_path / "outcome.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "request_kind"),
+    [
+        ("external_publication_approval_digest", "fresh"),
+        ("external_publication_plan_digest", "fresh"),
+        ("external_publication_approval_digest", "resume"),
+    ],
+)
+def test_preflight_unexpected_digest_helper_error_is_detail_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    helper_name: str,
+    request_kind: str,
+) -> None:
+    request = (
+        _fresh_request(tmp_path)
+        if request_kind == "fresh"
+        else _resume_request(tmp_path)
+    )
+    recorder = _Phase291Recorder(AssertionError("Phase 291 must not be called"))
+
+    def _boom(value: object) -> object:
+        raise RuntimeError("secret digest detail")
+
+    monkeypatch.setattr(lifecycle_module, helper_name, _boom)
+    with pytest.raises(ExternalPublicationOperationLifecycleOutcomeError) as info:
+        run_and_persist_external_publication_operation_lifecycle_outcome(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            lifecycle_outcome_path=tmp_path / "outcome.json",
+            request=request,
+            phase291_function=recorder,
+        )
+    assert info.value.detail.classification == "dependency_error"
+    assert "secret digest detail" not in str(info.value)
+    assert recorder.calls == []
+    assert not (tmp_path / "outcome.json").exists()
+
+
+def test_preflight_fresh_lineage_helpers_exactly_once_with_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _fresh_request(tmp_path)
+    approval_recorder = _DigestRecorder(
+        lifecycle_module.external_publication_approval_digest(request.approval)
+    )
+    plan_recorder = _DigestRecorder(external_publication_plan_digest(request.plan))
+    monkeypatch.setattr(
+        lifecycle_module,
+        "external_publication_approval_digest",
+        approval_recorder,
+    )
+    monkeypatch.setattr(
+        lifecycle_module, "external_publication_plan_digest", plan_recorder
+    )
+    _seed_start(tmp_path, request, "fresh")
+    start = lifecycle_module.load_external_publication_operation_start(
+        tmp_path / "start.json"
+    )
+    result = _fresh_result(
+        approval_digest=start.publication_approval_sha256,
+        plan_digest=start.publication_plan_sha256,
+    )
+    run_and_persist_external_publication_operation_lifecycle_outcome(
+        intent_path=tmp_path / "intent.json",
+        start_path=tmp_path / "start.json",
+        lifecycle_outcome_path=tmp_path / "outcome.json",
+        request=request,
+        phase291_function=_Phase291Recorder(result),
+    )
+    assert len(approval_recorder.calls) == 1
+    assert approval_recorder.calls[0] is request.approval
+    assert len(plan_recorder.calls) == 1
+    assert plan_recorder.calls[0] is request.plan
+
+
+def test_preflight_resume_lineage_helper_exactly_once_with_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _resume_request(tmp_path)
+    approval_recorder = _DigestRecorder(
+        lifecycle_module.external_publication_approval_digest(request.approval)
+    )
+    monkeypatch.setattr(
+        lifecycle_module,
+        "external_publication_approval_digest",
+        approval_recorder,
+    )
+    _seed_start(tmp_path, request, "resume")
+    run_and_persist_external_publication_operation_lifecycle_outcome(
+        intent_path=tmp_path / "intent.json",
+        start_path=tmp_path / "start.json",
+        lifecycle_outcome_path=tmp_path / "outcome.json",
+        request=request,
+        phase291_function=_Phase291Recorder(_reconciliation("matched")),
+    )
+    assert len(approval_recorder.calls) == 1
+    assert approval_recorder.calls[0] is request.approval
+
+
+@pytest.mark.parametrize("bad_value", ["not-a-digest", None, 7, "A" * 64])
+def test_preflight_malformed_digest_return_is_detail_safe_zero_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_value: object
+) -> None:
+    request = _fresh_request(tmp_path)
+    recorder = _Phase291Recorder(AssertionError("Phase 291 must not be called"))
+    monkeypatch.setattr(
+        lifecycle_module,
+        "external_publication_approval_digest",
+        _DigestRecorder(bad_value),
+    )
+    with pytest.raises(ExternalPublicationOperationLifecycleOutcomeError) as info:
+        run_and_persist_external_publication_operation_lifecycle_outcome(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            lifecycle_outcome_path=tmp_path / "outcome.json",
+            request=request,
+            phase291_function=recorder,
+        )
+    assert info.value.detail.classification == "request_lineage"
+    assert recorder.calls == []
+    assert not (tmp_path / "outcome.json").exists()
+
+
+def test_preflight_propagates_dependency_error_for_absent_outcome(
     tmp_path: Path,
 ) -> None:
     request = _fresh_request(tmp_path)
@@ -823,6 +1204,50 @@ def _fast_path_setup(
     outcome_path = tmp_path / "outcome.json"
     persist_external_publication_operation_lifecycle_outcome(outcome_path, outcome)
     return tmp_path / "intent.json", tmp_path / "start.json", outcome_path, request
+
+
+def test_existing_outcome_fast_path_one_load_and_exact_object_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    intent_path, start_path, outcome_path, request = _fast_path_setup(tmp_path)
+    phase291 = _Phase291Recorder(AssertionError("Phase 291 must not be called"))
+
+    real_lifecycle_loader = (
+        lifecycle_module.load_external_publication_operation_lifecycle_outcome
+    )
+    real_start_loader = lifecycle_module.load_external_publication_operation_start
+    start = real_start_loader(start_path)
+    expected = real_lifecycle_loader(outcome_path)
+
+    lifecycle_loader = _LoaderRecorder(real_lifecycle_loader)
+    start_loader = _LoaderRecorder(lambda path: start)
+    start_digest = _DigestRecorder(external_publication_operation_start_digest(start))
+    monkeypatch.setattr(
+        lifecycle_module,
+        "load_external_publication_operation_lifecycle_outcome",
+        lifecycle_loader,
+    )
+    returned = run_and_persist_external_publication_operation_lifecycle_outcome(
+        intent_path=intent_path,
+        start_path=start_path,
+        lifecycle_outcome_path=outcome_path,
+        request=request,
+        phase291_function=phase291,
+        start_loader=start_loader,
+        start_digest_function=start_digest,
+    )
+    assert phase291.calls == []
+    assert len(lifecycle_loader.calls) == 1
+    assert lifecycle_loader.calls[0] == outcome_path
+    assert len(start_loader.calls) == 1
+    assert start_loader.calls[0] == start_path
+    assert len(start_digest.calls) == 1
+    assert start_digest.calls[0] is start_loader.results[0]
+    assert returned is lifecycle_loader.results[0]
+    assert returned is not expected
+    assert returned == expected
+
+    assert start is not None
 
 
 def test_existing_outcome_fast_path_returns_same_object_and_zero_calls(
@@ -1710,8 +2135,22 @@ def test_source_audit_no_forbidden_direct_calls() -> None:
         "reconcile_and_persist_external_publication_execution",
     ):
         assert forbidden not in called, forbidden
-    for forbidden_call in ("run_external_publication_operation_start_handoff",):
-        assert forbidden_call not in called or True
+
+    # The Phase 292 module must never call the Phase 291 boundary directly; the
+    # only path is the injected ``phase291_function`` dependency.
+    assert "run_external_publication_operation_start_handoff" not in called
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if node.name != "_call_phase291":
+            continue
+        inner_calls = {
+            call.func.id
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        }
+        assert "run_external_publication_operation_start_handoff" not in inner_calls
+        assert "phase291_function" in inner_calls
 
 
 def test_no_cli_change_and_no_phase292_command() -> None:
