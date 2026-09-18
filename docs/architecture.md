@@ -5915,3 +5915,90 @@ must call Phase 288 only from a same-invocation newly acquired result; a
 restarted caller receiving `already_acquired` must not automatically replay
 fresh. The next design step should evaluate that thin execution handoff while
 preserving explicit fresh/resume semantics and zero automatic replay.
+
+## Phase 291: Same-invocation acquired-start execution handoff
+
+Phase 291 is the thin, non-persistent execution handoff that crosses the
+Phase 290 start fence. It deliberately does not accept a caller-supplied or
+reconstructed acquisition object as authorization: a restarted caller could
+otherwise rebuild an `acquired`-looking value and defeat the same-invocation
+guarantee. Phase 291 therefore owns the Phase 290 call itself and branches only
+on the exact object that same invocation received.
+
+```text
+Phase 289 durable intent
+              ↓
+Phase 291 request preflight
+              ↓
+Phase 290 acquire exactly once
+        ↓ acquired            ↓ already_acquired
+Phase 288 exactly once   zero-call stop
+```
+
+The default `phase290_function` is the public
+`acquire_external_publication_operation_start` and the default
+`phase288_function` is the public `run_external_publication_operation`. Before
+any irreversible acquisition, Phase 291 preflights the request: both caller
+paths must be exact concrete platform `Path` objects, the request must be the
+exact runtime fresh or resume request type (subclasses, lookalikes, and
+mappings are rejected), fresh requests require exact plan/approval/target
+values, exact path fields, and a callable transport, and resume requests
+require exact path fields and an exact approval. The existing authoritative
+approval-to-plan validation contract must succeed, and the canonical approval
+digest plus the exact plan binding digest must both be builtin lowercase
+64-hex. This preflight reads no output or evidence file and contacts no
+provider; deeper Phase 288/285 validation remains authoritative.
+
+Phase 291 then calls Phase 290 exactly once with the caller's exact
+`intent_path` and `start_path` object identities. The result must be the exact
+runtime `ExternalPublicationOperationStartAcquisition`, and the embedded
+`ExternalPublicationOperationStart` is strictly revalidated: schema version,
+intent/approval/plan digests, explicit `fresh` or `resume`, and `started`
+state. Start lineage must match the preflighted request — operation equality,
+exact approval digest equality, exact validated plan digest equality, and an
+exact lowercase 64-hex intent digest. Any mismatch is a fixed, detail-safe
+Phase 291 error with zero Phase 288 calls.
+
+`already_acquired` is the restart/no-replay stop route. Phase 288 call count
+stays at zero, the identical acquisition object is returned by identity, and
+Phase 291 performs no fresh-to-resume conversion, no lower evidence or
+provider inspection, no Phase 290 retry, no marker mutation, deletion, repair,
+or replacement, and no second marker. An `already_acquired` result is never
+treated as success of the external operation.
+
+Only an exact same-invocation `acquired` result, after all lineage checks
+pass, reaches Phase 288. The exact original request object is passed by
+identity and Phase 288 is called exactly once — no retry, fallback, or second
+call. An exact fresh request must produce an exact
+`ExternalPublicationExecutionResult`; an exact resume request must produce an
+exact `ExternalPublicationExecutionReconciliation`; the exact Phase 288 result
+object is returned by identity. Known authoritative Phase 288 and lower errors
+propagate the same object by identity, while malformed, wrong-typed, or
+subclass results fail closed with a Phase 291 result-contract error.
+
+Crash and restart semantics are explicit. On fresh success the flow is
+`acquired` then exactly one Phase 288 fresh call then the exact execution
+result. On fresh failure or an ambiguous provider outcome the first invocation
+propagates the lower error while the start marker remains; a restarted
+invocation receives `already_acquired`, makes zero Phase 288 calls, and returns
+that same acquisition object. Phase 291 never infers that fresh should be
+retried merely because a Phase 288 result or evidence file is absent. If a
+start/request lineage mismatch is detected after `acquired` but before Phase
+288, Phase 291 fails closed and leaves the marker intact so a later invocation
+sees `already_acquired` and does not auto-replay; safety is preferred over
+automatic liveness. A newly acquired explicit resume request may dispatch one
+Phase 288 resume call, while an already-acquired resume request also stops with
+zero calls in this phase; resume retryability is not special-cased here.
+
+Phase 291 owns no new durable artifact. Its only allowed side effects are the
+single Phase 290 call and, for an exact newly acquired result only, the single
+Phase 288 call with its lower authoritative side effects. It never rolls back,
+compensates for, or deletes a successfully created Phase 290 marker when Phase
+288 fails, and it duplicates no Phase 280 claim, Phase 282 evidence, Phase 284
+reconciliation evidence, or Phase 289/290 persistence logic. It does not
+create or inspect claims or evidence to infer a route, convert fresh to resume,
+retry, compensate, auto-heal, or automatically continue the workflow, and it
+adds no timestamp, clock, random, or UUID lifecycle data. No CLI or GUI
+behavior changes. The next design step should evaluate explicit post-handoff
+durable lifecycle or recovery state only after this no-replay boundary is
+proven.

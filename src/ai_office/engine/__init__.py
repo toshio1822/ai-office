@@ -364,6 +364,12 @@ from ai_office.engine.external_publication_operation_start import (  # noqa: E50
     load_external_publication_operation_start,
     serialize_external_publication_operation_start_canonical,
 )  # noqa: E501
+from ai_office.engine.external_publication_operation_start_handoff import (  # noqa: E501
+    ExternalPublicationOperationStartHandoffCompatibilityError,
+    ExternalPublicationOperationStartHandoffError,
+    ExternalPublicationOperationStartHandoffFailureDetail,
+    run_external_publication_operation_start_handoff,
+)  # noqa: E501
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationApprovalError,
@@ -1532,6 +1538,10 @@ __all__ = [
     "external_publication_operation_start_digest",
     "load_external_publication_operation_start",
     "serialize_external_publication_operation_start_canonical",
+    "ExternalPublicationOperationStartHandoffCompatibilityError",
+    "ExternalPublicationOperationStartHandoffError",
+    "ExternalPublicationOperationStartHandoffFailureDetail",
+    "run_external_publication_operation_start_handoff",
     "PublicationRegenerationPlan",
     "PublicationRegenerationPlanError",
     "PublicationRegenerationReadiness",
