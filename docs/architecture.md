@@ -6308,3 +6308,180 @@ automatically continues, schedules, loops, or parallelizes nothing. It adds no
 CLI or GUI behavior. A future Phase 295 may use this exact preparation evidence
 to construct and persist a new Phase 289 resume intent together with explicit
 provenance binding; Phase 294 does not do so.
+
+## Phase 295: Recovery-bound resume intent materialization
+
+Phase 295 adds one append-only, immutable **recovery resume-intent provenance
+binding** on top of the Phase 294 durable recovery resume preparation, and
+materializes the exact Phase 289 `resume` operation intent that the binding
+authorizes. Phase 295 does not acquire a Phase 290 start marker, does not
+execute a resume, and performs no reconciliation or provider work.
+
+The new recovery authority is the durable Phase 294 preparation plus the Phase
+295 binding. A Phase 289 resume-intent digest **alone** is not recovery
+authorization.
+
+```text
+Phase 294 prepared
+    |
+Phase 295 binding authorized
+    |
+exact Phase 289 resume intent materialized
+    |
+future Phase 296 explicit start acquisition
+```
+
+A Phase 289 `ExternalPublicationOperationIntent` carries only the publication
+approval digest, the publication plan digest, and the operation, so a recovery
+resume intent may be byte/digest-identical to a prior resume intent that used
+the same approval/plan. Phase 295 therefore never treats the Phase 289 intent
+digest alone as proof of new recovery authorization; the recovery provenance is
+carried by a separate Phase 295 durable binding that includes the exact Phase
+294 preparation digest and the expected Phase 289 intent digest.
+
+The Phase 295 binding is persisted or resolved **before** the Phase 289 intent
+is materialized or accepted. A binding can safely exist before the intent
+because its state means only "this exact recovery preparation authorizes this
+exact expected resume intent identity". An intent must never become the sole
+evidence of recovery authorization. If the process crashes after binding
+durability but before intent durability, a later Phase 295 invocation can
+recover from the exact binding and materialize or verify the intent; if intent
+persistence is ambiguous, the binding remains authoritative, later exact
+retained intent bytes may be accepted, and partial or different bytes fail
+closed.
+
+The exact frozen binding carries `schema_version`,
+`resume_preparation_sha256`, `recovery_decision_sha256`,
+`publication_approval_sha256`, `publication_plan_sha256`,
+`operation_intent_sha256`, `source_operation`, `recovery_kind`, `operation`, and
+`state`. Every digest must be an exact builtin lowercase 64-hex string, every
+enum must be an exact builtin string, `operation` must be exactly `resume`,
+`state` must be exactly `authorized`, and `recovery_kind`
+`reconciliation_mismatch` requires `source_operation` `resume`. The model stores
+no timestamps, generated UUIDs, randomness, hostname, PID, caller paths,
+credentials, provider or transport objects, exception text, or mutable runtime
+values.
+
+`authorized` means only that this exact Phase 294 preparation authorizes the
+exact expected Phase 289 resume intent identity. It does not mean that the
+intent has necessarily been durably materialized, that a start has been
+acquired, that provider execution is authorized, that reconciliation is
+complete, or that `fresh` may be replayed. This distinction matters because the
+binding may durably exist alone after a crash before intent materialization.
+
+The canonical JSON has exactly ten keys and uses compact UTF-8, sorted keys,
+`ensure_ascii=False`, `allow_nan=False`, duplicate-key rejection, and
+non-standard constant rejection. The loader requires the exact key set, strict
+model reconstruction, and canonical byte equality, so semantically equivalent
+but noncanonical bytes are rejected, and the digest is a deterministic SHA-256
+over the exact canonical bytes.
+
+The append-only persistence helper creates the target exclusively, writes the
+full canonical bytes, flushes, file-fsyncs, safely closes, and fsyncs the parent
+directory. Identical existing bytes are an idempotent success; different,
+partial, or noncanonical bytes are a fixed conflict and are never overwritten,
+truncated, deleted, repaired, or renamed over. Any uncertainty after exclusive
+creation at write, short write, flush, file fsync, close, or directory fsync is
+ambiguous: the artifact is retained with no cleanup, no retry, and no rewrite,
+and later exact retained bytes may be accepted while partial or different bytes
+fail closed.
+
+Phase 295 constructs the expected `ExternalPublicationOperationIntent` only
+from the strict-loaded Phase 294 preparation approval/plan lineage and the exact
+`resume` operation. It neither requires nor calls
+`build_external_publication_operation_intent()`, because Phase 295 is not
+authorized to accept or reload an approval object as authority, and it does not
+modify the Phase 289 model or schema.
+
+The public orchestration API
+`materialize_and_bind_external_publication_recovery_resume_intent` is
+keyword-only and takes the three exact concrete platform `Path` values
+(`resume_preparation_path`, `resume_intent_binding_path`, `resume_intent_path`)
+plus injected callables that default to the exact public helpers
+(`preparation_loader`, `preparation_digest_function`, `intent_loader`,
+`intent_digest_function`, `intent_persist_function`). It accepts no
+caller-supplied preparation object, preparation digest, approval object,
+operation intent object, operation intent digest, recovery decision object,
+source operation, recovery kind, or target operation as authority.
+
+Before any mutation, Phase 295 preflights that all three paths are exact
+concrete platform `Path` values, pairwise distinct, and that every injected
+dependency is callable, and it validates the binding and intent target parents
+and shapes without mutation. No start-marker path exists in this API, and no
+provider, network, or credential access occurs. A regular existing intent target
+is not by itself authorization; it may only be accepted after an exact Phase 295
+binding has been durably resolved.
+
+Phase 295 then strict-loads the Phase 294 preparation exactly once through the
+caller's exact `resume_preparation_path` identity and locally revalidates every
+model field and cross-field invariant: the exact schema, exact lowercase
+digests, exact `fresh|resume` source operation, exact
+`already_acquired|reconciliation_mismatch` recovery kind,
+`reconciliation_mismatch` requiring `resume` source operation, `target_operation`
+exactly `resume`, and `state` exactly `prepared`. The preparation digest is
+computed exactly once from the exact loader-returned object identity and must be
+an exact lowercase 64-hex string. Known Phase 294 errors propagate by exact
+object identity; unexpected helper exceptions become the fixed detail-safe
+`dependency_error`.
+
+The expected Phase 289 resume intent is constructed only from the validated
+preparation approval and plan lineage with the exact `resume` operation, and its
+exact contract (model, schema, approval digest, plan digest, operation) is
+revalidated locally. No approval object, target, provider, transport, or lower
+evidence is loaded. The expected intent digest is computed by calling the
+injected public digest helper exactly once with the exact constructed object
+identity and must be an exact builtin lowercase 64-hex string; known Phase 289
+errors keep their exact identity and unexpected helper exceptions sanitize to
+the Phase 295 `dependency_error`.
+
+The Phase 295 binding is constructed only from the computed Phase 294
+preparation digest, the preparation recovery decision digest, the preparation
+approval and plan digests, the computed expected Phase 289 intent digest, the
+preparation source operation, the preparation recovery kind, operation `resume`,
+and state `authorized`. No ambient value is used.
+
+Resolving or persisting that binding completes before any Phase 289 intent
+load or persist attempt. When the binding target exists, it is strict-loaded
+exactly once, must be the exact runtime binding, must pass the strict local
+validation, and must equal the constructed binding exactly; a differing binding
+is a fixed conflict whose bytes are unchanged, and the exact loader-returned
+binding object identity is used for the rest of the invocation. When the
+binding target is absent, the constructed binding is persisted exactly once with
+no retry and the exact constructed object is used. If binding persistence is
+ambiguous or fails, Phase 295 stops immediately, the Phase 289 intent loader and
+persist call counts are zero, and no intent mutation occurs.
+
+Only after binding durability is established does Phase 295 materialize or
+verify the Phase 289 resume intent. When the intent target exists it is
+strict-loaded exactly once, must be the exact
+`ExternalPublicationOperationIntent`, must pass local revalidation of the exact
+Phase 289 fields, must equal the exact constructed expected intent, and must
+carry operation `resume`; a mismatched or corrupt intent fails closed and is
+never overwritten, repaired, or deleted. When the intent target is absent,
+`intent_persist_function` is called exactly once with the exact path and object
+identities and is never retried. Known Phase 289 load and persistence errors
+preserve their exact object identity, and unexpected dependency errors sanitize
+to the Phase 295 `dependency_error`. The Phase 295 binding remains retained if
+intent materialization later fails or is ambiguous.
+
+Phase 295 returns the exact resolved binding object: the exact loader-returned
+object identity for an existing exact binding, or the exact constructed binding
+for a newly persisted binding. It returns only after the Phase 289 intent is
+either strict-loaded and exactly equal or durably persisted successfully, and it
+never returns success when the binding exists but the intent has not been proven
+exact and durable during the invocation.
+
+Phase 295 calls no Phase 294/293/292/291 orchestration, no Phase 290
+acquisition, no Phase 288/287/285, and no provider, transport, or network. It
+creates no Phase 290 start marker, never treats a Phase 289 intent alone as
+recovery authorization, never creates or persists an intent before binding
+durability, accepts no approval/plan/provider/target/runtime object from the
+caller as authority, never replays fresh, never executes a resume, and inspects
+no Phase 280/282/284 lower evidence or provider state. It overwrites, deletes,
+or repairs no binding, preparation, or intent artifact, retries no binding or
+intent persistence, generates no timestamps, randomness, UUIDs, or ambient
+identity, accesses no environment, credentials, socket, or subprocess, and
+automatically continues, schedules, loops, or parallelizes nothing. It adds no
+CLI or GUI behavior. A future Phase 296 must require the exact Phase 295 binding
+plus the exact bound Phase 289 intent before acquiring a **new explicit start
+marker path**, and must not infer authority from the intent alone.
