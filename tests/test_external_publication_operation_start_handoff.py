@@ -13,6 +13,7 @@ import ai_office.engine.external_publication_operation_start_handoff as handoff_
 from ai_office.engine import (
     ExternalPublicationApproval,
     ExternalPublicationApprovalError,
+    ExternalPublicationError,
     ExternalPublicationExecutionReconciliation,
     ExternalPublicationExecutionResult,
     ExternalPublicationFreshOperationRequest,
@@ -535,6 +536,247 @@ def test_resume_preflight_requires_lowercase_plan_digest(
         )
     _assert_handoff_error(info.value, "request_lineage")
     assert phase290.calls == []
+
+
+# --- helper call count, identity, and detail-safe failures -------------
+
+
+def test_resume_approval_digest_called_once_with_exact_approval_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = _plan()
+    approval = _approval(plan)
+    request = _resume_request(tmp_path, approval=approval)
+    seen: list[object] = []
+
+    def counting_digest(value: object) -> object:
+        seen.append(value)
+        return external_publication_approval_digest(value)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        handoff_module, "external_publication_approval_digest", counting_digest
+    )
+    result = _resume_result()
+    phase288 = _Phase288Recorder(result)
+    returned = run_external_publication_operation_start_handoff(
+        intent_path=tmp_path / "intent.json",
+        start_path=tmp_path / "start.json",
+        request=request,
+        phase290_function=_Phase290Recorder(
+            _acquisition(
+                "acquired",
+                "resume",
+                approval_digest=external_publication_approval_digest(approval),
+                plan_digest=approval.publication_plan_sha256,
+            )
+        ),
+        phase288_function=phase288,
+    )
+    assert seen == [approval]
+    assert seen[0] is request.approval
+    assert returned is result
+    assert phase288.calls == [request]
+
+
+def test_fresh_validate_approval_known_error_propagates_by_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = ExternalPublicationApprovalError("plan_binding")
+
+    def failing_validate(plan: object, approval: object) -> None:
+        raise error
+
+    monkeypatch.setattr(
+        handoff_module, "validate_external_publication_approval", failing_validate
+    )
+    phase290 = _Phase290Recorder(_acquire_ok("fresh"))
+    phase288 = _Phase288Recorder(_fresh_result())
+    with pytest.raises(ExternalPublicationApprovalError) as info:
+        run_external_publication_operation_start_handoff(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            request=_fresh_request(tmp_path),
+            phase290_function=phase290,
+            phase288_function=phase288,
+        )
+    assert info.value is error
+    assert phase290.calls == []
+    assert phase288.calls == []
+
+
+@pytest.mark.parametrize("operation", ["fresh", "resume"])
+def test_approval_digest_known_error_propagates_by_identity(
+    operation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = ExternalPublicationError("digest")
+
+    def failing_digest(value: object) -> object:
+        raise error
+
+    monkeypatch.setattr(
+        handoff_module, "external_publication_approval_digest", failing_digest
+    )
+    request: object = (
+        _fresh_request(tmp_path) if operation == "fresh" else _resume_request(tmp_path)
+    )
+    phase290 = _Phase290Recorder(_acquire_ok(operation))
+    phase288 = _Phase288Recorder(
+        _fresh_result() if operation == "fresh" else _resume_result()
+    )
+    with pytest.raises(ExternalPublicationError) as info:
+        run_external_publication_operation_start_handoff(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            request=request,
+            phase290_function=phase290,
+            phase288_function=phase288,
+        )
+    assert info.value is error
+    assert phase290.calls == []
+    assert phase288.calls == []
+
+
+def test_fresh_plan_digest_known_error_propagates_by_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = ExternalPublicationError("digest")
+
+    def failing_digest(value: object) -> object:
+        raise error
+
+    monkeypatch.setattr(
+        handoff_module, "external_publication_plan_digest", failing_digest
+    )
+    phase290 = _Phase290Recorder(_acquire_ok("fresh"))
+    phase288 = _Phase288Recorder(_fresh_result())
+    with pytest.raises(ExternalPublicationError) as info:
+        run_external_publication_operation_start_handoff(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            request=_fresh_request(tmp_path),
+            phase290_function=phase290,
+            phase288_function=phase288,
+        )
+    assert info.value is error
+    assert phase290.calls == []
+    assert phase288.calls == []
+
+
+_MALFORMED_DIGESTS = (
+    None,
+    123,
+    1.5,
+    b"a" * 64,
+    _StringChild("a" * 64),
+    "A" * 64,
+    "a" * 63,
+    "a" * 65,
+    "g" * 64,
+    "",
+)
+
+
+@pytest.mark.parametrize("malformed", _MALFORMED_DIGESTS)
+def test_malformed_approval_digest_is_request_lineage(
+    malformed: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        handoff_module, "external_publication_approval_digest", lambda value: malformed
+    )
+    phase290 = _Phase290Recorder(_acquire_ok("fresh"))
+    phase288 = _Phase288Recorder(_fresh_result())
+    with pytest.raises(ExternalPublicationOperationStartHandoffError) as info:
+        run_external_publication_operation_start_handoff(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            request=_fresh_request(tmp_path),
+            phase290_function=phase290,
+            phase288_function=phase288,
+        )
+    _assert_handoff_error(info.value, "request_lineage")
+    assert phase290.calls == []
+    assert phase288.calls == []
+
+
+@pytest.mark.parametrize("malformed", _MALFORMED_DIGESTS)
+def test_malformed_fresh_plan_digest_is_request_lineage(
+    malformed: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        handoff_module, "external_publication_plan_digest", lambda value: malformed
+    )
+    phase290 = _Phase290Recorder(_acquire_ok("fresh"))
+    phase288 = _Phase288Recorder(_fresh_result())
+    with pytest.raises(ExternalPublicationOperationStartHandoffError) as info:
+        run_external_publication_operation_start_handoff(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            request=_fresh_request(tmp_path),
+            phase290_function=phase290,
+            phase288_function=phase288,
+        )
+    _assert_handoff_error(info.value, "request_lineage")
+    assert phase290.calls == []
+    assert phase288.calls == []
+
+
+@pytest.mark.parametrize("malformed", _MALFORMED_DIGESTS)
+def test_malformed_resume_approval_digest_is_request_lineage(
+    malformed: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        handoff_module, "external_publication_approval_digest", lambda value: malformed
+    )
+    phase290 = _Phase290Recorder(_acquire_ok("resume"))
+    phase288 = _Phase288Recorder(_resume_result())
+    with pytest.raises(ExternalPublicationOperationStartHandoffError) as info:
+        run_external_publication_operation_start_handoff(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            request=_resume_request(tmp_path),
+            phase290_function=phase290,
+            phase288_function=phase288,
+        )
+    _assert_handoff_error(info.value, "request_lineage")
+    assert phase290.calls == []
+    assert phase288.calls == []
+
+
+_SECRET = "sk-live-do-not-leak-291"
+
+
+def _preflight_helper_cases() -> list[tuple[str, str]]:
+    return [
+        ("validator", "validate_external_publication_approval"),
+        ("approval_digest", "external_publication_approval_digest"),
+        ("plan_digest", "external_publication_plan_digest"),
+    ]
+
+
+@pytest.mark.parametrize("label,attribute", _preflight_helper_cases())
+def test_unexpected_preflight_helper_error_is_detail_safe(
+    label: str, attribute: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def exploding(*args: object, **kwargs: object) -> object:
+        raise RuntimeError(_SECRET)
+
+    monkeypatch.setattr(handoff_module, attribute, exploding)
+    phase290 = _Phase290Recorder(_acquire_ok("fresh"))
+    phase288 = _Phase288Recorder(_fresh_result())
+    with pytest.raises(ExternalPublicationOperationStartHandoffError) as info:
+        run_external_publication_operation_start_handoff(
+            intent_path=tmp_path / "intent.json",
+            start_path=tmp_path / "start.json",
+            request=_fresh_request(tmp_path),
+            phase290_function=phase290,
+            phase288_function=phase288,
+        )
+    _assert_handoff_error(info.value, "dependency_error")
+    assert _SECRET not in str(info.value)
+    assert _SECRET not in repr(info.value.detail)
+    assert _SECRET not in repr(info.value.detail.classification)
+    assert phase290.calls == []
+    assert phase288.calls == []
 
 
 # --- Phase 290 ordering --------------------------------------------------
