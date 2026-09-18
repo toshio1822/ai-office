@@ -1031,6 +1031,97 @@ def test_decision_contract_rejects_forged_fields(
     assert not preparation_path.exists()
 
 
+_METADATA_INVALID_CASES = [
+    pytest.param(1234, id="non-string-int"),
+    pytest.param(None, id="non-string-none"),
+    pytest.param(_StringChild("operator-294"), id="non-string-str-child"),
+    pytest.param("", id="empty"),
+    pytest.param(" operator-294", id="leading-whitespace"),
+    pytest.param("operator-294 ", id="trailing-whitespace"),
+    pytest.param("a" * 257, id="over-max-length"),
+    pytest.param("oper\x00ator", id="cc-character"),
+    pytest.param("oper\ud800ator", id="cs-surrogate"),
+]
+
+
+@pytest.mark.parametrize("field", ["decided_by", "decision_id"])
+@pytest.mark.parametrize("value", _METADATA_INVALID_CASES)
+def test_decision_metadata_revalidated_locally_before_any_dependency(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    """Phase 294 rejects forged Phase 293 operator metadata on its own.
+
+    The injected decision digest helper would return a valid lowercase 64-hex
+    digest for this operand, so only the Phase 294 local boundary contract can
+    reject it.  The rejection must happen before the digest helper, the
+    lifecycle loader, or the start loader is ever called.
+    """
+    decision_path, lifecycle_path, start_path = _seed_lineage(tmp_path)
+    preparation_path = tmp_path / "prep.json"
+    before = (
+        decision_path.read_bytes(),
+        lifecycle_path.read_bytes(),
+        start_path.read_bytes(),
+    )
+    real = load_external_publication_recovery_decision(decision_path)
+    forged = _forged_instance(
+        ExternalPublicationRecoveryDecision, real, **{field: value}
+    )
+    digest_function = _CallRecorder(lambda *args, **kwargs: "a" * 64)
+    lifecycle_loader = _LoaderRecorder(
+        load_external_publication_operation_lifecycle_outcome
+    )
+    start_loader = _LoaderRecorder(load_external_publication_operation_start)
+
+    with pytest.raises(ExternalPublicationRecoveryResumePreparationError) as info:
+        _prepare(
+            decision_path,
+            lifecycle_path,
+            start_path,
+            preparation_path,
+            decision_loader=lambda path: forged,
+            decision_digest_function=digest_function,
+            lifecycle_loader=lifecycle_loader,
+            start_loader=start_loader,
+        )
+    _assert_error(info.value, "decision_contract")
+    assert len(digest_function.calls) == 0
+    assert len(lifecycle_loader.calls) == 0
+    assert len(start_loader.calls) == 0
+    assert not preparation_path.exists()
+    assert (
+        decision_path.read_bytes(),
+        lifecycle_path.read_bytes(),
+        start_path.read_bytes(),
+    ) == before
+
+
+@pytest.mark.parametrize("field", ["decided_by", "decision_id"])
+def test_decision_metadata_exactly_max_length_still_accepted(
+    tmp_path: Path, field: str
+) -> None:
+    """The Phase 293 ``<= 256`` length contract is preserved exactly.
+
+    Exactly 256 characters with no surrounding or control characters stays
+    valid; the rejection boundary begins at 257.
+    """
+    decision_path, lifecycle_path, start_path = _seed_lineage(tmp_path)
+    preparation_path = tmp_path / "prep.json"
+    real = load_external_publication_recovery_decision(decision_path)
+    forged = _forged_instance(
+        ExternalPublicationRecoveryDecision, real, **{field: "a" * 256}
+    )
+    preparation = _prepare(
+        decision_path,
+        lifecycle_path,
+        start_path,
+        preparation_path,
+        decision_loader=lambda path: forged,
+    )
+    assert preparation.state == "prepared"
+    assert preparation.target_operation == "resume"
+
+
 def test_stop_decision_rejected_before_target_mutation(tmp_path: Path) -> None:
     decision_path, lifecycle_path, start_path = _seed_lineage(tmp_path, chosen="stop")
     preparation_path = tmp_path / "prep.json"
@@ -1898,6 +1989,7 @@ def test_source_audit_no_forbidden_imports() -> None:
         "pathlib",
         "re",
         "typing",
+        "unicodedata",
     }
     assert imports[".external_publication_recovery_decision"] == {
         "ExternalPublicationRecoveryDecision",

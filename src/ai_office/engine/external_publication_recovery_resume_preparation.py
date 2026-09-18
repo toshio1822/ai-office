@@ -35,6 +35,7 @@ import errno
 import json
 import os
 import re
+import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -88,6 +89,7 @@ _PREPARATION_KEYS = frozenset(
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _PATH_TYPE = type(Path())
 _MAX_PREPARATION_BYTES = 4096
+_MAX_METADATA_LENGTH = 256
 _SOURCE_OPERATIONS = frozenset({"fresh", "resume"})
 _RECOVERY_KINDS = frozenset({"already_acquired", "reconciliation_mismatch"})
 _TARGET_OPERATIONS = frozenset({"resume"})
@@ -519,6 +521,8 @@ def _validate_decision_contract(decision: object) -> None:
         source_operation = decision.source_operation  # type: ignore[union-attr]
         recovery_kind = decision.recovery_kind  # type: ignore[union-attr]
         chosen = decision.decision  # type: ignore[union-attr]
+        decided_by = decision.decided_by  # type: ignore[union-attr]
+        decision_id = decision.decision_id  # type: ignore[union-attr]
         state = decision.state  # type: ignore[union-attr]
     except ExternalPublicationRecoveryResumePreparationError:
         raise
@@ -548,6 +552,22 @@ def _validate_decision_contract(decision: object) -> None:
         _raise_preparation("decision_contract")
     if type(state) is not str or state != "decided":
         _raise_preparation("decision_state")
+    # Phase 294 revalidates the Phase 293 operator metadata as its own boundary
+    # contract instead of relying on the Phase 293 digest helper to reject it.
+    _validate_decision_metadata(decided_by, decision_id)
+
+
+def _validate_decision_metadata(decided_by: object, decision_id: object) -> None:
+    for value in (decided_by, decision_id):
+        if (
+            type(value) is not str
+            or not value
+            or value != value.strip()
+            or len(value) > _MAX_METADATA_LENGTH
+        ):
+            _raise_preparation("decision_contract")
+        if any(unicodedata.category(character) in {"Cc", "Cs"} for character in value):
+            _raise_preparation("decision_contract")
 
 
 def _require_authorizing_decision(decision: object) -> None:
