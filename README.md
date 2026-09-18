@@ -5311,3 +5311,91 @@ lifecycle looping、Phase 285/287/provider/transportの直接呼び出しを行�
 reconciliation evidence、Phase 289/290 persistenceを複製しません。CLI/GUI変更もありません。
 次の設計段階は、このno-replay boundaryが証明された後にだけ、explicitなpost-handoff
 durable lifecycle/recovery stateを評価します。
+
+## Phase 292: durable post-handoff lifecycle outcome evidence
+
+Phase 292は、Phase 291のsame-invocation handoffの上に、append-onlyでimmutableな
+lifecycle sidecarを1つ追加します。Phase 291の**normal returnだけ**をdurable lifecycle
+outcomeへ変換し、それ以外は記録しません。
+
+```text
+Phase 289 durable intent
+        ↓
+Phase 290 crash-safe start fence
+        ↓
+Phase 291 same-invocation handoff
+        ↓ normal return only
+Phase 292 durable lifecycle outcome
+   ├─ completed
+   └─ recovery_required
+```
+
+Phase 291実行前に、Phase 292はexactな`intent_path` / `start_path` /
+`lifecycle_outcome_path`のplatform `Path`、exact request runtime type、注入dependencyの
+callable性、lifecycle targetのparent/shape（mutationなし）、および既存sidecar比較に
+必要な最小限のrequest lineage（exact approval runtime type、public canonical approval
+digestを1回、exact plan digest、request typeから導出するexpected operation）だけを
+preflightします。output/evidence/provider stateは読みません。
+
+lifecycle sidecarはそれ自身がidempotency boundaryです。exactなlifecycle outcomeが
+既に存在する場合、Phase 292はsidecarを1回strict-loadし、Phase 290 start markerを1回
+strict-loadし、exact start digestを1回計算し、operation/approval/plan/start-digestの
+lineageと全cross-field invariantを検証して、そのloaded objectをそのまま返します。この
+ときPhase 291のcall countは**0**です。validな既存`recovery_required` recordはそのまま
+返され、retry permissionとして使われません。malformed/conflicting/noncanonicalな
+sidecarはfail closedとなり、Phase 291はzero-callです。
+
+lifecycle outcomeが存在しない場合、Phase 292はcallerのexactな`intent_path` /
+`start_path` / request identityでPhase 291をexactly once呼び、Phase 290 startを
+strict-loadし、start digestを1回計算してstart lineageを再検証したうえで、exactな
+Phase 291 returnのruntime type/valueだけで分類します。
+
+- fresh → durable startとapproval/plan digestが一致するexact
+  `ExternalPublicationExecutionResult(status="published")` は
+  `completed / execution_result`；
+- resume → exact `ExternalPublicationExecutionReconciliation(status="matched")`は
+  `completed / reconciliation`；
+- resumeの`lineage_mismatch`は`recovery_required / reconciliation`；
+- 埋め込みstartがstrict-loaded durable startと一致するexact
+  `ExternalPublicationOperationStartAcquisition(status="already_acquired")`は
+  `recovery_required / none`（result digestはnull）。
+
+`already_acquired`は必ず`recovery_required`となり、`completed`にはなりません。
+`recovery_required`はautomatic replayを停止すべきというdurable knowledgeであり、failure
+classificationでもretry authorizationでもありません。Phase 290 markerがreplay fenceの
+ままであり、Phase 292はpost-handoff knowledgeのみを記録します。
+
+Phase 291が例外をraiseした場合、Phase 292はknown authoritative errorを同一object
+identityでpropagateし、sidecarを作成しません。unexpected exceptionはfixed/detail-safeな
+`dependency_error`となり、lifecycle targetはabsentのままです。Phase 291の例外から
+durable lifecycle stateを推測することはなく、Phase 290 start markerが存在するだけで
+`recovery_required`を書くこともありません。exception-sideのdurable ambiguity
+classificationは後続のexplicit phaseに属します。
+
+完全なlifecycle outcomeはlifecycle targetのmutation前にderive/validateされ、Phase 292の
+append-only persistence helperでexactly once永続化されます。exclusive create、full
+canonical write、flush、file fsync、safe close、parent-directory fsyncの順です。同一bytes
+はidempotentなdurable success、different/partial/noncanonical bytesはfixed conflictであり、
+overwrite/truncate/delete/rename-overは行いません。exclusive create後のuncertain failureは
+ambiguousとなり、artifactは保持されcleanupもretryも行いません。後からexactなretained
+bytesはidempotentにacceptされ、partial/different bytesはfail closedします。Phase 292は
+Phase 291や自身のpersistenceをretryせず、Phase 290 start markerをrollbackせず、
+fresh↔resume変換も行いません。
+
+canonical JSONはexactly 8 key（`operation`、`operation_start_sha256`、
+`publication_approval_sha256`、`publication_plan_sha256`、`result_kind`、
+`result_sha256`、`schema_version`、`state`）で、compact UTF-8、`sort_keys=True`、
+`ensure_ascii=False`、`allow_nan=False`、strict duplicate-key rejection、非標準JSON
+定数のrejectionを持ちます。loaderはexact modelとcanonical byte equalityを要求するため、
+semantically equivalentでもnoncanonicalなwhitespace/orderはrejectされ、digestはexact
+canonical bytesに対するdeterministic SHA-256です。timestamp、clock value、UUID、
+randomness、hostname、PID、caller path、provider credential、transport object、
+exception text、approval ID/name、mutable runtime valueは含みません。
+
+Phase 292はPhase 288/290/285/287境界やprovider/transportを直接呼ばず、Phase 280 claimや
+Phase 282/284 evidenceをretry判断のためにinspectしません。fresh↔resume変換、
+`recovery_required`からのfresh replay、Phase 289 intent / Phase 290 startのdelete/repair、
+lifecycle outcomeのoverwrite/repair、Phase 291 / lifecycle persistenceのretry、lifecycle
+persistence失敗時のstart marker rollback、automatic continuation/schedule/loop/parallelizeは
+行いません。CLI/GUI変更もありません。次の設計段階は、freshのno-replay fenceを弱めずに
+`recovery_required`をconsumeするexplicitなoperator/recovery decision boundaryを評価します。

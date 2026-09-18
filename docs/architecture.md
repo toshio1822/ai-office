@@ -6002,3 +6002,105 @@ adds no timestamp, clock, random, or UUID lifecycle data. No CLI or GUI
 behavior changes. The next design step should evaluate explicit post-handoff
 durable lifecycle or recovery state only after this no-replay boundary is
 proven.
+
+## Phase 292: Durable post-handoff lifecycle outcome evidence
+
+Phase 292 adds one append-only, immutable lifecycle sidecar on top of the Phase
+291 same-invocation handoff. It is the first boundary that durably records what
+a Phase 291 return proved, and it deliberately records nothing else.
+
+```text
+Phase 289 durable intent
+        ↓
+Phase 290 crash-safe start fence
+        ↓
+Phase 291 same-invocation handoff
+        ↓ normal return only
+Phase 292 durable lifecycle outcome
+   ├─ completed
+   └─ recovery_required
+```
+
+Only a *normal* Phase 291 return may create Phase 292 lifecycle outcome
+evidence. Before Phase 291 executes, Phase 292 preflights the exact caller
+`intent_path`, `start_path`, and `lifecycle_outcome_path` platform `Path`
+values, the exact runtime request type, every injected dependency's
+callability, the lifecycle target parent/shape without mutation, and the
+minimal request-lineage checks needed to compare an already-existing sidecar
+(the exact approval runtime type, one public canonical approval digest, one
+exact plan digest, and the expected operation derived from the exact request
+type). It never reads output, evidence, or provider state.
+
+The lifecycle sidecar is itself the idempotency boundary. When an exact
+lifecycle outcome already exists, Phase 292 strict-loads it once, strict-loads
+the Phase 290 start marker once, computes the exact start digest once, verifies
+the complete operation/approval/plan/start-digest lineage and all cross-field
+invariants, returns that exact loaded object, and calls Phase 291 **zero**
+times. A valid existing `recovery_required` record is returned unchanged.
+Malformed, conflicting, or noncanonical sidecars fail closed with a Phase 291
+zero-call count.
+
+When no lifecycle outcome exists, Phase 292 calls Phase 291 exactly once with
+the caller's exact `intent_path`, `start_path`, and request identities, then
+strict-loads the Phase 290 start, computes the start digest once, revalidates
+start lineage, and classifies only by the exact Phase 291 return runtime
+type/value:
+
+- fresh → exact `ExternalPublicationExecutionResult(status="published")` whose
+  approval and plan digests match the durable start becomes
+  `completed / execution_result`;
+- resume → exact `ExternalPublicationExecutionReconciliation(status="matched")`
+  becomes `completed / reconciliation`;
+- resume reconciliation `lineage_mismatch` becomes
+  `recovery_required / reconciliation`;
+- exact `ExternalPublicationOperationStartAcquisition(status="already_acquired")`
+  whose embedded start equals the strict-loaded durable start becomes
+  `recovery_required / none` with a null result digest.
+
+`already_acquired` always maps to `recovery_required` and is never
+`completed`. `recovery_required` is durable knowledge that automatic replay
+must stop: it is neither a failure classification nor retry permission, and
+Phase 292 never uses it to authorize a replay. The Phase 290 marker remains the
+replay fence; Phase 292 records durable post-handoff knowledge only.
+
+If Phase 291 raises, Phase 292 propagates a known authoritative error unchanged
+by identity and writes no sidecar; an unexpected exception becomes a fixed
+detail-safe `dependency_error`, and the lifecycle target stays absent. A Phase
+291 exception is never classified into a durable lifecycle state, and a present
+Phase 290 start marker is never by itself converted into `recovery_required`.
+Exception-side durable ambiguity classification belongs to a later explicit
+phase.
+
+The complete lifecycle outcome is derived and validated before any lifecycle
+target mutation, and it is persisted exactly once through the Phase 292
+append-only persistence helper: exclusive create, full canonical write, flush,
+file fsync, safe close, then parent-directory fsync. Identical existing bytes
+are an idempotent durable success; different, partial, or noncanonical bytes are
+a fixed conflict and are never overwritten, truncated, deleted, or renamed
+over. An uncertain failure after exclusive creation is ambiguous: the artifact
+is retained with no cleanup and no retry, later exact retained bytes may be
+accepted idempotently, and later partial or different bytes fail closed. Phase
+292 never retries Phase 291 or its own persistence, never rolls back the Phase
+290 start marker, and never converts fresh to resume.
+
+Its canonical JSON holds exactly eight keys (`operation`,
+`operation_start_sha256`, `publication_approval_sha256`,
+`publication_plan_sha256`, `result_kind`, `result_sha256`, `schema_version`,
+`state`) as compact UTF-8 with sorted keys, `ensure_ascii=False`,
+`allow_nan=False`, strict duplicate-key rejection, and rejection of
+non-standard JSON constants. The loader requires the exact model and canonical
+byte equality, so semantically equivalent but noncanonical whitespace or key
+order is rejected, and the digest is deterministic SHA-256 over the exact
+canonical bytes. The model carries no timestamps, clock values, UUIDs,
+randomness, hostname, PID, caller paths, provider credentials, transport
+objects, exception text, approval IDs or names, or mutable runtime values.
+
+Phase 292 calls no Phase 288/290/285/287 boundary directly, no provider or
+transport, and inspects no Phase 280 claim or Phase 282/284 evidence to decide
+a retry. It does not convert fresh to resume, replay fresh from
+`recovery_required`, delete or repair the Phase 289 intent or Phase 290 start,
+overwrite the lifecycle outcome, retry Phase 291 or lifecycle persistence, roll
+back the start marker if lifecycle persistence fails, or automatically
+continue, schedule, loop, or parallelize. It adds no CLI or GUI behavior. The
+next design step may evaluate an explicit operator/recovery decision boundary
+that consumes `recovery_required` without weakening the fresh no-replay fence.
