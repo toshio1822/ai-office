@@ -6637,16 +6637,46 @@ authorization is persisted exactly once with no retry and returned only after
 durable success. No Phase 290 acquisition and no Phase 291 call occurs on either
 path.
 
+### Canonical authorization target contract
+
+The Phase 296 authorization target itself must be canonical for the exact Phase
+295 binding. A binding path alone is insufficient: if the same exact binding
+could be materialized against authorization paths in different parent
+directories, the resulting authorization bytes and digest would be identical
+but a future Phase 297 would derive different start-marker paths from each
+authorization path parent, reintroducing the multiple-start-path replay risk
+Phase 296 fences.
+
+After strict-loading, locally revalidating, and computing the exact Phase 295
+binding digest, and **before** the Phase 289 intent loader is called, Phase 296
+derives the only allowed authorization target as
+`resume_intent_binding_path.parent / ("external-publication-recovery-resume-start-authorization-" + binding_digest + ".json")`
+and requires the caller's `resume_start_authorization_path` to be exactly equal
+to it. The caller may still supply the argument, but any other filename or
+parent directory fails closed with the fixed detail-safe `authorization_path`
+classification before the intent loader, intent digest, start digest, or any
+persistence call, leaving all artifacts unchanged. Only exact concrete `Path`
+equality is accepted; no normalization, resolve, or symlink-following
+equivalence is applied, no directory is created, and no artifact is relocated or
+copied. The canonical target is based on the exact caller binding path parent
+plus the exact computed binding digest, so one exact binding path cannot yield
+two valid Phase 296 authorizations.
+
 ### Future deterministic start target contract
 
 Phase 296 creates no start marker, but it pins the rule for a future Phase 297.
-Given the exact `resume_start_authorization_path`, the exact loaded Phase 296
-authorization, and the exact computed Phase 296 authorization digest, future
-Phase 297 must derive the only allowed start target as
-`resume_start_authorization_path.parent / ("external-publication-recovery-resume-start-" + authorization_digest + ".json")`,
-using a fixed filename convention. Phase 297 must not accept an arbitrary
-caller-supplied start path. This makes one Phase 296 authorization map to exactly
-one canonical start target within its authoritative sidecar directory, so one
+The authoritative namespace is the exact Phase 295 binding parent. Given the
+exact `resume_intent_binding_path`, the exact loaded Phase 296 authorization,
+and the exact computed Phase 296 authorization digest, future Phase 297 must
+derive the only allowed start target as
+`resume_intent_binding_path.parent / ("external-publication-recovery-resume-start-" + authorization_digest + ".json")`,
+using a fixed filename convention. Because Phase 296 now requires the
+authorization sidecar itself to live at the canonical path inside the exact
+binding parent, `resume_start_authorization_path.parent` would be equivalent
+after validation, but the contract and helper use `resume_intent_binding_path.parent`
+explicitly so the namespace authority is unambiguous. Phase 297 must not accept
+an arbitrary caller-supplied start path. This makes one Phase 296 authorization
+map to exactly one canonical start target, so one
 authorization invocation cannot casually select multiple independent start
 targets.
 

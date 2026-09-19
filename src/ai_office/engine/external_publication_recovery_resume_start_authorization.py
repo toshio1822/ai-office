@@ -99,11 +99,16 @@ _BINDING_OPERATIONS = frozenset({"resume"})
 _BINDING_STATES = frozenset({"authorized"})
 _FUTURE_START_FILENAME_PREFIX = "external-publication-recovery-resume-start-"
 _FUTURE_START_FILENAME_SUFFIX = ".json"
+_AUTHORIZATION_FILENAME_PREFIX = (
+    "external-publication-recovery-resume-start-authorization-"
+)
+_AUTHORIZATION_FILENAME_SUFFIX = ".json"
 
 Classification = Literal[
     "configuration",
     "path_type",
     "path_conflict",
+    "authorization_path",
     "binding_contract",
     "binding_digest",
     "intent_contract",
@@ -290,22 +295,71 @@ def external_publication_recovery_resume_start_authorization_digest(
     ).hexdigest()
 
 
-def _future_start_target_path(
+def _canonical_authorization_target_path(
+    resume_intent_binding_path: Path,
+    binding_digest: str,
+) -> Path:
+    """Derive the only allowed Phase 296 authorization target for one binding.
+
+    The rule is canonical for the exact Phase 295 binding so that the same
+    binding can never materialize more than one valid Phase 296 authorization:
+
+    ``resume_intent_binding_path.parent /
+    "external-publication-recovery-resume-start-authorization-<binding digest>.json"``
+
+    The caller may still supply ``resume_start_authorization_path``, but after
+    the binding digest is computed it must be exactly equal to this derived
+    target.  No normalization, resolve, or symlink-following equivalence is
+    applied; only exact concrete ``Path`` equality is accepted.
+    """
+    return resume_intent_binding_path.parent / (
+        f"{_AUTHORIZATION_FILENAME_PREFIX}{binding_digest}"
+        f"{_AUTHORIZATION_FILENAME_SUFFIX}"
+    )
+
+
+def _validate_canonical_authorization_path(
+    resume_intent_binding_path: Path,
     resume_start_authorization_path: Path,
+    binding_digest: str,
+) -> None:
+    """Require the caller target to be the exact canonical authorization path.
+
+    Runs after the exact Phase 295 binding has been strict-loaded, locally
+    revalidated, and digested, and before the Phase 289 intent loader is called.
+    Only exact concrete ``Path`` equality with the derived canonical target is
+    accepted; no normalization, resolve, or symlink-following equivalence is
+    applied, and no directory is created or artifact relocated.
+    """
+    try:
+        canonical = _canonical_authorization_target_path(
+            resume_intent_binding_path, binding_digest
+        )
+    except ExternalPublicationRecoveryResumeStartAuthorizationError:
+        raise
+    except Exception:
+        _raise_authorization("authorization_path")
+    if resume_start_authorization_path != canonical:
+        _raise_authorization("authorization_path")
+
+
+def _future_start_target_path(
+    resume_intent_binding_path: Path,
     authorization_digest: str,
 ) -> Path:
     """Derive the one canonical future Phase 297 start target for one authorization.
 
-    The rule is fixed so that one Phase 296 authorization maps to exactly one
-    canonical start target inside its authoritative sidecar directory:
+    The authoritative namespace is the exact Phase 295 binding parent, because
+    Phase 296 already requires the authorization sidecar itself to live at the
+    canonical path inside that same parent:
 
-    ``<resume_start_authorization_path>.parent /
-    "external-publication-recovery-resume-start-<digest>.json"``
+    ``resume_intent_binding_path.parent /
+    "external-publication-recovery-resume-start-<authorization digest>.json"``
 
     Phase 296 itself neither creates nor checks this future marker, and a future
     Phase 297 must not accept an arbitrary caller-supplied start path.
     """
-    return resume_start_authorization_path.parent / (
+    return resume_intent_binding_path.parent / (
         f"{_FUTURE_START_FILENAME_PREFIX}{authorization_digest}"
         f"{_FUTURE_START_FILENAME_SUFFIX}"
     )
@@ -411,8 +465,13 @@ def authorize_and_persist_external_publication_recovery_resume_start(
     The exact Phase 295 binding is strict-loaded exactly once through the
     caller's exact ``resume_intent_binding_path`` identity and every Phase 295
     field and cross-field invariant is locally revalidated before its digest is
-    computed exactly once from the exact loaded object.  Only then is the exact
-    bound Phase 289 ``resume`` intent strict-loaded exactly once through the
+    computed exactly once from the exact loaded object.  The caller
+    ``resume_start_authorization_path`` must then be exactly equal to the
+    canonical authorization target derived from that exact binding path parent
+    and exact computed binding digest; any other filename or parent fails closed
+    with the fixed ``authorization_path`` classification before the Phase 289
+    intent loader is called and before any target mutation.  Only then is the
+    exact bound Phase 289 ``resume`` intent strict-loaded exactly once through the
     caller's exact ``resume_intent_path`` identity, locally revalidated, and its
     digest bound to the binding digest, approval digest, plan digest, and
     operation.  A Phase 289 intent alone is never recovery authority.
@@ -448,6 +507,10 @@ def authorize_and_persist_external_publication_recovery_resume_start(
     binding = _strict_load_binding(binding_loader, resume_intent_binding_path)
     _validate_binding_contract(binding)
     binding_digest = _binding_digest_once(binding_digest_function, binding)
+
+    _validate_canonical_authorization_path(
+        resume_intent_binding_path, resume_start_authorization_path, binding_digest
+    )
 
     intent = _strict_load_intent(intent_loader, resume_intent_path)
     _validate_intent_contract(intent)

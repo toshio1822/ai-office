@@ -122,6 +122,7 @@ _INJECTED_DEPENDENCIES = frozenset(
     }
 )
 _FUTURE_START_PREFIX = "external-publication-recovery-resume-start-"
+_AUTH_FILENAME_PREFIX = "external-publication-recovery-resume-start-authorization-"
 
 _DIGESTS = ("a", "b", "c", "d", "e", "f", "1", "2")
 
@@ -371,7 +372,10 @@ class _OsShim:
 
 
 def _install_persistence_fault(
-    scope: pytest.MonkeyPatch, stage: str, *, name: str = "authorization.json"
+    scope: pytest.MonkeyPatch,
+    stage: str,
+    *,
+    name: str | None = None,
 ) -> None:
     """Fault-inject exactly one step of the authorization persistence sequence.
 
@@ -397,7 +401,7 @@ def _install_persistence_fault(
     def _fake_open(
         self: Path, mode: str = "r", *args: object, **kwargs: object
     ) -> object:
-        if mode == "xb" and self.name == name:
+        if mode == "xb" and (name is None or self.name == name):
             real = real_open(self, mode, buffering=0)
             if stage == "close_failure":
                 return _CloseFaultHandle(real)
@@ -443,7 +447,7 @@ def _authorize_pair(
     plan: str = "d" * 64,
     source_operation: str = "fresh",
     recovery_kind: str = "already_acquired",
-    target_name: str = "authorization.json",
+    target_name: str | None = None,
 ) -> tuple[ExternalPublicationRecoveryResumeStartAuthorization, _CallRecorder]:
     """Run the boundary with fully injected, self-consistent dependencies."""
     binding, intent = _bound_pair(
@@ -454,10 +458,16 @@ def _authorize_pair(
         recovery_kind=recovery_kind,
     )
     start_recorder = _CallRecorder(result=start_digest)
+    binding_path = tmp_path / "binding.json"
+    target = (
+        binding_path.parent / target_name
+        if target_name is not None
+        else _target(binding_path, binding_digest)
+    )
     authorization = _authorize(
-        tmp_path / "binding.json",
+        binding_path,
         tmp_path / "intent.json",
-        tmp_path / target_name,
+        target,
         binding_loader=_CallRecorder(result=binding),
         binding_digest_function=_CallRecorder(result=binding_digest),
         intent_loader=_CallRecorder(result=intent),
@@ -582,6 +592,20 @@ def _seed(
         regeneration_id=regeneration_id,
     )
     return root / "binding.json", root / "intent.json"
+
+
+def _target(binding_path: Path, binding_digest: str = "1" * 64) -> Path:
+    """Return the canonical Phase 296 authorization target for one binding."""
+    return binding_path.parent / f"{_AUTH_FILENAME_PREFIX}{binding_digest}.json"
+
+
+def _seeded_target(binding_path: Path) -> Path:
+    """Return the canonical target for one real seeded Phase 295 binding."""
+    binding = load_external_publication_recovery_resume_intent_binding(binding_path)
+    return _target(
+        binding_path,
+        external_publication_recovery_resume_intent_binding_digest(binding),
+    )
 
 
 def _authorize(
@@ -811,11 +835,11 @@ def test_helpers_reject_subclass_and_forged_instances(tmp_path: Path) -> None:
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
     ) as caught:
         persist_external_publication_recovery_resume_start_authorization(
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             child,  # type: ignore[arg-type]
         )
     _assert_error(caught.value, "configuration")
-    assert not (tmp_path / "authorization.json").exists()
+    assert not (_target(tmp_path / "binding.json")).exists()
 
 
 def test_forged_enum_with_extra_attribute_is_still_rejected() -> None:
@@ -864,7 +888,7 @@ def test_canonical_json_exact_keys_and_deterministic_digest() -> None:
 
 
 def test_loader_round_trips_exact_bytes(tmp_path: Path) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     authorization = _authorization()
     persist_external_publication_recovery_resume_start_authorization(
         path, authorization
@@ -885,7 +909,7 @@ def test_loader_round_trips_exact_bytes(tmp_path: Path) -> None:
     ],
 )
 def test_loader_rejects_noncanonical_bytes(tmp_path: Path, mutate: object) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     path.write_bytes(
         mutate(  # type: ignore[operator]
             external_publication_recovery_resume_start_authorization_canonical_bytes(
@@ -901,7 +925,7 @@ def test_loader_rejects_noncanonical_bytes(tmp_path: Path, mutate: object) -> No
 
 
 def test_loader_rejects_reordered_keys_as_noncanonical(tmp_path: Path) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     payload = json.loads(
         external_publication_recovery_resume_start_authorization_canonical_bytes(
             _authorization()
@@ -917,7 +941,7 @@ def test_loader_rejects_reordered_keys_as_noncanonical(tmp_path: Path) -> None:
 
 
 def test_loader_rejects_duplicate_keys(tmp_path: Path) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     body = external_publication_recovery_resume_start_authorization_canonical_bytes(
         _authorization()
     ).decode("utf-8")
@@ -931,7 +955,7 @@ def test_loader_rejects_duplicate_keys(tmp_path: Path) -> None:
 
 
 def test_loader_rejects_nonstandard_json_constant(tmp_path: Path) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     body = external_publication_recovery_resume_start_authorization_canonical_bytes(
         _authorization()
     ).decode("utf-8")
@@ -957,7 +981,7 @@ def test_loader_rejects_nonstandard_json_constant(tmp_path: Path) -> None:
 def test_loader_rejects_extra_and_missing_keys(
     tmp_path: Path, drop: tuple[str, ...], add: tuple[tuple[str, str], ...]
 ) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     payload = json.loads(
         external_publication_recovery_resume_start_authorization_canonical_bytes(
             _authorization()
@@ -978,7 +1002,7 @@ def test_loader_rejects_extra_and_missing_keys(
 
 
 def test_loader_rejects_malformed_payload(tmp_path: Path) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     path.write_bytes(b"{not json")
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationLoadError
@@ -988,7 +1012,7 @@ def test_loader_rejects_malformed_payload(tmp_path: Path) -> None:
 
 
 def test_loader_rejects_invalid_field_values_as_load(tmp_path: Path) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     payload = json.loads(
         external_publication_recovery_resume_start_authorization_canonical_bytes(
             _authorization()
@@ -1038,7 +1062,7 @@ def test_loader_rejects_oversized_and_non_regular_targets(tmp_path: Path) -> Non
 
 
 def test_persistence_idempotent_for_identical_bytes(tmp_path: Path) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     authorization = _authorization()
     persist_external_publication_recovery_resume_start_authorization(
         path, authorization
@@ -1061,7 +1085,7 @@ def test_persistence_idempotent_for_identical_bytes(tmp_path: Path) -> None:
 def test_persistence_conflict_leaves_bytes_unchanged(
     tmp_path: Path, replacement: bytes
 ) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     path.write_bytes(replacement)
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationConflictError
@@ -1083,15 +1107,15 @@ def test_persistence_rejects_bad_targets(tmp_path: Path, target: str) -> None:
     elif target == "symlink":
         real = tmp_path / "real.json"
         real.write_bytes(b"x")
-        path = tmp_path / "authorization.json"
+        path = _target(tmp_path / "binding.json")
         path.symlink_to(real)
         classification = "target"
     elif target == "directory":
-        path = tmp_path / "authorization.json"
+        path = _target(tmp_path / "binding.json")
         path.mkdir()
         classification = "target"
     else:
-        path = tmp_path / "authorization.json"
+        path = _target(tmp_path / "binding.json")
         os.mkfifo(path)
         classification = "target"
 
@@ -1119,7 +1143,7 @@ def test_persistence_rejects_bad_path_type(tmp_path: Path) -> None:
 def test_persistence_ambiguity_retains_artifact_without_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
 ) -> None:
-    path = tmp_path / "authorization.json"
+    path = _target(tmp_path / "binding.json")
     _install_persistence_fault(monkeypatch, stage)
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationPersistenceError
@@ -1160,7 +1184,7 @@ def test_preflight_rejects_non_exact_paths_and_non_callable_dependencies(
 ) -> None:
     binding = tmp_path / "binding.json"
     intent = tmp_path / "intent.json"
-    target = tmp_path / "authorization.json"
+    target = _target(tmp_path / "binding.json")
     binding.write_bytes(b"{}")
     intent.write_bytes(b"{}")
 
@@ -1193,7 +1217,7 @@ def test_preflight_rejects_path_conflicts_and_bad_authorization_target(
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
     ) as caught:
-        _authorize(binding, binding, tmp_path / "authorization.json")
+        _authorize(binding, binding, _target(tmp_path / "binding.json"))
     _assert_error(caught.value, "path_conflict")
 
     with pytest.raises(
@@ -1243,7 +1267,7 @@ def test_binding_loader_once_with_exact_path_identity_and_no_mutation(
     start_digest = _CallRecorder(result="3" * 64)
     binding_path = tmp_path / "binding.json"
     intent_path = tmp_path / "intent.json"
-    target = tmp_path / "authorization.json"
+    target = _target(tmp_path / "binding.json")
 
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
@@ -1292,7 +1316,7 @@ def test_binding_exact_model_only_subclass_and_lookalike_rejected(
             _authorize(
                 tmp_path / "binding.json",
                 tmp_path / "intent.json",
-                tmp_path / "authorization.json",
+                _target(tmp_path / "binding.json"),
                 binding_loader=_CallRecorder(result=lookalike),
                 binding_digest_function=digest,
                 intent_loader=intent_loader,
@@ -1327,7 +1351,7 @@ def test_binding_fields_locally_revalidated_even_with_fake_digest(
     intent_loader = _CallRecorder(result=_intent())
     intent_digest = _CallRecorder(result="2" * 64)
     start_digest = _CallRecorder(result="3" * 64)
-    target = tmp_path / "authorization.json"
+    target = _target(tmp_path / "binding.json")
 
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
@@ -1365,7 +1389,7 @@ def test_binding_reconciliation_mismatch_with_fresh_source_rejected(
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(result=forged),
         )
     _assert_error(caught.value, "binding_contract")
@@ -1387,7 +1411,7 @@ def test_binding_digest_exactly_once_and_malformed_rejected(tmp_path: Path) -> N
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(result=binding),
             binding_digest_function=_digest,
             intent_loader=intent_loader,
@@ -1407,7 +1431,7 @@ def test_binding_loader_known_error_propagates_by_object_identity(
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(fault=error),
         )
     assert caught.value is error
@@ -1421,7 +1445,7 @@ def test_binding_digest_known_error_propagates_by_object_identity(
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(result=_binding()),
             binding_digest_function=_CallRecorder(fault=error),
         )
@@ -1438,7 +1462,7 @@ def test_binding_unexpected_errors_sanitize_to_dependency_error(
             _authorize(
                 tmp_path / "binding.json",
                 tmp_path / "intent.json",
-                tmp_path / "authorization.json",
+                _target(tmp_path / "binding.json"),
                 binding_loader=_CallRecorder(fault=fault),
             )
         _assert_error(caught.value, "dependency_error")
@@ -1449,7 +1473,7 @@ def test_binding_unexpected_errors_sanitize_to_dependency_error(
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(result=_binding()),
             binding_digest_function=_CallRecorder(fault=RuntimeError("boom")),
         )
@@ -1482,7 +1506,7 @@ def test_binding_validated_and_digested_before_intent_loader(tmp_path: Path) -> 
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_binding_loader,
             binding_digest_function=_binding_digest,
             intent_loader=_intent_loader,
@@ -1493,7 +1517,7 @@ def test_binding_validated_and_digested_before_intent_loader(tmp_path: Path) -> 
 
 def test_malformed_binding_digest_blocks_intent_loading(tmp_path: Path) -> None:
     intent_loader = _CallRecorder(result=_intent())
-    target = tmp_path / "authorization.json"
+    target = _target(tmp_path / "binding.json")
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
     ) as caught:
@@ -1528,7 +1552,7 @@ def test_intent_exact_model_only_and_lookalikes_rejected(tmp_path: Path) -> None
             _authorize(
                 tmp_path / "binding.json",
                 tmp_path / "intent.json",
-                tmp_path / "authorization.json",
+                _target(tmp_path / "binding.json"),
                 binding_loader=_CallRecorder(result=_binding()),
                 binding_digest_function=_CallRecorder(result="1" * 64),
                 intent_loader=_CallRecorder(result=lookalike),
@@ -1553,7 +1577,7 @@ def test_intent_locally_revalidated_with_fake_digest_helper(
         ExternalPublicationOperationIntent, _intent(), **{field: value}
     )
     start_digest = _CallRecorder(result="3" * 64)
-    target = tmp_path / "authorization.json"
+    target = _target(tmp_path / "binding.json")
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
     ) as caught:
@@ -1576,7 +1600,7 @@ def test_intent_digest_exactly_once_with_exact_loaded_object(tmp_path: Path) -> 
     binding = _binding()
     intent = _intent()
     digest = _CallRecorder(result="2" * 64)
-    target = tmp_path / "authorization.json"
+    target = _target(tmp_path / "binding.json")
 
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
@@ -1613,7 +1637,7 @@ def test_binding_intent_mismatch_rejected_before_authorization(
     binding = _binding(**binding_overrides)
     intent = _intent(**intent_overrides)
     start_digest = _CallRecorder(result="3" * 64)
-    target = tmp_path / "authorization.json"
+    target = _target(tmp_path / "binding.json")
 
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
@@ -1641,7 +1665,7 @@ def test_intent_loader_known_error_propagates_by_object_identity(
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(result=_binding()),
             binding_digest_function=_CallRecorder(result="1" * 64),
             intent_loader=_CallRecorder(fault=error),
@@ -1656,7 +1680,7 @@ def test_intent_unexpected_errors_sanitize(tmp_path: Path) -> None:
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(result=_binding()),
             binding_digest_function=_CallRecorder(result="1" * 64),
             intent_loader=_CallRecorder(fault=RuntimeError("boom")),
@@ -1669,7 +1693,7 @@ def test_intent_unexpected_errors_sanitize(tmp_path: Path) -> None:
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(result=_binding()),
             binding_digest_function=_CallRecorder(result="1" * 64),
             intent_loader=_CallRecorder(result=_intent()),
@@ -1693,7 +1717,7 @@ def test_expected_start_constructed_with_exact_bound_lineage(tmp_path: Path) -> 
     authorization = _authorize(
         tmp_path / "binding.json",
         tmp_path / "intent.json",
-        tmp_path / "authorization.json",
+        _target(tmp_path / "binding.json"),
         binding_loader=_CallRecorder(result=binding),
         binding_digest_function=_CallRecorder(result="1" * 64),
         intent_loader=_CallRecorder(result=intent),
@@ -1713,7 +1737,7 @@ def test_expected_start_constructed_with_exact_bound_lineage(tmp_path: Path) -> 
 
 
 def test_malformed_start_digest_rejected_and_nothing_persisted(tmp_path: Path) -> None:
-    target = tmp_path / "authorization.json"
+    target = _target(tmp_path / "binding.json")
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
     ) as caught:
@@ -1741,7 +1765,7 @@ def test_start_digest_known_error_propagates_by_object_identity(
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(
                 result=_binding(operation_intent_sha256="2" * 64)
             ),
@@ -1760,7 +1784,7 @@ def test_start_digest_unexpected_error_sanitizes(tmp_path: Path) -> None:
         _authorize(
             tmp_path / "binding.json",
             tmp_path / "intent.json",
-            tmp_path / "authorization.json",
+            _target(tmp_path / "binding.json"),
             binding_loader=_CallRecorder(
                 result=_binding(operation_intent_sha256="2" * 64)
             ),
@@ -1776,9 +1800,7 @@ def test_real_expected_start_digest_matches_public_phase290_helper(
     tmp_path: Path,
 ) -> None:
     binding_path, intent_path = _seed(tmp_path)
-    authorization = _authorize(
-        binding_path, intent_path, tmp_path / "authorization.json"
-    )
+    authorization = _authorize(binding_path, intent_path, _seeded_target(binding_path))
     intent = load_external_publication_operation_intent(intent_path)
     expected = ExternalPublicationOperationStart(
         schema_version=_START_SCHEMA,  # type: ignore[arg-type]
@@ -1800,9 +1822,7 @@ def test_authorization_fields_bind_exact_lineage(tmp_path: Path) -> None:
     binding_path, intent_path = _seed(tmp_path)
     binding = load_external_publication_recovery_resume_intent_binding(binding_path)
     intent = load_external_publication_operation_intent(intent_path)
-    authorization = _authorize(
-        binding_path, intent_path, tmp_path / "authorization.json"
-    )
+    authorization = _authorize(binding_path, intent_path, _seeded_target(binding_path))
 
     assert authorization.schema_version == _AUTHORIZATION_SCHEMA
     assert authorization.resume_intent_binding_sha256 == (
@@ -1829,7 +1849,7 @@ def test_existing_authorization_loader_once_and_identity_returned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     binding_path, intent_path = _seed(tmp_path)
-    target = tmp_path / "authorization.json"
+    target = _seeded_target(binding_path)
     first = _authorize(binding_path, intent_path, target)
     before = target.read_bytes()
 
@@ -1853,7 +1873,7 @@ def test_existing_authorization_mismatch_is_fixed_conflict_unchanged(
     tmp_path: Path,
 ) -> None:
     binding_path, intent_path = _seed(tmp_path)
-    target = tmp_path / "authorization.json"
+    target = _seeded_target(binding_path)
     _authorize(binding_path, intent_path, target)
 
     other = _authorization()
@@ -1874,7 +1894,7 @@ def test_existing_authorization_noncanonical_is_load_error_unchanged(
     tmp_path: Path,
 ) -> None:
     binding_path, intent_path = _seed(tmp_path)
-    target = tmp_path / "authorization.json"
+    target = _seeded_target(binding_path)
     payload = external_publication_recovery_resume_start_authorization_canonical_bytes(
         _authorization()
     ).decode("utf-8")
@@ -1893,7 +1913,7 @@ def test_absent_authorization_persisted_once_without_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     binding_path, intent_path = _seed(tmp_path)
-    target = tmp_path / "authorization.json"
+    target = _seeded_target(binding_path)
     real_persist = authorization_module.persist_external_publication_recovery_resume_start_authorization  # noqa: E501
     recorder = _CallRecorder(delegate=real_persist)
     monkeypatch.setattr(
@@ -1917,41 +1937,214 @@ def test_absent_authorization_persisted_once_without_retry(
 def test_future_start_target_formula_is_pinned() -> None:
     assert authorization_module._FUTURE_START_FILENAME_PREFIX == _FUTURE_START_PREFIX
     assert authorization_module._FUTURE_START_FILENAME_SUFFIX == ".json"
-    root = Path("/tmp/phase296-sidecar")
+    binding_path = Path("/tmp/phase296-binding/binding.json")
     digest = "a" * 64
-    derived = authorization_module._future_start_target_path(
-        root / "authorization.json", digest
-    )
-    assert derived == root / (
+    derived = authorization_module._future_start_target_path(binding_path, digest)
+    assert derived == binding_path.parent / (
         f"external-publication-recovery-resume-start-{digest}.json"
     )
-    assert derived.parent == root
-    distinct = authorization_module._future_start_target_path(
-        root / "authorization.json", "b" * 64
-    )
+    assert derived.parent == binding_path.parent
+    distinct = authorization_module._future_start_target_path(binding_path, "b" * 64)
     assert distinct != derived
 
 
-def test_phase296_creates_no_future_start_marker(tmp_path: Path) -> None:
+def test_future_start_target_uses_binding_parent_and_authorization_digest(
+    tmp_path: Path,
+) -> None:
     binding_path, intent_path = _seed(tmp_path)
-    target = tmp_path / "authorization.json"
+    target = _seeded_target(binding_path)
     authorization = _authorize(binding_path, intent_path, target)
     digest = external_publication_recovery_resume_start_authorization_digest(
         authorization
     )
-    future = authorization_module._future_start_target_path(target, digest)
+    future = authorization_module._future_start_target_path(binding_path, digest)
+    assert future == binding_path.parent / (f"{_FUTURE_START_PREFIX}{digest}.json")
+    assert future.parent == binding_path.parent
+    assert digest in future.name
+
+
+def test_canonical_authorization_target_formula_uses_binding_digest() -> None:
+    binding_path = Path("/tmp/phase296-binding/binding.json")
+    digest = "c" * 64
+    derived = authorization_module._canonical_authorization_target_path(
+        binding_path, digest
+    )
+    assert derived == binding_path.parent / (f"{_AUTH_FILENAME_PREFIX}{digest}.json")
+    assert derived.parent == binding_path.parent
+    assert digest in derived.name
+    assert (
+        authorization_module._canonical_authorization_target_path(
+            Path("/tmp/other/binding.json"), digest
+        ).parent
+        != derived.parent
+    )
+
+
+def test_canonical_authorization_path_succeeds(tmp_path: Path) -> None:
+    binding_path, intent_path = _seed(tmp_path)
+    binding = load_external_publication_recovery_resume_intent_binding(binding_path)
+    binding_digest = external_publication_recovery_resume_intent_binding_digest(binding)
+    target = _target(binding_path, binding_digest)
+    assert target.name == f"{_AUTH_FILENAME_PREFIX}{binding_digest}.json"
+
+    authorization = _authorize(binding_path, intent_path, target)
+    assert authorization.resume_intent_binding_sha256 == binding_digest
+    assert target.exists()
+    assert (
+        load_external_publication_recovery_resume_start_authorization(target)
+        == authorization
+    )
+
+
+def test_different_authorization_filename_in_same_parent_rejected(
+    tmp_path: Path,
+) -> None:
+    binding_path, intent_path = _seed(tmp_path)
+    before = sorted((p.name, p.read_bytes()) for p in tmp_path.iterdir())
+
+    loader = _CallRecorder(delegate=load_external_publication_operation_intent)
+    digest = _CallRecorder(delegate=external_publication_operation_intent_digest)
+    start_digest = _CallRecorder(delegate=external_publication_operation_start_digest)
+    wrong = tmp_path / f"{_AUTH_FILENAME_PREFIX}{'0' * 64}.json"
+
+    with pytest.raises(
+        ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
+    ) as caught:
+        _authorize(
+            binding_path,
+            intent_path,
+            wrong,
+            intent_loader=loader,
+            intent_digest_function=digest,
+            start_digest_function=start_digest,
+        )
+    _assert_error(caught.value, "authorization_path")
+    assert loader.call_count == 0
+    assert digest.call_count == 0
+    assert start_digest.call_count == 0
+    assert not wrong.exists()
+    assert sorted((p.name, p.read_bytes()) for p in tmp_path.iterdir()) == before
+
+
+def test_different_authorization_parent_rejected(tmp_path: Path) -> None:
+    binding_path, intent_path = _seed(tmp_path)
+    binding = load_external_publication_recovery_resume_intent_binding(binding_path)
+    binding_digest = external_publication_recovery_resume_intent_binding_digest(binding)
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    before = sorted((p.name, p.read_bytes()) for p in tmp_path.iterdir() if p.is_file())
+
+    loader = _CallRecorder(delegate=load_external_publication_operation_intent)
+    digest = _CallRecorder(delegate=external_publication_operation_intent_digest)
+    start_digest = _CallRecorder(delegate=external_publication_operation_start_digest)
+    relocated = _target(other_root / "binding.json", binding_digest)
+
+    with pytest.raises(
+        ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
+    ) as caught:
+        _authorize(
+            binding_path,
+            intent_path,
+            relocated,
+            intent_loader=loader,
+            intent_digest_function=digest,
+            start_digest_function=start_digest,
+        )
+    _assert_error(caught.value, "authorization_path")
+    assert loader.call_count == 0
+    assert digest.call_count == 0
+    assert start_digest.call_count == 0
+    assert not relocated.exists()
+    after = sorted((p.name, p.read_bytes()) for p in tmp_path.iterdir() if p.is_file())
+    assert after == before
+    assert list(other_root.iterdir()) == []
+
+
+def test_one_binding_cannot_yield_two_valid_authorizations(tmp_path: Path) -> None:
+    binding_path, intent_path = _seed(tmp_path)
+    canonical = _seeded_target(binding_path)
+    first = _authorize(binding_path, intent_path, canonical)
+    assert canonical.exists()
+
+    binding = load_external_publication_recovery_resume_intent_binding(binding_path)
+    binding_digest = external_publication_recovery_resume_intent_binding_digest(binding)
+    alternative_root = tmp_path / "alternative"
+    alternative_root.mkdir()
+    alternatives = (
+        tmp_path / f"{_AUTH_FILENAME_PREFIX}{binding_digest}-other.json",
+        alternative_root / f"{_AUTH_FILENAME_PREFIX}{binding_digest}.json",
+    )
+    for alternative in alternatives:
+        with pytest.raises(
+            ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
+        ) as caught:
+            _authorize(binding_path, intent_path, alternative)
+        _assert_error(caught.value, "authorization_path")
+        assert not alternative.exists()
+
+    assert list(alternative_root.iterdir()) == []
+    second = _authorize(binding_path, intent_path, canonical)
+    assert second == first
+    assert (
+        load_external_publication_recovery_resume_start_authorization(canonical)
+        == first
+    )
+
+
+def test_authorization_path_check_runs_before_intent_loader(tmp_path: Path) -> None:
+    order: list[str] = []
+    binding = _binding(operation_intent_sha256="2" * 64)
+    binding_path = tmp_path / "binding.json"
+
+    def _binding_loader(path: object) -> object:
+        order.append("binding_loader")
+        return binding
+
+    def _binding_digest(value: object) -> object:
+        order.append("binding_digest")
+        return "1" * 64
+
+    def _intent_loader(path: object) -> object:
+        order.append("intent_loader")
+        return _intent()
+
+    with pytest.raises(
+        ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
+    ) as caught:
+        _authorize(
+            binding_path,
+            tmp_path / "intent.json",
+            tmp_path / "not-canonical.json",
+            binding_loader=_binding_loader,
+            binding_digest_function=_binding_digest,
+            intent_loader=_intent_loader,
+        )
+    _assert_error(caught.value, "authorization_path")
+    assert order == ["binding_loader", "binding_digest"]
+
+
+def test_phase296_creates_no_future_start_marker(tmp_path: Path) -> None:
+    binding_path, intent_path = _seed(tmp_path)
+    target = _seeded_target(binding_path)
+    authorization = _authorize(binding_path, intent_path, target)
+    digest = external_publication_recovery_resume_start_authorization_digest(
+        authorization
+    )
+    future = authorization_module._future_start_target_path(binding_path, digest)
     assert future.parent == tmp_path
     assert not future.exists()
-    assert sorted(path.name for path in tmp_path.iterdir()) == [
-        "authorization.json",
-        "binding.json",
-        "decision.json",
-        "intent.json",
-        "lifecycle.json",
-        "lineage-intent.json",
-        "preparation.json",
-        "start.json",
-    ]
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+        [
+            "binding.json",
+            "decision.json",
+            "intent.json",
+            "lifecycle.json",
+            "lineage-intent.json",
+            "preparation.json",
+            "start.json",
+            target.name,
+        ]
+    )
 
 
 def test_api_has_no_start_path_or_acquisition_argument() -> None:
@@ -2106,6 +2299,43 @@ def test_source_audit_pins_future_start_filename_formula() -> None:
     assert '".json"' in _SOURCE
 
 
+def test_source_audit_pins_canonical_authorization_filename_formula() -> None:
+    assert "_AUTHORIZATION_FILENAME_PREFIX" in _SOURCE
+    assert "_AUTHORIZATION_FILENAME_SUFFIX" in _SOURCE
+    assert (
+        '"external-publication-recovery-resume-start-authorization-"' in _SOURCE
+    )
+    assert "_canonical_authorization_target_path(" in _SOURCE
+    assert "_validate_canonical_authorization_path(" in _SOURCE
+    assert "authorization_path" in _SOURCE
+
+
+def test_source_audit_uses_binding_parent_not_authorization_parent() -> None:
+    tree = ast.parse(_SOURCE)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in {
+            "_canonical_authorization_target_path",
+            "_future_start_target_path",
+        }:
+            args = [arg.arg for arg in node.args.args]
+            assert args[:1] == ["resume_intent_binding_path"], node.name
+    assert "resume_start_authorization_path.parent" not in _SOURCE
+    assert "resume_intent_binding_path.parent" in _SOURCE
+
+
+def test_source_audit_no_normalization_or_symlink_equivalence() -> None:
+    for token in (
+        ".resolve(",
+        "realpath",
+        "normpath",
+        "os.path.abspath",
+        "samefile",
+        "readlink",
+        "casefold",
+    ):
+        assert token not in _SOURCE, token
+
+
 def test_no_cli_change_and_no_phase296_command() -> None:
     from typer.testing import CliRunner
 
@@ -2132,8 +2362,6 @@ def test_no_cli_change_and_no_phase296_command() -> None:
 def test_integration_fresh_already_acquired_lineage(tmp_path: Path) -> None:
     predecessor_root = tmp_path / "predecessor"
     predecessor_root.mkdir()
-    target_root = tmp_path / "target"
-    target_root.mkdir()
 
     binding_path, intent_path = _seed(predecessor_root)
     binding = load_external_publication_recovery_resume_intent_binding(binding_path)
@@ -2141,9 +2369,8 @@ def test_integration_fresh_already_acquired_lineage(tmp_path: Path) -> None:
         (path.name, path.read_bytes()) for path in predecessor_root.iterdir()
     )
 
-    authorization = _authorize(
-        binding_path, intent_path, target_root / "authorization.json"
-    )
+    target = _seeded_target(binding_path)
+    authorization = _authorize(binding_path, intent_path, target)
     assert authorization.source_operation == "fresh"
     assert authorization.recovery_kind == "already_acquired"
     assert authorization.operation == "resume"
@@ -2155,18 +2382,33 @@ def test_integration_fresh_already_acquired_lineage(tmp_path: Path) -> None:
         binding.resume_preparation_sha256
     )
     assert authorization.recovery_decision_sha256 == binding.recovery_decision_sha256
-    assert (
-        sorted((path.name, path.read_bytes()) for path in predecessor_root.iterdir())
-        == before
+    assert target == predecessor_root / (
+        f"{_AUTH_FILENAME_PREFIX}"
+        f"{external_publication_recovery_resume_intent_binding_digest(binding)}.json"
     )
-    assert sorted(path.name for path in target_root.iterdir()) == ["authorization.json"]
+    after = sorted(
+        (path.name, path.read_bytes())
+        for path in predecessor_root.iterdir()
+        if path.name != target.name
+    )
+    assert after == before
+    assert sorted(path.name for path in predecessor_root.iterdir()) == sorted(
+        [
+            "binding.json",
+            "decision.json",
+            "intent.json",
+            "lifecycle.json",
+            "lineage-intent.json",
+            "preparation.json",
+            "start.json",
+            target.name,
+        ]
+    )
 
 
 def test_integration_resume_reconciliation_mismatch_lineage(tmp_path: Path) -> None:
     predecessor_root = tmp_path / "predecessor"
     predecessor_root.mkdir()
-    target_root = tmp_path / "target"
-    target_root.mkdir()
 
     binding_path, intent_path = _seed(
         predecessor_root, operation="resume", result_kind="reconciliation"
@@ -2174,24 +2416,25 @@ def test_integration_resume_reconciliation_mismatch_lineage(tmp_path: Path) -> N
     before = sorted(
         (path.name, path.read_bytes()) for path in predecessor_root.iterdir()
     )
-    authorization = _authorize(
-        binding_path, intent_path, target_root / "authorization.json"
-    )
+    target = _seeded_target(binding_path)
+    authorization = _authorize(binding_path, intent_path, target)
     assert authorization.source_operation == "resume"
     assert authorization.recovery_kind == "reconciliation_mismatch"
     assert authorization.operation == "resume"
     assert authorization.state == "authorized"
-    assert (
-        sorted((path.name, path.read_bytes()) for path in predecessor_root.iterdir())
-        == before
+    after = sorted(
+        (path.name, path.read_bytes())
+        for path in predecessor_root.iterdir()
+        if path.name != target.name
     )
+    assert after == before
 
 
 def test_integration_second_invocation_returns_same_authorization(
     tmp_path: Path,
 ) -> None:
     binding_path, intent_path = _seed(tmp_path)
-    target = tmp_path / "authorization.json"
+    target = _seeded_target(binding_path)
     first = _authorize(binding_path, intent_path, target)
     before = sorted(
         (path.name, path.read_bytes())
@@ -2222,7 +2465,7 @@ def test_integration_binding_intent_mismatch_fails_before_mutation(
 
     before_a = sorted((p.name, p.read_bytes()) for p in root_a.iterdir())
     before_b = sorted((p.name, p.read_bytes()) for p in root_b.iterdir())
-    target = tmp_path / "authorization.json"
+    target = _seeded_target(binding_path)
 
     with pytest.raises(
         ExternalPublicationRecoveryResumeStartAuthorizationCompatibilityError
@@ -2251,7 +2494,7 @@ def test_integration_no_start_marker_or_provider_artifact_created(
         monkeypatch.setattr(authorization_module, name, _forbidden, raising=False)
 
     binding_path, intent_path = _seed(tmp_path)
-    target = tmp_path / "authorization.json"
+    target = _seeded_target(binding_path)
     authorization = _authorize(binding_path, intent_path, target)
     assert called == []
     assert authorization.state == "authorized"

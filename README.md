@@ -5784,22 +5784,49 @@ caller-supplied `start_path`を受け取りません。authorization targetが�
 reconstruction、future same-invocation handoff外でのprovider実行許可、resume実行、
 reconciliation完了、fresh replay許可のいずれも意味しません。
 
-### future deterministic start target contract
+### canonical authorization target contract
 
-Phase 296はstart markerを作成しませんが、future Phase 297のruleを固定します。exactな
-`resume_start_authorization_path`、exactなloaded Phase 296 authorization、exactなcomputed
-Phase 296 authorization digestが与えられたとき、future Phase 297が導出できる唯一のstart targetは
-次です。
+Phase 296のauthorization target自体が、exactなPhase 295 bindingに対してcanonicalでなければ
+なりません。`resume_intent_binding_path`だけでは不十分で、同じbindingを別parentのauthorization
+pathにmaterializeできると、future Phase 297で複数のstart targetを作れてしまいます。
+
+Phase 296はbindingをstrict-load・local revalidate・digestした後、**intent loaderを呼ぶ前**に、
+callerの`resume_start_authorization_path`が次のderived canonical targetとexactに一致することのみを
+許可します。
 
 ```text
-resume_start_authorization_path.parent
+resume_intent_binding_path.parent
+/
+("external-publication-recovery-resume-start-authorization-"
+ + binding_digest
+ + ".json")
+```
+
+filename違い／parent違いは`authorization_path` classificationでfail closedし、intent
+loader/digest、start digest、persistenceはいずれもzero-callで、artifactはunchangedです。
+normalization/resolve/symlink-following equivalenceは行わず、exactなconcrete `Path` equalityのみを
+受け付け、directory作成やartifactのrelocate/copyも行いません。これにより同じexact bindingから
+2つの有効なPhase 296 authorizationを作ることはできません。
+
+### future deterministic start target contract
+
+Phase 296はstart markerを作成しませんが、future Phase 297のruleを固定します。authoritativeな
+namespaceはexactなPhase 295 binding parentです。exactな`resume_intent_binding_path`、exactな
+loaded Phase 296 authorization、exactなcomputed Phase 296 authorization digestが与えられたとき、
+future Phase 297が導出できる唯一のstart targetは次です。
+
+```text
+resume_intent_binding_path.parent
 /
 ("external-publication-recovery-resume-start-"
  + authorization_digest
  + ".json")
 ```
 
-これにより1つのPhase 296 authorizationは、そのauthoritativeなsidecar directory内の1つの
+Phase 296はauthorization sidecar自体をexactなbinding parent内のcanonical pathに固定するため、
+`resume_start_authorization_path.parent`はvalidation後にはequivalentになりますが、contractと
+helper/testsはnamespace authorityを曖昧にしないため`resume_intent_binding_path.parent`を明示的に
+使います。これにより1つのPhase 296 authorizationは、そのauthoritativeなbinding parent内の1つの
 canonical start targetにのみ対応します。future Phase 297は任意のcaller-supplied start pathを
 受け取ってはなりません。
 
