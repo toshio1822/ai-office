@@ -5746,3 +5746,117 @@ future Phase 296は、**新しいexplicit start marker path**を取得する前�
 exactなbound Phase 289 intentを要求しなければならず、intent単独からauthorityを推測しては
 なりません。Phase 295自身はPhase 290 start markerを作成せず、実行/reconciliation/provider作業を
 行わず、fresh no-replayを維持します。
+
+## Phase 296: recovery-bound resume start authorization evidence
+
+Phase 296は、Phase 295のdurableなrecovery resume intent bindingとそのexactなbound Phase 289
+`resume` operation intentの上に、append-onlyでimmutableな**recovery resume start authorization
+evidence**を追加します。このrecordは、将来のsame-invocationな実行境界が、exactなexpected Phase 290
+resume start identityを、将来のcanonical start target経由でstart acquisitionを試みることを
+authorizeするだけです。
+
+```text
+Phase 295 durable binding + exact bound Phase 289 resume intent
+        |
+        v
+Phase 296 strict provenance validation
+        |
+        v
+durable recovery resume start authorization
+        |
+        v
+future Phase 297 only:
+validate authorization -> derive one deterministic start target
+-> Phase 291 owns Phase 290 acquisition + execution handoff in same invocation
+```
+
+Phase 296はPhase 290 acquisitionを呼ばず、start markerを作成・load・persistせず、
+caller-supplied `start_path`を受け取りません。authorization targetが存在する場合はstrict-load
+されたexactなrecordのみをidentityで返し、差分はfixed conflictとして既存bytesを変更しません。
+
+`state="authorized"`が意味するのは次の一点だけです。
+
+> exactなPhase 295 recovery bindingとexactなbound Phase 289 resume intentが、将来の1回のattempt
+> に対して、exactなexpected Phase 290 resume start identityを将来のcanonical start target経由で
+> acquireすることをauthorizeする。
+
+`authorized`は`acquired`ではありません。start markerの存在、acquisitionの成功、`acquired`の
+reconstruction、future same-invocation handoff外でのprovider実行許可、resume実行、
+reconciliation完了、fresh replay許可のいずれも意味しません。
+
+### canonical authorization target contract
+
+Phase 296のauthorization target自体が、exactなPhase 295 bindingに対してcanonicalでなければ
+なりません。`resume_intent_binding_path`だけでは不十分で、同じbindingを別parentのauthorization
+pathにmaterializeできると、future Phase 297で複数のstart targetを作れてしまいます。
+
+Phase 296はbindingをstrict-load・local revalidate・digestした後、**intent loaderを呼ぶ前**に、
+callerの`resume_start_authorization_path`が次のderived canonical targetとexactに一致することのみを
+許可します。
+
+```text
+resume_intent_binding_path.parent
+/
+("external-publication-recovery-resume-start-authorization-"
+ + binding_digest
+ + ".json")
+```
+
+filename違い／parent違いは`authorization_path` classificationでfail closedし、intent
+loader/digest、start digest、persistenceはいずれもzero-callで、artifactはunchangedです。
+normalization/resolve/symlink-following equivalenceは行わず、exactなconcrete `Path` equalityのみを
+受け付け、directory作成やartifactのrelocate/copyも行いません。これにより同じexact bindingから
+2つの有効なPhase 296 authorizationを作ることはできません。
+
+### future deterministic start target contract
+
+Phase 296はstart markerを作成しませんが、future Phase 297のruleを固定します。authoritativeな
+namespaceはexactなPhase 295 binding parentです。exactな`resume_intent_binding_path`、exactな
+loaded Phase 296 authorization、exactなcomputed Phase 296 authorization digestが与えられたとき、
+future Phase 297が導出できる唯一のstart targetは次です。
+
+```text
+resume_intent_binding_path.parent
+/
+("external-publication-recovery-resume-start-"
+ + authorization_digest
+ + ".json")
+```
+
+Phase 296はauthorization sidecar自体をexactなbinding parent内のcanonical pathに固定するため、
+`resume_start_authorization_path.parent`はvalidation後にはequivalentになりますが、contractと
+helper/testsはnamespace authorityを曖昧にしないため`resume_intent_binding_path.parent`を明示的に
+使います。これにより1つのPhase 296 authorizationは、そのauthoritativeなbinding parent内の1つの
+canonical start targetにのみ対応します。future Phase 297は任意のcaller-supplied start pathを
+受け取ってはなりません。
+
+### public API
+
+`authorize_and_persist_external_publication_recovery_resume_start`はkeyword-onlyで、3つのexactな
+concrete platform `Path`（`resume_intent_binding_path`、`resume_intent_path`、
+`resume_start_authorization_path`）と、exactなpublic helperをdefaultに持つinjected callable
+（`binding_loader`、`binding_digest_function`、`intent_loader`、`intent_digest_function`、
+`start_digest_function`）を取ります。caller-suppliedなbinding object/digest、intent
+object/digest、approval object、preparation/decision object、expected start object/digest、
+source operation、recovery kind、start pathのいずれもauthorityとして受け取りません。
+
+Phase 296はbindingを**必ずintentより先に**strict-load・local revalidate・digestし、intent単独を
+recovery authorityとして扱いません。expected Phase 290 start objectはexactなvalidated lineage
+からのみin-memoryで構築され、exactなpublic Phase 290 `external_publication_operation_start_digest`
+helperで1回だけdigestされます。Phase 296はPhase 290 start objectをpersist・load・acquireせず、
+Phase 288/291/292/293/294/295 orchestrationを呼ばず、provider/transport/network作業を行いません。
+
+persistenceはestablished append-only exclusive patternに従います。canonical bytesを先に
+derive/validateし、new targetはexclusive create → full write → flush → file fsync → safe close →
+parent-directory fsyncの全durability step成功後にのみ成功とします。exactに同一の既存bytesは
+idempotentなdurable success、異なる/partial/noncanonicalなbytesはfixed conflictとして既存bytesを
+変更しません。exclusive creation後のwrite/short-write/flush/file-fsync/close/dir-fsyncでの不確実性は
+ambiguousとし、artifactをretainしてcleanup・retry・rewriteを行いません。
+
+### next phase
+
+future Phase 297は、Phase 296 authorizationをvalidateし、上記のdeterministic start targetを導出
+したうえで、exactなPhase 291 handoffを呼び、Phase 290 acquisitionとPhase 288 execution handoffを
+**同一invocation内**で完結させなければなりません。Phase 290 `acquired`はpersist/reconstructして
+後続実行authorityとして扱ってはならず、intent単独は依然として不十分なrecovery authorityであり、
+fresh no-replayは維持されます。

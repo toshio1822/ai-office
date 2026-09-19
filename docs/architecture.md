@@ -6485,3 +6485,236 @@ automatically continues, schedules, loops, or parallelizes nothing. It adds no
 CLI or GUI behavior. A future Phase 296 must require the exact Phase 295 binding
 plus the exact bound Phase 289 intent before acquiring a **new explicit start
 marker path**, and must not infer authority from the intent alone.
+
+## Phase 296: Recovery-bound resume start authorization evidence
+
+Phase 296 adds one append-only, immutable **recovery resume start authorization
+evidence** record on top of the Phase 295 durable recovery resume-intent
+binding. It consumes one exact Phase 295 binding plus the exact bound Phase 289
+`resume` operation intent, strictly revalidates their complete lineage,
+constructs the exact Phase 290 start-marker identity that would be expected for
+that intent, and persists one immutable authorization record proving that a
+future same-invocation execution boundary may attempt start acquisition.
+
+```text
+Phase 295 durable binding + exact bound Phase 289 resume intent
+        |
+        v
+Phase 296 strict provenance validation
+        |
+        v
+durable recovery resume start authorization
+        |
+        v
+future Phase 297 only:
+validate authorization -> derive one deterministic start target
+-> Phase 291 owns Phase 290 acquisition + execution handoff in same invocation
+```
+
+Phase 296 does not acquire a start marker, does not create or load a start
+marker, does not persist a Phase 290 start object, and accepts no
+caller-supplied start path, start object, or start digest as authority.
+
+`state` `"authorized"` means only that the exact Phase 295 recovery binding and
+the exact bound Phase 289 resume intent authorize one future attempt to acquire
+the exact expected Phase 290 resume start identity through the future canonical
+start target. It does not mean that a start marker exists, that acquisition
+succeeded, that `acquired` may be reconstructed or persisted as later execution
+authority, that provider execution is authorized outside a future
+same-invocation handoff, that resume executed, that reconciliation completed, or
+that `fresh` may be replayed.
+
+### Durable authorization model
+
+The exact frozen, secret-free model carries the Phase 295 schema version, the
+resume-intent-binding digest, the resume preparation digest, the recovery
+decision digest, the operation intent digest, the expected operation start
+digest, the publication approval and plan digests, the `fresh|resume` source
+operation, the `already_acquired|reconciliation_mismatch` recovery kind, the
+exact `resume` operation, and the exact `authorized` state. Every digest must be
+an exact builtin lowercase 64-hex string, every enum field must be an exact
+builtin `str`, subclasses and lookalikes are rejected, and
+`reconciliation_mismatch` requires `resume` source operation. No timestamps,
+UUID generation, randomness, hostname, PID, raw caller paths, credentials,
+provider or transport objects, exception text, or mutable runtime values are
+recorded.
+
+### Canonical helpers and durable persistence
+
+`serialize_external_publication_recovery_resume_start_authorization_canonical`,
+`external_publication_recovery_resume_start_authorization_canonical_bytes`,
+`external_publication_recovery_resume_start_authorization_digest`,
+`load_external_publication_recovery_resume_start_authorization`, and
+`persist_external_publication_recovery_resume_start_authorization` form the
+public canonical surface. Canonical JSON has exactly twelve keys, is compact
+UTF-8 with `sort_keys=True` and `ensure_ascii=False`, rejects duplicate keys and
+non-standard JSON constants, requires the exact key set, strictly reconstructs,
+and enforces canonical byte equality and deterministic SHA-256. Semantically
+equivalent but noncanonical bytes are rejected.
+
+Persistence uses the established append-only exclusive pattern. Canonical bytes
+are derived and validated before creation. A new target is created exclusively,
+written in full, flushed, file-fsynced, closed, and then parent-directory
+fsynced; success is returned only after every durability step. An existing
+target with identical bytes is an idempotent durable success; different,
+partial, or noncanonical bytes are a fixed conflict and are left unchanged. Any
+uncertainty after exclusive creation at write, short write, flush, file fsync,
+close, or directory fsync is ambiguous: the artifact is retained with no
+cleanup, no retry, and no rewrite, later exact retained bytes may be accepted,
+and partial or different retained bytes fail closed.
+
+### Public orchestration API
+
+`authorize_and_persist_external_publication_recovery_resume_start` is
+keyword-only and takes the three exact concrete platform `Path` values
+(`resume_intent_binding_path`, `resume_intent_path`,
+`resume_start_authorization_path`) plus injected callables defaulting to the
+exact public helpers (`binding_loader`, `binding_digest_function`,
+`intent_loader`, `intent_digest_function`, `start_digest_function`). It accepts
+no caller-supplied binding object, binding digest, intent object, intent digest,
+approval object, preparation or decision object, expected start object, expected
+start digest, source operation, recovery kind, or start path as authority, and
+no Phase 290 start path is accepted or touched.
+
+Preflight requires all three paths to be exact concrete platform `Path` values,
+pairwise distinct, and every injected dependency to be callable, and it
+validates the authorization target parent and shape without mutation. The Phase
+295 binding path and the Phase 289 intent path are only authoritative read
+inputs.
+
+Phase 296 then strict-loads the Phase 295 binding exactly once through the
+caller's exact `resume_intent_binding_path` object identity, requires the exact
+runtime binding model, and locally revalidates every field and cross-field
+invariant: the exact schema, all exact lowercase digests, the exact
+`fresh|resume` source operation, the exact
+`already_acquired|reconciliation_mismatch` recovery kind,
+`reconciliation_mismatch` requiring `resume` source operation, operation exactly
+`resume`, and state exactly `authorized`. The digest helper is never trusted to
+perform this local boundary validation. The binding digest is computed exactly
+once from the exact loader-returned object identity and must be an exact builtin
+lowercase 64-hex string. Known Phase 295 binding errors propagate by exact
+object identity; unexpected dependency exceptions sanitize to the fixed
+detail-safe Phase 296 `dependency_error`.
+
+Only after the binding has been validated and digested does Phase 296
+strict-load the exact bound Phase 289 intent exactly once through the caller's
+exact `resume_intent_path` identity. The intent must be the exact runtime model
+and is locally revalidated for the exact schema, exact approval digest, exact
+plan digest, and operation exactly `resume`. Its digest is computed exactly once
+from the exact loader-returned object identity and must equal the binding's
+operation intent digest; the intent approval digest must equal the binding
+approval digest, the intent plan digest must equal the binding plan digest, and
+the intent operation must equal the binding operation exactly `resume`. A Phase
+289 intent alone is not authority; binding validation always happens first, and
+a binding/intent mismatch fails before any authorization mutation. Known Phase
+289 errors preserve exact object identity and unexpected errors sanitize.
+
+The exact expected Phase 290 start object is then constructed in memory only,
+from the exact validated intent and binding lineage, with the exact start schema
+version, the computed intent digest, the validated approval and plan digests,
+operation `resume`, and state `started`. Its Phase 290 model contract is
+revalidated locally, its digest is computed exactly once by calling the public
+Phase 290 digest helper with the exact constructed object identity, and it must
+be an exact builtin lowercase 64-hex string. Known Phase 290 start errors keep
+their exact object identity and unexpected dependency errors sanitize. This is
+an expected identity only: the start object is never persisted, acquisition is
+never called, no existing start marker is loaded, and no caller-supplied start
+object, digest, or path is accepted as authority.
+
+The Phase 296 authorization is constructed only from the computed binding
+digest, the binding resume preparation digest, the binding recovery decision
+digest, the computed intent digest, the computed expected start digest, the
+validated approval and plan lineage, the binding source operation, the binding
+recovery kind, operation `resume`, and state `authorized`. No ambient value is
+used.
+
+When the authorization target exists it is strict-loaded exactly once, must be
+the exact runtime model, must pass strict local validation, and must equal the
+constructed authorization exactly; the exact loader-returned object identity is
+returned and the bytes are unchanged. A mismatch is a fixed conflict that leaves
+the existing bytes unchanged. When the target is absent, the exact constructed
+authorization is persisted exactly once with no retry and returned only after
+durable success. No Phase 290 acquisition and no Phase 291 call occurs on either
+path.
+
+### Canonical authorization target contract
+
+The Phase 296 authorization target itself must be canonical for the exact Phase
+295 binding. A binding path alone is insufficient: if the same exact binding
+could be materialized against authorization paths in different parent
+directories, the resulting authorization bytes and digest would be identical
+but a future Phase 297 would derive different start-marker paths from each
+authorization path parent, reintroducing the multiple-start-path replay risk
+Phase 296 fences.
+
+After strict-loading, locally revalidating, and computing the exact Phase 295
+binding digest, and **before** the Phase 289 intent loader is called, Phase 296
+derives the only allowed authorization target as
+`resume_intent_binding_path.parent / ("external-publication-recovery-resume-start-authorization-" + binding_digest + ".json")`
+and requires the caller's `resume_start_authorization_path` to be exactly equal
+to it. The caller may still supply the argument, but any other filename or
+parent directory fails closed with the fixed detail-safe `authorization_path`
+classification before the intent loader, intent digest, start digest, or any
+persistence call, leaving all artifacts unchanged. Only exact concrete `Path`
+equality is accepted; no normalization, resolve, or symlink-following
+equivalence is applied, no directory is created, and no artifact is relocated or
+copied. The canonical target is based on the exact caller binding path parent
+plus the exact computed binding digest, so one exact binding path cannot yield
+two valid Phase 296 authorizations.
+
+### Future deterministic start target contract
+
+Phase 296 creates no start marker, but it pins the rule for a future Phase 297.
+The authoritative namespace is the exact Phase 295 binding parent. Given the
+exact `resume_intent_binding_path`, the exact loaded Phase 296 authorization,
+and the exact computed Phase 296 authorization digest, future Phase 297 must
+derive the only allowed start target as
+`resume_intent_binding_path.parent / ("external-publication-recovery-resume-start-" + authorization_digest + ".json")`,
+using a fixed filename convention. Because Phase 296 now requires the
+authorization sidecar itself to live at the canonical path inside the exact
+binding parent, `resume_start_authorization_path.parent` would be equivalent
+after validation, but the contract and helper use `resume_intent_binding_path.parent`
+explicitly so the namespace authority is unambiguous. Phase 297 must not accept
+an arbitrary caller-supplied start path. This makes one Phase 296 authorization
+map to exactly one canonical start target, so one
+authorization invocation cannot casually select multiple independent start
+targets.
+
+### Error family and forbidden behavior
+
+The fixed detail-safe error family is
+`ExternalPublicationRecoveryResumeStartAuthorizationFailureDetail`,
+`ExternalPublicationRecoveryResumeStartAuthorizationError`,
+`...CompatibilityError`, `...PersistenceError`, `...ConflictError`, and
+`...LoadError`, with the fixed messages "external publication recovery resume
+start authorization is invalid", "…persistence failed", and "…could not be
+loaded". Safe classifications include configuration, path_type, path_conflict,
+binding_contract, binding_digest, intent_contract, intent_digest, intent_lineage,
+start_contract, start_digest, serialization, encoding, parent, target, create,
+ambiguous, conflict, load, parse, keys, noncanonical, and dependency_error. No
+paths, digest values, approval or decision metadata, provider values,
+credentials, or underlying exception text are ever exposed. Authoritative errors
+from the Phase 295 binding loader and digest family, the Phase 289 intent loader
+and digest family, and the Phase 290 start digest and model family preserve exact
+object identity, while unexpected dependency exceptions sanitize. No dependency
+is retried.
+
+Phase 296 itself must not call Phase 295 orchestration, Phase 294/293/292/291,
+Phase 290 acquisition, or Phase 288/287/285; must not persist, create, or load a
+Phase 290 start marker; must not accept a start path; must not call provider,
+transport, or network; must not treat intent alone as recovery authority; must
+not treat the Phase 296 authorization as already-acquired; must not reconstruct
+`acquired`; must not execute resume; must not replay fresh; must not inspect
+Phase 280/282/284 provider or evidence state; must not overwrite, delete, or
+repair predecessor or authorization artifacts; must not retry persistence or
+dependencies; must not use time, randomness, UUID, environment, socket, or
+subprocess; must not auto-continue, schedule, loop, or parallelize; and adds or
+changes no CLI or GUI behavior.
+
+A future Phase 297 must validate the Phase 296 authorization, derive the single
+canonical start target from the authorization digest, and then call the existing
+Phase 291 handoff so that Phase 291 itself owns Phase 290 acquisition and the
+Phase 288 execution handoff in one invocation. Phase 290 `acquired` must never
+be persisted or reconstructed as later execution authority, a Phase 289 intent
+alone remains insufficient recovery authority, and fresh no-replay remains
+intact.
