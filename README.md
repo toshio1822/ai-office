@@ -5860,3 +5860,107 @@ future Phase 297は、Phase 296 authorizationをvalidateし、上記のdetermini
 **同一invocation内**で完結させなければなりません。Phase 290 `acquired`はpersist/reconstructして
 後続実行authorityとして扱ってはならず、intent単独は依然として不十分なrecovery authorityであり、
 fresh no-replayは維持されます。
+
+## Phase 297: recovery-bound resume start handoff
+
+Phase 297は、Phase 296のdurableなrecovery resume start authorizationを消費し、exactなexpected
+Phase 290 resume start targetを導出したうえで、既存のpublicなPhase 291 same-invocation handoffを
+**exactly once**呼ぶ、strictなrecovery resume start handoff boundaryです。Phase 297はPhase 290の
+start fenceを越える最初のrecovery専用境界ですが、越え方はPhase 291への委譲だけです。
+
+```text
+Phase 296 durable start authorization
+        |
+Phase 297 strict recovery resume handoff
+        |
+canonical start path
+        |
+Phase 291
+  |-- Phase290 acquired ----------> Phase288 resume -> reconciliation
+  '-- Phase290 already_acquired --> stop
+```
+
+Phase 297はauthorization pathとstart pathの両方を内部導出し、callerはどちらも渡しません。
+callerが渡せるのはexactなPhase 295 binding path、exactなbound Phase 289 resume intent path、
+そして1つのexactなruntime `ExternalPublicationResumeOperationRequest`だけです。
+
+### 導出規則
+
+binding load/validation/digest後、authorization pathはexactなbinding path parentとexactなcomputed
+binding digestから導出します。
+
+```text
+resume_intent_binding_path.parent
+/
+("external-publication-recovery-resume-start-authorization-"
+ + binding_digest
+ + ".json")
+```
+
+Phase 296 authorizationのstrict-load/local revalidation/digest後、start pathは同じexactなbinding
+path parentとexactなcomputed authorization digestから導出します。
+
+```text
+resume_intent_binding_path.parent
+/
+("external-publication-recovery-resume-start-"
+ + authorization_digest
+ + ".json")
+```
+
+どちらもnormalization、`.resolve()`、`realpath`、`normpath`、`samefile`、symlink-following
+等価性、ambientなdirectory discoveryを使いません。Phase 297はこのmarker自体を作成せず、exactな
+derived `Path` objectをPhase 291へ渡すだけです。acquireするのはPhase 291経由のPhase 290だけです。
+
+### validation順序
+
+Phase 297はexact Phase 295 binding → exact Phase 296 authorization → exact Phase 289 resume
+intent → exact runtime resume requestの順に検証します。authorizationはbinding lineage（binding
+digest、preparation/decision/intent/approval/plan digest、source operation、recovery kind、
+operation、state）と照合され、intentはbindingとauthorizationの両方に照合されます。expected
+Phase 290 start identityはvalidatedなintent lineageからのみin-memoryで再構築し、そのdigestが
+Phase 296の`expected_operation_start_sha256`と一致することを要求します。request側ではexactな
+approval typeとmetadata、approval digest、plan digestをbinding・authorization・intentと照合します。
+不一致はintent load前またはPhase 291前にfail closedとなります。
+
+### Phase 291委譲
+
+Phase 297は`intent_path` / derived `start_path` / exact caller `request`だけをkeywordで渡し、
+Phase 291をexactly once呼びます。`phase290_function` / `phase288_function`は注入せず、Phase 291に
+自身のdefault Phase 290/288依存を所有させます。retry、fallback、automatic continuationは行いません。
+
+戻り値はexactな`ExternalPublicationOperationStartAcquisition`（statusが`already_acquired`の場合のみ）
+またはexactな`ExternalPublicationExecutionReconciliation`だけで、どちらもPhase 291が返した同一object
+identityをそのまま返します。Phase 291が`acquired`を返すことはなく（新規acquire時はPhase 288へdispatch
+してresume reconciliationを返す）、`acquired`のacquisitionやfresh execution result、subclass、
+lookalike、malformed modelは拒否します。
+
+### crash semantics
+
+Phase 297は`acquired`を再構築せず、Phase 290を直接呼ばず、Phase 291を1回だけ呼びます。過去の
+invocationがmarkerをacquireした後にresume resultを返す前にcrashした場合、後続のPhase 297 invocationは
+Phase 291の`already_acquired` stop resultを受け取ります。`already_acquired`は実行authorityではなく
+stop resultであり、新規実行許可として再解釈してはなりません。markerのcleanup/repair/retryは行いません。
+
+Phase 297は自身のdurable outcome sidecarを追加せず、Phase 296/295/294/293/292 orchestration、
+Phase 290/288/287/285の直接呼び出し、fresh requestの受理・dispatch、transport/provider objectの受理、
+fresh-vs-resume推測、artifactのoverwrite/delete/repair、time/random/UUID/environment/socket/
+subprocessの使用、auto-continue/schedule/loop/parallelize、CLI/GUI変更を行いません。realな
+provider/network/credential/paid API callは0です。
+
+### public API
+
+`run_external_publication_recovery_resume_start_handoff`はkeyword-onlyで、exactなconcrete platform
+`Path`（`resume_intent_binding_path`、`resume_intent_path`）と1つのexactなruntime
+`ExternalPublicationResumeOperationRequest`、およびexactなpublic helperをdefaultに持つinjected
+callable（`binding_loader`、`binding_digest_function`、`authorization_loader`、
+`authorization_digest_function`、`intent_loader`、`intent_digest_function`、
+`approval_digest_function`、`start_digest_function`、`phase291_function`）を取ります。
+caller-suppliedなauthorization path、start path、binding/authorization/intent/start objectやdigest、
+source operation、recovery kind、operation、acquisition result、Phase 290/288 functionのいずれも
+authorityとして受け取りません。
+
+### next phase
+
+future Phase 298は、Phase 297のnormal returnをpersist/classifyしつつ、Phase 296 authorization
+provenanceを保持しなければなりません。Phase 298は本Issueでは着手しません。
