@@ -6110,4 +6110,47 @@ callable（`binding_loader`、`binding_digest_function`、`authorization_loader`
 
 future Phase 299は、`completed`をterminal stop/closureへ、`recovery_required/reconciliation`を
 explicitな新recovery decision pathへ、`recovery_required/none`をexplicitなhuman recovery
-decision pathへrouteすることがあります。Phase 299は本Issueでは着手しません。
+decision pathへrouteすることがあります。Phase 299のrouting boundaryは以下で定義します。
+
+## Phase 299: recovery resume outcome routing boundary
+
+Phase 299は、Phase 298のdurable recovery resume outcomeをstrictに読み取り、current recovery
+reasonをrouteする**read-only boundary**です。callerが渡すのはexactなPhase 295 binding pathだけであり、
+Phase 296 authorization path、Phase 298 outcome path、Phase 290 start pathはbinding parentとcomputed
+digestから内部でcanonicalに導出します。pathのnormalization、`resolve()`、`realpath`、`normpath`、
+`abspath`、`samefile`、symlink-following equivalence、ambient directory discoveryは行いません。
+
+```text
+Phase 298 durable outcome
+        |
+Phase 299 read-only routing
+   |-- completed -----------------> terminal exact outcome
+   |-- recovery_required/recon ---> decision required (current mismatch)
+   '-- recovery_required/none ----> decision required (current already-acquired)
+```
+
+Phase 298の`recovery_kind`は、resume attemptをauthorizeしたprevious-cycle provenanceです。新しい
+current decisionのreasonとは限らないため、Phase 299は`previous_recovery_kind`としてその値を保持し、
+current `recovery_kind`をPhase 298の現在のstate/resultからのみ導出します。したがって
+`recovery_required / reconciliation`は常に`reconciliation_mismatch`、`recovery_required / none`は
+常に`already_acquired`です。previous valueをcurrent valueへコピーしません。
+
+Phase 299はbinding、authorization、outcome、startをそれぞれexactly once strict-loadし、loader-returned
+objectを独立にpublic model reconstructionしてlocal revalidateします。各digest helperも必要な段階で
+exactly once、exact object identityに対して呼びます。authorization、outcome、startのcomplete lineage
+を検証し、lineage mismatch、malformed digest、subclass、lookalike、forged exact modelはfail closed
+します。authoritativeなPhase 295/296/298/290 errorはexact object identityで伝播し、unexpected
+exceptionはfixed detail-safeなrouting errorへsanitizeします。
+
+`completed / reconciliation`ではoutcome digest helperを呼ばず、loaderが返したPhase 298 outcome objectを
+同一identityのままterminal returnします。recovery routeでは一度だけoutcome digestを計算し、
+`ExternalPublicationRecoveryResumeDecisionRequired`をin-memoryで構築します。このmodelはfrozenで、
+完全なlowercase SHA-256 digest、previous/current recovery kind、state/result couplingだけを持ち、path、
+provider、transport、credential、runtime request、operator metadata、timestamp、UUID、randomness、
+hostname、PID、exception textを持ちません。Phase 299ではこのdecision-required modelをpersistしません。
+
+Phase 299はPhase 298/297/293/291以下のorchestrationを呼ばず、execution、replay、retry、fallback、
+automatic continuation、scheduler、loop、parallelizationを行いません。CLI/GUI変更はなく、real provider、
+network、credential、paid API callは0です。将来のPhase 300は、exact Phase 298 outcome digest、durable
+start digest、current Phase 299 recovery kindにboundした明示的operator decisionをpersistできますが、
+Phase 293 generic Phase 292-bound decision recordをauthorityとして再利用してはなりません。
