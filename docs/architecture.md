@@ -7025,3 +7025,82 @@ persist an explicit operator decision bound to the exact Phase 298 outcome
 digest, durable start digest, and current Phase 299 recovery kind, but it must
 preserve the Phase 298 authorization provenance and must not reuse the generic
 Phase 293 Phase 292-bound decision record as authority.
+
+## Phase 300: Durable recovery-resume operator decision
+
+Phase 300 adds one append-only, immutable decision boundary above the read-only
+Phase 299 router. Its semantic caller inputs are exactly the Phase 295 binding
+path, an explicit `decision`, `decided_by`, and `decision_id`. It accepts no
+caller-supplied `DecisionRequired` object, Phase 298 outcome, lower provenance
+digest, artifact path, start, request, provider, transport, or credential.
+
+```text
+Phase 299
+   |
+   +-- exact Phase 298 completed outcome
+   |      -> decision_not_required / zero persistence
+   |
+   '-- exact DecisionRequired
+          |
+          +-- stop
+          |      -> durable Phase 300 decision
+          '-- authorize_resume_preparation
+                 -> durable Phase 300 decision
+                 -> future preparation authorization only
+```
+
+The only orchestration dependency is the public Phase 299
+`route_external_publication_recovery_resume_outcome` boundary. Phase 300 calls
+it exactly once with only `resume_intent_binding_path`; no lower dependency
+override is passed. A completed Phase 298 outcome is independently rebuilt
+through the public model constructor and rejected as the fixed
+`decision_not_required` classification before any digest, decision
+construction, or persistence. Only an exact public
+`ExternalPublicationRecoveryResumeDecisionRequired` is accepted and rebuilt
+locally. Phase 300 does not recompute the current recovery reason: the current
+kind derived by Phase 299 is copied unchanged as the semantic authority. Both
+cross-cycle cases remain explicit: previous `already_acquired` may become
+current `reconciliation_mismatch`, and previous `reconciliation_mismatch` may
+become current `already_acquired`.
+
+The durable decision preserves the exact Phase 298 outcome digest, Phase 296
+start-authorization digest, Phase 295 binding digest, operation-intent digest,
+Phase 290 start digest, approval and plan digests, previous and current
+recovery kinds, result kind/digest, and the explicit operator choice and
+metadata. Its canonical path is derived internally from the exact binding
+parent and outcome digest as
+`external-publication-recovery-resume-decision-<outcome-digest>.json`; no path
+normalization or caller override is used. This makes one outcome one-shot.
+Replaying the same decision strict-loads the existing canonical record once and
+returns the exact loader-returned object identity. Changing `decision`,
+`decided_by`, or `decision_id` is a fixed conflict and never rewrites existing
+bytes.
+
+The frozen decision model contains exactly 18 canonical JSON keys. Serialization
+uses compact UTF-8, sorted keys, `ensure_ascii=False`, and `allow_nan=False`.
+Duplicate keys, non-standard JSON constants, noncanonical bytes, malformed
+fields, subclasses, and lookalikes are rejected. Every digest is an exact
+lowercase 64-hex builtin string; operator metadata is a bounded stripped
+builtin string with Unicode control/surrogate categories rejected. The model
+contains no path, timestamp, UUID, randomness, hostname, PID, provider,
+transport, credential, or exception text.
+
+Decision persistence uses the established append-only durability sequence:
+exclusive create, full write, flush, file fsync, safe close, and
+parent-directory fsync. Identical existing bytes are an idempotent durable
+success. Different, partial, or noncanonical occupied bytes are a fixed
+conflict; no overwrite, delete, cleanup, retry, or rewrite occurs. Any
+uncertain failure after exclusive creation is `ambiguous` and retains the
+artifact. `stop` records terminal no-action only. `authorize_resume_preparation`
+authorizes only a future phase to prepare a new lineage bound to this exact
+decision; it is not execution permission and does not materialize intent,
+acquire a start, execute, reconcile, or call a provider.
+
+Phase 300 calls no Phase 298/297/294/293/291/290 acquisition/288-or-lower
+orchestration, performs no preparation, intent, start, execution, retry,
+fallback, automatic continuation, scheduling, looping, or parallelization, and
+adds no CLI or GUI behavior. Phase 293's generic decision is not reused. Real
+provider, network, credential, and paid API calls remain zero. A future Phase
+301 may consume only exact `authorize_resume_preparation` decisions, must stop
+on `stop`, must preserve the Phase 298/299/300 provenance, and must never
+automatically execute.
