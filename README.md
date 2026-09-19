@@ -5964,3 +5964,150 @@ authorityとして受け取りません。
 
 future Phase 298は、Phase 297のnormal returnをpersist/classifyしつつ、Phase 296 authorization
 provenanceを保持しなければなりません。Phase 298は本Issueでは着手しません。
+
+## Phase 298: durable recovery resume outcome evidence
+
+Phase 298は、Phase 297の上にappend-onlyでimmutableな**durable recovery resume outcome**を追加
+します。Phase 296のrecovery resume start authorization lineageを消費し、canonicalなPhase 290
+start targetとcanonicalなPhase 298 outcome targetを内部導出し、existing exact outcomeをzero-Phase297の
+idempotent fast pathとして使い、outcomeが無い場合のみpublic Phase 297 handoffをexactly once呼び、
+normal returnのみを分類し、exactなdurable Phase 290 start markerをstrict-load/bindして、Phase 296
+authorization provenanceを保持するoutcomeを1つpersistします。
+
+```text
+Phase 296 authorization
+        |
+Phase 297 same-invocation resume handoff
+        |
+Phase 298 durable recovery resume outcome
+   |-- completed / reconciliation
+   |-- recovery_required / reconciliation
+   '-- recovery_required / none
+```
+
+Phase 298はPhase 292のgenericな`ExternalPublicationOperationLifecycleOutcome`をcanonical artifact
+として再利用しません。Phase 292 modelはoperation start digest、approval digest、plan digest、
+operation、state、result kind/digestを持ちますが、Phase 296のrecovery-start-authorization provenanceを
+持たないためです。Phase 298はpublicなmodel/digest規約は再利用してよいものの、Phase 292
+orchestrationを呼びません。
+
+### outcome model
+
+`ExternalPublicationRecoveryResumeOutcome`はfrozenでsecret-freeなmodelで、
+`resume_start_authorization_sha256`（Phase 296 authorization digest全体へのcommit）、
+`resume_intent_binding_sha256`、`operation_intent_sha256`、`operation_start_sha256`（durable
+Phase 290 start marker digest）、approval/plan digest、継承した`source_operation` / `recovery_kind`、
+`operation="resume"`、classified `state` / `result_kind` / `result_sha256`を持ちます。
+
+許可されるstate/result組み合わせはexactly 3つです。
+
+```text
+completed          / reconciliation / exact digest  -- Phase 297 matched
+recovery_required  / reconciliation / exact digest  -- Phase 297 lineage_mismatch
+recovery_required  / none           / None          -- Phase 297 already_acquired stop
+```
+
+`completed + none`、`none + non-None digest`、`reconciliation + None`、その他のstate/result kindは
+拒否されます。`recovery_kind == "reconciliation_mismatch"`は`source_operation == "resume"`を要求します。
+
+`already_acquired`は過去の成功を意味しません。Phase 298は不確実性として
+`recovery_required / none / None`を記録し、start markerの存在から失われたreconciliation resultを
+推測しません。
+
+### canonical paths
+
+binding load/validation/digest後、authorization pathはexactなbinding parent + binding digestから
+導出します。authorization strict-load/validation/digest後、start pathとoutcome pathは同じexactな
+binding parent + authorization digestから導出します。
+
+```text
+external-publication-recovery-resume-start-authorization-<binding digest>.json
+external-publication-recovery-resume-start-<authorization digest>.json
+external-publication-recovery-resume-outcome-<authorization digest>.json
+```
+
+callerはこの3つのpathをいずれも渡せません。normalization、`.resolve()`、`realpath`、`normpath`、
+`abspath`、`samefile`、symlink-following等価性、ambient-directory discoveryは使いません。exactな
+binding parentがauthoritativeなnamespaceです。outcome pathはbinding parent + authorization digestで
+一意に固定されます。
+
+### validation順序
+
+exact Phase 295 binding → Phase 296 authorization → Phase 289 intent → expected start → runtime
+requestの順に検証します。bindingとauthorizationはそれぞれexact load exactly once、local
+revalidation、exact object identityでのdigest exactly onceを行います。authorizationはbinding lineageの
+全項目（binding/preparation/decision/intent/approval/plan digest、source operation、recovery kind、
+resume operation、authorized state）と照合されます。intentはbindingとauthorizationの両方に照合され、
+expected Phase 290 start identityはin-memoryで再構築してdigestがauthorization
+`expected_operation_start_sha256`と一致することを要求します。request approval/plan lineageも
+binding・authorization・intentと照合されます。outcomeが無い場合のみpublic Phase 297をexactly once
+呼び、Phase 297へ渡すのは`resume_intent_binding_path` / `resume_intent_path` / exact caller `request`
+のみです。Phase 291 / 290 / 288 / 287 / 285やPhase 292 orchestrationを直接呼びません。
+
+Phase 297のnormal return後、canonicalなdurable start markerをstrict-load・local validation・
+digest exactly onceし、digestがauthorization.expected start digestと一致し、startのintent/approval/
+plan/operationがauthorization lineageと一致することを要求します。start markerがabsent/malformed/
+mismatchならfail closedとなりPhase 298 outcomeは作成されません。
+
+### 分類
+
+Phase 297 returnはexactな`ExternalPublicationOperationStartAcquisition`（statusがbuiltin `str`で
+exactly `already_acquired`、embedded startがstrict-loaded durable startとexactly equal）またはexactな
+`ExternalPublicationExecutionReconciliation`（statusが`matched`または`lineage_mismatch`）のみ受理
+します。`acquired`、fresh execution result、subclass、lookalike、malformed model、arbitrary objectは
+拒否します。reconciliation digestはexact Phase 297-returned object identityでexactly once計算します。
+
+### existing outcome fast path
+
+canonical outcome targetが既に存在する場合、Phase 297 call countは**0**です。exact Phase 298 outcomeを
+exactly once strict-loadし、binding + authorization + intent + request lineageと照合し、canonical
+Phase 290 start markerをstrict-load・digestしてauthorization expected start digestとoutcome
+`operation_start_sha256`の両方に一致することを要求し、loader-returned object identityをそのまま返します。
+fast pathではreconciliation digest helperを呼びません。malformed/conflicting/noncanonical outcome、
+あるいはmissing/mismatched startはPhase 297 zero-callのままfail closedとなります。
+
+### persistenceとcrash semantics
+
+persistenceはestablished append-only exclusive patternに従います。new targetはexclusive create →
+full write → flush → file fsync → safe close → parent-directory fsyncの全durability step成功後にのみ
+成功とします。exactに同一の既存bytesはidempotentなdurable success、異なる/partial/noncanonicalな
+bytesはfixed conflictとして既存bytesを変更しません。exclusive creation後の不確実性はambiguousとし、
+artifactをretainしてcleanup・retry・rewrite・deleteを行いません。後続のexact artifactはfast pathで
+受理され、partial/differentなretained artifactはfail closedとなります。
+
+Phase 297がnormal returnした後にPhase 298 outcomeのpersist前にcrashした場合、後続のPhase 298
+invocationはoutcomeが無いためlineageを再検証してPhase 297を1回呼びます。canonical start markerが既に
+存在するためPhase 297/291は`already_acquired`を返しPhase 288 executionをreplayしません。Phase 298は
+`recovery_required / none / None`をpersistします。これは意図的であり、失われたprior reconciliation
+resultをstart markerの存在から推測してはなりません。
+
+Phase 297が例外をraiseした場合、Phase 298 outcomeはpersistされず、retryも行いません。known predecessor
+errorは同一object identityで伝播し、unexpected dependency errorはdetail-safeな`dependency_error`へ
+sanitizeされます。
+
+Phase 298はauthorization/start/outcome pathをcallerから受け取らず、Phase 296/295 orchestration、
+Phase 294/293/292 orchestration、Phase 291/290/288/287/285の直接呼び出し、Phase 297へのlower
+dependency注入、fresh requestの受理、fresh-vs-resume推測、already-acquired operationのreplay、
+`acquired`のreconstruct/persist、`already_acquired`の成功扱い、失われたreconciliation resultの推測、
+binding/auth/intent/start/outcome artifactのoverwrite/delete/repair、Phase 297やpersistenceのretry、
+time/random/UUID/environment/socket/subprocessの使用、auto-continue/schedule/loop/parallelize、
+CLI/GUI変更を行いません。realなprovider/network/credential/paid API callは0です。
+
+### public API
+
+`run_and_persist_external_publication_recovery_resume_outcome`はkeyword-onlyで、exactなconcrete
+platform `Path`（`resume_intent_binding_path`、`resume_intent_path`）と1つのexactなruntime
+`ExternalPublicationResumeOperationRequest`、およびexactなpublic helperをdefaultに持つinjected
+callable（`binding_loader`、`binding_digest_function`、`authorization_loader`、
+`authorization_digest_function`、`intent_loader`、`intent_digest_function`、
+`approval_digest_function`、`expected_start_digest_function`、`start_loader`、
+`start_digest_function`、`reconciliation_digest_function`、`phase297_function`）を取ります。
+`expected_start_digest_function`はPhase 297前のin-memory expected start identityを、
+`start_digest_function`はPhase 297後／outcome用のstrict-loaded durable markerをdigestするという
+異なるsemantic roleを持ちますが、defaultは両方とも同一のexactなpublic helperを指します。
+
+### next phase
+
+future Phase 299は、`completed`をterminal stop/closureへ、`recovery_required/reconciliation`を
+explicitな新recovery decision pathへ、`recovery_required/none`をexplicitなhuman recovery
+decision pathへrouteすることがあります。Phase 299は本Issueでは着手しません。

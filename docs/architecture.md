@@ -6843,3 +6843,129 @@ network, credential, and paid API calls remain zero.
 A future Phase 298 should persist and classify the normal Phase 297 return while
 preserving the Phase 296 authorization provenance. Phase 298 is not started in
 this Issue.
+
+## Phase 298: Durable recovery resume outcome evidence
+
+Phase 298 adds one append-only, immutable **durable recovery resume outcome**
+on top of the Phase 297 same-invocation handoff. It consumes the exact Phase 295
+binding, the exact Phase 296 authorization, the exact bound Phase 289 resume
+intent, and one exact runtime resume request; derives the canonical Phase 290
+start target and the canonical Phase 298 outcome target internally; uses an
+existing exact outcome as a zero-Phase297 idempotent fast path; otherwise calls
+the existing public Phase 297 handoff exactly once; classifies only the normal
+Phase 297 return; strict-loads and binds the exact durable Phase 290 start
+marker; and persists one immutable recovery-specific outcome.
+
+```text
+Phase 296 authorization
+        |
+Phase 297 same-invocation resume handoff
+        |
+Phase 298 durable recovery resume outcome
+   |-- completed / reconciliation
+   |-- recovery_required / reconciliation
+   '-- recovery_required / none
+```
+
+A generic Phase 292 `ExternalPublicationOperationLifecycleOutcome` must not be
+reused as the canonical Phase 298 artifact. The Phase 292 model carries the
+operation start digest, approval digest, plan digest, operation, state, and
+result kind/digest, but it carries no Phase 296 recovery-start-authorization
+provenance. Phase 298 preserves that recovery-specific identity, and reuses only
+public model and digest conventions; it calls no Phase 292 orchestration.
+
+The `ExternalPublicationRecoveryResumeOutcome` model commits the complete Phase
+296 authorization digest in `resume_start_authorization_sha256`, plus the Phase
+295 binding digest, the Phase 289 intent digest, the durable Phase 290 start
+digest, the approval and plan digests, the inherited source operation and
+recovery kind, the exact `resume` operation, and the classified state, result
+kind, and result digest. Exactly three state/result combinations are valid:
+`completed / reconciliation / digest` for a Phase 297 `matched` reconciliation,
+`recovery_required / reconciliation / digest` for a `lineage_mismatch`
+reconciliation, and `recovery_required / none / None` for the Phase 297
+`already_acquired` stop result. `completed` with `none`, `none` with a non-None
+digest, `reconciliation` with a `None` digest, other result kinds, other states,
+and `reconciliation_mismatch` with a `fresh` source operation are all rejected.
+`already_acquired` is uncertainty, never evidence that an earlier execution
+completed.
+
+All three derived paths live in the exact Phase 295 binding parent: the Phase
+296 authorization path and the Phase 290 start path use exactly the prefixes and
+digests Phase 297 already defines, and the Phase 298 outcome path is
+`external-publication-recovery-resume-outcome-<authorization digest>.json`. The
+caller supplies none of the three, and the outcome path is fixed by the binding
+parent plus the authorization digest. No normalization, `resolve()`, `realpath`,
+`normpath`, `abspath`, `samefile`, symlink-following equivalence, or
+ambient-directory discovery is used.
+
+The binding is strict-loaded once through the exact caller path identity,
+locally revalidated, and digested once; the authorization is strict-loaded once
+from the derived path, locally revalidated, digested once, and checked against
+the complete binding lineage; the intent is loaded once and checked against both
+the binding and the authorization; the expected Phase 290 start identity is
+reconstructed in memory only and its digest must equal the authorization
+`expected_operation_start_sha256`; and the runtime request approval and plan
+lineage are checked against the binding, authorization, and intent. Only then is
+the public Phase 297 handoff called exactly once, with exactly
+`resume_intent_binding_path`, `resume_intent_path`, and the exact caller
+`request`. Phase 298 calls no Phase 291/290/288/287/285 directly, passes no lower
+dependency injection through Phase 297, and calls no Phase 296/295 or
+Phase 294/293/292 orchestration.
+
+After any normal Phase 297 return the canonical durable start marker is
+strict-loaded once, locally revalidated, and digested once; the digest must
+equal the authorization expected start digest, and the start intent, approval,
+plan, and operation must match the authorization lineage. If Phase 297 returned
+normally but the marker is absent, malformed, or mismatched, Phase 298 fails
+closed and creates no outcome. The normal result is then classified: an exact
+`already_acquired` acquisition whose embedded start equals the strict-loaded
+durable start yields `recovery_required / none / None` without calling the
+reconciliation digest helper, and an exact reconciliation with status `matched`
+or `lineage_mismatch` is digested exactly once from the exact Phase 297-returned
+identity. `acquired` acquisitions, fresh execution results, subclasses,
+lookalikes, malformed exact models, and arbitrary objects are rejected.
+
+An existing exact outcome is a zero-Phase297 idempotent fast path. It is
+strict-loaded once, locally revalidated, checked against the binding,
+authorization, intent, request, and durable start lineage, and returned by
+identity. The reconciliation digest helper is deliberately not called on that
+path, because the stored digest is already part of the exact record. Malformed,
+conflicting, or noncanonical outcomes and missing or mismatched start markers
+fail closed with Phase 297 still at zero calls.
+
+Persistence follows the established append-only exclusive pattern: exclusive
+create, full write, flush, file fsync, safe close, and parent-directory fsync,
+with success only after every durability step. Identical existing bytes are an
+idempotent durable success; different, partial, or noncanonical bytes are a
+fixed conflict that leaves the existing bytes unchanged. Uncertainty after
+exclusive creation is classified ambiguous and retains the artifact with no
+cleanup, retry, rewrite, or deletion. A later exact artifact is accepted through
+the fast path; a partial or different retained artifact fails closed.
+
+If a Phase 297 normal return is followed by a crash before the Phase 298
+outcome is persisted, a later Phase 298 invocation finds no outcome, revalidates
+the lineage, and calls Phase 297 once more. Because the canonical start marker
+already exists, Phase 297/291 returns `already_acquired` and does not replay
+Phase 288 execution, so Phase 298 records `recovery_required / none / None`.
+This is deliberate: a lost prior reconciliation result must never be inferred
+from the existence of a start marker, and a crash after a lost normal result
+does not permit replay. If Phase 297 raises, no outcome is persisted and nothing
+is retried; known predecessor errors propagate with exact object identity and
+unexpected dependency exceptions sanitize to the fixed detail-safe
+`dependency_error`. No path, digest, approval or decision metadata, provider or
+credential value, or underlying exception text is ever exposed.
+
+Phase 298 accepts no caller-supplied authorization, start, or outcome path and
+no caller-supplied model, digest, or result authority; it describes no fresh
+route; it replays no already-acquired operation; it reconstructs and persists no
+`acquired`; it never treats `already_acquired` as success; it overwrites,
+deletes, or repairs no binding, authorization, intent, start, or outcome
+artifact; it retries neither Phase 297 nor persistence; it uses no time,
+randomness, UUID, environment, socket, or subprocess; it auto-continues,
+schedules, loops, and parallelizes nothing; and it adds no CLI or GUI behavior.
+Real provider, network, credential, and paid API calls remain zero.
+
+A future Phase 299 may route `completed` to a terminal stop or closure,
+`recovery_required` with a reconciliation to an explicit new recovery decision
+path, and `recovery_required` without a result to an explicit human recovery
+decision path. Phase 299 is not started in this Issue.
