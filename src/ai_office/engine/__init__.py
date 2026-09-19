@@ -430,6 +430,13 @@ from ai_office.engine.external_publication_recovery_resume_outcome import (  # n
     run_and_persist_external_publication_recovery_resume_outcome,
     serialize_external_publication_recovery_resume_outcome_canonical,
 )
+from ai_office.engine.external_publication_recovery_resume_outcome_routing import (  # noqa: E501
+    ExternalPublicationRecoveryResumeDecisionRequired,
+    ExternalPublicationRecoveryResumeOutcomeRoutingCompatibilityError,
+    ExternalPublicationRecoveryResumeOutcomeRoutingError,
+    ExternalPublicationRecoveryResumeOutcomeRoutingFailureDetail,
+    route_external_publication_recovery_resume_outcome,
+)
 from ai_office.engine.external_publication_recovery_resume_preparation import (  # noqa: E501
     ExternalPublicationRecoveryResumePreparation,
     ExternalPublicationRecoveryResumePreparationCompatibilityError,
@@ -1684,6 +1691,11 @@ __all__ = [
     "persist_external_publication_recovery_resume_outcome",
     "run_and_persist_external_publication_recovery_resume_outcome",
     "serialize_external_publication_recovery_resume_outcome_canonical",
+    "ExternalPublicationRecoveryResumeOutcomeRoutingCompatibilityError",
+    "ExternalPublicationRecoveryResumeOutcomeRoutingError",
+    "ExternalPublicationRecoveryResumeOutcomeRoutingFailureDetail",
+    "ExternalPublicationRecoveryResumeDecisionRequired",
+    "route_external_publication_recovery_resume_outcome",
     "external_publication_recovery_resume_preparation_canonical_bytes",
     "external_publication_recovery_resume_preparation_digest",
     "load_external_publication_recovery_resume_preparation",

@@ -6968,4 +6968,60 @@ Real provider, network, credential, and paid API calls remain zero.
 A future Phase 299 may route `completed` to a terminal stop or closure,
 `recovery_required` with a reconciliation to an explicit new recovery decision
 path, and `recovery_required` without a result to an explicit human recovery
-decision path. Phase 299 is not started in this Issue.
+decision path. Phase 299 routing boundary is defined below.
+
+## Phase 299: Recovery resume outcome routing boundary
+
+Phase 299 adds one strict, read-only boundary above the durable Phase 298
+recovery resume outcome. The caller supplies only the exact Phase 295 binding
+path. Phase 299 derives the Phase 296 authorization path, the Phase 298
+outcome path, and the Phase 290 start path from that binding's exact parent and
+the computed lineage digests; it accepts no caller-supplied authorization,
+outcome, start, or intent path.
+
+```text
+Phase 298 durable outcome
+        |
+Phase 299 read-only routing
+   |-- completed -----------------> terminal exact outcome
+   |-- recovery_required/recon ---> decision required (current mismatch)
+   '-- recovery_required/none ----> decision required (current already-acquired)
+```
+
+The Phase 298 `recovery_kind` is previous-cycle provenance: it records the
+recovery reason that authorized the resume attempt whose outcome Phase 298
+persisted. It is not necessarily the reason for a new recovery decision.
+Phase 299 therefore preserves it as `previous_recovery_kind` and derives the
+current recovery kind only from the current Phase 298 state and result:
+`recovery_required / reconciliation` always yields
+`reconciliation_mismatch`, while `recovery_required / none` always yields
+`already_acquired`. It never copies the historical value into the current
+field.
+
+Phase 299 strict-loads binding, authorization, outcome, and durable start
+exactly once, independently reconstructs each exact public model for local
+revalidation, checks complete lineage, and computes each required digest once
+from the exact loader-returned object. Known authoritative Phase 295, 296, 298,
+and 290 errors retain exact object identity; unexpected dependency exceptions
+are sanitized to a fixed detail-safe routing error. Forged exact instances,
+subclasses, lookalikes, malformed digests, and lineage mismatches fail closed.
+
+For `completed / reconciliation`, Phase 299 calls no outcome digest helper,
+constructs no decision object, and returns the exact Phase 298 loader-returned
+outcome identity unchanged. For either recovery-required result, it calls the
+outcome digest exactly once and emits only one frozen, in-memory
+`ExternalPublicationRecoveryResumeDecisionRequired` model. The model contains
+only exact lowercase SHA-256 digests, source/previous/current recovery kinds,
+operation, result, and `decision_required` state; it contains no path,
+provider, transport, credential, runtime request, operator metadata, time,
+UUID, randomness, hostname, PID, or exception text. Phase 299 persists
+nothing.
+
+Phase 299 calls no Phase 298, 297, 293, 291, or 290 orchestration and performs
+no execution, replay, retry, fallback, automatic continuation, scheduling,
+looping, or parallelization. It adds no CLI or GUI behavior. Real provider,
+network, credential, and paid API calls remain zero. A future Phase 300 may
+persist an explicit operator decision bound to the exact Phase 298 outcome
+digest, durable start digest, and current Phase 299 recovery kind, but it must
+preserve the Phase 298 authorization provenance and must not reuse the generic
+Phase 293 Phase 292-bound decision record as authority.
