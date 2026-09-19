@@ -6154,3 +6154,65 @@ automatic continuation、scheduler、loop、parallelizationを行いません。
 network、credential、paid API callは0です。将来のPhase 300は、exact Phase 298 outcome digest、durable
 start digest、current Phase 299 recovery kindにboundした明示的operator decisionをpersistできますが、
 Phase 293 generic Phase 292-bound decision recordをauthorityとして再利用してはなりません。
+
+## Phase 300: durable recovery-resume operator decision
+
+Phase 300は、Phase 299のread-only routeの上に、recovery-resume専用のappend-onlyでimmutableな
+**explicit operator decision** boundaryを追加します。callerが渡せるのは、exactなPhase 295
+`resume_intent_binding_path`、`decision`（`stop` または `authorize_resume_preparation`）、
+`decided_by`、`decision_id`だけです。Phase 299の`DecisionRequired`、Phase 298 outcome、
+authorization、binding digest、start、approval、plan、result、decision pathはcallerから受け取りません。
+
+```text
+Phase 299
+   |
+   +-- exact Phase 298 completed outcome
+   |      -> decision_not_required / zero persistence
+   |
+   '-- exact DecisionRequired
+          |
+          +-- stop
+          |      -> durable Phase 300 decision
+          |
+          '-- authorize_resume_preparation
+                 -> durable Phase 300 decision
+                 -> future preparation authorization only
+```
+
+Phase 300はpublic Phase 299 `route_external_publication_recovery_resume_outcome`をexactly once、
+`resume_intent_binding_path`だけで呼びます。lower dependency overrideは渡しません。Phase 299が返す
+completed Phase 298 outcomeはpublic model reconstructionでlocal revalidateした後、固定分類
+`decision_not_required`としてrejectし、digest計算・decision construction・decision persistenceを
+行いません。exactな`ExternalPublicationRecoveryResumeDecisionRequired`だけを受理し、同じpublic
+modelを再構築してlocal revalidateします。Phase 300はcurrent recovery kindを再計算せず、Phase 299が
+導出したcurrent valueをauthorityとしてそのまま保持します。したがって、previous
+`already_acquired` → current `reconciliation_mismatch` と、previous `reconciliation_mismatch` →
+current `already_acquired` の両方をdurable decisionに保持できます。
+
+durable decisionは、exactなPhase 298 outcome digest、Phase 296 start-authorization digest、Phase 295
+binding digest、operation-intent digest、durable Phase 290 start digest、publication approval/plan digest、
+previous/current recovery kind、current result kind/digest、operator choice/metadataを保持します。
+canonical targetはbinding parentとPhase 298 outcome digestから内部で
+`external-publication-recovery-resume-decision-<outcome-digest>.json`として導出され、callerは上書き
+できません。従って同じPhase 298 outcomeに対するdecisionはone-shotです。同じdecisionの再実行は
+existing canonical bytesをstrict-loadしてloader-returned objectをidentityで返し、decision、
+`decided_by`、`decision_id`のいずれかが変わればfixed conflictとして既存bytesを変更しません。
+
+decision modelはexact runtime typeのfrozen dataclassで、canonical JSONはexactly 18 keys、compact UTF-8、
+sorted keys、`ensure_ascii=False`、`allow_nan=False`、duplicate-key/non-standard-constant rejection、
+strict reconstruction、canonical byte equality、deterministic SHA-256を持ちます。operator metadataは
+空文字、前後空白、Unicode `Cc`/`Cs`、256文字超過、subclassを拒否します。modelとsidecarはpath、
+provider、transport、credential、timestamp、UUID、randomness、hostname、PID、exception textを保持しません。
+
+persistenceはexclusive create → full write → flush → file fsync → safe close → parent-directory fsyncの
+順です。既存の同一bytesはdurable idempotent success、different/partial/noncanonical bytesはfixed
+conflictで、overwrite、delete、cleanup、rewrite、retryを行いません。exclusive create後のwrite、
+flush、file-fsync、close、parent-fsyncの不確実な失敗は`ambiguous`としてartifactを保持します。
+
+`stop`はterminal no-action decisionです。`authorize_resume_preparation`は将来のphaseがこのexactな
+Phase 300 decisionにbindした新しいpreparation lineageを作ることだけをauthorizeし、execution許可、
+intent materialization、start acquisition、provider call、reconciliation、automatic continuationを
+意味しません。Phase 300自身はpreparation、intent、start、executionを行わず、Phase 293 generic decision
+を再利用しません。Phase 298/297/294/293/291/290 acquisition/288以下を直接呼ばず、CLI/GUI変更もなく、
+real provider/network/credential/paid API callは0です。future Phase 301はexactな
+`authorize_resume_preparation`だけをconsumeし、`stop`では停止しなければなりません。
