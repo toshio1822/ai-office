@@ -6718,3 +6718,128 @@ Phase 288 execution handoff in one invocation. Phase 290 `acquired` must never
 be persisted or reconstructed as later execution authority, a Phase 289 intent
 alone remains insufficient recovery authority, and fresh no-replay remains
 intact.
+
+## Phase 297: Recovery-bound resume start handoff
+
+Phase 297 is the strict recovery-bound resume start handoff. It consumes the
+exact Phase 296 durable start authorization lineage, derives the only canonical
+Phase 290 start target, and delegates exactly once to the existing public Phase
+291 same-invocation handoff. It is the first recovery-specific boundary allowed
+to cross the Phase 290 start fence, and it crosses that fence only by
+delegation.
+
+```text
+Phase 296 durable start authorization
+        |
+Phase 297 strict recovery resume handoff
+        |
+canonical start path
+        |
+Phase 291
+  |-- Phase290 acquired ----------> Phase288 resume -> reconciliation
+  '-- Phase290 already_acquired --> stop
+```
+
+Phase 297 derives both durable paths internally and accepts neither from the
+caller. The authorization path is derived from the exact concrete binding path
+parent and the exact computed binding digest:
+
+```text
+resume_intent_binding_path.parent
+/
+("external-publication-recovery-resume-start-authorization-"
+ + binding_digest
+ + ".json")
+```
+
+The start path is derived from the same exact binding path parent and the exact
+computed authorization digest:
+
+```text
+resume_intent_binding_path.parent
+/
+("external-publication-recovery-resume-start-"
+ + authorization_digest
+ + ".json")
+```
+
+Neither derivation uses normalization, `resolve()`, `realpath`, `normpath`,
+`samefile`, symlink-following equivalence, or ambient directory discovery. Phase
+297 itself creates no marker; it passes the exact derived `Path` object to Phase
+291, and only Phase 291 may cause Phase 290 to acquire it.
+
+Validation order is exact Phase 295 binding, then exact Phase 296
+authorization, then exact Phase 289 resume intent, then the exact runtime resume
+request. The binding is strict-loaded once through the exact caller path
+identity, locally revalidated field by field, and digested once from the exact
+loaded object. The authorization is strict-loaded once from the derived path,
+locally revalidated, digested once, and checked against every binding lineage
+field: binding digest, preparation digest, decision digest, intent digest,
+approval digest, plan digest, source operation, recovery kind, operation, and
+state. Mismatch fails closed before the intent loader and before Phase 291. The
+intent is then loaded once through the exact caller path identity and checked
+against both the binding and the authorization. The expected Phase 290 start
+identity is reconstructed in memory only from the validated intent lineage, and
+its digest must equal the authorization `expected_operation_start_sha256`. No
+start marker is loaded, inspected, created, overwritten, deleted, or repaired
+here, and Phase 290 is never called directly. Finally the runtime request
+approval and plan lineage are checked against the binding, authorization, and
+intent before anything else happens; a Phase 289 intent alone never authorizes
+recovery execution.
+
+Phase 297 then calls the injected public Phase 291 function exactly once with
+exactly `intent_path`, the derived `start_path`, and the caller `request`, using
+the exact object identities of the caller intent path, the locally derived
+`Path`, and the caller request. It injects no `phase290_function` or
+`phase288_function` and lets Phase 291 own its default Phase 290 and Phase 288
+dependencies. There is no retry.
+
+Only two result shapes are accepted. An exact
+`ExternalPublicationOperationStartAcquisition` is accepted only when its status
+is exactly `already_acquired`; Phase 291 never returns `acquired` upward because
+on newly acquired start it dispatches Phase 288 and returns the resume
+reconciliation result. The acquisition start is locally revalidated, its digest
+must equal the authorization `expected_operation_start_sha256`, and the exact
+Phase 291 object is returned unchanged. An exact
+`ExternalPublicationExecutionReconciliation` is accepted as an exact runtime
+model only, locally reconstructed so malformed injected results fail closed, and
+returned by identity. `acquired` acquisitions, fresh execution results,
+subclasses, lookalikes, arbitrary objects, and malformed exact models are
+rejected, and Phase 291 is never called a second time.
+
+Phase 297 never reconstructs `acquired`, never calls Phase 290 itself, and calls
+Phase 291 once. Phase 291 preflights the request, calls Phase 290 once, and calls
+Phase 288 only if the exact same Phase 291 invocation receives `acquired`. If
+the start already exists, Phase 291 returns the exact `already_acquired` stop
+result with zero Phase 288 calls. A later Phase 297 invocation that arrives after
+a prior invocation acquired the marker but crashed before returning the resume
+result must receive that stop result and must never reinterpret it as new
+execution permission. No marker cleanup, repair, or retry is performed.
+
+Known authoritative errors from the Phase 295 binding loader/digest family, the
+Phase 296 authorization loader/digest family, the Phase 289 intent
+loader/digest family, the Phase 290 start model/digest family, the external
+publication approval digest family, and the Phase 291 handoff family with its
+known lower public error families propagate unchanged with exact object
+identity. Unexpected dependency exceptions sanitize to the fixed detail-safe
+Phase 297 `dependency_error`, and no path, digest, approval or decision
+metadata, provider or credential value, or underlying exception text is ever
+exposed.
+
+Phase 297 adds no durable outcome sidecar of its own. It accepts no
+authorization path, start path, or caller-supplied model or digest authority; it
+calls no Phase 296 or Phase 295 orchestration and no Phase 294/293/292; it calls
+Phase 290 or Phase 288 never and Phase 287/285 never; it passes no injected
+Phase 290 or Phase 288 dependency through Phase 291; it accepts and dispatches
+no fresh request and accepts no transport or provider object; it infers no
+fresh-versus-resume; it persists and reconstructs no `acquired` and never turns
+`already_acquired` into execution authority; it overwrites, deletes, or repairs
+no start, binding, intent, or authorization artifact; it retries no Phase 291 or
+lower execution and performs no fresh replay; it uses no time, randomness, UUID,
+environment, socket, or subprocess; it auto-continues, schedules, loops, and
+parallelizes nothing; and it adds no CLI or GUI behavior. Real provider,
+network, credential, and paid API calls remain zero.
+
+A future Phase 298 should persist and classify the normal Phase 297 return while
+preserving the Phase 296 authorization provenance. Phase 298 is not started in
+this Issue.

@@ -445,6 +445,12 @@ from ai_office.engine.external_publication_recovery_resume_start_authorization i
     persist_external_publication_recovery_resume_start_authorization,
     serialize_external_publication_recovery_resume_start_authorization_canonical,
 )
+from ai_office.engine.external_publication_recovery_resume_start_handoff import (  # noqa: E501
+    ExternalPublicationRecoveryResumeStartHandoffCompatibilityError,
+    ExternalPublicationRecoveryResumeStartHandoffError,
+    ExternalPublicationRecoveryResumeStartHandoffFailureDetail,
+    run_external_publication_recovery_resume_start_handoff,
+)
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationApprovalError,
@@ -1677,6 +1683,10 @@ __all__ = [
     "ExternalPublicationRecoveryResumeStartAuthorizationLoadError",
     "ExternalPublicationRecoveryResumeStartAuthorizationPersistenceError",
     "authorize_and_persist_external_publication_recovery_resume_start",
+    "ExternalPublicationRecoveryResumeStartHandoffCompatibilityError",
+    "ExternalPublicationRecoveryResumeStartHandoffError",
+    "ExternalPublicationRecoveryResumeStartHandoffFailureDetail",
+    "run_external_publication_recovery_resume_start_handoff",
     "external_publication_recovery_resume_start_authorization_canonical_bytes",
     "external_publication_recovery_resume_start_authorization_digest",
     "load_external_publication_recovery_resume_start_authorization",
