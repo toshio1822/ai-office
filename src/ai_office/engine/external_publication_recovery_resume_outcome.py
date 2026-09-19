@@ -1296,32 +1296,34 @@ def _classify_reconciliation(
 
 
 def _revalidate_reconciliation(reconciliation: object) -> None:
+    """Revalidate the exact public Phase 283 contract before trusting a digest.
+
+    The exact Phase 297-returned object is reconstructed through the public
+    model so that every Phase 283 cross-field invariant - allowed lineage field
+    names, no duplicates, canonical lineage-field order, and the exact
+    ``matched``/``lineage_mismatch`` coupling with ``mismatched_fields`` - is
+    enforced locally instead of being delegated to the injected digest helper.
+    The reconstruction is validation only; the original object is never
+    replaced and is the identity later handed to the digest helper.
+    """
     if type(reconciliation) is not ExternalPublicationExecutionReconciliation:
         _raise_outcome("result_contract")
     try:
-        schema_version = reconciliation.schema_version  # type: ignore[union-attr]
-        claim_digest = reconciliation.claim_sha256  # type: ignore[union-attr]
-        evidence_digest = reconciliation.execution_evidence_sha256  # type: ignore[union-attr]
-        status = reconciliation.status  # type: ignore[union-attr]
-        mismatched = reconciliation.mismatched_fields  # type: ignore[union-attr]
+        ExternalPublicationExecutionReconciliation(
+            schema_version=reconciliation.schema_version,  # type: ignore[union-attr]
+            claim_sha256=reconciliation.claim_sha256,  # type: ignore[union-attr]
+            execution_evidence_sha256=(  # type: ignore[union-attr]
+                reconciliation.execution_evidence_sha256
+            ),
+            status=reconciliation.status,  # type: ignore[union-attr]
+            mismatched_fields=(  # type: ignore[union-attr]
+                reconciliation.mismatched_fields
+            ),
+        )
     except ExternalPublicationRecoveryResumeOutcomeError:
         raise
     except Exception:
         _raise_outcome("result_contract")
-
-    if type(schema_version) is not str or schema_version != (
-        "external-publication-execution-reconciliation.v1"
-    ):
-        _raise_outcome("result_contract")
-    if not _is_sha256(claim_digest) or not _is_sha256(evidence_digest):
-        _raise_outcome("result_contract")
-    if type(status) is not str or status not in _RECONCILIATION_STATUSES:
-        _raise_outcome("result_contract")
-    if type(mismatched) is not tuple:
-        _raise_outcome("result_contract")
-    for field in mismatched:
-        if type(field) is not str:
-            _raise_outcome("result_contract")
 
 
 def _construct_outcome(

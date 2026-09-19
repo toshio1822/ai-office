@@ -1962,6 +1962,102 @@ def test_reconciliation_mismatch_is_recovery_required(tmp_path: Path) -> None:
     )
 
 
+# Phase 283 canonical lineage-field order, used for ordering regressions.
+_CANONICAL_LINEAGE_ORDER = (
+    "publication_attempt_claim_sha256",
+    "regeneration_id",
+    "publication_plan_sha256",
+    "publication_approval_sha256",
+    "business_output_sha256",
+    "output_byte_length",
+    "provider",
+    "publication_target_sha256",
+)
+
+
+def _forged_reconciliation(
+    *, status: object, mismatched_fields: object
+) -> ExternalPublicationExecutionReconciliation:
+    """Allocate an exact runtime instance without running model validation."""
+    return _forged_instance(  # type: ignore[return-value]
+        ExternalPublicationExecutionReconciliation,
+        _reconciliation(),
+        status=status,
+        mismatched_fields=mismatched_fields,
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "status", "mismatched_fields"),
+    [
+        ("matched_nonempty", "matched", ("provider",)),
+        ("mismatch_empty", "lineage_mismatch", ()),
+        ("unknown_field", "lineage_mismatch", ("not_a_lineage_field",)),
+        ("duplicate_field", "lineage_mismatch", ("provider", "provider")),
+        (
+            "noncanonical_order",
+            "lineage_mismatch",
+            ("provider", "regeneration_id"),
+        ),
+    ],
+)
+def test_reconciliation_local_contract_rejected_before_digest(
+    tmp_path: Path, case: str, status: object, mismatched_fields: object
+) -> None:
+    """A forged exact instance must fail locally, never via the digest helper."""
+    harness = _Harness(tmp_path)
+    forged = _forged_reconciliation(status=status, mismatched_fields=mismatched_fields)
+    with pytest.raises(ExternalPublicationRecoveryResumeOutcomeError) as excinfo:
+        harness.run(phase297_result=forged)
+    _assert_error(excinfo.value, "result_contract")
+    # Phase 297 ran exactly once and was never retried.
+    assert harness.phase297.call_count == 1
+    # The injected digest helper must not be trusted to discover the violation.
+    assert harness.reconciliation_digest.call_count == 0
+    # No Phase 298 outcome is persisted for an invalid reconciliation.
+    assert not harness.lineage.outcome_path.exists()
+
+
+def test_reconciliation_noncanonical_order_is_not_canonical_equivalent(
+    tmp_path: Path,
+) -> None:
+    """The same field set in the wrong order is not a valid Phase 283 record."""
+    harness = _Harness(tmp_path)
+    reversed_fields = tuple(reversed(_CANONICAL_LINEAGE_ORDER))
+    forged = _forged_reconciliation(
+        status="lineage_mismatch", mismatched_fields=reversed_fields
+    )
+    with pytest.raises(ExternalPublicationRecoveryResumeOutcomeError) as excinfo:
+        harness.run(phase297_result=forged)
+    _assert_error(excinfo.value, "result_contract")
+    assert harness.phase297.call_count == 1
+    assert harness.reconciliation_digest.call_count == 0
+    assert not harness.lineage.outcome_path.exists()
+
+
+def test_reconciliation_canonical_order_accepted(tmp_path: Path) -> None:
+    """A canonical non-empty tuple is the valid lineage_mismatch shape."""
+    harness = _Harness(tmp_path)
+    canonical = (
+        "regeneration_id",
+        "provider",
+        "publication_target_sha256",
+    )
+    assert (
+        tuple(field for field in _CANONICAL_LINEAGE_ORDER if field in canonical)
+        == canonical
+    )
+    reconciliation = _reconciliation(
+        status="lineage_mismatch", mismatched_fields=canonical
+    )
+    result = harness.run(phase297_result=reconciliation)
+    assert result.state == "recovery_required"
+    assert result.result_kind == "reconciliation"
+    assert harness.reconciliation_digest.call_count == 1
+    assert harness.reconciliation_digest.first_positional is reconciliation
+    assert harness.lineage.outcome_path.exists()
+
+
 @pytest.mark.parametrize(
     "bad_digest", ["", "D" * 64, "d" * 63, _StringChild("d" * 64), None, 4]
 )
