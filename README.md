@@ -6378,3 +6378,44 @@ binding plus its exact bound Phase 289 resume intent authorize one future
 attempt to acquire the exact expected Phase 290 resume-start identity. Phase
 304 must derive its future start target from the Phase 303 authorization digest;
 Phase 304 is not started here.
+
+## Phase 304: strict recovery-resume start acquisition handoff
+
+Phase 304 is the narrow handoff from one exact Phase 303 durable start
+authorization to the Phase 290 exclusive start-acquisition fence. The caller
+supplies only the exact Phase 303 authorization path. The boundary strict-loads
+that authorization once, independently reconstructs it, verifies its exact
+canonical filename, and computes its digest exactly once from the original
+loader-returned object. It derives the exact bound Phase 289 intent path from
+the authorization, strict-loads and reconstructs the intent once, computes its
+digest exactly once from the original loader-returned object, and checks the
+intent, approval, plan, and `resume` operation lineage before any start call.
+
+```text
+Phase 303 durable authorization
+        |
+Phase 304 strict acquisition handoff
+        |
+Phase 290 exclusive start marker
+        |
+ acquired / already_acquired
+        |
+       STOP
+```
+
+The expected `ExternalPublicationOperationStart` is constructed in memory
+only and its digest is computed exactly once from that exact constructed
+identity. The digest must equal the authorization's expected-start digest.
+Only then does Phase 304 derive
+`external-publication-recovery-resume-start-<Phase303 authorization digest>.json`
+and call Phase 290 exactly once with only `intent_path` and `start_path`.
+Phase 290 owns all exclusive-create and durable-marker semantics; Phase 304
+does not inspect, load, persist, repair, or retry the start target.
+
+Both exact Phase 290 results, `acquired` and `already_acquired`, are returned
+unchanged by object identity and are terminal for this phase. `acquired` only
+proves that this invocation won the durable start fence; `already_acquired`
+never becomes fresh execution authority. Phase 304 adds no sidecar, calls no
+Phase 291/297/288 or execution/reconciliation boundary, and performs no
+provider, transport, network, credential, or paid API work. A future Phase 305
+may consume the exact acquisition result only through a new explicit boundary.
