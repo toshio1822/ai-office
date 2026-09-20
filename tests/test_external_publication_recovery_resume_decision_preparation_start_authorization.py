@@ -28,14 +28,30 @@ from ai_office.engine import (
     ExternalPublicationRecoveryResumeDecisionPreparationStartAuthorizationFailureDetail,
     ExternalPublicationRecoveryResumeDecisionPreparationStartAuthorizationLoadError,
     ExternalPublicationRecoveryResumeDecisionPreparationStartAuthorizationPersistenceError,
+    ExternalPublicationRecoveryResumeIntentBinding,
+    ExternalPublicationRecoveryResumeOutcome,
+    ExternalPublicationRecoveryResumeStartAuthorization,
+    decide_and_persist_external_publication_recovery_resume,
     external_publication_operation_intent_digest,
+    external_publication_operation_start_canonical_bytes,
     external_publication_operation_start_digest,
+    external_publication_recovery_resume_decision_digest,
+    external_publication_recovery_resume_decision_preparation_digest,
     external_publication_recovery_resume_decision_preparation_intent_binding_digest,
     external_publication_recovery_resume_decision_preparation_start_authorization_digest,
+    external_publication_recovery_resume_intent_binding_digest,
+    external_publication_recovery_resume_start_authorization_digest,
+    load_external_publication_operation_intent,
+    load_external_publication_recovery_resume_decision_preparation_intent_binding,
     load_external_publication_recovery_resume_decision_preparation_start_authorization,
+    materialize_and_bind_external_publication_recovery_resume_decision_preparation_intent,
     persist_external_publication_operation_intent,
     persist_external_publication_recovery_resume_decision_preparation_intent_binding,
     persist_external_publication_recovery_resume_decision_preparation_start_authorization,
+    persist_external_publication_recovery_resume_intent_binding,
+    persist_external_publication_recovery_resume_outcome,
+    persist_external_publication_recovery_resume_start_authorization,
+    prepare_and_persist_external_publication_recovery_resume_decision_lineage,
     serialize_external_publication_recovery_resume_decision_preparation_start_authorization_canonical,
 )
 
@@ -52,6 +68,11 @@ _AUTHORIZATION_PREFIX = (
 )
 _INTENT_PREFIX = "external-publication-operation-intent-"
 _START_PREFIX = "external-publication-operation-start-"
+_DECISION_PREFIX = "external-publication-recovery-resume-decision-"
+_PREPARATION_PREFIX = "external-publication-recovery-resume-decision-preparation-"
+_BINDING_PREFIX = (
+    "external-publication-recovery-resume-decision-preparation-intent-binding-"
+)
 _SUFFIX = ".json"
 _AUTHORIZATION_KEYS = frozenset(
     {
@@ -297,6 +318,93 @@ def _valid_lineage(
         start_digest,
         root / f"{_AUTHORIZATION_PREFIX}{binding_digest}.json",
     )
+
+
+def _seed_real_phase295_lineage(
+    root: Path,
+    *,
+    previous_recovery_kind: str,
+    result_kind: str,
+    result_sha256: str | None,
+) -> Path:
+    """Build only local Phase295/296/298 artifacts for integration."""
+    root.mkdir()
+    anchor = root / "phase-295-binding.json"
+    phase295_binding = ExternalPublicationRecoveryResumeIntentBinding(
+        schema_version="external-publication-recovery-resume-intent-binding.v1",
+        resume_preparation_sha256="a" * 64,
+        recovery_decision_sha256="b" * 64,
+        publication_approval_sha256="c" * 64,
+        publication_plan_sha256="d" * 64,
+        operation_intent_sha256="e" * 64,
+        source_operation="resume",
+        recovery_kind=previous_recovery_kind,  # type: ignore[arg-type]
+        operation="resume",
+        state="authorized",
+    )
+    phase295_digest = external_publication_recovery_resume_intent_binding_digest(
+        phase295_binding
+    )
+    start = ExternalPublicationOperationStart(
+        schema_version=_START_SCHEMA,
+        operation_intent_sha256=phase295_binding.operation_intent_sha256,
+        publication_approval_sha256=phase295_binding.publication_approval_sha256,
+        publication_plan_sha256=phase295_binding.publication_plan_sha256,
+        operation="resume",
+        state="started",
+    )
+    start_digest = external_publication_operation_start_digest(start)
+    authorization = ExternalPublicationRecoveryResumeStartAuthorization(
+        schema_version="external-publication-recovery-resume-start-authorization.v1",
+        resume_intent_binding_sha256=phase295_digest,
+        resume_preparation_sha256=phase295_binding.resume_preparation_sha256,
+        recovery_decision_sha256=phase295_binding.recovery_decision_sha256,
+        operation_intent_sha256=phase295_binding.operation_intent_sha256,
+        expected_operation_start_sha256=start_digest,
+        publication_approval_sha256=phase295_binding.publication_approval_sha256,
+        publication_plan_sha256=phase295_binding.publication_plan_sha256,
+        source_operation=phase295_binding.source_operation,
+        recovery_kind=phase295_binding.recovery_kind,
+        operation="resume",
+        state="authorized",
+    )
+    authorization_digest = (
+        external_publication_recovery_resume_start_authorization_digest(authorization)
+    )
+    authorization_path = root / (
+        "external-publication-recovery-resume-start-authorization-"
+        f"{phase295_digest}.json"
+    )
+    start_path = root / (
+        f"external-publication-recovery-resume-start-{authorization_digest}.json"
+    )
+    outcome = ExternalPublicationRecoveryResumeOutcome(
+        schema_version="external-publication-recovery-resume-outcome.v1",
+        resume_start_authorization_sha256=authorization_digest,
+        resume_intent_binding_sha256=phase295_digest,
+        operation_intent_sha256=phase295_binding.operation_intent_sha256,
+        operation_start_sha256=start_digest,
+        publication_approval_sha256=phase295_binding.publication_approval_sha256,
+        publication_plan_sha256=phase295_binding.publication_plan_sha256,
+        source_operation=phase295_binding.source_operation,
+        recovery_kind=phase295_binding.recovery_kind,
+        operation="resume",
+        state="recovery_required",
+        result_kind=result_kind,  # type: ignore[arg-type]
+        result_sha256=result_sha256,
+    )
+    outcome_path = root / (
+        f"external-publication-recovery-resume-outcome-{authorization_digest}.json"
+    )
+    persist_external_publication_recovery_resume_intent_binding(
+        anchor, phase295_binding
+    )
+    persist_external_publication_recovery_resume_start_authorization(
+        authorization_path, authorization
+    )
+    start_path.write_bytes(external_publication_operation_start_canonical_bytes(start))
+    persist_external_publication_recovery_resume_outcome(outcome_path, outcome)
+    return anchor
 
 
 def _run_injected(
@@ -1202,6 +1310,108 @@ def test_real_local_phase302_binding_and_phase289_intent_integration(
     assert authorization_path.exists()
     assert not (tmp_path / f"{_START_PREFIX}{start_digest}.json").exists()
     del start
+
+
+def test_real_phase295_to_phase303_integration_preserves_lineage_and_start_boundary(
+    tmp_path: Path,
+) -> None:
+    """Run the real local Phase295 -> Phase303 provider-free lineage twice."""
+    cases = (
+        (
+            "already_acquired",
+            "reconciliation",
+            "7" * 64,
+            "reconciliation_mismatch",
+        ),
+        ("reconciliation_mismatch", "none", None, "already_acquired"),
+    )
+    for previous, result_kind, result_sha256, current in cases:
+        root = tmp_path / f"{previous}-{result_kind}"
+        anchor = _seed_real_phase295_lineage(
+            root,
+            previous_recovery_kind=previous,
+            result_kind=result_kind,
+            result_sha256=result_sha256,
+        )
+        decision = decide_and_persist_external_publication_recovery_resume(
+            resume_intent_binding_path=anchor,
+            decision="authorize_resume_preparation",
+            decided_by="operator@example.test",
+            decision_id=f"{previous}-{result_kind}",
+        )
+        preparation = (
+            prepare_and_persist_external_publication_recovery_resume_decision_lineage(
+                resume_intent_binding_path=anchor
+            )
+        )
+        phase302_binding = materialize_and_bind_external_publication_recovery_resume_decision_preparation_intent(
+            resume_intent_binding_path=anchor
+        )
+
+        decision_digest = external_publication_recovery_resume_decision_digest(decision)
+        preparation_digest = (
+            external_publication_recovery_resume_decision_preparation_digest(
+                preparation
+            )
+        )
+        binding_digest = external_publication_recovery_resume_decision_preparation_intent_binding_digest(
+            phase302_binding
+        )
+        binding_path = root / f"{_BINDING_PREFIX}{preparation_digest}.json"
+        intent_digest = phase302_binding.operation_intent_sha256
+        intent_path = root / f"{_INTENT_PREFIX}{intent_digest}.json"
+        expected_intent = load_external_publication_operation_intent(intent_path)
+        expected_start = _expected_start(expected_intent, intent_digest)
+        start_digest = external_publication_operation_start_digest(expected_start)
+
+        before_phase303 = {path.name for path in root.iterdir()}
+        before_start_markers = {
+            path.name
+            for path in root.iterdir()
+            if path.name.startswith("external-publication-recovery-resume-start-")
+        }
+        authorization = authorization_module.authorize_and_persist_external_publication_recovery_resume_decision_preparation_start(
+            decision_preparation_intent_binding_path=binding_path
+        )
+        after_phase303 = {path.name for path in root.iterdir()}
+        after_start_markers = {
+            path.name
+            for path in root.iterdir()
+            if path.name.startswith("external-publication-recovery-resume-start-")
+        }
+        authorization_path = root / (
+            f"{_AUTHORIZATION_PREFIX}{binding_digest}{_SUFFIX}"
+        )
+
+        assert (
+            authorization.decision_preparation_intent_binding_sha256 == binding_digest
+        )
+        assert authorization.decision_preparation_sha256 == preparation_digest
+        assert authorization.recovery_resume_decision_sha256 == decision_digest
+        assert authorization.operation_intent_sha256 == intent_digest
+        assert authorization.expected_operation_start_sha256 == start_digest
+        assert (
+            authorization.publication_approval_sha256
+            == phase302_binding.publication_approval_sha256
+        )
+        assert (
+            authorization.publication_plan_sha256
+            == phase302_binding.publication_plan_sha256
+        )
+        assert authorization.source_operation == phase302_binding.source_operation
+        assert authorization.previous_recovery_kind == previous
+        assert authorization.recovery_kind == current
+        assert authorization.result_kind == result_kind
+        assert authorization.result_sha256 == result_sha256
+        assert (
+            load_external_publication_recovery_resume_decision_preparation_intent_binding(
+                binding_path
+            )
+            == phase302_binding
+        )
+        assert authorization_path.exists()
+        assert after_phase303 == before_phase303 | {authorization_path.name}
+        assert after_start_markers == before_start_markers
 
 
 def test_source_audit_excludes_acquisition_orchestration_and_ambient_state() -> None:
