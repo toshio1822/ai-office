@@ -7291,3 +7291,71 @@ state authorizes only one future attempt to acquire the exact expected Phase
 290 resume-start identity; it does not assert that the start exists or was
 acquired. A future Phase 304 must derive its canonical start target from the
 Phase 303 authorization digest, and Phase 304 is outside this phase.
+
+## Phase 304: Strict recovery-resume start acquisition handoff
+
+Phase 304 is the first new-generation phase that may create a Phase 290 start
+marker. It consumes exactly one Phase 303 durable start authorization and
+does nothing beyond the exclusive Phase 290 start-acquisition handoff. Its
+public caller input is only the exact `start_authorization_path`; intent,
+start, authority, acquisition, runtime-request, provider, transport, and
+execution values are not caller inputs.
+
+```text
+Phase 303 durable authorization
+        |
+Phase 304 strict acquisition handoff
+        |
+Phase 290 exclusive start marker
+        |
+ acquired / already_acquired
+        |
+       STOP
+```
+
+The exact concrete authorization path is the namespace root. Phase 304
+strict-loads the Phase 303 authorization exactly once and independently
+reconstructs the complete public model. Before any authorization digest,
+intent load, start digest, or Phase 290 call, it requires the exact canonical
+filename:
+
+```text
+start_authorization_path.parent /
+("external-publication-recovery-resume-decision-preparation-start-authorization-"
+ + authorization.decision_preparation_intent_binding_sha256 + ".json")
+```
+
+The authorization digest is computed exactly once with the exact object
+returned by that loader. The Phase 289 intent path is then derived only from
+`authorization.operation_intent_sha256`, strict-loaded exactly once, locally
+reconstructed, and digested exactly once with the exact loader-returned
+identity. The computed intent digest, approval digest, plan digest, and
+operation must match the authorization, with operation exactly `resume`.
+
+The expected Phase 290 start is constructed in memory only from that exact
+intent lineage and its digest is computed exactly once with the exact
+constructed object identity. The computed value must equal
+`authorization.expected_operation_start_sha256`. No Phase 290 start is loaded,
+inspected, persisted, repaired, or pre-acquired by Phase 304. After all
+checks, the start target is derived from the Phase 303 authorization digest,
+not from the repeated intent or expected-start digest:
+
+```text
+start_authorization_path.parent /
+("external-publication-recovery-resume-start-" + authorization_digest + ".json")
+```
+
+Phase 290 is called exactly once with exactly `intent_path` and `start_path`.
+Its exclusive-create, file-sync, parent-sync, existing-marker, and ambiguous
+failure semantics remain wholly owned by Phase 290. Phase 304 validates the
+exact `ExternalPublicationOperationStartAcquisition` result and returns the
+same object identity for both `acquired` and `already_acquired`. Either status
+is a stop: `acquired` proves only that this invocation won the durable start
+fence, while `already_acquired` never becomes fresh execution authority.
+
+Phase 304 adds no Phase 304 sidecar, retry, fallback, cleanup, repair, or
+automatic continuation. It calls no Phase 291, old Phase 297 handoff, Phase
+288, execution, reconciliation, provider, transport, network, credential, or
+runtime boundary. A future Phase 305 may consume this exact acquisition result
+only through a new explicit boundary; Phase 304 never decides to execute
+publication automatically.

@@ -445,6 +445,12 @@ from ai_office.engine.external_publication_recovery_resume_decision_preparation_
     persist_external_publication_recovery_resume_decision_preparation_intent_binding,
     serialize_external_publication_recovery_resume_decision_preparation_intent_binding_canonical,
 )
+from ai_office.engine.external_publication_recovery_resume_decision_preparation_start_acquisition_handoff import (  # noqa: E501
+    ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffCompatibilityError,
+    ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffError,
+    ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffFailureDetail,
+    run_external_publication_recovery_resume_decision_preparation_start_acquisition_handoff,
+)
 from ai_office.engine.external_publication_recovery_resume_decision_preparation_start_authorization import (  # noqa: E501
     ExternalPublicationRecoveryResumeDecisionPreparationStartAuthorization,
     ExternalPublicationRecoveryResumeDecisionPreparationStartAuthorizationCompatibilityError,
@@ -1777,6 +1783,10 @@ __all__ = [
     "load_external_publication_recovery_resume_decision_preparation_start_authorization",
     "persist_external_publication_recovery_resume_decision_preparation_start_authorization",
     "serialize_external_publication_recovery_resume_decision_preparation_start_authorization_canonical",
+    "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffCompatibilityError",
+    "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffError",
+    "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffFailureDetail",
+    "run_external_publication_recovery_resume_decision_preparation_start_acquisition_handoff",
     "external_publication_recovery_resume_decision_preparation_canonical_bytes",
     "external_publication_recovery_resume_decision_preparation_digest",
     "load_external_publication_recovery_resume_decision_preparation",
