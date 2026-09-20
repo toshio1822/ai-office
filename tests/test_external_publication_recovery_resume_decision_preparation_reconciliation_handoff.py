@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import hashlib
 import inspect
 from pathlib import Path
 
@@ -46,6 +45,8 @@ from ai_office.engine import (
     external_publication_consumption_key,
     external_publication_operation_intent_digest,
     external_publication_operation_start_digest,
+    external_publication_recovery_resume_decision_preparation_start_authorization_digest,
+    load_external_publication_recovery_resume_decision_preparation_start_authorization,
     persist_external_publication_execution_result,
     persist_external_publication_operation_intent,
     persist_external_publication_recovery_resume_decision_preparation_start_authorization,
@@ -62,6 +63,7 @@ _AUTHORIZATION_PREFIX = (
     "external-publication-recovery-resume-decision-preparation-start-authorization-"
 )
 _INTENT_PREFIX = "external-publication-operation-intent-"
+_START_PREFIX = "external-publication-recovery-resume-start-"
 _SUFFIX = ".json"
 _MESSAGE = (
     "external publication recovery resume decision preparation reconciliation "
@@ -931,15 +933,14 @@ def _persist_real_provider_free_resume_lineage(
     )
     assert claim_path.exists()
 
-    output = b"phase-306-provider-free-output"
     execution_result = ExternalPublicationExecutionResult(
         schema_version="external-publication-execution-result.v1",
         regeneration_id=claim.regeneration_id,
         publication_attempt_claim_sha256=claim.digest,
         publication_plan_sha256=claim.publication_plan_sha256,
         publication_approval_sha256=claim.publication_approval_sha256,
-        business_output_sha256=hashlib.sha256(output).hexdigest(),
-        output_byte_length=len(output),
+        business_output_sha256=claim.business_output_sha256,
+        output_byte_length=claim.output_byte_length,
         provider=execution_provider,
         publication_target_sha256=claim.publication_target_sha256,
         publication_id="phase306-local-publication",
@@ -1011,8 +1012,8 @@ def _persist_same_namespace_cycles(
         publication_attempt_claim_sha256=claim.digest,
         publication_plan_sha256=claim.publication_plan_sha256,
         publication_approval_sha256=claim.publication_approval_sha256,
-        business_output_sha256=hashlib.sha256(b"phase-306-cycle-output").hexdigest(),
-        output_byte_length=len(b"phase-306-cycle-output"),
+        business_output_sha256=claim.business_output_sha256,
+        output_byte_length=claim.output_byte_length,
         provider="future-provider",
         publication_target_sha256=claim.publication_target_sha256,
         publication_id="phase306-cycle-publication",
@@ -1023,6 +1024,175 @@ def _persist_same_namespace_cycles(
         execution_result,
     )
     return path_a, path_b, _request(root, approval), approval
+
+
+@pytest.mark.parametrize(
+    "previous,recovery",
+    [
+        ("already_acquired", "reconciliation_mismatch"),
+        ("reconciliation_mismatch", "already_acquired"),
+    ],
+)
+def test_real_phase306_default_resume_lineage_uses_persisted_provider_free_fixture(
+    tmp_path: Path, previous: str, recovery: str
+) -> None:
+    root = tmp_path / f"real-{previous}-{recovery}"
+    authorization_path, request, _ = _persist_real_provider_free_resume_lineage(
+        root,
+        previous=previous,
+        recovery=recovery,
+    )
+
+    # The first invocation uses the production defaults all the way through
+    # Phase 305 -> Phase 304 -> Phase 290 -> Phase 288 -> Phase 287.
+    first = handoff_module.run_external_publication_recovery_resume_decision_preparation_reconciliation_handoff(
+        start_authorization_path=authorization_path,
+        request=request,
+    )
+    assert type(first) is ExternalPublicationExecutionReconciliation
+    assert first.status == "matched"
+
+    marker_paths = sorted(root.glob(f"{_START_PREFIX}*.json"))
+    assert len(marker_paths) == 1
+    marker_bytes = marker_paths[0].read_bytes()
+    reconciliation_bytes = request.execution_reconciliation_evidence_path.read_bytes()
+
+    # Keep Phase 305 real while observing that its recovery route stops before
+    # Phase 288.  The first call above already exercised the default Phase 288
+    # and provider-free Phase 287 closure.
+    second_phase288 = _Recorder()
+    second = handoff_module.run_external_publication_recovery_resume_decision_preparation_reconciliation_handoff(
+        start_authorization_path=authorization_path,
+        request=request,
+        phase288_function=second_phase288,
+    )
+    assert second.route == "recovery_required"  # type: ignore[union-attr]
+    assert second.acquisition.status == "already_acquired"  # type: ignore[union-attr]
+    assert second_phase288.call_count == 0
+    assert marker_paths[0].read_bytes() == marker_bytes
+    assert request.execution_reconciliation_evidence_path.read_bytes() == (
+        reconciliation_bytes
+    )
+
+
+def test_real_same_namespace_cycles_use_distinct_authorizations_and_start_markers(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "same-namespace"
+    path_a, path_b, request, _ = _persist_same_namespace_cycles(root)
+    authorization_a = load_external_publication_recovery_resume_decision_preparation_start_authorization(
+        path_a
+    )
+    authorization_b = load_external_publication_recovery_resume_decision_preparation_start_authorization(
+        path_b
+    )
+    authorization_digest_a = external_publication_recovery_resume_decision_preparation_start_authorization_digest(
+        authorization_a
+    )
+    authorization_digest_b = external_publication_recovery_resume_decision_preparation_start_authorization_digest(
+        authorization_b
+    )
+    assert (
+        authorization_a.operation_intent_sha256
+        == authorization_b.operation_intent_sha256
+    )
+    assert (
+        authorization_a.expected_operation_start_sha256
+        == authorization_b.expected_operation_start_sha256
+    )
+    assert authorization_digest_a != authorization_digest_b
+    assert path_a != path_b
+
+    start_path_a = root / f"{_START_PREFIX}{authorization_digest_a}{_SUFFIX}"
+    start_path_b = root / f"{_START_PREFIX}{authorization_digest_b}{_SUFFIX}"
+    assert start_path_a != start_path_b
+
+    # Each first invocation uses default real Phase 305 and Phase 288, so
+    # each independent authorization reaches the provider-free Phase 287
+    # reconciliation with the shared intent/start identity.
+    first_a = handoff_module.run_external_publication_recovery_resume_decision_preparation_reconciliation_handoff(
+        start_authorization_path=path_a,
+        request=request,
+    )
+    first_b = handoff_module.run_external_publication_recovery_resume_decision_preparation_reconciliation_handoff(
+        start_authorization_path=path_b,
+        request=request,
+    )
+    assert type(first_a) is ExternalPublicationExecutionReconciliation
+    assert type(first_b) is ExternalPublicationExecutionReconciliation
+    assert first_a.status == first_b.status == "matched"
+    assert start_path_a.exists()
+    assert start_path_b.exists()
+    assert set(root.glob(f"{_START_PREFIX}*.json")) == {
+        start_path_a,
+        start_path_b,
+    }
+
+    second_phase288_a = _Recorder()
+    second_a = handoff_module.run_external_publication_recovery_resume_decision_preparation_reconciliation_handoff(
+        start_authorization_path=path_a,
+        request=request,
+        phase288_function=second_phase288_a,
+    )
+    second_phase288_b = _Recorder()
+    second_b = handoff_module.run_external_publication_recovery_resume_decision_preparation_reconciliation_handoff(
+        start_authorization_path=path_b,
+        request=request,
+        phase288_function=second_phase288_b,
+    )
+    assert second_a.route == second_b.route == "recovery_required"  # type: ignore[union-attr]
+    assert second_phase288_a.call_count == second_phase288_b.call_count == 0
+
+
+def test_malformed_phase288_result_after_real_phase305_acquisition_preserves_marker_and_blocks_retry(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "malformed-after-real-acquisition"
+    authorization_path, request, _ = _persist_real_provider_free_resume_lineage(root)
+    assert not list(root.glob(f"{_START_PREFIX}*.json"))
+    valid_reconciliation = _reconciliation()
+    malformed = object.__new__(_ReconciliationChild)
+    for field in dataclasses.fields(valid_reconciliation):
+        object.__setattr__(
+            malformed, field.name, getattr(valid_reconciliation, field.name)
+        )
+
+    marker_bytes_at_phase288: dict[Path, bytes] = {}
+
+    def malformed_phase288(received_request: object) -> object:
+        assert received_request is request
+        marker_paths = sorted(root.glob(f"{_START_PREFIX}*.json"))
+        assert len(marker_paths) == 1
+        marker_bytes_at_phase288[marker_paths[0]] = marker_paths[0].read_bytes()
+        return malformed
+
+    phase288 = _Recorder(delegate=malformed_phase288)
+    with pytest.raises(ValueError) as caught:
+        # Phase 305, Phase 304, and Phase 290 are all the real defaults; only
+        # Phase 288 is replaced to return the malformed result exactly once.
+        handoff_module.run_external_publication_recovery_resume_decision_preparation_reconciliation_handoff(
+            start_authorization_path=authorization_path,
+            request=request,
+            phase288_function=phase288,
+        )
+    _assert_error(caught.value, "reconciliation_contract")
+    assert phase288.call_count == 1
+    assert len(marker_bytes_at_phase288) == 1
+    marker_path, marker_bytes = next(iter(marker_bytes_at_phase288.items()))
+    assert marker_path.exists()
+    assert marker_path.read_bytes() == marker_bytes
+    assert not request.execution_reconciliation_evidence_path.exists()
+
+    second_phase288 = _Recorder()
+    second = handoff_module.run_external_publication_recovery_resume_decision_preparation_reconciliation_handoff(
+        start_authorization_path=authorization_path,
+        request=request,
+        phase288_function=second_phase288,
+    )
+    assert second.route == "recovery_required"  # type: ignore[union-attr]
+    assert second.acquisition.status == "already_acquired"  # type: ignore[union-attr]
+    assert second_phase288.call_count == 0
+    assert marker_path.read_bytes() == marker_bytes
 
 
 def test_marker_only_crash_window_is_recovery_required_and_phase288_zero_call(
