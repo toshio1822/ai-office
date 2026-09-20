@@ -6419,3 +6419,55 @@ never becomes fresh execution authority. Phase 304 adds no sidecar, calls no
 Phase 291/297/288 or execution/reconciliation boundary, and performs no
 provider, transport, network, credential, or paid API work. A future Phase 305
 may consume the exact acquisition result only through a new explicit boundary.
+
+## Phase 305: same-invocation recovery-resume start acquisition routing
+
+Phase 305 is the read-only, non-persisted routing boundary above the exact
+Phase 304 acquisition handoff. Its only caller input is the exact Phase 303
+`start_authorization_path`; Phase 304 is called exactly once with that same
+`Path` object and exactly the keyword `start_authorization_path`. No caller
+may supply an acquisition, status, route, intent/start path, authorization
+object or digest, request, provider, transport, credential, execution, or
+reconciliation dependency.
+
+```text
+Phase 303 durable authorization
+        |
+Phase 304 exclusive acquisition
+        |
+Phase 305 in-memory routing
+        |
+        +-- acquired
+        |       -> fresh_start_acquired
+        |              |
+        |             STOP at Phase 305
+        |
+        '-- already_acquired
+                -> recovery_required
+                       |
+                      STOP
+```
+
+Phase 305 accepts only the exact
+`ExternalPublicationOperationStartAcquisition` returned by Phase 304. It
+independently reconstructs the acquisition and its exact contained
+`ExternalPublicationOperationStart`, requires an exact builtin acquisition
+status, and couples `acquired` only to `fresh_start_acquired` and
+`already_acquired` only to `recovery_required`. The returned frozen,
+three-field route keeps the exact Phase 304 acquisition object by identity.
+
+`fresh_start_acquired` means only that this exact Phase 304 call chain won the
+Phase 290 durable start fence in this invocation. It is an in-memory route,
+not execution permission, and it is never serialized, digested, loaded, or
+persisted. A later invocation over the same durable lineage receives
+`already_acquired` from Phase 304 and is routed to `recovery_required`;
+marker existence is never inspected or used to reconstruct fresh authority.
+
+Phase 305 calls no Phase 290, Phase 291, old Phase 297, Phase 288, execution,
+reconciliation, provider, transport, network, credential, or runtime boundary.
+It performs no retry, fallback, cleanup, automatic continuation, path
+normalization, or CLI/GUI work. Unexpected Phase 304 exceptions become a
+fixed, detail-safe `dependency_error`; known Phase 304 errors preserve exact
+object identity. A future Phase 306 must call Phase 305 in the same invocation
+and must not accept a caller-constructed route as authority. Phase 306 is not
+started here.
