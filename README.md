@@ -6329,3 +6329,52 @@ authority, call Phase 300/301 orchestration, add CLI/GUI behavior, or begin
 Phase 303. A future Phase 303 may consume only the exact Phase 302 binding and
 exact Phase 289 intent to create a new recovery-specific start authorization;
 it must not acquire a start or execute.
+
+## Phase 303: recovery-resume decision-preparation start authorization
+
+Phase 303 adds the durable authorization boundary above the exact Phase 302
+preparation-intent binding. The caller supplies only the exact Phase 302
+binding path. Phase 303 strict-loads and locally reconstructs that binding
+exactly once, computes its digest once from the loader-returned object, derives
+the content-addressed Phase 289 intent path from the binding, and strict-loads
+the exact bound intent once. The intent digest is computed once from that exact
+loader-returned object and its digest, approval, plan, and `resume` operation
+must match the Phase 302 binding.
+
+```text
+Phase 302 durable preparation-intent binding
+        |
+exact Phase 289 resume intent
+        |
+expected Phase 290 start identity (in memory only)
+        |
+Phase 303 durable start authorization  <-- new recovery authority
+        |
+future Phase 304 canonical start handoff/acquisition
+```
+
+The expected Phase 290 start is constructed and locally reconstructed in
+memory only. Its public digest helper is called exactly once with that exact
+constructed object. Phase 303 never loads, persists, or acquires a Phase 290
+start marker. The new fifteen-field authorization binds the Phase 302 binding
+digest, preparation digest, recovery-decision digest, exact intent digest,
+expected-start digest, approval and plan digests, and all source/recovery/result
+provenance. The authorization path is derived internally from the Phase 302
+binding digest, so an intent or start digest repeated in another cycle cannot
+collapse the cycle identity.
+
+An existing exact authorization is strict-loaded and returned by the exact
+loaded-object identity. A different, partial, noncanonical, corrupt, or
+non-regular artifact fails closed without overwrite, cleanup, repair, retry, or
+rewrite. New authorization persistence uses exclusive create, full write,
+flush, file fsync, safe close, and parent-directory fsync. Ambiguous failures
+retain the artifact and perform no second attempt.
+
+Phase 303 calls no Phase 299/300/301/302 orchestration, no old Phase 295/296/
+297/298 orchestration, and no Phase 290 acquisition. It performs no execution,
+reconciliation, provider, transport, network, credential, or paid API work and
+adds no CLI/GUI behavior. `authorized` means only that this exact Phase 302
+binding plus its exact bound Phase 289 resume intent authorize one future
+attempt to acquire the exact expected Phase 290 resume-start identity. Phase
+304 must derive its future start target from the Phase 303 authorization digest;
+Phase 304 is not started here.
