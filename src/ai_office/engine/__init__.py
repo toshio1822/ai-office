@@ -451,6 +451,13 @@ from ai_office.engine.external_publication_recovery_resume_decision_preparation_
     ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffFailureDetail,
     run_external_publication_recovery_resume_decision_preparation_start_acquisition_handoff,
 )
+from ai_office.engine.external_publication_recovery_resume_decision_preparation_start_acquisition_routing import (  # noqa: E501
+    ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionRoute,
+    ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionRoutingCompatibilityError,
+    ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionRoutingError,
+    ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionRoutingFailureDetail,
+    route_external_publication_recovery_resume_decision_preparation_start_acquisition,
+)
 from ai_office.engine.external_publication_recovery_resume_decision_preparation_start_authorization import (  # noqa: E501
     ExternalPublicationRecoveryResumeDecisionPreparationStartAuthorization,
     ExternalPublicationRecoveryResumeDecisionPreparationStartAuthorizationCompatibilityError,
@@ -1787,6 +1794,11 @@ __all__ = [
     "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffError",
     "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionHandoffFailureDetail",
     "run_external_publication_recovery_resume_decision_preparation_start_acquisition_handoff",
+    "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionRoute",
+    "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionRoutingCompatibilityError",
+    "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionRoutingError",
+    "ExternalPublicationRecoveryResumeDecisionPreparationStartAcquisitionRoutingFailureDetail",
+    "route_external_publication_recovery_resume_decision_preparation_start_acquisition",
     "external_publication_recovery_resume_decision_preparation_canonical_bytes",
     "external_publication_recovery_resume_decision_preparation_digest",
     "load_external_publication_recovery_resume_decision_preparation",

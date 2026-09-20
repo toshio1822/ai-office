@@ -7359,3 +7359,72 @@ automatic continuation. It calls no Phase 291, old Phase 297 handoff, Phase
 runtime boundary. A future Phase 305 may consume this exact acquisition result
 only through a new explicit boundary; Phase 304 never decides to execute
 publication automatically.
+
+## Phase 305: Same-invocation recovery-resume start acquisition routing
+
+Phase 305 is a read-only, non-persisted boundary above the exact Phase 304
+acquisition handoff. The caller supplies only the exact Phase 303
+`start_authorization_path`. Phase 305 validates the concrete `Path` and the
+callable Phase 304 dependency without filesystem access or path normalization,
+then calls Phase 304 exactly once as:
+
+```text
+phase304_function(start_authorization_path=start_authorization_path)
+```
+
+The caller's `Path` identity is forwarded unchanged and no dependency
+overrides are passed to Phase 304. Known Phase 304 errors are propagated by
+exact object identity. Any unexpected Phase 304 exception is replaced by the
+fixed, detail-safe Phase 305 `dependency_error`; there is no retry or fallback.
+
+```text
+Phase 303 durable authorization
+        |
+Phase 304 exclusive acquisition
+        |
+Phase 290 exclusive start marker
+        |
+Phase 305 in-memory routing
+        |
+        +-- acquired
+        |       -> fresh_start_acquired
+        |              |
+        |             STOP
+        |
+        '-- already_acquired
+                -> recovery_required
+                       |
+                      STOP
+```
+
+The exact frozen Phase 305 route has only three fields, in order:
+`schema_version`, `acquisition`, and `route`. It accepts only the exact
+`ExternalPublicationOperationStartAcquisition` returned by Phase 304. Before
+routing, Phase 305 independently reconstructs the acquisition from its public
+fields and independently reconstructs its contained exact
+`ExternalPublicationOperationStart`. It requires builtin status `acquired` or
+`already_acquired`; the status/route coupling is exact:
+
+```text
+acquired          <=> fresh_start_acquired
+already_acquired  <=> recovery_required
+```
+
+The route retains the original Phase 304 acquisition object by identity. The
+`fresh_start_acquired` route means only that this exact invocation won the
+Phase 290 durable start fence. It is not execution authority and is never
+serialized, digested, loaded, or persisted. Phase 305 never loads, inspects,
+deletes, rewrites, or derives anything from the Phase 290 marker. If the
+process crashes after Phase 290 created the marker but before the route is
+observed, the next Phase 305 call follows Phase 304's
+`already_acquired` result and returns only `recovery_required`; durable marker
+existence alone cannot recreate fresh authority.
+
+Phase 305 calls no Phase 290 directly, no Phase 291, old Phase 297, Phase 288,
+or Phase 303/302/301/300/299 orchestration. It performs no publication
+execution, reconciliation, provider, transport, network, credential, paid
+API, runtime-request, retry, fallback, automatic continuation, persistence,
+serialization, digest, loader, CLI, or GUI work. A future Phase 306 may call
+Phase 305 exactly once and handle only the exact same-invocation
+`fresh_start_acquired` route through a new explicit boundary; it must not
+accept a caller-constructed route as authority. Phase 306 is not started here.
