@@ -7237,3 +7237,57 @@ does not create or reuse the old Phase 295 binding as its authority. A future
 Phase 303 may consume only the exact Phase 302 binding plus exact Phase 289
 intent and create a new recovery-specific start authorization bound to their
 lineage; Phase 303 must not acquire a start or execute.
+
+## Phase 303: Recovery-resume decision-preparation start authorization
+
+Phase 303 is the durable, append-only boundary between the exact Phase 302
+preparation-intent binding and a future Phase 304 start-acquisition handoff.
+Only the exact Phase 302 binding path is caller input. The binding is
+strict-loaded exactly once and independently reconstructed before its digest is
+computed exactly once from the original loader-returned object. The exact
+Phase 289 intent path is then derived from the binding's recorded intent
+digest, strict-loaded exactly once, independently reconstructed, and digested
+exactly once from the original intent object. The computed intent digest,
+approval digest, plan digest, and `resume` operation must all match the Phase
+302 binding before any expected-start digest or authorization persistence.
+
+```text
+Phase 302 durable preparation-intent binding
+        |
+exact Phase 289 resume intent
+        |
+expected Phase 290 start identity (constructed in memory only)
+        |
+Phase 303 durable start authorization
+        |
+future Phase 304 canonical start handoff/acquisition
+```
+
+The expected Phase 290 `ExternalPublicationOperationStart` is constructed
+solely from the exact intent digest and its approval/plan lineage, locally
+reconstructed, and passed once to the public Phase 290 start-digest helper.
+Phase 303 does not load, persist, or acquire a Phase 290 start marker. The
+fifteen-field Phase 303 authorization directly records the Phase 302 binding
+digest, Phase 301 preparation digest, Phase 300 decision digest, Phase 289
+intent digest, expected Phase 290 start digest, approval and plan digests, and
+the complete source/previous-recovery/current-recovery/result provenance.
+
+The authorization target is derived from the exact Phase 302 binding digest in
+the binding's parent namespace. The intent and expected-start digests may
+repeat across recovery cycles; the Phase 302 binding digest remains the cycle
+identity. An exact existing authorization is strict-loaded and returned by
+the exact loaded-object identity. Partial, noncanonical, corrupt, different,
+symlink, directory, or other non-regular artifacts fail closed unchanged.
+New records use exclusive create, full write, flush, file fsync, safe close,
+and parent-directory fsync. An ambiguous write, short write, flush, file-sync,
+close, or directory-sync result retains the artifact and performs no cleanup,
+retry, rewrite, or fallback.
+
+Phase 303 calls no Phase 299/300/301/302 orchestration and does not reuse the
+old Phase 295/296 authority chain. It calls no Phase 290 acquisition, creates
+no start marker, and performs no execution or reconciliation. Provider,
+transport, network, credential, and paid API calls are zero. The `authorized`
+state authorizes only one future attempt to acquire the exact expected Phase
+290 resume-start identity; it does not assert that the start exists or was
+acquired. A future Phase 304 must derive its canonical start target from the
+Phase 303 authorization digest, and Phase 304 is outside this phase.
