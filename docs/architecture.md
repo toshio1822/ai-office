@@ -7169,3 +7169,71 @@ lower boundary, and no provider, transport, runtime request, network,
 credential, or paid API. A future Phase 302 may consume only an exact Phase 301
 preparation, preserve the Phase 298/299/300 provenance, and create the next
 explicit durable binding without executing.
+
+## Phase 302: Preparation-intent binding
+
+Phase 302 is the crash-safe, durable boundary from the exact Phase 301
+decision-bound preparation to the exact Phase 289 `resume` operation intent.
+The caller supplies only the existing Phase 295
+`resume_intent_binding_path`; that path's parent is the namespace root for all
+internally derived Phase 300 decision, Phase 301 preparation, Phase 302
+binding, and Phase 289 intent paths.
+
+```text
+Phase 300 durable operator decision
+        |
+Phase 301 decision-bound preparation
+        |
+Phase 302 preparation-intent binding  <-- new recovery authority
+        |
+exact Phase 289 resume intent
+        |
+future start authorization only
+```
+
+The public Phase 299 route is called exactly once with only the anchor path.
+Only an exact `DecisionRequired` result is accepted. A completed route is
+terminal and performs no Phase 300 loader/digest, Phase 301 loader/digest,
+Phase 302 persistence, or intent work. A Phase 300 `stop` is also terminal and
+performs no Phase 300 digest, Phase 301, binding, or intent work. Only
+`authorize_resume_preparation` proceeds.
+
+Before computing the Phase 300 digest, Phase 302 reconstructs the exact public
+Phase 300 model and compares every Phase 299 → Phase 300 provenance field.
+After loading the canonical Phase 301 preparation, it reconstructs that exact
+public model and compares every Phase 300 → Phase 301 field, including the
+decision, target operation, state, previous/current recovery kinds, and result
+coupling. Each predecessor digest is called exactly once with the exact
+object returned by its loader. Known predecessor errors preserve identity;
+unexpected dependency exceptions become fixed, detail-safe Phase 302 errors.
+
+The frozen, secret-free Phase 302 binding contains exactly thirteen fields:
+the Phase 301 preparation digest, the Phase 300 decision digest, approval and
+plan lineage, the expected intent digest, source and previous/current recovery
+provenance, result provenance, `operation="resume"`, and `state="authorized"`.
+It contains no path, timestamp, UUID, randomness, hostname, PID, exception,
+provider, transport, credential, or runtime request. `authorized` means only
+that this exact Phase 301 preparation authorizes this exact expected Phase
+289 resume-intent identity. It is not intent existence, start authorization,
+start acquisition, execution authority, reconciliation, or replay permission.
+
+The next resume intent may be byte- and digest-identical to a previous resume
+intent when approval and plan remain unchanged. Intent identity or existence
+alone is not new recovery authority. The Phase 301 preparation digest and the
+new Phase 302 binding distinguish the new cycle, and the binding is resolved
+or durably persisted before any Phase 289 intent loader or persistence call.
+An exact existing binding is returned by its strict-loader identity. An exact
+existing intent is accepted only after that binding-first step. Different,
+partial, noncanonical, corrupt, or subclass/lookalike binding or intent
+artifacts fail closed unchanged; no overwrite, delete, repair, retry, or
+rewrite occurs. Exclusive create, full write, flush, file fsync, safe close,
+and parent-directory fsync are required, and uncertain post-create failures
+retain their artifacts as `ambiguous`.
+
+Phase 302 creates no start authorization, acquires no start marker, executes
+or reconciles no publication, invokes no provider/transport/network, and adds
+no CLI or GUI behavior. It calls no Phase 300 or Phase 301 orchestration and
+does not create or reuse the old Phase 295 binding as its authority. A future
+Phase 303 may consume only the exact Phase 302 binding plus exact Phase 289
+intent and create a new recovery-specific start authorization bound to their
+lineage; Phase 303 must not acquire a start or execute.

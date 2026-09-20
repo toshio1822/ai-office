@@ -6275,3 +6275,57 @@ orchestration is called, no lower acquisition/execution boundary is called, and
 real provider, network, credential, and paid API calls remain zero. A future
 Phase 302 may consume only an exact Phase 301 preparation and must preserve the
 Phase 298/299/300 provenance without executing.
+
+## Phase 302: recovery-resume preparation-intent binding
+
+Phase 302 adds the durable boundary between the exact Phase 301 preparation
+and the exact Phase 289 `resume` operation intent. The caller supplies only
+the existing Phase 295 `resume_intent_binding_path`, which is used as the
+namespace anchor; Phase 299 is called exactly once and every later path is
+derived from the returned lineage digests.
+
+```text
+Phase 300 durable operator decision
+        |
+Phase 301 decision-bound preparation
+        |
+Phase 302 preparation-intent binding  <-- new recovery authority
+        |
+exact Phase 289 resume intent
+        |
+future start authorization only
+```
+
+Phase 302 accepts only an exact Phase 299 `DecisionRequired` route. A
+completed route is terminal (`materialization_not_required`) and performs zero
+Phase 300/301/302/289 work. A Phase 300 `stop` is terminal
+(`materialization_not_authorized`). Only `authorize_resume_preparation` may
+continue. The Phase 299 → Phase 300 lineage is validated before the Phase 300
+digest; the complete Phase 300 → Phase 301 lineage is validated before the
+Phase 301 digest. Every predecessor digest is computed exactly once against
+the exact object returned by its loader.
+
+The frozen Phase 302 record has exactly thirteen fields and is rooted directly
+in the Phase 301 preparation digest. Its `authorized` state means only that
+this exact preparation authorizes this exact expected Phase 289 `resume`
+intent identity. A next resume intent may be byte- and digest-identical to a
+prior resume intent when its approval and plan are unchanged. Intent identity
+alone is therefore not new recovery authority; the Phase 301 preparation
+digest plus the new Phase 302 binding disambiguate the recovery cycle.
+
+The Phase 302 binding is resolved or durably persisted first. Only after that
+binding is exact and durable may the content-addressed Phase 289 intent be
+strict-loaded or persisted. Existing exact intent bytes are accepted only
+after this binding-first step; partial, noncanonical, or different binding or
+intent bytes fail closed without overwrite, cleanup, retry, or repair. Binding
+and intent persistence use exclusive create, full write, flush, file fsync,
+safe close, and parent-directory fsync; uncertain post-create failures retain
+the artifact and are classified `ambiguous`.
+
+Phase 302 creates no start authorization, acquires no start marker, executes
+or reconciles no publication, and makes no provider, transport, network,
+credential, or paid API call. It does not reuse the Phase 295 binding as new
+authority, call Phase 300/301 orchestration, add CLI/GUI behavior, or begin
+Phase 303. A future Phase 303 may consume only the exact Phase 302 binding and
+exact Phase 289 intent to create a new recovery-specific start authorization;
+it must not acquire a start or execute.
