@@ -6471,3 +6471,58 @@ fixed, detail-safe `dependency_error`; known Phase 304 errors preserve exact
 object identity. A future Phase 306 must call Phase 305 in the same invocation
 and must not accept a caller-constructed route as authority. Phase 306 is not
 started here.
+
+## Phase 306: same-invocation recovery-resume reconciliation handoff
+
+Phase 306 is the explicit handoff above Phase 305. It binds the exact runtime
+`ExternalPublicationResumeOperationRequest` to the durable Phase 303 start
+authorization before Phase 305 may create the Phase 290 start marker. The
+caller supplies only the exact `start_authorization_path` and exact resume
+request; route, acquisition, authorization, intent/start paths, provider,
+transport, and reconciliation values are not caller authority.
+
+```text
+Phase 303 durable authorization
+        |
+Phase 306 request preflight / lineage bind
+        |
+Phase 305 same-invocation acquisition routing
+        |
+        +-- recovery_required
+        |       -> exact Phase 305 route
+        |       -> Phase 288 zero-call
+        |       -> STOP
+        |
+        '-- fresh_start_acquired
+                -> Phase 288 exact resume request once
+                -> Phase 287 provider-free reconciliation closure
+                -> exact reconciliation
+                -> STOP
+```
+
+Before Phase 305, Phase 306 rejects fresh requests, Path subclasses and
+malformed request paths, independently reconstructs the exact approval,
+strict-loads Phase 303 authorization exactly once, checks its canonical
+filename, computes the request approval digest exactly once over the original
+approval identity, and binds both approval and plan digests to the
+authorization. Any request or lineage mismatch therefore burns no start
+fence. Phase 305 is then called exactly once with only the original
+`start_authorization_path` object.
+
+Phase 306 independently reconstructs the exact Phase 305 route, acquisition,
+and start. It computes the start digest once over the exact returned start and
+checks the complete Phase 303/request lineage. `recovery_required` returns the
+exact Phase 305 route unchanged and never calls Phase 288. Only an exact
+same-invocation `fresh_start_acquired` route calls Phase 288 once, positionally
+with the exact caller request and without lower-dependency overrides. The
+exact `ExternalPublicationExecutionReconciliation` returned by Phase 288 is
+returned unchanged; Phase 306 does not classify or persist it.
+
+If Phase 288 fails after Phase 305 acquired the marker, the known error is
+propagated unchanged, the marker is retained, and there is no retry. A later
+Phase 306 invocation receives `recovery_required` from Phase 305 and makes
+zero Phase 288 calls. Phase 306 does not load or inspect the marker, call
+Phase 290/291/old Phase 297/287/285 directly, perform fresh provider
+publication, normalize paths, add CLI/GUI behavior, or use ambient
+time/random/environment/network state. A future Phase 307 may explicitly
+classify or persist the exact reconciliation result; it is not started here.

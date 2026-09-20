@@ -7428,3 +7428,73 @@ serialization, digest, loader, CLI, or GUI work. A future Phase 306 may call
 Phase 305 exactly once and handle only the exact same-invocation
 `fresh_start_acquired` route through a new explicit boundary; it must not
 accept a caller-constructed route as authority. Phase 306 is not started here.
+
+## Phase 306: Same-invocation recovery-resume reconciliation handoff
+
+Phase 306 is the narrow read-only boundary that binds a runtime resume request
+to one durable Phase 303 authorization before delegating same-invocation start
+acquisition through Phase 305. Its public caller inputs are only the exact
+concrete Phase 303 `start_authorization_path` and exact
+`ExternalPublicationResumeOperationRequest`. A caller cannot provide a route,
+acquisition, authorization object/digest, intent or start path, provider,
+transport, fresh request, or reconciliation result.
+
+```text
+Phase 303 durable authorization
+        |
+Phase 306 request preflight / lineage bind
+        |
+Phase 305 same-invocation route
+        |
+        +-- recovery_required
+        |       -> exact route returned
+        |       -> Phase 288 zero-call
+        |       -> STOP
+        |
+        '-- fresh_start_acquired
+                -> Phase 288 exact resume request once
+                -> Phase 287 provider-free reconciliation closure
+                -> exact reconciliation returned
+                -> STOP
+```
+
+The boundary validates every request Path field and the exact approval model
+before any authorization load. It rejects fresh request types, reconstructs
+the approval through its public model, verifies all callable dependencies, and
+does not touch the filesystem during preflight. It then strict-loads Phase 303
+authorization exactly once with the caller's original Path identity, locally
+reconstructs the complete public model, and checks the exact canonical
+authorization filename before computing the request approval digest. The
+approval digest is computed exactly once over the original request approval
+identity, and both approval and plan lineage must match the authorization
+before Phase 305 is called. Thus invalid request lineage cannot create a
+Phase 290 start marker.
+
+Phase 305 is called exactly once with only
+`start_authorization_path=<original Path object>`. Its exact route,
+`ExternalPublicationOperationStartAcquisition`, and contained
+`ExternalPublicationOperationStart` are independently reconstructed by Phase
+306. The start digest is computed exactly once over the original route start
+identity. The expected-start, operation-intent, approval, plan, operation,
+and state bindings must all match the Phase 303 authorization and caller
+request. Any route or lineage mismatch stops with Phase 288 at zero calls.
+
+Only the exact route pair `fresh_start_acquired` / `acquired` permits one
+positional Phase 288 call with the exact caller request. Because the request
+runtime type is exact resume, Phase 288 selects its provider-free Phase 287
+reconciliation closure; Phase 306 supplies no Phase 285 or Phase 287 lower
+override. The exact `ExternalPublicationExecutionReconciliation` is locally
+reconstructed and returned by identity without Phase 306 classification,
+serialization, persistence, or lifecycle mutation.
+
+The exact route pair `recovery_required` / `already_acquired` returns the
+Phase 305 route object unchanged and makes no Phase 288 call. If Phase 288
+raises after acquisition, known Phase 288/reconciliation errors retain object
+identity, the durable Phase 290 marker remains owned by Phase 290, and Phase
+306 performs no retry, cleanup, replay, fallback, or automatic continuation.
+The next invocation therefore reaches `recovery_required` and stops. Phase
+306 never loads or inspects the marker, calls Phase 290/291/old Phase 297/287/
+285 directly, performs fresh publication, normalizes paths, uses ambient
+time/random/environment/network state, or adds CLI/GUI behavior. A future
+Phase 307 may explicitly classify or persist the returned reconciliation; it
+is outside this phase.
