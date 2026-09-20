@@ -6216,3 +6216,62 @@ intent materialization、start acquisition、provider call、reconciliation、au
 を再利用しません。Phase 298/297/294/293/291/290 acquisition/288以下を直接呼ばず、CLI/GUI変更もなく、
 real provider/network/credential/paid API callは0です。future Phase 301はexactな
 `authorize_resume_preparation`だけをconsumeし、`stop`では停止しなければなりません。
+
+## Phase 301: recovery-resume decision-bound preparation
+
+Phase 301 adds one durable, append-only preparation boundary above the exact
+Phase 300 recovery-resume operator decision. Its caller supplies only the
+exact Phase 295 `resume_intent_binding_path`; Phase 299 is called exactly once
+to recover the canonical current recovery provenance, and the Phase 300
+decision path is derived internally from the Phase 299 outcome digest.
+
+```text
+Phase 298 durable outcome
+        |
+Phase 299 current recovery routing
+        |
+Phase 300 durable operator decision
+        |
+        +-- stop ------------------------> terminal / zero Phase 301 persistence
+        |
+        '-- authorize_resume_preparation
+                     |
+                     v
+Phase 301 decision-bound preparation
+                     |
+                     '-- future lineage materialization only
+```
+
+Phase 301 accepts only an exact Phase 299 `DecisionRequired` result after local
+public-model reconstruction. A completed Phase 298 route is
+`preparation_not_required` and performs zero Phase 300 decision-loader calls,
+decision-digest calls, or Phase 301 persistence. A Phase 300 `stop` decision is
+`preparation_not_authorized` and performs zero decision-digest calls and zero
+Phase 301 persistence. Only the exact
+`authorize_resume_preparation` decision is accepted.
+
+The complete Phase 299 → Phase 300 provenance is compared field by field
+before the Phase 300 decision digest is computed. The digest is computed
+exactly once from the original strict-loader-returned Phase 300 object and is
+bound directly to the new preparation. Phase 301 never recalculates the
+current recovery kind: both `already_acquired` → `reconciliation_mismatch`
+and `reconciliation_mismatch` → `already_acquired` remain authoritative.
+
+The Phase 301 model and canonical JSON contain exactly seventeen fields and no
+raw paths, provider/transport objects, credentials, timestamps, UUIDs,
+randomness, hostnames, PIDs, or exception text. Persistence uses exclusive
+create, full write, flush, file fsync, safe close, and parent-directory fsync.
+Identical existing canonical bytes are idempotent and return the strict-loaded
+object identity; partial, noncanonical, or different existing bytes are
+rejected without changing the artifact. Ambiguous post-create failures retain
+the artifact and never clean up, retry, or rewrite it.
+
+`prepared` means only that the exact Phase 300 decision authorized one future
+attempt to materialize a new recovery-resume lineage bound to this exact
+preparation. It is not operation-intent existence, start authorization, start
+acquisition, execution authority, retry permission, or automatic continuation.
+Phase 294 preparation is not reused as authority, no Phase 294/300
+orchestration is called, no lower acquisition/execution boundary is called, and
+real provider, network, credential, and paid API calls remain zero. A future
+Phase 302 may consume only an exact Phase 301 preparation and must preserve the
+Phase 298/299/300 provenance without executing.
