@@ -27,6 +27,7 @@ from ai_office.engine import (
     ExternalPublicationRecoveryResumeIntentBinding,
     ExternalPublicationRecoveryResumeOutcome,
     ExternalPublicationRecoveryResumeStartAuthorization,
+    acquire_external_publication_operation_start,
     authorize_and_persist_external_publication_recovery_resume_decision_preparation_start,
     decide_and_persist_external_publication_recovery_resume,
     external_publication_operation_intent_digest,
@@ -818,6 +819,80 @@ def test_malformed_phase290_result_fails_closed_without_cleanup_or_retry(
     _assert_error(caught.value, "result_contract")
     assert phase290.call_count == 1
     assert not list(tmp_path.glob(f"{_START_PREFIX}*.json"))
+
+
+def test_durable_phase290_marker_survives_phase304_result_validation_failure(
+    tmp_path: Path,
+) -> None:
+    (
+        authorization_path,
+        authorization,
+        intent,
+        intent_digest,
+        expected_start,
+        start_digest,
+    ) = _lineage(tmp_path)
+    intent_path = tmp_path / f"{_INTENT_PREFIX}{intent_digest}{_SUFFIX}"
+    persist_external_publication_operation_intent(intent_path, intent)
+    persist_external_publication_recovery_resume_decision_preparation_start_authorization(
+        authorization_path, authorization
+    )
+    authorization_digest = handoff_module.external_publication_recovery_resume_decision_preparation_start_authorization_digest(
+        authorization
+    )
+    start_path = tmp_path / f"{_START_PREFIX}{authorization_digest}{_SUFFIX}"
+    expected_marker_bytes = external_publication_operation_start_canonical_bytes(
+        expected_start
+    )
+    wrapper_calls: list[tuple[Path, Path]] = []
+    actual_results: list[ExternalPublicationOperationStartAcquisition] = []
+    marker_bytes_created_by_phase290: list[bytes] = []
+
+    def phase290_wrapper(*, intent_path: Path, start_path: Path) -> object:
+        wrapper_calls.append((intent_path, start_path))
+        actual = acquire_external_publication_operation_start(
+            intent_path=intent_path,
+            start_path=start_path,
+        )
+        actual_results.append(actual)
+        marker_bytes_created_by_phase290.append(start_path.read_bytes())
+        return _forged(actual, status="finished")
+
+    with pytest.raises(_CompatibilityError) as caught:
+        handoff_module.run_external_publication_recovery_resume_decision_preparation_start_acquisition_handoff(
+            start_authorization_path=authorization_path,
+            phase290_function=phase290_wrapper,
+        )
+    _assert_error(caught.value, "result_contract")
+
+    assert wrapper_calls == [(intent_path, start_path)]
+    assert len(actual_results) == 1
+    assert len(marker_bytes_created_by_phase290) == 1
+    assert actual_results[0].status == "acquired"
+    assert actual_results[0].start == expected_start
+    assert (
+        external_publication_operation_start_digest(actual_results[0].start)
+        == start_digest
+    )
+    assert start_path.exists()
+    marker_bytes_after_failure = start_path.read_bytes()
+    assert marker_bytes_after_failure == marker_bytes_created_by_phase290[0]
+    assert marker_bytes_after_failure == expected_marker_bytes
+    assert (
+        marker_bytes_after_failure
+        == external_publication_operation_start_canonical_bytes(expected_start)
+    )
+
+    retry_result = acquire_external_publication_operation_start(
+        intent_path=intent_path,
+        start_path=start_path,
+    )
+    assert retry_result.status == "already_acquired"
+    assert retry_result.start == expected_start
+    assert start_path.read_bytes() == marker_bytes_after_failure
+    assert not any("execution" in path.name for path in tmp_path.iterdir())
+    assert not any("reconciliation" in path.name for path in tmp_path.iterdir())
+    assert not any("provider" in path.name for path in tmp_path.iterdir())
 
 
 def test_result_start_mismatch_and_subclass_are_rejected_after_one_phase290_call(
