@@ -6582,3 +6582,60 @@ read-only observer. Existing `none` outcomes require evidence absence; if
 evidence appears later, Phase 307 raises an explicit durable-state conflict
 and never upgrades, rewrites, or removes the old outcome. Authorization-
 digest-specific paths keep same-namespace recovery cycles independent.
+
+## Phase 308: read-only durable reconciliation outcome routing
+
+Phase 308 is the strict read-only routing boundary above the exact durable
+Phase 307 reconciliation outcome. Its only caller-owned input is the exact
+concrete Phase 302
+`decision_preparation_intent_binding_path`. It strict-loads and independently
+reconstructs that Phase 302 binding, derives the Phase 303 authorization path
+from the binding digest, derives the Phase 290 start, Phase 307
+reconciliation-evidence, and Phase 307 outcome paths from the authorization
+digest, then revalidates the complete durable lineage before routing. No
+caller-supplied binding, authorization, outcome, start, evidence, digest,
+runtime request, route, decision, or lower boundary is accepted.
+
+```text
+Phase 302 durable intent-binding path
+        |
+Phase 303 authorization / Phase 290 start / Phase 307 evidence + outcome
+        |
+Phase 308 durable-read-only routing
+        |
+        +-- completed / reconciliation
+        |       -> exact loaded Phase 307 outcome by identity
+        |       -> terminal STOP
+        |
+        +-- recovery_required / reconciliation
+        |       -> in-memory decision-required
+        |       -> current recovery_kind=reconciliation_mismatch
+        |       -> STOP
+        |
+        '-- recovery_required / none
+                -> in-memory decision-required
+                -> current recovery_kind=already_acquired
+                -> STOP
+```
+
+For `reconciliation`, the canonical authorization-specific evidence must
+exist, strict-load successfully, independently reconstruct, and digest once;
+its digest must equal the Phase 307 outcome result digest. `matched` evidence
+is valid only for `completed`, while `lineage_mismatch` evidence is valid only
+for `recovery_required`. For `none`, the outcome must be
+`recovery_required` with no result digest and the canonical evidence target
+must be absent. Evidence appearing after a `none` outcome is an explicit
+read-only routing failure, never an upgrade.
+
+The in-memory seventeen-field decision-required model preserves every Phase
+307 provenance field. `previous_recovery_kind` is the exact Phase 307
+historical recovery reason for the just-finished resume attempt; the new
+current `recovery_kind` is derived only from the current state/result pair.
+The decision-required value is not serialized, digested, loaded, or
+persisted. Phase 308 calls no Phase 307, Phase 306, Phase 305, Phase 304,
+Phase 290, Phase 288/287/286/285, provider, transport, credential, or
+persistence boundary, and performs no observation, retry, fallback,
+continuation, path normalization, time/random/environment access, or CLI/GUI
+work. A future Phase 309 may persist one explicit operator decision for the
+decision-required route; it is not started here. A completed Phase 307
+outcome is terminal.
