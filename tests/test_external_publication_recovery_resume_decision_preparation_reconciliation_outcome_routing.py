@@ -76,6 +76,7 @@ _ROUTING_MESSAGE = (
     "external publication recovery resume decision preparation reconciliation "
     "outcome routing is blocked"
 )
+_UNSET = object()
 
 
 class _Recorder:
@@ -228,11 +229,14 @@ def _authorization(
 
 def _reconciliation(
     status: str = "lineage_mismatch",
+    *,
+    claim_sha256: str = "a" * 64,
+    execution_evidence_sha256: str = "b" * 64,
 ) -> ExternalPublicationExecutionReconciliation:
     return ExternalPublicationExecutionReconciliation(
         schema_version=_EVIDENCE_SCHEMA,
-        claim_sha256="a" * 64,
-        execution_evidence_sha256="b" * 64,
+        claim_sha256=claim_sha256,
+        execution_evidence_sha256=execution_evidence_sha256,
         status=status,  # type: ignore[arg-type]
         mismatched_fields=("provider",) if status == "lineage_mismatch" else (),
     )
@@ -275,29 +279,53 @@ def _seed(
     *,
     preparation_digest: str = "1" * 64,
     state: str = "recovery_required",
-    result_kind: str = "reconciliation",
+    predecessor_result_kind: str = "reconciliation",
+    predecessor_result_sha256: str | None | object = _UNSET,
+    current_result_kind: str = "reconciliation",
+    current_result_sha256: str | None | object = _UNSET,
     evidence_status: str = "lineage_mismatch",
     previous_recovery_kind: str = "already_acquired",
 ) -> _Lineage:
     root = tmp_path / "artifacts"
     root.mkdir(parents=True, exist_ok=True)
-    recovery_kind = (
-        "reconciliation_mismatch"
-        if result_kind == "reconciliation"
-        else "already_acquired"
-    )
     evidence = (
-        _reconciliation(evidence_status) if result_kind == "reconciliation" else None
+        _reconciliation(evidence_status)
+        if current_result_kind == "reconciliation"
+        else None
+    )
+    observed_current_result_sha256 = (
+        external_publication_execution_reconciliation_digest(evidence)
+        if evidence is not None
+        else None
+    )
+    if current_result_sha256 is _UNSET:
+        current_result_sha256 = observed_current_result_sha256
+    if current_result_kind == "reconciliation":
+        if type(current_result_sha256) is not str:
+            raise AssertionError("current reconciliation requires a digest")
+    elif current_result_sha256 is not None:
+        raise AssertionError("current none requires no digest")
+
+    if predecessor_result_sha256 is _UNSET:
+        predecessor_result_sha256 = (
+            "f" * 64 if predecessor_result_kind == "reconciliation" else None
+        )
+    if predecessor_result_kind == "reconciliation":
+        if type(predecessor_result_sha256) is not str:
+            raise AssertionError("predecessor reconciliation requires a digest")
+    elif predecessor_result_sha256 is not None:
+        raise AssertionError("predecessor none requires no digest")
+
+    predecessor_recovery_kind = (
+        "reconciliation_mismatch"
+        if predecessor_result_kind == "reconciliation"
+        else "already_acquired"
     )
     binding = _binding(
         preparation_digest=preparation_digest,
-        result_kind=result_kind,
-        result_sha256=(
-            external_publication_execution_reconciliation_digest(evidence)
-            if evidence is not None
-            else None
-        ),
-        recovery_kind=recovery_kind,
+        result_kind=predecessor_result_kind,
+        result_sha256=predecessor_result_sha256,  # type: ignore[arg-type]
+        recovery_kind=predecessor_recovery_kind,
         previous_recovery_kind=previous_recovery_kind,
     )
     binding_digest = (
@@ -318,13 +346,9 @@ def _seed(
         binding_digest=binding_digest,
         start_digest=start_digest,
         preparation_digest=preparation_digest,
-        result_kind=result_kind,
-        result_sha256=(
-            external_publication_execution_reconciliation_digest(evidence)
-            if evidence is not None
-            else None
-        ),
-        recovery_kind=recovery_kind,
+        result_kind=predecessor_result_kind,
+        result_sha256=predecessor_result_sha256,  # type: ignore[arg-type]
+        recovery_kind=predecessor_recovery_kind,
         previous_recovery_kind=previous_recovery_kind,
     )
     authorization_path = root / f"{_AUTHORIZATION_PREFIX}{binding_digest}{_SUFFIX}"
@@ -354,9 +378,9 @@ def _seed(
         start_digest=start_digest,
         preparation_digest=preparation_digest,
         state=state,
-        result_kind=result_kind,
-        result_sha256=reconciliation_digest,
-        recovery_kind=recovery_kind,
+        result_kind=current_result_kind,
+        result_sha256=current_result_sha256,  # type: ignore[arg-type]
+        recovery_kind=predecessor_recovery_kind,
         previous_recovery_kind=previous_recovery_kind,
     )
     outcome_path = root / f"{_OUTCOME_PREFIX}{authorization_digest}{_SUFFIX}"
@@ -631,6 +655,30 @@ def test_completed_matched_routes_exact_loaded_identity_and_skips_outcome_digest
     assert recorders["outcome_digest_function"].call_count == 0
 
 
+def test_predecessor_none_authorizes_current_completed_matched_terminal_route(
+    tmp_path: Path,
+) -> None:
+    lineage = _seed(
+        tmp_path,
+        state="completed",
+        predecessor_result_kind="none",
+        predecessor_result_sha256=None,
+        current_result_kind="reconciliation",
+        evidence_status="matched",
+    )
+    assert lineage.authorization.result_kind == "none"
+    assert lineage.authorization.result_sha256 is None
+    assert lineage.outcome.result_kind == "reconciliation"
+    assert lineage.outcome.result_sha256 == lineage.reconciliation_digest
+
+    result, recorders = _route_with_recorders(lineage)
+
+    assert result is lineage.outcome
+    assert recorders["outcome_digest_function"].call_count == 0
+    assert recorders["reconciliation_loader"].call_count == 1
+    assert recorders["reconciliation_digest_function"].call_count == 1
+
+
 def test_recovery_reconciliation_routes_current_mismatch_and_preserves_provenance(
     tmp_path: Path,
 ) -> None:
@@ -679,10 +727,74 @@ def test_recovery_reconciliation_routes_current_mismatch_and_preserves_provenanc
     assert recorders["reconciliation_digest_function"].call_count == 1
 
 
+def test_predecessor_reconciliation_authorizes_current_none_already_acquired_route(
+    tmp_path: Path,
+) -> None:
+    old_digest = "e" * 64
+    lineage = _seed(
+        tmp_path,
+        predecessor_result_kind="reconciliation",
+        predecessor_result_sha256=old_digest,
+        current_result_kind="none",
+        current_result_sha256=None,
+    )
+    assert lineage.authorization.result_kind == "reconciliation"
+    assert lineage.authorization.result_sha256 == old_digest
+    assert lineage.outcome.result_kind == "none"
+    assert lineage.outcome.result_sha256 is None
+
+    result, recorders = _route_with_recorders(lineage)
+
+    assert isinstance(
+        result,
+        ExternalPublicationRecoveryResumeDecisionPreparationReconciliationDecisionRequired,
+    )
+    assert result.recovery_kind == "already_acquired"
+    assert result.previous_recovery_kind == lineage.outcome.recovery_kind
+    assert result.result_kind == "none"
+    assert result.result_sha256 is None
+    assert recorders["outcome_digest_function"].call_count == 1
+    assert recorders["reconciliation_loader"].call_count == 0
+
+
+def test_historical_and_current_reconciliation_digests_are_independent(
+    tmp_path: Path,
+) -> None:
+    old_digest = "e" * 64
+    lineage = _seed(
+        tmp_path,
+        predecessor_result_kind="reconciliation",
+        predecessor_result_sha256=old_digest,
+        current_result_kind="reconciliation",
+        evidence_status="lineage_mismatch",
+    )
+    assert lineage.authorization.result_sha256 == old_digest
+    assert lineage.outcome.result_sha256 == lineage.reconciliation_digest
+    assert lineage.outcome.result_sha256 != lineage.authorization.result_sha256
+
+    result, recorders = _route_with_recorders(lineage)
+
+    assert isinstance(
+        result,
+        ExternalPublicationRecoveryResumeDecisionPreparationReconciliationDecisionRequired,
+    )
+    assert result.recovery_kind == "reconciliation_mismatch"
+    assert result.result_kind == "reconciliation"
+    assert result.result_sha256 == lineage.outcome.result_sha256
+    assert recorders["outcome_digest_function"].call_count == 1
+    assert recorders["reconciliation_digest_function"].call_count == 1
+
+
 def test_recovery_none_routes_already_acquired_without_evidence_digest_or_loader(
     tmp_path: Path,
 ) -> None:
-    lineage = _seed(tmp_path, result_kind="none")
+    lineage = _seed(
+        tmp_path,
+        predecessor_result_kind="none",
+        predecessor_result_sha256=None,
+        current_result_kind="none",
+        current_result_sha256=None,
+    )
     result, recorders = _route_with_recorders(lineage)
     assert isinstance(
         result,
@@ -705,7 +817,13 @@ def test_recovery_none_routes_already_acquired_without_evidence_digest_or_loader
 def test_none_outcome_with_later_evidence_fails_explicitly_without_upgrade(
     tmp_path: Path,
 ) -> None:
-    lineage = _seed(tmp_path, result_kind="none")
+    lineage = _seed(
+        tmp_path,
+        predecessor_result_kind="none",
+        predecessor_result_sha256=None,
+        current_result_kind="none",
+        current_result_sha256=None,
+    )
     lineage.reconciliation_path.write_bytes(b"later evidence")
     before = {path: path.read_bytes() for path in lineage.root.iterdir()}
     with pytest.raises(ValueError) as caught:

@@ -646,14 +646,6 @@ def _validate_outcome_lineage(
             authorization.recovery_kind,  # type: ignore[union-attr]
         ),
         (
-            outcome.result_kind,  # type: ignore[union-attr]
-            authorization.result_kind,  # type: ignore[union-attr]
-        ),
-        (
-            outcome.result_sha256,  # type: ignore[union-attr]
-            authorization.result_sha256,  # type: ignore[union-attr]
-        ),
-        (
             outcome.operation,  # type: ignore[union-attr]
             authorization.operation,  # type: ignore[union-attr]
         ),
