@@ -6526,3 +6526,59 @@ Phase 290/291/old Phase 297/287/285 directly, perform fresh provider
 publication, normalize paths, add CLI/GUI behavior, or use ambient
 time/random/environment/network state. A future Phase 307 may explicitly
 classify or persist the exact reconciliation result; it is not started here.
+
+## Phase 307: crash-recoverable recovery-resume reconciliation outcome
+
+Phase 307 is the durable outcome boundary above Phase 306. It accepts only
+the exact Phase 303 `start_authorization_path` and exact
+`ExternalPublicationResumeOperationRequest`; the authorization digest derives
+the cycle-specific start-marker, reconciliation-evidence, and outcome paths.
+The request's reconciliation-evidence path must equal that canonical path
+exactly as a `Path` value. Phase 307 never normalizes paths and accepts no
+caller-supplied start or outcome path.
+
+```text
+Phase 303 authorization
+        |
+Phase 307 exact request/path bind
+        |
+        +-- existing outcome
+        |       -> revalidate start and evidence/read-only observer
+        |       -> Phase 306 zero-call
+        |       -> return exact loaded outcome
+        |
+        '-- no outcome
+                -> Phase 306 at most once
+                -> durable start-marker validation
+                -> evidence classification / append-only outcome
+```
+
+The frozen sixteen-field outcome preserves the complete Phase 303 provenance
+and records exactly one of these states:
+
+- `completed / reconciliation`: durable evidence is `matched` and the
+  read-only current claim/execution observer agrees.
+- `recovery_required / reconciliation`: durable evidence is
+  `lineage_mismatch` and the read-only observer agrees.
+- `recovery_required / none`: Phase 306 reports the already-acquired route,
+  but this authorization has no reconciliation evidence. This is uncertainty,
+  not evidence of successful publication.
+
+When the process crashes after real Phase 306 has durable reconciliation
+evidence but before the Phase 307 outcome, the next Phase 306 call returns
+`recovery_required` because the start marker already exists. Phase 307 then
+strict-loads only the authorization-specific evidence and uses the allowed
+read-only reconciliation observer (`external_publication_consumption_key`,
+`external_publication_attempt_claim_path`, and
+`reconcile_external_publication_execution`) to restore `matched` or
+`lineage_mismatch`. It does not rebuild authority, call Phase 288/287/286,
+persist evidence, retry, or invoke provider/network/credential work.
+
+Outcome persistence is append-only: validation precedes exclusive creation,
+full write/flush/file fsync/close/parent fsync are required, identical bytes
+are idempotent, conflicts are explicit, and ambiguous artifacts are retained.
+Existing reconciliation outcomes require canonical evidence and an agreeing
+read-only observer. Existing `none` outcomes require evidence absence; if
+evidence appears later, Phase 307 raises an explicit durable-state conflict
+and never upgrades, rewrites, or removes the old outcome. Authorization-
+digest-specific paths keep same-namespace recovery cycles independent.
