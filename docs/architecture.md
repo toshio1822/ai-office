@@ -7595,3 +7595,71 @@ digest, two same-namespace cycles can share intent and expected-start
 identities without aliasing start markers, reconciliation evidence, or
 outcomes. A future Phase 308 may route the exact durable outcome; Phase 308 is
 outside this phase.
+
+## Phase 308: Durable reconciliation outcome routing
+
+Phase 308 consumes only the exact concrete Phase 302 intent-binding path. It
+strict-loads and independently reconstructs the Phase 302 binding, computes
+its digest once, and requires the canonical binding filename derived from
+`decision_preparation_sha256`. The Phase 303 authorization path is then
+derived from that binding digest. After the authorization is reconstructed
+and its digest is computed once, Phase 308 derives the authorization-specific
+Phase 290 start marker, Phase 307 reconciliation evidence, and Phase 307
+outcome paths. These are internal paths; callers cannot supply predecessor
+objects, derived paths, digests, runtime requests, routes, decisions, or
+lower-boundary dependencies.
+
+```text
+Phase 302 binding
+        |
+        +-- Phase 303 authorization
+        |       |
+        |       +-- Phase 290 start marker
+        |       +-- Phase 307 reconciliation evidence
+        |       '-- Phase 307 durable outcome
+        |
+Phase 308 strict lineage revalidation and routing
+        |
+        +-- completed / reconciliation
+        |       -> exact loaded Phase 307 outcome, unchanged, terminal
+        |
+        +-- recovery_required / reconciliation
+        |       -> in-memory decision_required
+        |       -> current recovery reason: reconciliation_mismatch
+        |
+        '-- recovery_required / none
+                -> in-memory decision_required
+                -> current recovery reason: already_acquired
+```
+
+Every loaded public predecessor is reconstructed through its public frozen
+model before its fields are used. The Phase 302-to-303 lineage includes the
+binding digest, decision-preparation digest, recovery decision, operation
+intent, approval, plan, source operation, historical recovery fields, result
+kind/digest, operation, and state. The Phase 303-to-307 lineage additionally
+binds the authorization digest, expected start digest, complete provenance,
+and the exact Phase 290 start marker. Same-namespace cycles remain separate
+because all authorization-derived targets use the exact Phase 303 digest.
+
+For a reconciliation result, Phase 308 requires the exact canonical evidence,
+reconstructs it, computes its digest once, and requires equality with the
+Phase 307 result digest. `matched` may accompany only `completed`; a
+`lineage_mismatch` may accompany only `recovery_required`. A `none` outcome
+must be `recovery_required`, must have no result digest, and must have absent
+canonical evidence. Later evidence is an explicit failure and is never used
+to upgrade the durable outcome. A completed route deliberately does not
+compute the Phase 307 outcome digest; recovery-required routes compute it
+exactly once to identify the in-memory decision-required value.
+
+The seventeen-field decision-required model is in-memory only. It preserves
+the exact Phase 307 `recovery_kind` as
+`previous_recovery_kind`—historical provenance for the just-finished resume
+attempt—and derives the new current recovery reason from the current state
+and result pair. Phase 308 is durable-read-only routing: it calls no Phase
+307/306/305/304/290/288/287/286/285 orchestration, provider, transport,
+credential, or persistence boundary; it does not observe fresh publication
+state, retry, fall back, continue automatically, normalize paths, access
+ambient state, or add CLI/GUI behavior. A future Phase 309 may persist one
+explicit operator decision for the exact decision-required route, while a
+completed Phase 307 outcome remains terminal. Phase 309 is not part of this
+phase.
