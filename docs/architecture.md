@@ -1,5 +1,29 @@
 # アーキテクチャ
 
+## この文書の位置付け
+
+この文書には、現在のアーキテクチャ説明に加えて、過去の Phase で導入・検証された設計経緯が多数含まれている。
+
+**Phase 番号、既存 module、boundary、bridge、adapter、wrapper、test の存在は、その構造を今後も維持・踏襲すべきことを意味しない。**
+
+2026年9月21日時点で、AI Office はアーキテクチャ簡素化の再評価期間に入っている。今後の設計判断では、過去の Phase 構造よりも次を優先する。
+
+1. プロダクトが守るべき不変条件
+2. 外部から観測可能な安定契約
+3. 状態遷移と永続化の所有権
+4. 人間承認と外部副作用の明示的な境界
+5. crash/restart後にも監査可能な durable evidence
+6. 同じ保証を実現できる最も単純な構造
+
+Phase 番号は開発履歴であり、runtime architecture の階層ではない。
+
+新しい boundary は、状態遷移、永続化、外部副作用、人間承認、trust boundary などの独立した責務を持つ場合に限って追加する。既存値を再検証して別の内部関数へ委譲するだけの wrapper は、独立した外部契約がない限り追加しない。
+
+テストは、最終結果、状態遷移、永続化内容、外部副作用、承認・停止条件、不変条件を優先して検証する。特定の内部関数への委譲回数、引数順、Python object identity、default dependency、source/AST形状は、それ自体が外部契約または副作用安全性に必要な場合を除いて固定しない。
+
+以下の Phase 記述は、過去にどの保証をどの構造で検証したかを理解するための資料として扱う。将来の実装は、同じ保証をより単純な構造で実現できるかを改めて評価する。
+
+
 ## Phase 59: classified persisted outcome routing phase bridge reentry
 
 Phase 59 accepts exactly one Phase 58 result. Exact `persisted_success` and
