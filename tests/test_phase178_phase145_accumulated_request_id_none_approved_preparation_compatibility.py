@@ -5,19 +5,17 @@ transport, legitimately produces a durable predecessor history where step 5
 and step 6 both succeeded with ``request_id=None`` (provider ``"openai"``)
 and step 7 then succeeded with a non-empty request id, yielding an exact
 ``prepare_next_step`` decision for step 8.  Before Issue #386 the
-approved-preparation entry layers (Phase 145 outer-chain and Phase 137 outer)
-independently rejected any non-immediate predecessor with ``request_id=None``
-via ``terminal_contract``, so a real accumulated-None provenance could not
-cross the approved-preparation entry seam.
+approved-preparation entry rejected any non-immediate predecessor with
+``request_id=None`` via ``terminal_contract``, so a real accumulated-None
+provenance could not cross the approved-preparation entry seam.
 
 Issue #386 adds a bounded ``allow_accumulated_openai_none`` relaxation: on the
 prepare route only, an aged predecessor at position >= 5 whose provider is
 exactly openai and whose request_id is None is accepted when
-``current_step_index >= 7``.  These tests prove the real Phase 145 default
-chain (real Phase 137 -> real Phase 130/lower) prepares step 8 from the exact
-real Phase 178 prepare decision, while unrelated strictness (non-openai
-accumulated None, below-threshold positions, aged-None on the stop route)
-remains enforced.
+``current_step_index >= 7``.  These tests prove the Phase 145 facade prepares
+step 8 from the exact real Phase 178 prepare decision, while unrelated
+strictness (non-openai accumulated None, below-threshold positions, aged-None
+on the stop route) remains enforced.
 
 Requirement-to-test mapping (Issue #386):
 - A -> test_a_real_phase178_accumulated_none_prepares_step8
@@ -39,9 +37,6 @@ from ai_office.engine import (
     PreparedWorkflowStep,
     WorkflowProgressionDecision,
     route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as real_phase145,
-)
-from ai_office.engine import (
-    route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary as real_phase137,
 )
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase145Error,
@@ -181,9 +176,7 @@ def _write_prepare_scenario(
             changes["provider"] = "openai"
         if position in non_openai_positions:
             changes["provider"] = "anthropic"
-        predecessors.append(
-            harness.predecessor_event(prior.id, position, **changes)
-        )
+        predecessors.append(harness.predecessor_event(prior.id, position, **changes))
     terminal = harness.predecessor_event(
         step.id, index, provider="openai", request_id="request", output_text="output"
     )
@@ -221,8 +214,7 @@ def _write_prepare_scenario(
 def test_a_real_phase178_accumulated_none_prepares_step8(tmp_path: Path) -> None:
     # Issue #386: the exact prepare_next_step(step8) produced by the real
     # Phase 178 boundary (with accumulated step5/step6 openai None) crosses
-    # the real Phase 145 default chain (real Phase 137 -> Phase 130/lower) and
-    # yields an exact PreparedWorkflowStep(step8).
+    # the Phase 145 facade and yields an exact PreparedWorkflowStep(step8).
     scenario, decision = _phase178_prepare_step8(tmp_path)
     wf = scenario["workflow"]
     approval = _harness178().approval_for(decision)
@@ -234,13 +226,12 @@ def test_a_real_phase178_accumulated_none_prepares_step8(tmp_path: Path) -> None
         employee,
         scenario["state_path"],
         scenario["events_path"],
-        phase137_function=real_phase137,
     )
     assert type(out) is PreparedWorkflowStep
     assert out.workflow_id == "w"
     assert out.step_id == "step-8"
     assert out.step_index == 8
-    # durable inputs unchanged through the real Phase 145 chain
+    # durable inputs remain unchanged through the Phase 145 facade
     assert scenario["state_path"].read_bytes() == scenario["state_before"]
     assert scenario["events_path"].read_bytes() == scenario["events_before"]
 
@@ -250,7 +241,7 @@ def test_b_non_contiguous_accumulated_openai_none_prepares_step8(
 ) -> None:
     # Non-contiguous accumulated control: only position 5 is None/openai,
     # position 6 keeps a non-empty request id, terminal step 7 succeeded.
-    # The real Phase 145 default chain still prepares step 8.
+    # The Phase 145 facade still prepares step 8.
     value = _write_prepare_scenario(tmp_path, index=7, none_positions=(5,))
     out = real_phase145(
         value["result"],
@@ -259,7 +250,6 @@ def test_b_non_contiguous_accumulated_openai_none_prepares_step8(
         value["employee"],
         value["state_path"],
         value["events_path"],
-        phase137_function=real_phase137,
     )
     assert type(out) is PreparedWorkflowStep
     assert out.step_id == "step-8" and out.step_index == 8
@@ -270,9 +260,7 @@ def test_b_non_contiguous_accumulated_openai_none_prepares_step8(
 def test_c_inline_strict_prepare_negatives(tmp_path: Path) -> None:
     # (a) accumulated None at position 4 (below threshold >= 5) is rejected
     # and the target bytes are unchanged.
-    below = _write_prepare_scenario(
-        tmp_path / "below", index=7, none_positions=(4,)
-    )
+    below = _write_prepare_scenario(tmp_path / "below", index=7, none_positions=(4,))
     with pytest.raises(Phase145Error) as caught:
         real_phase145(
             below["result"],
@@ -281,7 +269,6 @@ def test_c_inline_strict_prepare_negatives(tmp_path: Path) -> None:
             below["employee"],
             below["state_path"],
             below["events_path"],
-            phase137_function=real_phase137,
         )
     assert caught.value.detail.classification == "terminal_contract"
     assert below["state_path"].read_bytes() == below["before_state"]
@@ -300,14 +287,15 @@ def test_c_inline_strict_prepare_negatives(tmp_path: Path) -> None:
             non_openai["employee"],
             non_openai["state_path"],
             non_openai["events_path"],
-            phase137_function=real_phase137,
         )
     assert caught.value.detail.classification == "terminal_contract"
     assert non_openai["state_path"].read_bytes() == non_openai["before_state"]
     assert non_openai["events_path"].read_bytes() == non_openai["before_events"]
 
 
-def test_d_canonical_stop_routes_exact_identity_aged_none_strict(tmp_path: Path) -> None:
+def test_d_canonical_stop_routes_exact_identity_aged_none_strict(
+    tmp_path: Path,
+) -> None:
     harness = _harness178()
 
     # (a) canonical workflow_complete stop: exact identity + bytes unchanged.
@@ -326,7 +314,6 @@ def test_d_canonical_stop_routes_exact_identity_aged_none_strict(tmp_path: Path)
         None,
         state_path,
         events_path,
-        phase137_function=real_phase137,
     )
     assert out is stop
     assert state_path.read_bytes() == committed_state
@@ -348,7 +335,6 @@ def test_d_canonical_stop_routes_exact_identity_aged_none_strict(tmp_path: Path)
         None,
         state_path2,
         events_path2,
-        phase137_function=real_phase137,
     )
     assert out2 is stop2
     assert state_path2.read_bytes() == committed_state2
@@ -380,7 +366,6 @@ def test_d_canonical_stop_routes_exact_identity_aged_none_strict(tmp_path: Path)
             None,
             state_path3,
             events_path3,
-            phase137_function=real_phase137,
         )
     assert caught.value.detail.classification == "terminal_contract"
     assert state_path3.read_bytes() == values3["state_before"]
@@ -409,7 +394,6 @@ def test_d_canonical_stop_routes_exact_identity_aged_none_strict(tmp_path: Path)
             None,
             state_path4,
             events_path4,
-            phase137_function=real_phase137,
         )
     assert caught.value.detail.classification == "terminal_contract"
     assert state_path4.read_bytes() == values4["state_before"]
