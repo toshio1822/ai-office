@@ -7498,3 +7498,100 @@ The next invocation therefore reaches `recovery_required` and stops. Phase
 time/random/environment/network state, or adds CLI/GUI behavior. A future
 Phase 307 may explicitly classify or persist the returned reconciliation; it
 is outside this phase.
+
+## Phase 307: Crash-recoverable recovery-resume reconciliation outcome
+
+Phase 307 is the append-only durable outcome boundary above Phase 306. Its
+caller authority is deliberately limited to the exact concrete Phase 303
+`start_authorization_path` and the exact
+`ExternalPublicationResumeOperationRequest`. Phase 307 strict-loads the
+authorization once, independently reconstructs it, computes its digest once,
+and checks the canonical authorization filename before deriving all later
+targets from that digest:
+
+```text
+root = start_authorization_path.parent
+authorization_digest = digest(exact loaded Phase 303 authorization)
+
+external-publication-recovery-resume-start-<authorization_digest>.json
+external-publication-recovery-resume-decision-preparation-reconciliation-<authorization_digest>.json
+external-publication-recovery-resume-decision-preparation-reconciliation-outcome-<authorization_digest>.json
+```
+
+The request's `execution_reconciliation_evidence_path` must equal the
+authorization-specific reconciliation path exactly before Phase 306 is
+called. No path is resolved, absolutized, normalized, or inferred from a
+different cycle, and the caller supplies neither the start path, outcome path,
+authorization object/digest, reconciliation object/digest, Phase 306 result,
+route/acquisition, nor any lower publication boundary.
+
+The durable outcome is a frozen model with exactly sixteen fields, preserving
+all Phase 303 provenance:
+
+```text
+schema_version
+decision_preparation_start_authorization_sha256
+decision_preparation_intent_binding_sha256
+decision_preparation_sha256
+recovery_resume_decision_sha256
+operation_intent_sha256
+operation_start_sha256
+publication_approval_sha256
+publication_plan_sha256
+source_operation
+previous_recovery_kind
+recovery_kind
+operation
+state
+result_kind
+result_sha256
+```
+
+Its only valid result classifications are:
+
+```text
+durable reconciliation.status == matched
+    -> completed / reconciliation / durable reconciliation digest
+
+durable reconciliation.status == lineage_mismatch
+    -> recovery_required / reconciliation / durable reconciliation digest
+
+start marker exists, canonical reconciliation evidence is absent
+    -> recovery_required / none / None
+```
+
+For a missing outcome, Phase 306 is invoked at most once with only the two
+exact caller inputs. A normal reconciliation return must have matching
+authorization-specific durable evidence; a recovery-required route must be
+bound to the exact durable start marker and then inspect only the canonical
+evidence path. Phase 307 independently strict-loads and reconstructs the
+evidence, compares it with the Phase 306 result when one was returned, and
+recomputes current lineage through the read-only observer sequence:
+
+```text
+external_publication_consumption_key
+external_publication_attempt_claim_path
+reconcile_external_publication_execution
+```
+
+This observer is read-only validation. Phase 307 never calls Phase 286, 287,
+or 288 for recovery, never persists reconciliation evidence, never reconstructs
+fresh authority from marker existence, and never invokes Phase 285/provider,
+transport, network, or credential work. It has no retry, fallback, automatic
+continuation, cleanup, or outcome rewrite.
+
+The existing-outcome path is a strict zero-Phase306 fast path. It returns the
+exact loaded outcome identity only after revalidating authorization and start
+lineage. A reconciliation outcome requires canonical evidence, matching
+evidence digest, and read-only observer equality. A `none` outcome requires
+evidence absence. If evidence appears after a `none` outcome, Phase 307 raises
+an explicit durable-state conflict, leaves the old bytes untouched, and never
+silently upgrades the outcome. Exclusive creation, complete write, file and
+parent-directory fsync, idempotent exact-byte reuse, conflict detection, and
+ambiguous-artifact retention make the outcome itself crash recoverable.
+
+Because every derived artifact includes the exact Phase 303 authorization
+digest, two same-namespace cycles can share intent and expected-start
+identities without aliasing start markers, reconciliation evidence, or
+outcomes. A future Phase 308 may route the exact durable outcome; Phase 308 is
+outside this phase.
