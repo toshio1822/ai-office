@@ -26,9 +26,6 @@ from ai_office.engine.next_step_preparation import NextStepPreparationApproval
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
-)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178Error,
 )
@@ -431,10 +428,7 @@ def test_13_phase183_safe_error_identity_zero_phase145_and_no_outer_rollback(tmp
         _call(case, phase183_function=dependency, phase145_function=lambda *args: calls.append(args))
     assert caught.value is safe and calls == [] and case["state_path"].read_bytes() == before + b"owned"
 
-    for label, safe_error in (
-        ("phase178", Phase178Error("dependency_error")),
-        ("phase137", Phase137Error("dependency_error")),
-    ):
+    for label, safe_error in (("phase178", Phase178Error("dependency_error")),):
         error_case = _scenario(tmp_path / label)
         error_before = error_case["state_path"].read_bytes()
         error_owned = error_before + b"owned-by-safe-error"

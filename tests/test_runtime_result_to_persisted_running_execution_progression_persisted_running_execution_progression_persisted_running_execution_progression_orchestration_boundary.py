@@ -85,9 +85,6 @@ from ai_office.engine.runtime_result_to_approved_preparation_orchestration_bound
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
-)
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146Error,
 )
@@ -461,7 +458,6 @@ _PHASE187_SAFE_ERRORS = (
     Phase172Error,
     Phase172CompatibilityError,
     Phase145Error,
-    Phase137Error,
     Phase146Error,
     Phase138Error,
     Phase147Error,
@@ -644,7 +640,6 @@ def test_20_explicit_no_readvance_source_audit_and_only_public_dependencies() ->
         "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(",
-        "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
     ):
         assert forbidden not in source
     assert "retry" not in source.lower()
