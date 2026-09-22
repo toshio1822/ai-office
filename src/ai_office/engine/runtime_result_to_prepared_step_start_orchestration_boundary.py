@@ -18,9 +18,6 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146Error,
     route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase138Error,
-)
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
@@ -153,7 +150,7 @@ def route_runtime_result_to_prepared_step_start_orchestration_boundary(
         value = phase146_function(
             progressed, workflow, employee, state_path, events_path
         )
-    except (Phase146Error, Phase138Error) as error:
+    except Phase146Error as error:
         _restore_if_changed(state_path, events_path, committed)
         raise error
     except Exception:
