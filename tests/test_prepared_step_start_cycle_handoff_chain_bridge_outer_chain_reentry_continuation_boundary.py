@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-import ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as facade
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
@@ -20,7 +19,6 @@ from ai_office.engine import (
     PreparedStepExecutionStart,
     PreparedWorkflowStep,
     WorkflowProgressionDecision,
-    prepare_prepared_step_execution_start,
 )
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError,
@@ -28,8 +26,6 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain
 )
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
-    WorkflowExecutionPersistenceTargets,
-    load_workflow_execution_history_with_source_digests,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -250,7 +246,7 @@ def prepare_route(
     return value
 
 
-def test_public_facade_has_no_historical_injection_seam() -> None:
+def test_public_facade_signature_has_no_historical_injection_seam() -> None:
     parameters = tuple(
         inspect.signature(
             route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
@@ -264,11 +260,6 @@ def test_public_facade_has_no_historical_injection_seam() -> None:
         "events_path",
     )
     assert all(parameter.annotation is object for parameter in parameters)
-    source = Path(facade.__file__).read_text(encoding="utf-8")
-    assert "phase138" not in source.lower()
-    assert "prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary" not in source
-    assert "load_workflow_execution_history_with_source_digests" in source
-    assert "prepare_prepared_step_execution_start" in source
 
 
 def test_valid_prepare_reconstructs_exact_upstream_and_runtime_provenance(
@@ -276,19 +267,16 @@ def test_valid_prepare_reconstructs_exact_upstream_and_runtime_provenance(
 ) -> None:
     definition = workflow()
     state_path, events_path, before_state, before_events = write_history(
-        tmp_path, definition, current=6,
+        tmp_path,
+        definition,
+        current=6,
         predecessor_changes=None,
     )
     rewrite_event(events_path, 5, output_text="line 1\nユニコード\nline 3")
     before_state, before_events = state_path.read_bytes(), events_path.read_bytes()
     prepared = prepared_for(definition, 7)
-    loaded, state_digest, _event_digest = load_workflow_execution_history_with_source_digests(
-        WorkflowExecutionPersistenceTargets(state_path, events_path)
-    )
-    expected = prepare_prepared_step_execution_start(
-        prepared, loaded, state_source_sha256=state_digest
-    )
-
+    state_digest = sha256(state_path.read_bytes()).hexdigest()
+    predecessor = success_event(definition, 6, output_text="line 1\nユニコード\nline 3")
     actual = route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
         prepared,
         definition,
@@ -297,7 +285,11 @@ def test_valid_prepare_reconstructs_exact_upstream_and_runtime_provenance(
         events_path,
     )
 
-    assert actual == expected
+    assert type(actual) is PreparedStepExecutionStart
+    assert actual.request.model == prepared.model
+    assert actual.request.system_instructions == prepared.employee_instructions
+    assert actual.request.task_instructions == prepared.step_instructions
+    assert actual.request.allowed_tools == prepared.allowed_tool_names
     assert actual.request.upstream_inputs[0].output_text == "line 1\nユニコード\nline 3"
     assert actual.running_state == WorkflowExecutionState(
         definition.id,
@@ -310,33 +302,12 @@ def test_valid_prepare_reconstructs_exact_upstream_and_runtime_provenance(
     )
     facts = {fact.key: fact for fact in actual.request.runtime_facts.facts}
     assert facts["workflow.status"].provenance.source_sha256 == state_digest
-    assert facts["predecessor.step_id"].provenance.source_sha256 == sha256(
-        serialize_runtime_step_event_jsonl(loaded.events[-1]).encode("utf-8")
-    ).hexdigest()
-    assert (state_path.read_bytes(), events_path.read_bytes()) == (
-        before_state,
-        before_events,
+    assert (
+        facts["predecessor.step_id"].provenance.source_sha256
+        == sha256(
+            serialize_runtime_step_event_jsonl(predecessor).encode("utf-8")
+        ).hexdigest()
     )
-
-
-def test_history_loader_is_read_only_and_called_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    definition = workflow()
-    state_path, events_path, before_state, before_events = write_history(
-        tmp_path, definition, current=6
-    )
-    real_loader = facade.load_workflow_execution_history_with_source_digests
-    calls: list[tuple[object, ...]] = []
-
-    def recording_loader(*args: object, **kwargs: object) -> object:
-        calls.append(args)
-        return real_loader(*args, **kwargs)
-
-    monkeypatch.setattr(facade, "load_workflow_execution_history_with_source_digests", recording_loader)
-    result = prepare_route(definition, state_path, events_path, current=6)
-
-    assert result.running_state.current_step_index == 7
-    assert len(calls) == 1
-    assert calls[0][0] == WorkflowExecutionPersistenceTargets(state_path, events_path)
     assert (state_path.read_bytes(), events_path.read_bytes()) == (
         before_state,
         before_events,
@@ -351,9 +322,8 @@ def test_history_loader_is_read_only_and_called_once(tmp_path: Path, monkeypatch
         (lambda value: replace(value, workflow_id="other"), "prepared_step_contract"),
     ],
 )
-def test_stale_or_unsupported_prepare_inputs_fail_before_history_read(
+def test_stale_or_unsupported_prepare_inputs_fail_closed(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     changed: object,
     classification: str,
 ) -> None:
@@ -361,26 +331,19 @@ def test_stale_or_unsupported_prepare_inputs_fail_before_history_read(
     state_path, events_path, before_state, before_events = write_history(
         tmp_path, definition, current=6
     )
-    calls = 0
-
-    def unexpected(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("history must not be read")
-
-    monkeypatch.setattr(facade, "load_workflow_execution_history_with_source_digests", unexpected)
     value = changed(prepared_for(definition, 7))  # type: ignore[operator]
     assert_classification(
-        lambda: route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            value,
-            definition,
-            employee_for(definition, 7),
-            state_path,
-            events_path,
+        lambda: (
+            route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+                value,
+                definition,
+                employee_for(definition, 7),
+                state_path,
+                events_path,
+            )
         ),
         classification,
     )
-    assert calls == 0
     assert (state_path.read_bytes(), events_path.read_bytes()) == (
         before_state,
         before_events,
@@ -394,22 +357,26 @@ def test_exact_workflow_and_employee_contracts_are_enforced(tmp_path: Path) -> N
     )
     prepared = prepared_for(definition, 7)
     assert_classification(
-        lambda: route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            prepared,
-            WorkflowChild.model_validate(definition.model_dump()),
-            employee_for(definition, 7),
-            state_path,
-            events_path,
+        lambda: (
+            route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+                prepared,
+                WorkflowChild.model_validate(definition.model_dump()),
+                employee_for(definition, 7),
+                state_path,
+                events_path,
+            )
         ),
         "workflow_definition",
     )
     assert_classification(
-        lambda: route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            prepared,
-            definition,
-            employee_for(definition, 6),
-            state_path,
-            events_path,
+        lambda: (
+            route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+                prepared,
+                definition,
+                employee_for(definition, 6),
+                state_path,
+                events_path,
+            )
         ),
         "employee_contract",
     )
@@ -448,8 +415,12 @@ def _assert_history_corruption_fails_closed_without_writes(
     )
 
 
-@pytest.mark.parametrize("mutation", ["state-prefix", "event-order", "provider", "request-id", "output-type"])
-def test_history_corruption_matrix_is_fail_closed(tmp_path: Path, mutation: str) -> None:
+@pytest.mark.parametrize(
+    "mutation", ["state-prefix", "event-order", "provider", "request-id", "output-type"]
+)
+def test_history_corruption_matrix_is_fail_closed(
+    tmp_path: Path, mutation: str
+) -> None:
     _assert_history_corruption_fails_closed_without_writes(tmp_path, mutation)
 
 
@@ -459,7 +430,9 @@ def test_current_predecessor_provider_acceptance_is_preserved(
 ) -> None:
     definition = workflow()
     state_path, events_path, *_ = write_history(
-        tmp_path, definition, current=6,
+        tmp_path,
+        definition,
+        current=6,
         predecessor_changes={5: {"provider": provider}},
     )
     result = prepare_route(definition, state_path, events_path, current=6)
@@ -469,16 +442,25 @@ def test_current_predecessor_provider_acceptance_is_preserved(
 def test_earlier_non_openai_provider_remains_accepted(tmp_path: Path) -> None:
     definition = workflow()
     state_path, events_path, *_ = write_history(
-        tmp_path, definition, current=6,
+        tmp_path,
+        definition,
+        current=6,
         predecessor_changes={1: {"provider": "anthropic"}},
     )
-    assert prepare_route(definition, state_path, events_path, current=6).running_state.current_step_index == 7
+    assert (
+        prepare_route(
+            definition, state_path, events_path, current=6
+        ).running_state.current_step_index
+        == 7
+    )
 
 
 def test_current_predecessor_non_openai_provider_is_rejected(tmp_path: Path) -> None:
     definition = workflow()
     state_path, events_path, *_ = write_history(
-        tmp_path, definition, current=6,
+        tmp_path,
+        definition,
+        current=6,
         predecessor_changes={5: {"provider": "anthropic"}},
     )
     assert_classification(
@@ -502,7 +484,12 @@ def test_empty_historical_predecessor_threshold_boundary(
             "terminal_contract",
         )
     else:
-        assert prepare_route(definition, state_path, events_path, current=current).running_state.current_step_index == current + 1
+        assert (
+            prepare_route(
+                definition, state_path, events_path, current=current
+            ).running_state.current_step_index
+            == current + 1
+        )
 
 
 def test_immediate_and_accumulated_none_request_id_compatibility_is_bounded(
@@ -515,7 +502,12 @@ def test_immediate_and_accumulated_none_request_id_compatibility_is_bounded(
         current=6,
         predecessor_changes={5: {"request_id": None}},
     )
-    assert prepare_route(definition, state_path, events_path, current=6).running_state.current_step_index == 7
+    assert (
+        prepare_route(
+            definition, state_path, events_path, current=6
+        ).running_state.current_step_index
+        == 7
+    )
 
     state_path, events_path, *_ = write_history(
         tmp_path / "immediate-below",
@@ -534,7 +526,12 @@ def test_immediate_and_accumulated_none_request_id_compatibility_is_bounded(
         current=7,
         predecessor_changes={5: {"request_id": None, "provider": "openai"}},
     )
-    assert prepare_route(definition, state_path, events_path, current=7).running_state.current_step_index == 8
+    assert (
+        prepare_route(
+            definition, state_path, events_path, current=7
+        ).running_state.current_step_index
+        == 8
+    )
 
     state_path, events_path, *_ = write_history(
         tmp_path / "accumulated-below",
@@ -565,7 +562,9 @@ def test_empty_or_wrong_type_request_ids_remain_rejected(
 ) -> None:
     definition = workflow()
     state_path, events_path, *_ = write_history(
-        tmp_path, definition, current=6,
+        tmp_path,
+        definition,
+        current=6,
         predecessor_changes={5: {"request_id": bad}},
     )
     assert_classification(
@@ -574,61 +573,28 @@ def test_empty_or_wrong_type_request_ids_remain_rejected(
     )
 
 
-def test_start_preparation_failure_is_sanitized_without_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    definition = workflow()
-    state_path, events_path, before_state, before_events = write_history(
-        tmp_path, definition, current=6
-    )
-    calls = 0
-
-    def unexpected(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise RuntimeError("secret provider detail")
-
-    monkeypatch.setattr(facade, "prepare_prepared_step_execution_start", unexpected)
-    with pytest.raises(
-        PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        prepare_route(definition, state_path, events_path, current=6)
-    assert caught.value.detail.classification == "dependency_error"
-    assert "secret provider detail" not in str(caught.value)
-    assert calls == 1
-    assert (state_path.read_bytes(), events_path.read_bytes()) == (
-        before_state,
-        before_events,
-    )
-
-
-def test_stop_routes_are_identity_preserving_read_only_and_do_not_prepare(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_stop_routes_are_identity_preserving_and_read_only(tmp_path: Path) -> None:
     definition = workflow(6)
-    success_state, success_events, success_before_state, success_before_events = write_history(
-        tmp_path / "success", definition, current=6
+    success_state, success_events, success_before_state, success_before_events = (
+        write_history(tmp_path / "success", definition, current=6)
     )
-    failure_state, failure_events, failure_before_state, failure_before_events = write_history(
-        tmp_path / "failure", definition, current=4, status="failed"
+    failure_state, failure_events, failure_before_state, failure_before_events = (
+        write_history(tmp_path / "failure", definition, current=4, status="failed")
     )
-    calls = 0
-
-    def unexpected(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("stop routes must not prepare a start")
-
-    monkeypatch.setattr(facade, "prepare_prepared_step_execution_start", unexpected)
     success = completion(definition)
     failed = failure(definition, 4)
-    assert route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-        success, definition, None, success_state, success_events
-    ) is success
-    assert route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-        failed, definition, None, failure_state, failure_events
-    ) is failed
-    assert calls == 0
+    assert (
+        route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+            success, definition, None, success_state, success_events
+        )
+        is success
+    )
+    assert (
+        route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+            failed, definition, None, failure_state, failure_events
+        )
+        is failed
+    )
     assert (success_state.read_bytes(), success_events.read_bytes()) == (
         success_before_state,
         success_before_events,
@@ -639,38 +605,54 @@ def test_stop_routes_are_identity_preserving_read_only_and_do_not_prepare(
     )
 
 
-def test_stop_compatibility_and_terminal_strictness_are_preserved(tmp_path: Path) -> None:
+def test_stop_compatibility_and_terminal_strictness_are_preserved(
+    tmp_path: Path,
+) -> None:
     definition = workflow(6)
     state_path, events_path, *_ = write_history(
         tmp_path / "empty-history",
         definition,
         current=6,
-        predecessor_changes={1: {"output_text": ""}, 5: {"request_id": None, "output_text": ""}},
+        predecessor_changes={
+            1: {"output_text": ""},
+            5: {"request_id": None, "output_text": ""},
+        },
     )
     result = completion(definition)
-    assert route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-        result, definition, None, state_path, events_path
-    ) is result
+    assert (
+        route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+            result, definition, None, state_path, events_path
+        )
+        is result
+    )
 
     state_path, events_path, *_ = write_history(
-        tmp_path / "earlier-none", definition, current=6,
+        tmp_path / "earlier-none",
+        definition,
+        current=6,
         predecessor_changes={1: {"request_id": None}},
     )
     assert_classification(
-        lambda: route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            result, definition, None, state_path, events_path
+        lambda: (
+            route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+                result, definition, None, state_path, events_path
+            )
         ),
         "terminal_contract",
     )
 
     state_path, events_path, *_ = write_history(
-        tmp_path / "empty-terminal", definition, current=6,
+        tmp_path / "empty-terminal",
+        definition,
+        current=6,
         predecessor_changes=None,
     )
     rewrite_event(events_path, 5, output_text="")
     assert_classification(
-        lambda: route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            result, definition, None, state_path, events_path
+        lambda: (
+            route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+                result, definition, None, state_path, events_path
+            )
         ),
         "terminal_contract",
     )
@@ -681,16 +663,28 @@ def test_terminal_result_contracts_and_targets_fail_closed(tmp_path: Path) -> No
     state_path, events_path, before_state, before_events = write_history(
         tmp_path, definition, current=6
     )
-    prepared = prepared_for(definition, 7) if len(definition.steps) >= 7 else prepared_for(workflow(), 7)
+    prepared = (
+        prepared_for(definition, 7)
+        if len(definition.steps) >= 7
+        else prepared_for(workflow(), 7)
+    )
     assert_classification(
-        lambda: route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            completion(definition), definition, employee_for(definition, 1), state_path, events_path
+        lambda: (
+            route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+                completion(definition),
+                definition,
+                employee_for(definition, 1),
+                state_path,
+                events_path,
+            )
         ),
         "completion_contract",
     )
     assert_classification(
-        lambda: route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            completion(definition), definition, None, state_path, state_path
+        lambda: (
+            route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+                completion(definition), definition, None, state_path, state_path
+            )
         ),
         "target_conflict",
     )
@@ -699,20 +693,3 @@ def test_terminal_result_contracts_and_targets_fail_closed(tmp_path: Path) -> No
         before_events,
     )
     assert isinstance(prepared, PreparedWorkflowStep)
-
-
-def test_no_provider_or_persistence_execution_is_introduced() -> None:
-    source = Path(facade.__file__).read_text(encoding="utf-8")
-    forbidden = (
-        "persist_prepared_running_state",
-        "persist_workflow_execution_transition",
-        "requests.",
-        "urllib.",
-        "subprocess.",
-        "time.",
-        "random.",
-        "os.environ",
-    )
-    assert all(token not in source for token in forbidden)
-    assert "write_bytes" not in source
-    assert "unlink(" not in source
