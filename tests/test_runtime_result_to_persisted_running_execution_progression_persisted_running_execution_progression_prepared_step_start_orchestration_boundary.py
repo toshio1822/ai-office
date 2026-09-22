@@ -25,10 +25,6 @@ from ai_office.engine import (
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146Error,
 )
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase138Error,
-    route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary as phase138,
-)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_approved_preparation_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionApprovedPreparationOrchestrationBoundaryError as Phase184Error,
 )
@@ -373,7 +369,7 @@ def test_10_default_phase185_real_phase184_to_phase146_step9_start_is_read_only(
     assert all(json.loads(line)["step_id"] != "step-9" for line in case["events_path"].read_text().splitlines())
 
 
-def test_11_accumulated_provenance_narrowness_reuses_phase146_phase138_contract(tmp_path: Path) -> None:
+def test_11_accumulated_provenance_narrowness_is_enforced_by_phase146(tmp_path: Path) -> None:
     valid = _case(tmp_path / "aged-none-valid")
     valid_prepared = _prepared(valid)
     _rewrite_event(valid["events_path"], 2, provider="anthropic", request_id="older-request")
@@ -392,9 +388,6 @@ def test_11_accumulated_provenance_narrowness_reuses_phase146_phase138_contract(
         before = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
         _rewrite_event(case["events_path"], position, **changes)
         invalid_before = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
-        with pytest.raises(Phase138Error) as lower_caught:
-            phase138(prepared, case["workflow"], case["following_employee"], case["state_path"], case["events_path"])
-        assert lower_caught.value.detail.classification == "terminal_contract"
         with pytest.raises(Phase146Error) as caught:
             phase146(prepared, case["workflow"], case["following_employee"], case["state_path"], case["events_path"])
         assert caught.value.detail.classification == "terminal_contract"
@@ -443,24 +436,23 @@ def test_15_malformed_phase146_output_is_contract_error(tmp_path: Path) -> None:
     _classification(lambda: _call(case, phase184_function=lambda *args: prepared, phase146_function=lambda *args: object()), "phase146_contract")
 
 
-def test_16_phase146_and_phase138_safe_errors_restore_committed_snapshot_once(tmp_path: Path) -> None:
-    for error_type in (Phase146Error, Phase138Error):
-        for mode in ("state", "events", "both"):
-            case = _case(tmp_path / f"safe-{error_type.__name__}-{mode}")
-            prepared = _prepared(case)
-            committed = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
-            dependency_calls: list[object] = []
-            safe = error_type("phase146-safe")
+def test_16_phase146_safe_error_restores_committed_snapshot_once(tmp_path: Path) -> None:
+    for mode in ("state", "events", "both"):
+        case = _case(tmp_path / f"safe-{mode}")
+        prepared = _prepared(case)
+        committed = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
+        dependency_calls: list[object] = []
+        safe = Phase146Error("phase146-safe")
 
-            def dependency(*args: object) -> object:
-                dependency_calls.append(args)
-                _mutate_targets(case, committed, mode, b"phase146-owned")
-                raise safe
+        def dependency(*args: object) -> object:
+            dependency_calls.append(args)
+            _mutate_targets(case, committed, mode, b"phase146-owned")
+            raise safe
 
-            with pytest.raises(error_type) as caught:
-                _call(case, phase184_function=lambda *args: prepared, phase146_function=dependency)
-            assert caught.value is safe and len(dependency_calls) == 1
-            assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == committed
+        with pytest.raises(Phase146Error) as caught:
+            _call(case, phase184_function=lambda *args: prepared, phase146_function=dependency)
+        assert caught.value is safe and len(dependency_calls) == 1
+        assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == committed
 
 
 def test_17_unexpected_phase146_error_is_sanitized_and_compensated_without_retry(tmp_path: Path) -> None:

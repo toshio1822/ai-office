@@ -82,9 +82,6 @@ from ai_office.engine.next_step_preparation import (
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146Error,
 )
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase138Error,
-)
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase145CompatibilityError,
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
@@ -437,7 +434,6 @@ def test_public_signature_default_identities_and_source_audit() -> None:
         "ai_office.engine.persisted_execution_outcome_reentry",
         "ai_office.engine.prepared_step_execution_start",
         "ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
-        "ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
         "ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
         "ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary",
         "ai_office.engine.runtime_result_to_progression_orchestration_boundary",
@@ -464,7 +460,6 @@ def test_public_signature_default_identities_and_source_audit() -> None:
         "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
         "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
         "route_runtime_result_to_progression_orchestration_boundary",
-        "route_prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
         "prepare_approved_next_workflow_step",
     ):
         assert forbidden not in source
@@ -838,7 +833,6 @@ def test_phase146_safe_error_identity_committed_retained(tmp_path: Path) -> None
     employee = employee_for(decision)
     safe_errors = [
         Phase146Error("phase146 safe failure"),
-        Phase138Error("phase138 safe failure"),
     ]
     for safe in safe_errors:
         def phase173(r: object, w: object, a: object, m: object, s: object, e: object) -> object:
@@ -847,7 +841,7 @@ def test_phase146_safe_error_identity_committed_retained(tmp_path: Path) -> None
         def phase146(*_: object) -> object:
             raise safe
 
-        with pytest.raises((Phase146Error, Phase138Error)) as exc:
+        with pytest.raises(Phase146Error) as exc:
             route_runtime_result_to_prepared_step_start_orchestration_boundary(
                 result,
                 wf,

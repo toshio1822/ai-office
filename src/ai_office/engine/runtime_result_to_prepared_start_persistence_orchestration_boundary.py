@@ -23,9 +23,6 @@ from ai_office.engine.prepared_step_execution_start import PreparedStepExecution
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146Error,
 )
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase138Error,
-)
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
@@ -148,7 +145,7 @@ def route_runtime_result_to_prepared_start_persistence_orchestration_boundary(
         progressed = phase175_function(
             result, workflow, approval, employee, state_path, events_path
         )
-    except (Phase175Error, Phase173Error, Phase172Error, Phase145Error, Phase146Error, Phase138Error) as error:
+    except (Phase175Error, Phase173Error, Phase172Error, Phase145Error, Phase146Error) as error:
         raise error
     except Exception:
         _fail("dependency_error")
