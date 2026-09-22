@@ -28,9 +28,6 @@ from ai_office.engine.next_step_preparation import (
 from ai_office.engine.persisted_continuation_runtime_facts import (
     build_persisted_continuation_runtime_facts,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase145Error,
-)
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145BoundaryError,
     route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as real145,
@@ -107,7 +104,7 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_cha
 
 # Independently enumerate the public safe families expected at each immediate
 # seam. These test oracles intentionally do not import production tuples.
-PHASE145_SAFE_ERRORS = (Phase145BoundaryError, Phase145Error)
+PHASE145_SAFE_ERRORS = (Phase145BoundaryError,)
 PHASE146_SAFE_ERRORS = (Phase146BoundaryError, Phase146Error)
 PHASE147_SAFE_ERRORS = (Phase147BoundaryError, Phase147Error)
 PHASE155_SAFE_ERRORS = (Phase155BoundaryError, Phase155Error)

@@ -35,9 +35,6 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reent
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
-)
 from ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary import (
     RuntimeResultToApprovedPreparationOrchestrationBoundaryError as Phase173Error,
 )
@@ -116,7 +113,6 @@ _SAFE_PHASE181_ERRORS = (
     Phase172Error,
     Phase172CompatibilityError,
     Phase145Error,
-    Phase137Error,
     Phase146Error,
     Phase138Error,
     Phase147Error,

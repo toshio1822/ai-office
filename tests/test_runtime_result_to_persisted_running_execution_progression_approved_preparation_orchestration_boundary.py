@@ -37,10 +37,6 @@ from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_br
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase145CompatibilityError,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase137CompatibilityError,
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
-)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase178CompatibilityError,
 )
@@ -1459,40 +1455,6 @@ def test_18_phase145_safe_error_identity_preserved_and_targets_restored(
     assert exc.value is sentinel
     assert sp.read_bytes() == committed[0]
     assert ep.read_bytes() == committed[1]
-
-    # Phase137 identity: a safe Phase137 error surfaced through Phase145 is
-    # re-raised by exact identity after restoring the committed snapshot, even
-    # though the stub polluted both targets first.
-    s137 = _scenario(tmp_path, "target137")
-    wf137 = s137["workflow"]
-    sp137, ep137 = Path(s137["state_path"]), Path(s137["events_path"])
-    prepare137 = prepare_decision(wf137, 7)
-    sentinel137 = Phase137CompatibilityError("terminal_contract")
-
-    def phase145_stub137(*args: object, **kwargs: object) -> object:
-        sp137.write_bytes(b"BAD-STATE")
-        ep137.write_bytes(b"BAD-EVENTS")
-        raise sentinel137
-
-    with pytest.raises(Phase137Error) as exc:
-        phase179(
-            s137["result"],
-            wf137,
-            s137["approval"],
-            s137["employee"],
-            sp137,
-            ep137,
-            TOOLS,
-            s137["api_key"],
-            s137["execution_approval"],
-            success_transport([]),
-            approval_for(prepare137),
-            employee_for(prepare137),
-            phase145_function=phase145_stub137,  # type: ignore[arg-type]
-        )
-    assert exc.value is sentinel137
-    assert sp137.read_bytes() == committed[0]
-    assert ep137.read_bytes() == committed[1]
 
 def test_19_unexpected_phase145_error_sanitized_and_rollback_failure(
     tmp_path: Path,

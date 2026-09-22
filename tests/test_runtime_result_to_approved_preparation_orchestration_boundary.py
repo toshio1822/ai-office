@@ -405,7 +405,6 @@ def test_public_signature_default_identities_and_source_audit() -> None:
         "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
         "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
         "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
-        "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
         "prepare_approved_next_workflow_step",
     ):
         assert forbidden not in source

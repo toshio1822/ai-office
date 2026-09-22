@@ -70,9 +70,6 @@ from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_br
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
-)
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError as Phase172CompatibilityError,
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172BoundaryError,
@@ -167,7 +164,7 @@ ApprovedWorkflowContinuationCycleFailure = ApprovedWorkflowContinuationCycleErro
 # Each immediate public boundary has an intentionally independent safe-error
 # family. An error from another stage must be sanitized as a Phase-190
 # dependency error rather than preserved by identity.
-_SAFE_PHASE145_ERRORS = (Phase145BoundaryError, Phase137Error)
+_SAFE_PHASE145_ERRORS = (Phase145BoundaryError,)
 _SAFE_PHASE146_ERRORS = (Phase146BoundaryError, Phase138Error)
 _SAFE_PHASE147_ERRORS = (Phase147BoundaryError, Phase139Error)
 _SAFE_PHASE155_ERRORS = (Phase155BoundaryError, Phase141Error)

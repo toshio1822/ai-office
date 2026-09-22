@@ -480,10 +480,6 @@ def test_public_signature_and_source_audit() -> None:
         not in source
     )
     assert (
-        "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary"
-        not in source
-    )
-    assert (
         "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary"
         not in source
     )
