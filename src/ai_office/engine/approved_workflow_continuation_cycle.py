@@ -61,9 +61,6 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase138Error,
-)
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145BoundaryError,
 )
@@ -165,7 +162,7 @@ ApprovedWorkflowContinuationCycleFailure = ApprovedWorkflowContinuationCycleErro
 # family. An error from another stage must be sanitized as a Phase-190
 # dependency error rather than preserved by identity.
 _SAFE_PHASE145_ERRORS = (Phase145BoundaryError,)
-_SAFE_PHASE146_ERRORS = (Phase146BoundaryError, Phase138Error)
+_SAFE_PHASE146_ERRORS = (Phase146BoundaryError,)
 _SAFE_PHASE147_ERRORS = (Phase147BoundaryError, Phase139Error)
 _SAFE_PHASE155_ERRORS = (Phase155BoundaryError, Phase141Error)
 # This is the Phase-188 precedent for the real Phase-172 public surface. The
