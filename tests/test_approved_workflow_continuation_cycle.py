@@ -58,9 +58,6 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from ai_office.tools import ToolDefinition
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeOuterReentryContinuationError as Phase146Error,
-)
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146BoundaryError,
 )
@@ -105,7 +102,7 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_cha
 # Independently enumerate the public safe families expected at each immediate
 # seam. These test oracles intentionally do not import production tuples.
 PHASE145_SAFE_ERRORS = (Phase145BoundaryError,)
-PHASE146_SAFE_ERRORS = (Phase146BoundaryError, Phase146Error)
+PHASE146_SAFE_ERRORS = (Phase146BoundaryError,)
 PHASE147_SAFE_ERRORS = (Phase147BoundaryError, Phase147Error)
 PHASE155_SAFE_ERRORS = (Phase155BoundaryError, Phase155Error)
 PHASE172_SAFE_ERRORS = (
@@ -485,7 +482,7 @@ def test_06_phase145_safe_unexpected_malformed_mutation_prior_snapshot_matrix(tm
         with pytest.raises(safe_type) as caught:
             phase190(*args, phase145_function=p_safe)
         assert caught.value is safe and (vv["state_path"].read_bytes(), vv["events_path"].read_bytes()) == vv["before"]
-    vv = setup(tmp_path / "unrelated"); w = vv["workflow"]; assert isinstance(w, WorkflowDefinition); args = contexts(vv, 9); unrelated = Phase146Error("unrelated")
+    vv = setup(tmp_path / "unrelated"); w = vv["workflow"]; assert isinstance(w, WorkflowDefinition); args = contexts(vv, 9); unrelated = Phase146BoundaryError("unrelated")
     def p_unrelated(*a, unrelated=unrelated): raise unrelated
     err(lambda: phase190(*args, phase145_function=p_unrelated), "dependency_error")
     assert (vv["state_path"].read_bytes(), vv["events_path"].read_bytes()) == vv["before"]
