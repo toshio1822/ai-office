@@ -1,8 +1,7 @@
-"""Phase 145 progression-to-approved-preparation cycle handoff chain bridge outer-chain boundary."""
+"""Phase 145 approved-preparation facade over validated history and pure preparation."""
 
 # ruff: noqa: E501,E701
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
@@ -11,21 +10,18 @@ from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
+    NextStepPreparationError,
     PreparedWorkflowStep,
+    prepare_approved_next_workflow_step,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
-)
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterReentryContinuationError as Phase137Error,
-)
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
+    LoadedWorkflowExecutionHistory,
     WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
@@ -45,11 +41,6 @@ Classification = Literal[
     "terminal_contract",
     "prepared_contract",
     "dependency_error",
-    "dependency_rollback",
-]
-Phase137Function = Callable[
-    [object, object, object, object, object, object],
-    PreparedWorkflowStep | WorkflowProgressionDecision | PersistedExecutionOutcome,
 ]
 _PATH_TYPE = type(Path())
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
@@ -89,13 +80,9 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
     employee: object,
     state_path: object,
     events_path: object,
-    *,
-    phase137_function: Phase137Function = (
-        route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
-    ),
 ) -> PreparedWorkflowStep | WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Route one exact Phase 144 continuation result through public Phase 137 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase137_function)
+    """Validate persisted history and prepare one approved next step directly."""
+    _check_inputs(result, workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -128,8 +115,7 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
         stop = True
 
     _check_targets(state_path, events_path)
-    original = _capture_targets(state_path, events_path)
-    _check_terminal(
+    loaded = _check_terminal(
         result,
         workflow,
         state_path,
@@ -139,9 +125,9 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=True,
+        restrict_empty_predecessor_output_to_current_step=not stop,
         allow_accumulated_openai_none=not stop,
     )
-    _require_unchanged(state_path, events_path, original, "terminal_contract")
 
     if stop:
         return result
@@ -150,15 +136,14 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
     assert type(approval) is NextStepPreparationApproval
     assert type(employee) is EmployeeDefinition
     try:
-        prepared = phase137_function(
-            result, workflow, approval, employee, state_path, events_path
+        prepared = prepare_approved_next_workflow_step(
+            workflow, loaded, result, approval, employee
         )
-    except Phase137Error as error:
-        _compensate_dependency_error(state_path, events_path, original, error)
+    except NextStepPreparationError:
+        _fail("prepared_contract")
     except Exception:
-        _compensate_dependency_error(state_path, events_path, original, None)
+        _fail("dependency_error")
 
-    _require_unchanged(state_path, events_path, original, "prepared_contract")
     _check_prepared(prepared, result, workflow, approval, employee)
     return prepared
 
@@ -168,7 +153,6 @@ def _check_inputs(
     workflow: object,
     state_path: object,
     events_path: object,
-    dependency: object,
 ) -> None:
     if type(result) not in {WorkflowProgressionDecision, PersistedExecutionOutcome}:
         _fail("result_type")
@@ -180,8 +164,6 @@ def _check_inputs(
         _fail("event_target")
     if state_path == events_path:
         _fail("target_conflict")
-    if not callable(dependency):
-        _fail("dependency_error")
 
 
 def _valid_workflow(workflow: WorkflowDefinition) -> bool:
@@ -297,7 +279,9 @@ def _check_failure(
         and type(index) is int
         and 1 <= index <= len(workflow.steps)
         and _exact_string(result.current_step_id, workflow.steps[index - 1].id)
-        and _exact_string(result.current_employee_id, workflow.steps[index - 1].employee)
+        and _exact_string(
+            result.current_employee_id, workflow.steps[index - 1].employee
+        )
         and type(result.failure_category) is str
         and result.failure_category in _FAILURE_CATEGORIES
     ):
@@ -328,18 +312,6 @@ def _check_targets(state_path: Path, events_path: Path) -> None:
             _fail(classification)
 
 
-def _capture_targets(state_path: Path, events_path: Path) -> tuple[bytes, bytes]:
-    try:
-        state_bytes = state_path.read_bytes()
-    except OSError:
-        _fail("state_target")
-    try:
-        event_bytes = events_path.read_bytes()
-    except OSError:
-        _fail("event_target")
-    return state_bytes, event_bytes
-
-
 def _check_terminal(
     result: WorkflowProgressionDecision | PersistedExecutionOutcome,
     workflow: WorkflowDefinition,
@@ -351,8 +323,9 @@ def _check_terminal(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    restrict_empty_predecessor_output_to_current_step: bool,
     allow_accumulated_openai_none: bool = False,
-) -> None:
+) -> LoadedWorkflowExecutionHistory:
     try:
         loaded = load_workflow_execution_history(
             WorkflowExecutionPersistenceTargets(state_path, events_path)
@@ -374,9 +347,14 @@ def _check_terminal(
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=allow_empty_predecessor_output,
+        restrict_empty_predecessor_output_to_current_step=(
+            restrict_empty_predecessor_output_to_current_step
+        ),
         allow_accumulated_openai_none=allow_accumulated_openai_none,
     ):
         _fail("terminal_contract")
+
+    return loaded
 
 
 def _valid_history(
@@ -391,6 +369,7 @@ def _valid_history(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    restrict_empty_predecessor_output_to_current_step: bool,
     allow_accumulated_openai_none: bool = False,
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple:
@@ -430,7 +409,12 @@ def _valid_history(
             position,
             state,
             require_openai=require_immediate_openai and position == len(prior_steps),
-            allow_empty_output=allow_empty_predecessor_output,
+            allow_empty_output=(
+                allow_empty_predecessor_output
+                and (
+                    not restrict_empty_predecessor_output_to_current_step or index >= 6
+                )
+            ),
             allow_none_immediate_predecessor_request=(
                 index >= 6 and position == len(prior_steps)
             ),
@@ -499,10 +483,7 @@ def _valid_predecessor(
         and _nonempty_string(event.response_id)
         and (
             _nonempty_string(event.request_id)
-            or (
-                allow_none_immediate_predecessor_request
-                and event.request_id is None
-            )
+            or (allow_none_immediate_predecessor_request and event.request_id is None)
             or (
                 allow_accumulated_openai_none
                 and event.request_id is None
@@ -591,57 +572,6 @@ def _check_prepared(
         and prepared.allowed_tool_names == tuple(employee.allowed_tools)
     ):
         _fail("prepared_contract")
-
-
-def _changed(state_path: Path, events_path: Path, original: tuple[bytes, bytes]) -> bool:
-    try:
-        return (
-            not state_path.is_file()
-            or not events_path.is_file()
-            or state_path.read_bytes() != original[0]
-            or events_path.read_bytes() != original[1]
-        )
-    except OSError:
-        return True
-
-
-def _restore_or_fail(
-    state_path: Path, events_path: Path, original: tuple[bytes, bytes]
-) -> None:
-    failed = False
-    for path, contents in ((state_path, original[0]), (events_path, original[1])):
-        try:
-            path.write_bytes(contents)
-        except OSError:
-            failed = True
-    if not failed and _changed(state_path, events_path, original):
-        failed = True
-    if failed:
-        _fail("dependency_rollback")
-
-
-def _require_unchanged(
-    state_path: Path,
-    events_path: Path,
-    original: tuple[bytes, bytes],
-    classification: Classification,
-) -> None:
-    if _changed(state_path, events_path, original):
-        _restore_or_fail(state_path, events_path, original)
-        _fail(classification)
-
-
-def _compensate_dependency_error(
-    state_path: Path,
-    events_path: Path,
-    original: tuple[bytes, bytes],
-    safe_error: Phase137Error | None,
-) -> None:
-    if _changed(state_path, events_path, original):
-        _restore_or_fail(state_path, events_path, original)
-    if safe_error is not None:
-        raise safe_error
-    _fail("dependency_error")
 
 
 def _nonempty_string(value: object) -> bool:
