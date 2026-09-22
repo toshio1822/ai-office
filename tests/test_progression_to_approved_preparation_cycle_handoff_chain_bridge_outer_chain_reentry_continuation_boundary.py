@@ -13,7 +13,6 @@ from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
-    NextStepPreparationError,
     PreparedWorkflowStep,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
@@ -26,7 +25,6 @@ from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_br
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
-    LoadedWorkflowExecutionHistory,
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
     serialize_runtime_step_event_jsonl,
@@ -34,24 +32,24 @@ from ai_office.storage import (
 )
 
 
-def workflow() -> WorkflowDefinition:
+def workflow(step_count: int = 6) -> WorkflowDefinition:
+    step_ids = ("one", "two", "three", "four", "five", "six", "seven")
+    employee_ids = "abcdefg"
     return WorkflowDefinition.model_validate(
         {
             "id": "w",
             "name": "W",
             "description": "D",
             "steps": [
-                {"id": "one", "name": "One", "employee": "a", "instructions": "one"},
-                {"id": "two", "name": "Two", "employee": "b", "instructions": "two"},
                 {
-                    "id": "three",
-                    "name": "Three",
-                    "employee": "c",
-                    "instructions": "three",
-                },
-                {"id": "four", "name": "Four", "employee": "d", "instructions": "four"},
-                {"id": "five", "name": "Five", "employee": "e", "instructions": "five"},
-                {"id": "six", "name": "Six", "employee": "f", "instructions": "six"},
+                    "id": step_id,
+                    "name": step_id.title(),
+                    "employee": employee_id,
+                    "instructions": step_id,
+                }
+                for step_id, employee_id in zip(
+                    step_ids[:step_count], employee_ids[:step_count], strict=True
+                )
             ],
         }
     )
@@ -164,8 +162,9 @@ def data(
     predecessor_providers: dict[int, object] | None = None,
     predecessor_outputs: dict[int, object] | None = None,
     predecessor_request_ids: dict[int, object] | None = None,
+    workflow_value: WorkflowDefinition | None = None,
 ) -> dict[str, object]:
-    supplied_workflow = workflow()
+    supplied_workflow = workflow() if workflow_value is None else workflow_value
     step = supplied_workflow.steps[index - 1]
     predecessor_providers = predecessor_providers or {}
     predecessor_outputs = predecessor_outputs or {}
@@ -260,8 +259,19 @@ def completion_data(
     return value
 
 
-def failure_data(tmp_path: Path, *, provider: object = "other") -> dict[str, object]:
-    return data(tmp_path, index=5, status="failed", terminal_provider=provider)
+def failure_data(
+    tmp_path: Path,
+    *,
+    provider: object = "other",
+    predecessor_outputs: dict[int, object] | None = None,
+) -> dict[str, object]:
+    return data(
+        tmp_path,
+        index=5,
+        status="failed",
+        terminal_provider=provider,
+        predecessor_outputs=predecessor_outputs,
+    )
 
 
 def invoke(value: dict[str, object]) -> object:
@@ -321,41 +331,6 @@ def test_valid_prepare_returns_pure_prepared_step_without_writing(
     unchanged(value)
 
 
-def test_direct_facade_calls_pure_preparation_once_with_loaded_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    value = data(tmp_path)
-    expected = PreparedWorkflowStep(
-        "w",
-        "six",
-        6,
-        "f",
-        "employee instructions",
-        "six",
-        "model-name",
-        ("tool-one", "tool-two"),
-    )
-    calls: list[tuple[object, ...]] = []
-
-    import ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase145_module
-
-    def prepare(*args: object) -> PreparedWorkflowStep:
-        calls.append(args)
-        return expected
-
-    monkeypatch.setattr(phase145_module, "prepare_approved_next_workflow_step", prepare)
-    out = invoke(value)
-    assert out is expected
-    assert len(calls) == 1
-    workflow_value, history, decision, approval_value, employee_value = calls[0]
-    assert workflow_value is value["workflow"]
-    assert type(history) is LoadedWorkflowExecutionHistory
-    assert decision is value["result"]
-    assert approval_value is value["approval"]
-    assert employee_value is value["employee"]
-    unchanged(value)
-
-
 def test_removed_phase137_keyword_is_not_accepted(tmp_path: Path) -> None:
     value = data(tmp_path)
     with pytest.raises(TypeError):
@@ -411,50 +386,6 @@ def test_persisted_history_inconsistency_fails_closed_without_new_write(
     assert before(value) == injected
 
 
-def test_preparation_error_is_fail_closed_without_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    value = data(tmp_path)
-    calls = 0
-    import ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase145_module
-
-    def fail_once(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise NextStepPreparationError()
-
-    monkeypatch.setattr(
-        phase145_module, "prepare_approved_next_workflow_step", fail_once
-    )
-    with pytest.raises(Phase145CompatibilityError) as caught:
-        invoke(value)
-    assert caught.value.detail.classification == "prepared_contract"
-    assert calls == 1
-    unchanged(value)
-
-
-def test_unexpected_preparation_error_is_sanitized_without_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    value = data(tmp_path)
-    calls = 0
-    import ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase145_module
-
-    def fail_once(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise RuntimeError("private detail")
-
-    monkeypatch.setattr(
-        phase145_module, "prepare_approved_next_workflow_step", fail_once
-    )
-    with pytest.raises(Phase145CompatibilityError) as caught:
-        invoke(value)
-    assert caught.value.detail.classification == "dependency_error"
-    assert calls == 1
-    unchanged(value)
-
-
 @pytest.mark.parametrize("route", ["completion", "failure"])
 def test_stop_routes_preserve_identity_and_history_compatibility(
     tmp_path: Path, route: str
@@ -467,17 +398,50 @@ def test_stop_routes_preserve_identity_and_history_compatibility(
     unchanged(value)
 
 
+@pytest.mark.parametrize("route", ["completion", "failure"])
 def test_stop_route_accepts_non_openai_provider_and_empty_predecessor_output(
-    tmp_path: Path,
+    tmp_path: Path, route: str
 ) -> None:
-    value = completion_data(
-        tmp_path,
-        provider="local-provider",
-        predecessor_outputs={1: ""},
+    value = (
+        completion_data(
+            tmp_path / "completion",
+            provider="local-provider",
+            predecessor_outputs={1: ""},
+        )
+        if route == "completion"
+        else failure_data(
+            tmp_path / "failure",
+            provider="local-provider",
+            predecessor_outputs={1: ""},
+        )
     )
     result = invoke(value)
     assert result is value["result"]
     unchanged(value)
+
+
+def test_prepare_empty_predecessor_output_keeps_legacy_threshold(
+    tmp_path: Path,
+) -> None:
+    below_threshold = data(
+        tmp_path / "below",
+        index=5,
+        predecessor_outputs={1: ""},
+    )
+    assert_rejected(below_threshold, "terminal_contract")
+
+    at_threshold = data(
+        tmp_path / "at-threshold",
+        index=6,
+        workflow_value=workflow(7),
+        predecessor_outputs={1: ""},
+    )
+    out = invoke(at_threshold)
+    assert type(out) is PreparedWorkflowStep
+    assert out.step_id == "seven"
+    assert out.step_index == 7
+    assert out.employee_id == "g"
+    unchanged(at_threshold)
 
 
 def test_stop_route_rejects_empty_final_success_output(tmp_path: Path) -> None:

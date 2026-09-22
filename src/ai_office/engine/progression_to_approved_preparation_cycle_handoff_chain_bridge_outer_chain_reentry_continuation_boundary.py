@@ -125,6 +125,7 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=True,
+        restrict_empty_predecessor_output_to_current_step=not stop,
         allow_accumulated_openai_none=not stop,
     )
 
@@ -322,6 +323,7 @@ def _check_terminal(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    restrict_empty_predecessor_output_to_current_step: bool,
     allow_accumulated_openai_none: bool = False,
 ) -> LoadedWorkflowExecutionHistory:
     try:
@@ -345,6 +347,9 @@ def _check_terminal(
         require_immediate_openai=require_immediate_openai,
         allow_empty_success_output=allow_empty_success_output,
         allow_empty_predecessor_output=allow_empty_predecessor_output,
+        restrict_empty_predecessor_output_to_current_step=(
+            restrict_empty_predecessor_output_to_current_step
+        ),
         allow_accumulated_openai_none=allow_accumulated_openai_none,
     ):
         _fail("terminal_contract")
@@ -364,6 +369,7 @@ def _valid_history(
     require_immediate_openai: bool,
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
+    restrict_empty_predecessor_output_to_current_step: bool,
     allow_accumulated_openai_none: bool = False,
 ) -> bool:
     if type(state) is not WorkflowExecutionState or type(history) is not tuple:
@@ -403,7 +409,12 @@ def _valid_history(
             position,
             state,
             require_openai=require_immediate_openai and position == len(prior_steps),
-            allow_empty_output=allow_empty_predecessor_output,
+            allow_empty_output=(
+                allow_empty_predecessor_output
+                and (
+                    not restrict_empty_predecessor_output_to_current_step or index >= 6
+                )
+            ),
             allow_none_immediate_predecessor_request=(
                 index >= 6 and position == len(prior_steps)
             ),
