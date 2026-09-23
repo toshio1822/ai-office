@@ -15,9 +15,6 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155Error,
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase141Error,
-)
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147Error,
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
@@ -110,7 +107,6 @@ _SAFE_PHASE181_ERRORS = (
     Phase146Error,
     Phase147Error,
     Phase155Error,
-    Phase141Error,
     Phase177Error,
     Phase161Error,
     Phase143Error,
@@ -258,7 +254,7 @@ def route_runtime_result_to_persisted_running_execution_progression_persisted_ru
             next_execution_approval,
             next_transport,
         )
-    except (Phase155Error, Phase141Error) as error:
+    except Phase155Error as error:
         _restore_if_changed(state_path, events_path, committed)
         raise error
     except Exception:

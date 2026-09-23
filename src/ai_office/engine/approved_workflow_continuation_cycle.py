@@ -36,9 +36,6 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase141Error,
-)
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
 )
@@ -161,7 +158,7 @@ ApprovedWorkflowContinuationCycleFailure = ApprovedWorkflowContinuationCycleErro
 _SAFE_PHASE145_ERRORS = (Phase145BoundaryError,)
 _SAFE_PHASE146_ERRORS = (Phase146BoundaryError,)
 _SAFE_PHASE147_ERRORS = (Phase147BoundaryError,)
-_SAFE_PHASE155_ERRORS = (Phase155BoundaryError, Phase141Error)
+_SAFE_PHASE155_ERRORS = (Phase155BoundaryError,)
 # This is the Phase-188 precedent for the real Phase-172 public surface. The
 # Phase-161 outer-chain error is required because it is the default first seam.
 _SAFE_PHASE172_ERRORS = (

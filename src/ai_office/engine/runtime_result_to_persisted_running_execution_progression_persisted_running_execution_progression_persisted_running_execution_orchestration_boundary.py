@@ -14,9 +14,6 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155Error,
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase141Error,
-)
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
@@ -145,13 +142,12 @@ _SAFE_PHASE186_ERRORS = (
     Phase146Error,
     Phase147Error,
     Phase155Error,
-    Phase141Error,
     Phase177CompatibilityError,
     Phase161Error,
     Phase143Error,
     Phase144Error,
 )
-_SAFE_PHASE155_ERRORS = (Phase155Error, Phase141Error)
+_SAFE_PHASE155_ERRORS = (Phase155Error,)
 
 
 @dataclass(frozen=True)

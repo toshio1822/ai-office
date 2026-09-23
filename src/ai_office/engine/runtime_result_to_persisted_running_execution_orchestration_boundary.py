@@ -17,9 +17,6 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155Error,
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase141Error,
-)
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147Error,
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
@@ -153,7 +150,8 @@ def route_runtime_result_to_persisted_running_execution_orchestration_boundary(
     durable next-step running-state persistence; the capture-only Phase-147
     adapter records the exact PreparedStepExecutionStart produced by the real
     Phase-147 handoff; Phase 155 owns exactly one next-step runtime execution
-    through the real Phase141 → 133 → 126 → lower chain.  Phase 177 stops
+    through the current Phase155 owner and its direct persisted-start
+    execution owner.  Phase 177 stops
     after returning the exact next-step runtime result or the exact stop
     object and must not persist that result, progress again, prepare another
     step, retry, loop, finalize, schedule, parallelize, or add CLI/GUI
@@ -244,7 +242,7 @@ def route_runtime_result_to_persisted_running_execution_orchestration_boundary(
             execution_approval,
             transport,
         )
-    except (Phase155Error, Phase141Error) as error:
+    except Phase155Error as error:
         _restore_if_changed(state_path, events_path, committed)
         raise error
     except Exception:
