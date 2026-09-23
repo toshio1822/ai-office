@@ -29,9 +29,6 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_cha
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
-)
 from ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary import (
     RuntimeResultToApprovedPreparationOrchestrationBoundaryError as Phase173Error,
 )
@@ -143,7 +140,6 @@ _SAFE_PHASE186_ERRORS = (
     Phase147Error,
     Phase155Error,
     Phase177CompatibilityError,
-    Phase161Error,
     Phase143Error,
     Phase144Error,
 )

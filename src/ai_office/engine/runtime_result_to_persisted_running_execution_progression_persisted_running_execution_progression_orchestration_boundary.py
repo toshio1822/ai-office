@@ -61,9 +61,6 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
     route_runtime_result_to_progression_orchestration_boundary,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
-)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.runtime import (
     RuntimeStepEvent,
@@ -115,12 +112,10 @@ _SAFE_PHASE182_ERRORS = (
     Phase146Error,
     Phase147Error,
     Phase155Error,
-    Phase161Error,
     Phase143Error,
     Phase144Error,
 )
 _SAFE_PHASE172_ERRORS = (
-    Phase161Error,
     Phase143Error,
     Phase144Error,
     Phase172Error,

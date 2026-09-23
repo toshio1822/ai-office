@@ -31,9 +31,6 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
     route_runtime_result_to_progression_orchestration_boundary as phase172,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
-)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryCompatibilityError as Phase187CompatibilityError,
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionPersistedRunningExecutionOrchestrationBoundaryError as Phase187Error,
@@ -239,7 +236,6 @@ def test_01_public_api_signature_exports_defaults_error_hierarchy_and_source_aud
     assert source.count("phase187_function(") == 1
     assert source.count("phase172_function(") == 1
     for forbidden in (
-        "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(",
@@ -453,7 +449,6 @@ _PHASE187_SAFE_ERRORS = (
     Phase147Error,
     Phase155Error,
     Phase177Error,
-    Phase161Error,
     Phase143Error,
     Phase144Error,
 )
@@ -556,7 +551,7 @@ def test_15_inconsistent_post_phase187_snapshot_is_contract_error_and_phase187_b
 
 
 def test_16_recognized_phase172_safe_errors_preserve_identity_no_outer_rollback_or_retry(tmp_path: Path) -> None:
-    safe_types = (Phase172Error, Phase172CompatibilityError, Phase161Error, Phase143Error, Phase144Error)
+    safe_types = (Phase172Error, Phase172CompatibilityError, Phase143Error, Phase144Error)
     for index, safe_type in enumerate(safe_types):
         case = _case(tmp_path / str(index))
         before = case["state_path"].read_bytes()
@@ -624,7 +619,6 @@ def test_20_explicit_no_readvance_source_audit_and_only_public_dependencies() ->
     assert "route_runtime_result_to_progression_orchestration_boundary" in source
     assert "route_runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_persisted_running_execution_orchestration_boundary" in source
     for forbidden in (
-        "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(",
