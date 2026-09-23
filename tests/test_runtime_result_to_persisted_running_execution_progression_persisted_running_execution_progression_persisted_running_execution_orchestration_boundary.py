@@ -44,9 +44,6 @@ from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_
 from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
-)
 from ai_office.engine.runtime_result_to_approved_preparation_orchestration_boundary import (
     RuntimeResultToApprovedPreparationOrchestrationBoundaryError as Phase173Error,
 )
@@ -202,7 +199,7 @@ _PHASE186_SAFE_ERRORS = (
     Phase180Error, Phase179Error, Phase178Error, Phase176Error, Phase175Error,
     Phase173Error, Phase172Error, Phase172CompatibilityError, Phase145Error,
     Phase146Error, Phase147Error,
-    Phase155Error, Phase177CompatibilityError, Phase161Error,
+    Phase155Error, Phase177CompatibilityError,
     Phase143Error, Phase144Error,
 )
 
@@ -695,7 +692,6 @@ def test_19_runtime_result_is_exact_step9_result_and_no_readvance(tmp_path: Path
     value = _runtime(case)
     source = Path(phase187.__code__.co_filename).read_text()
     for forbidden in (
-        "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(",
         "route_runtime_result_to_progression_orchestration_boundary(",

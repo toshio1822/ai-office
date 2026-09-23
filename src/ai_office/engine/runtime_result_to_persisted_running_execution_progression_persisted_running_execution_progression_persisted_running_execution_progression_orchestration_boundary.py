@@ -82,9 +82,6 @@ from ai_office.engine.runtime_result_to_persisted_running_execution_progression_
 from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161ChainError,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
-)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
 from ai_office.runtime import (
@@ -141,7 +138,6 @@ _SAFE_PHASE187_ERRORS = (
     Phase147Error,
     Phase155Error,
     Phase177Error,
-    Phase161Error,
     Phase143Error,
     Phase144Error,
 )
@@ -149,7 +145,6 @@ _SAFE_PHASE172_ERRORS = (
     Phase172Error,
     Phase172CompatibilityError,
     Phase161ChainError,
-    Phase161Error,
     Phase143Error,
     Phase144Error,
 )

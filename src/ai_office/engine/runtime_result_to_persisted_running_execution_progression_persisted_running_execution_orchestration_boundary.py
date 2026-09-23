@@ -52,9 +52,6 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
     RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError as Phase172CompatibilityError,
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase161Error,
-)
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
 )
@@ -108,7 +105,6 @@ _SAFE_PHASE181_ERRORS = (
     Phase147Error,
     Phase155Error,
     Phase177Error,
-    Phase161Error,
     Phase143Error,
     Phase144Error,
 )
