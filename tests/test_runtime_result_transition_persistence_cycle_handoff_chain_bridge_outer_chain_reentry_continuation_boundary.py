@@ -1,121 +1,33 @@
-"""Focused Phase 161 runtime-result transition-persistence outer-chain bridge tests.
+"""Behavioral tests for the Phase 161 runtime-result transition-persistence facade.
 
-Phase 161 is the outer-chain boundary that accepts one exact Phase 155
-runtime result (``StepRuntimeExecutionSuccess`` / ``StepRuntimeExecutionFailure``)
-and hands it exactly once to the public Phase 142 route in canonical
-four-argument order, plus the unchanged zero-call stops for exact
-``WorkflowProgressionDecision(workflow_complete)`` and exact
-``PersistedExecutionOutcome(persisted_failure)`` inherited from Phase 155.
-
-Requirement-to-test mapping (Issue #328):
-- public function exists with canonical first-four ``object`` annotations,
-  parameter kinds, keyword-only ``phase142_function`` defaulting to the public
-  Phase 142 route -> test_public_signature_and_source_audit,
-     test_default_dependency_identity_and_non_callable_rejection
-- source audit: only public Phase 142 route referenced; Phase 134 / Phase 143 /
-  Phase 155 routes and private cross-phase helpers absent
-  -> test_public_signature_and_source_audit
-- exact valid success/failure runtime routes with continuation index >= 6,
-  canonical four-argument identity, exactly one Phase 142 call
-  -> test_valid_routes_delegate_canonical_identity_once_and_return_exact_object
-- continuation indices 1-5 are accepted when their predecessor provenance is valid
-  -> test_runtime_indices_below_six_are_rejected_before_phase142
-- exact result/workflow/step/runtime invocation types -> test_result_subclasses_and_substitutes_are_zero_call_rejected,
-     test_workflow_subclass_and_attribute_compatible_substitute_are_zero_call_rejected,
-     test_workflow_step_subclass_and_attribute_compatible_substitute_are_rejected,
-     test_nested_invocation_result_subclasses_and_substitutes_are_zero_call_rejected,
-     test_runtime_success_nested_contract_is_strict,
-     test_runtime_failure_nested_contract_is_strict,
-     test_runtime_linkage_is_rejected_before_phase142
-- predecessor history matrix -> test_predecessor_history_matrix_is_rejected_before_phase142
-- Phase-155 provenance: earlier/immediate empty output accepted; immediate
-  request_id None accepted; earlier request IDs non-empty; immediate provider
-  exact "openai"; earlier provider semantics unchanged
-  -> test_predecessor_request_id_provenance_is_required,
-     test_immediate_predecessor_none_request_id_delegates_once,
-     test_immediate_predecessor_none_request_id_empty_output_delegates_once,
-     test_earlier_predecessor_none_request_id_is_rejected_before_phase142,
-     test_immediate_predecessor_invalid_request_ids_are_rejected_before_phase142,
-     test_immediate_predecessor_provider_must_be_openai,
-     test_earlier_predecessor_non_openai_provider_remains_allowed,
-     test_immediate_predecessor_empty_output_text_delegates_once_canonical_order,
-     test_earlier_empty_output_text_survives_later_succeeded_predecessor,
-     test_predecessor_nonempty_output_text_remains_accepted,
-     test_predecessor_output_text_non_string_is_rejected,
-     test_immediate_predecessor_empty_output_text_still_requires_openai_provider,
-     test_predecessor_empty_output_text_still_requires_response_id
-- persistence result exact type / identity / positive exact int byte counts /
-  terminal state-event semantics / appended-byte exactness / predecessor
-  provenance unchanged -> test_persistence_return_must_be_exact_and_target_identical,
-     test_malformed_persistence_returns_are_rejected_and_compensated,
-     test_persistence_result_subclass_is_rejected_and_restored,
-     test_fully_compatible_persistence_result_substitute_is_rejected,
-     test_persistence_byte_counts_require_positive_exact_int,
-     test_persistence_count_wrong_positive_is_rejected,
-     test_persisted_terminal_state_matrix_is_compensated_without_retry,
-     test_persisted_event_prefix_and_append_invariants_are_compensated,
-     test_event_bytes_appended_wrong_positive_is_rejected_and_compensated,
-     test_failed_terminal_event_semantics_are_revalidated_and_compensated,
-     test_invalid_persisted_terminal_event_semantics_are_rejected,
-     test_invalid_persisted_terminal_event_kind_and_linkage_is_rejected,
-     test_invalid_persisted_predecessor_history_is_rejected_and_restored
-- compensation on valid mutation / malformed return / safe error identity /
-  unexpected error sanitization / rollback failure -> test_valid_persistence_target_mutation_is_compensated_without_retry,
-     test_malformed_return_is_compensated_without_retry,
-     test_safe_phase142_error_identity_is_preserved_after_compensation,
-     test_unexpected_error_is_sanitized_and_compensated,
-     test_rollback_failure_attempts_both_targets_once_without_retry
-- stop routes (workflow_complete / persisted_failure) return supplied object
-  identity with zero Phase 142 calls; Phase-155 stop domain: empty predecessor
-  output and non-openai terminal provider allowed; final workflow_complete
-  empty success output rejected; own-domain validation
-  -> test_stop_routes_allow_non_openai_terminal_provider_and_are_zero_call,
-     test_stop_routes_allow_empty_predecessor_output_and_non_openai_terminal_provider,
-     test_stop_subclasses_and_compatible_substitutes_are_zero_call_rejected,
-     test_stop_current_step_index_bool_and_int_subclass_are_zero_call_rejected,
-     test_stop_malformed_values_and_unsupported_results_are_zero_call_rejected,
-     test_workflow_complete_stop_empty_terminal_output_is_rejected,
-     test_direct_non_phase142_results_are_zero_call_rejected
-- target safety -> test_missing_and_directory_targets_are_rejected_before_phase142,
-     test_target_conflict_and_non_callable_dependency_are_rejected,
-     test_target_oserror_is_classified_by_target
-- persisted running state revalidated before Phase 142
-  -> test_runtime_result_fully_compatible_substitutes_are_zero_call_rejected,
-     test_persisted_running_state_contract_is_revalidated_before_phase142
-- real-default persistence regression: Phase 161 -> real Phase 142 -> real
-  lower chain -> actual Phase 30 persistence, success and failure
-  -> test_real_default_success_persists_through_actual_phase30,
-     test_real_default_failure_persists_through_actual_phase30
+The facade now owns the runtime-result route directly: it validates the exact
+running state, predecessor history and runtime result, then performs exactly one
+transition/persistence through the current runtime owner.  These tests assert
+observable committed state, event history, rollback and zero-write behavior, not
+the removed historical wrapper topology.
 """
 
-# ruff: noqa: E501,E701,E702,F401,I001
+# ruff: noqa: E501
 
-import inspect
+from __future__ import annotations
+
 import json
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
+import ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase161_module
+from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
     PersistedExecutionOutcome,
+    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError,
     WorkflowProgressionDecision,
 )
-from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError,
-    route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
+    route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as public_route,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase142Error,
-)
-from ai_office.invocation import (
-    ModelInvocationFailure,
-    ModelInvocationRequest,
-    ModelInvocationSuccess,
-)
+from ai_office.invocation import ModelInvocationFailure, ModelInvocationSuccess
 from ai_office.runtime import (
     RuntimeStepEvent,
     StepRuntimeExecutionFailure,
@@ -123,8 +35,9 @@ from ai_office.runtime import (
     WorkflowExecutionState,
 )
 from ai_office.storage import (
-    RunningStatePersistenceResult,
+    WorkflowExecutionPersistenceFailureDetail,
     WorkflowExecutionPersistenceResult,
+    WorkflowExecutionPersistenceRollbackError,
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
     load_workflow_execution_state,
@@ -132,2082 +45,674 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 
-
-class SuccessChild(StepRuntimeExecutionSuccess):
-    pass
+_ERROR = RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
 
 
-class FailureChild(StepRuntimeExecutionFailure):
-    pass
-
-
-class SuccessInvocationChild(ModelInvocationSuccess):
-    pass
-
-
-class FailureInvocationChild(ModelInvocationFailure):
-    pass
-
-
-class WorkflowChild(WorkflowDefinition):
-    pass
-
-
-class StepChild(WorkflowStepDefinition):
-    pass
-
-
-class PersistenceChild(WorkflowExecutionPersistenceResult):
-    pass
-
-
-class IntChild(int):
-    pass
-
-
-class DecisionChild(WorkflowProgressionDecision):
-    pass
-
-
-class OutcomeChild(PersistedExecutionOutcome):
-    pass
-
-
-def workflow() -> WorkflowDefinition:
+def workflow(count: int = 8) -> WorkflowDefinition:
     return WorkflowDefinition.model_validate(
         {
-            "id": "w",
-            "name": "W",
-            "description": "D",
-            "steps": [
-                {"id": "one", "name": "One", "employee": "e", "instructions": "one"},
-                {"id": "two", "name": "Two", "employee": "e", "instructions": "two"},
-                {"id": "three", "name": "Three", "employee": "e", "instructions": "three"},
-                {"id": "four", "name": "Four", "employee": "e", "instructions": "four"},
-                {"id": "five", "name": "Five", "employee": "e", "instructions": "five"},
-                {"id": "six", "name": "Six", "employee": "e", "instructions": "six"},
-            ],
-        }
-    )
-
-
-def predecessor_event(
-    step_id: str,
-    step_index: int,
-    provider: object = "openai",
-    **changes: object,
-) -> RuntimeStepEvent:
-    return replace(
-        RuntimeStepEvent(
-            "step_succeeded",
-            "w",
-            step_id,
-            step_index,
-            "e",
-            "running",
-            "succeeded",
-            provider,  # type: ignore[arg-type]
-            None,
-            f"response-{step_id}",
-            f"request-{step_id}",
-            f"output-{step_id}",
-            None,
-        ),
-        **changes,
-    )
-
-
-def terminal_event(
-    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
-    **changes: object,
-) -> RuntimeStepEvent:
-    invocation = result.invocation_result
-    if type(result) is StepRuntimeExecutionSuccess:
-        event = RuntimeStepEvent(
-            "step_succeeded",
-            result.workflow_id,
-            result.step_id,
-            result.step_index,
-            result.employee_id,
-            "running",
-            "succeeded",
-            invocation.provider,
-            None,
-            invocation.response_id,
-            invocation.request_id,
-            invocation.text,
-            None,
-        )
-    else:
-        event = RuntimeStepEvent(
-            "step_failed",
-            result.workflow_id,
-            result.step_id,
-            result.step_index,
-            result.employee_id,
-            "running",
-            "failed",
-            invocation.provider,
-            invocation.category,
-            None,
-            invocation.request_id,
-            None,
-            invocation.message,
-        )
-    return replace(event, **changes)
-
-
-def runtime_success() -> StepRuntimeExecutionSuccess:
-    return StepRuntimeExecutionSuccess(
-        "w",
-        "six",
-        6,
-        "e",
-        ModelInvocationSuccess(
-            "openai", "response-six", "request-six", "completed", ("output",), "output"
-        ),
-    )
-
-
-def runtime_failure() -> StepRuntimeExecutionFailure:
-    return StepRuntimeExecutionFailure(
-        "w",
-        "six",
-        6,
-        "e",
-        ModelInvocationFailure(
-            "openai", "api_error", "safe failure", "request-six", 500, None, None
-        ),
-    )
-
-
-def setup(tmp_path: Path) -> dict[str, object]:
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
-    state = WorkflowExecutionState(
-        "w",
-        "running",
-        "six",
-        6,
-        "e",
-        ("one", "two", "three", "four", "five"),
-        None,
-    )
-    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
-    events_path.write_text(
-        "".join(
-            serialize_runtime_step_event_jsonl(
-                predecessor_event(step_id, index, provider)
-            )
-            for step_id, index, provider in (
-                ("one", 1, "other"),
-                ("two", 2, "other"),
-                ("three", 3, "other"),
-                ("four", 4, "other"),
-                ("five", 5, "openai"),
-            )
-        ),
-        encoding="utf-8",
-    )
-    return {
-        "result": runtime_success(),
-        "workflow": workflow(),
-        "state_path": state_path,
-        "events_path": events_path,
-    }
-
-
-def setup_index(tmp_path: Path, index: int) -> dict[str, object]:
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
-    selected = workflow().steps[index - 1]
-    state = WorkflowExecutionState(
-        "w",
-        "running",
-        selected.id,
-        index,
-        "e",
-        tuple(step.id for step in workflow().steps[: index - 1]),
-        None,
-    )
-    events_path.write_text(
-        "".join(
-            serialize_runtime_step_event_jsonl(
-                predecessor_event(
-                    step.id,
-                    position,
-                    "openai" if position == index - 1 else "other",
-                )
-            )
-            for position, step in enumerate(workflow().steps[: index - 1], 1)
-        ),
-        encoding="utf-8",
-    )
-    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
-    result = StepRuntimeExecutionSuccess(
-        "w",
-        selected.id,
-        index,
-        "e",
-        ModelInvocationSuccess(
-            "openai", "response", "request", "completed", ("out",), "out"
-        ),
-    )
-    return {
-        "result": result,
-        "workflow": workflow(),
-        "state_path": state_path,
-        "events_path": events_path,
-    }
-
-
-def persist_fake(
-    result: object,
-    _workflow: object,
-    state_path: Path,
-    events_path: Path,
-) -> WorkflowExecutionPersistenceResult:
-    assert type(result) in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
-    current = load_workflow_execution_state(state_path)
-    invocation = result.invocation_result  # type: ignore[union-attr]
-    successful = type(result) is StepRuntimeExecutionSuccess
-    state = WorkflowExecutionState(
-        result.workflow_id,  # type: ignore[union-attr]
-        "succeeded" if successful else "failed",
-        result.step_id,  # type: ignore[union-attr]
-        result.step_index,  # type: ignore[union-attr]
-        result.employee_id,  # type: ignore[union-attr]
-        current.completed_step_ids + ((result.step_id,) if successful else ()),  # type: ignore[union-attr]
-        None if successful else invocation.category,
-    )
-    event = terminal_event(result)  # type: ignore[arg-type]
-    state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
-    event_bytes = serialize_runtime_step_event_jsonl(event).encode("utf-8")
-    state_path.write_bytes(state_bytes)
-    events_path.write_bytes(events_path.read_bytes() + event_bytes)
-    return WorkflowExecutionPersistenceResult(
-        state_path, events_path, len(state_bytes), len(event_bytes)
-    )
-
-
-def call(values: dict[str, object], dependency: object) -> object:
-    supplied = dict(values)
-    supplied["phase142_function"] = dependency
-    return route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-        **supplied  # type: ignore[arg-type]
-    )
-
-
-def reject(
-    values: dict[str, object], classification: str, **changes: object
-) -> BaseException:
-    supplied = dict(values)
-    supplied.update(changes)
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    supplied["phase142_function"] = dependency
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            **supplied  # type: ignore[arg-type]
-        )
-    assert caught.value.detail.classification == classification
-    assert calls == 0
-    return caught.value
-
-
-def reject_unchanged(
-    values: dict[str, object], classification: str, **changes: object
-) -> BaseException:
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    caught = reject(values, classification, **changes)
-    assert (
-        values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    ) == before
-    return caught
-
-
-def reject_with_dependency(
-    values: dict[str, object], dependency: object, classification: str
-) -> None:
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    calls = 0
-
-    def counted(*args: object) -> object:
-        nonlocal calls
-        calls += 1
-        return dependency(*args)  # type: ignore[operator]
-
-    supplied = dict(values)
-    supplied["phase142_function"] = counted
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            **supplied  # type: ignore[arg-type]
-        )
-    assert caught.value.detail.classification == classification
-    assert calls == 1
-    assert (
-        values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    ) == before
-
-
-def success_targets(tmp_path: Path, provider: object = "other") -> tuple[Path, Path]:
-    state_path, events_path = tmp_path / "succeeded-state", tmp_path / "succeeded-events"
-    state = WorkflowExecutionState(
-        "w",
-        "succeeded",
-        "six",
-        6,
-        "e",
-        ("one", "two", "three", "four", "five", "six"),
-        None,
-    )
-    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
-    events_path.write_text(
-        "".join(
-            serialize_runtime_step_event_jsonl(
-                predecessor_event(step, index, step_provider)
-            )
-            for step, index, step_provider in (
-                ("one", 1, "other"),
-                ("two", 2, "other"),
-                ("three", 3, "other"),
-                ("four", 4, "other"),
-                ("five", 5, "openai"),
-            )
-        )
-        + serialize_runtime_step_event_jsonl(
-            terminal_event(runtime_success(), provider=provider)
-        ),
-        encoding="utf-8",
-    )
-    return state_path, events_path
-
-
-def failure_targets(tmp_path: Path, provider: object = "other") -> tuple[Path, Path]:
-    state_path, events_path = tmp_path / "failed-state", tmp_path / "failed-events"
-    state = WorkflowExecutionState(
-        "w",
-        "failed",
-        "six",
-        6,
-        "e",
-        ("one", "two", "three", "four", "five"),
-        "api_error",
-    )
-    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
-    events_path.write_text(
-        "".join(
-            serialize_runtime_step_event_jsonl(
-                predecessor_event(step, index, step_provider)
-            )
-            for step, index, step_provider in (
-                ("one", 1, "other"),
-                ("two", 2, "other"),
-                ("three", 3, "other"),
-                ("four", 4, "other"),
-                ("five", 5, "openai"),
-            )
-        )
-        + serialize_runtime_step_event_jsonl(
-            terminal_event(runtime_failure(), provider=provider)
-        ),
-        encoding="utf-8",
-    )
-    return state_path, events_path
-
-
-def stop_values(tmp_path: Path, kind: str) -> tuple[dict[str, object], object]:
-    values = setup(tmp_path)
-    if kind == "complete":
-        state, events = success_targets(tmp_path)
-        result: object = WorkflowProgressionDecision(
-            "workflow_complete", "w", "six", 6, "e", None, None, None, "last_step_succeeded"
-        )
-    else:
-        state, events = failure_targets(tmp_path)
-        result = PersistedExecutionOutcome(
-            "persisted_failure", "w", "six", 6, "e", "api_error"
-        )
-    values.update(
-        result=result,
-        state_path=state,
-        events_path=events,
-    )
-    return values, result
-
-
-def test_public_signature_and_source_audit() -> None:
-    function = route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
-    params = list(inspect.signature(function).parameters.values())
-    assert [param.name for param in params[:4]] == [
-        "result", "workflow", "state_path", "events_path"
-    ]
-    assert all(param.annotation is object for param in params[:4])
-    assert all(
-        param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD for param in params[:4]
-    )
-    assert params[4].kind is inspect.Parameter.KEYWORD_ONLY
-    from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
-    )
-    assert params[4].default is route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
-    source = Path(
-        "src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py"
-    ).read_text(encoding="utf-8")
-    assert "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary" in source
-    assert "phase127" not in source.lower()
-    assert "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary" not in source
-    assert "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary" not in source
-    assert "route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary" not in source
-    assert "._validate_" not in source
-    assert "._top" not in source
-    assert "._raise" not in source
-
-
-def test_default_dependency_identity_and_non_callable_rejection(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            **values,  # type: ignore[arg-type]
-            phase142_function=object(),  # type: ignore[arg-type]
-        )
-    assert caught.value.detail.classification == "persistence_contract"
-
-
-@pytest.mark.parametrize("result", [runtime_success(), runtime_failure()])
-def test_valid_routes_delegate_canonical_identity_once_and_return_exact_object(
-    tmp_path: Path, result: object
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = result
-    seen: list[tuple[object, ...]] = []
-    expected: object = object()
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        assert len(args) == 4
-        assert all(
-            actual is wanted
-            for actual, wanted in zip(
-                args,
-                tuple(
-                    values[key]
-                    for key in ("result", "workflow", "state_path", "events_path")
-                ),
-                strict=True,
-            )
-        )
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-    assert len(seen) == 1
-
-
-@pytest.mark.parametrize("index", [1, 2, 3, 4, 5])
-def test_runtime_indices_below_six_are_rejected_before_phase142(
-    tmp_path: Path, index: int
-) -> None:
-    for kind in ("success", "failure"):
-        (tmp_path / kind).mkdir()
-        values = setup_index(tmp_path / kind, index)
-        if kind == "failure":
-            values["result"] = StepRuntimeExecutionFailure(
-                "w",
-                f"{('one', 'two', 'three', 'four', 'five', 'six')[index - 1]}",
-                index,
-                "e",
-                ModelInvocationFailure(
-                    "openai", "api_error", "safe failure", "request", 500, None, None
-                ),
-            )
-        seen: list[tuple[object, ...]] = []
-        expected: object = None
-
-        def dependency(*args: object) -> object:
-            nonlocal expected
-            seen.append(args)
-            expected = persist_fake(*args)  # type: ignore[arg-type]
-            return expected
-
-        assert call(values, dependency) is expected
-        assert len(seen) == 1
-        state = load_workflow_execution_state(values["state_path"])  # type: ignore[arg-type]
-        history = load_workflow_execution_history(
-            WorkflowExecutionPersistenceTargets(
-                values["state_path"], values["events_path"]  # type: ignore[arg-type]
-            )
-        )
-        assert state.status == ("succeeded" if kind == "success" else "failed")
-        assert state.current_step_index == index
-        assert len(history.events) == index
-        assert history.events[-1].event_type == (
-            "step_succeeded" if kind == "success" else "step_failed"
-        )
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        SuccessChild("w", "six", 6, "e", runtime_success().invocation_result),
-        FailureChild("w", "six", 6, "e", runtime_failure().invocation_result),
-        SimpleNamespace(workflow_id="w", step_id="six", step_index=6, employee_id="e"),
-    ],
-)
-def test_result_subclasses_and_substitutes_are_zero_call_rejected(
-    tmp_path: Path, value: object
-) -> None:
-    reject(setup(tmp_path), "result_type", result=value)
-
-
-def test_workflow_subclass_and_attribute_compatible_substitute_are_zero_call_rejected(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    child = WorkflowChild.model_validate(workflow().model_dump())
-    substitute = SimpleNamespace(
-        id="w", name="W", description="D", steps=workflow().steps
-    )
-    for value in (child, substitute):
-        reject(values, "workflow_definition", workflow=value)
-
-
-def test_workflow_step_subclass_and_attribute_compatible_substitute_are_rejected(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    original = values["workflow"]
-    for replacement in (
-        StepChild(id="six", name="Six", employee="e", instructions="six"),
-        SimpleNamespace(id="six", name="Six", employee="e", instructions="six"),
-    ):
-        steps = list(original.steps)  # type: ignore[union-attr]
-        steps[-1] = replacement
-        candidate = WorkflowDefinition.model_construct(
-            id="w", name="W", description="D", steps=steps
-        )
-        reject(values, "workflow_definition", workflow=candidate)
-
-
-@pytest.mark.parametrize("nested", ["subclass", "substitute"])
-def test_nested_invocation_result_subclasses_and_substitutes_are_zero_call_rejected(
-    tmp_path: Path, nested: str
-) -> None:
-    values = setup(tmp_path)
-    invocation = runtime_success().invocation_result
-    replacement: object = (
-        SuccessInvocationChild(*invocation.__dict__.values())
-        if nested == "subclass"
-        else SimpleNamespace(**invocation.__dict__)
-    )
-    reject(
-        values,
-        "runtime_contract",
-        result=replace(runtime_success(), invocation_result=replacement),
-    )
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("provider", "other"),
-        ("provider", 4),
-        ("request_id", 4),
-        ("text", "wrong"),
-        ("text_parts", ["output"]),
-    ],
-)
-def test_runtime_success_nested_contract_is_strict(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    result = runtime_success()
-    bad = replace(
-        result, invocation_result=replace(result.invocation_result, **{field: value})
-    )
-    reject(setup(tmp_path), "runtime_contract", result=bad)
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("provider", "other"),
-        ("category", "unknown"),
-        ("message", None),
-        ("status_code", True),
-        ("request_id", 4),
-    ],
-)
-def test_runtime_failure_nested_contract_is_strict(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    result = runtime_failure()
-    bad = replace(
-        result, invocation_result=replace(result.invocation_result, **{field: value})
-    )
-    reject(setup(tmp_path), "runtime_contract", result=bad)
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("workflow_id", "other"),
-        ("step_id", "other"),
-        ("step_index", True),
-        ("employee_id", "other"),
-    ],
-)
-def test_runtime_linkage_is_rejected_before_phase142(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    reject(
-        setup(tmp_path), "runtime_contract", result=replace(runtime_success(), **{field: value})
-    )
-
-
-@pytest.mark.parametrize(
-    "mutation", ["duplicate", "missing", "reordered", "unrelated", "malformed", "extra"]
-)
-def test_predecessor_history_matrix_is_rejected_before_phase142(
-    tmp_path: Path, mutation: str
-) -> None:
-    values = setup(tmp_path)
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    unrelated = serialize_runtime_step_event_jsonl(
-        predecessor_event("unrelated", 99)
-    )
-    if mutation == "duplicate":
-        content = "".join(lines + [lines[-1]])
-    elif mutation == "missing":
-        content = "".join(lines[:-1])
-    elif mutation == "reordered":
-        content = lines[1] + lines[0] + lines[2] + lines[3] + lines[4]
-    elif mutation == "unrelated":
-        content = unrelated + "".join(lines[1:])
-    elif mutation == "malformed":
-        content = "{malformed}\n"
-    else:
-        content = "".join(lines) + unrelated
-    events.write_text(content, encoding="utf-8")  # type: ignore[union-attr]
-    reject(values, "runtime_contract")
-
-
-@pytest.mark.parametrize(
-    "step_id,position,provider,request_id",
-    [
-        ("two", 2, "other", None),
-        ("five", 5, "openai", ""),
-    ],
-)
-def test_predecessor_request_id_provenance_is_required(
-    tmp_path: Path,
-    step_id: str,
-    position: int,
-    provider: object,
-    request_id: object,
-) -> None:
-    values = setup(tmp_path)
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event(step_id, position, provider, request_id=request_id)
-    )
-    events.write_text(
-        "".join(lines[: position - 1]) + replacement + "".join(lines[position:]),
-        encoding="utf-8",
-    )  # type: ignore[union-attr]
-    reject(values, "runtime_contract")
-
-
-def test_immediate_predecessor_none_request_id_nonempty_output_delegates_once(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = runtime_success()
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, "openai", request_id=None)
-    )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    seen: list[tuple[object, ...]] = []
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                values[key]
-                for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
-
-
-def test_immediate_predecessor_none_request_id_empty_output_delegates_once(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = runtime_success()
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, "openai", request_id=None, output_text="")
-    )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-
-
-def test_earlier_predecessor_none_request_id_is_rejected_before_phase142(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("two", 2, "other", request_id=None)
-    )
-    events.write_text(
-        lines[0] + replacement + "".join(lines[2:]), encoding="utf-8"
-    )  # type: ignore[union-attr]
-    reject_unchanged(values, "runtime_contract")
-
-
-@pytest.mark.parametrize("request_id", ["", 123, True])
-def test_immediate_predecessor_invalid_request_ids_are_rejected_before_phase142(
-    tmp_path: Path, request_id: object
-) -> None:
-    values = setup(tmp_path)
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, "openai", request_id=request_id)
-    )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    reject_unchanged(values, "runtime_contract")
-
-
-@pytest.mark.parametrize("provider", ["other", 4])
-def test_immediate_predecessor_provider_must_be_openai(
-    tmp_path: Path, provider: object
-) -> None:
-    values = setup(tmp_path)
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, provider)
-    )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    reject(values, "runtime_contract")
-
-
-def test_earlier_predecessor_non_openai_provider_remains_allowed(tmp_path: Path) -> None:
-    values = setup(tmp_path)
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-
-
-@pytest.mark.parametrize("result_factory", [runtime_success, runtime_failure])
-def test_immediate_predecessor_empty_output_text_delegates_once_canonical_order(
-    tmp_path: Path, result_factory: object
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = result_factory()  # type: ignore[operator]
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, "openai", output_text="")
-    )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    seen: list[tuple[object, ...]] = []
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                values[key]
-                for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
-
-
-@pytest.mark.parametrize("result_factory", [runtime_success, runtime_failure])
-def test_earlier_empty_output_text_survives_later_succeeded_predecessor(
-    tmp_path: Path, result_factory: object
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = result_factory()  # type: ignore[operator]
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    earlier = serialize_runtime_step_event_jsonl(
-        predecessor_event("one", 1, "other", output_text="")
-    )
-    events.write_text(earlier + "".join(lines[1:]), encoding="utf-8")  # type: ignore[union-attr]
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-
-
-@pytest.mark.parametrize("result_factory", [runtime_success, runtime_failure])
-def test_predecessor_nonempty_output_text_remains_accepted(
-    tmp_path: Path, result_factory: object
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = result_factory()  # type: ignore[operator]
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-
-
-@pytest.mark.parametrize("output_text", [4, None, ["output"]])
-def test_predecessor_output_text_non_string_is_rejected(
-    tmp_path: Path, output_text: object
-) -> None:
-    values = setup(tmp_path)
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, "openai", output_text=output_text)
-    )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    reject_unchanged(values, "runtime_contract")
-
-
-@pytest.mark.parametrize("result_factory", [runtime_success, runtime_failure])
-def test_immediate_predecessor_empty_output_text_still_requires_openai_provider(
-    tmp_path: Path, result_factory: object
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = result_factory()  # type: ignore[operator]
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, "other", output_text="")
-    )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    reject_unchanged(values, "runtime_contract")
-
-
-@pytest.mark.parametrize("result_factory", [runtime_success, runtime_failure])
-def test_predecessor_empty_output_text_still_requires_response_id(
-    tmp_path: Path, result_factory: object
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = result_factory()  # type: ignore[operator]
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("five", 5, "openai", output_text="", response_id="")
-    )
-    events.write_text("".join(lines[:4]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    reject_unchanged(values, "runtime_contract")
-
-
-@pytest.mark.parametrize("result", [runtime_success(), runtime_failure()])
-def test_persistence_return_must_be_exact_and_target_identical(
-    tmp_path: Path, result: object
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = result
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        return replace(persisted, state_path=Path("not-the-supplied-target"))
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-@pytest.mark.parametrize(
-    "return_value",
-    [
-        object(),
-        SimpleNamespace(
-            state_path=Path("s"),
-            events_path=Path("e"),
-            state_bytes_written=1,
-            event_bytes_appended=1,
-        ),
-    ],
-)
-def test_malformed_persistence_returns_are_rejected_and_compensated(
-    tmp_path: Path, return_value: object
-) -> None:
-    values = setup(tmp_path)
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-
-    def dependency(*args: object) -> object:
-        persist_fake(*args)  # type: ignore[arg-type]
-        values["state_path"].write_bytes(b"invalid")  # type: ignore[union-attr]
-        values["events_path"].write_bytes(b"invalid")  # type: ignore[union-attr]
-        return return_value
-
-    calls = 0
-
-    def counted(*args: object) -> object:
-        nonlocal calls
-        calls += 1
-        return dependency(*args)
-
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        call(values, counted)
-    assert caught.value.detail.classification == "persistence_contract"
-    assert calls == 1
-    assert (
-        values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    ) == before
-
-
-def test_persistence_result_subclass_is_rejected_and_restored(tmp_path: Path) -> None:
-    values = setup(tmp_path)
-
-    def dependency(*args: object) -> object:
-        value = persist_fake(*args)  # type: ignore[arg-type]
-        return PersistenceChild(*value.__dict__.values())
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-def test_fully_compatible_persistence_result_substitute_is_rejected(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-
-    def dependency(*args: object) -> object:
-        value = persist_fake(*args)  # type: ignore[arg-type]
-        return SimpleNamespace(
-            state_path=value.state_path,
-            events_path=value.events_path,
-            state_bytes_written=value.state_bytes_written,
-            event_bytes_appended=value.event_bytes_appended,
-        )
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("state_bytes_written", 0),
-        ("state_bytes_written", -1),
-        ("state_bytes_written", True),
-        ("state_bytes_written", IntChild(1)),
-        ("event_bytes_appended", 0),
-        ("event_bytes_appended", -1),
-        ("event_bytes_appended", True),
-        ("event_bytes_appended", IntChild(1)),
-    ],
-)
-def test_persistence_byte_counts_require_positive_exact_int(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    values = setup(tmp_path)
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        return replace(persisted, **{field: value})
-
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    calls = 0
-
-    def counted(*args: object) -> object:
-        nonlocal calls
-        calls += 1
-        return dependency(*args)
-
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        call(values, counted)
-    assert caught.value.detail.classification == "persistence_contract"
-    assert calls == 1
-    assert (
-        values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    ) == before
-
-
-def test_persistence_count_wrong_positive_is_rejected(tmp_path: Path) -> None:
-    values = setup(tmp_path)
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        return replace(
-            persisted, state_bytes_written=persisted.state_bytes_written + 1
-        )
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-@pytest.mark.parametrize("mutation", ["state", "events", "both"])
-def test_valid_persistence_target_mutation_is_compensated_without_retry(
-    tmp_path: Path, mutation: str
-) -> None:
-    values = setup(tmp_path)
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    calls = 0
-
-    def dependency(*args: object) -> object:
-        nonlocal calls
-        calls += 1
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        if mutation in ("state", "both"):
-            values["state_path"].write_bytes(b"mutated-state")  # type: ignore[union-attr]
-        if mutation in ("events", "both"):
-            values["events_path"].write_bytes(b"mutated-events")  # type: ignore[union-attr]
-        return persisted
-
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        call(values, dependency)
-    assert caught.value.detail.classification == "persistence_contract"
-    assert calls == 1
-    assert (
-        values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    ) == before
-
-
-@pytest.mark.parametrize("result_factory", [runtime_success, runtime_failure])
-@pytest.mark.parametrize(
-    "field",
-    [
-        "malformed_bytes",
-        "workflow_id",
-        "current_step_id",
-        "current_step_index",
-        "current_employee_id",
-        "completed_step_ids",
-        "last_failure_category",
-    ],
-)
-def test_persisted_terminal_state_matrix_is_compensated_without_retry(
-    tmp_path: Path, result_factory: object, field: str
-) -> None:
-    values = setup(tmp_path)
-    result = result_factory()  # type: ignore[operator]
-    values["result"] = result
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        state_path = values["state_path"]
-        if field == "malformed_bytes":
-            state_bytes = b"{malformed persisted state}\n"
-        else:
-            current = load_workflow_execution_state(state_path)  # type: ignore[arg-type]
-            if field == "workflow_id":
-                change = {"workflow_id": "other-workflow"}
-            elif field == "current_step_id":
-                change = {"current_step_id": "other-step"}
-            elif field == "current_step_index":
-                change = {"current_step_index": 3}
-            elif field == "current_employee_id":
-                change = {"current_employee_id": "other-employee"}
-            elif field == "completed_step_ids":
-                change = {"completed_step_ids": ("one", "two", "wrong", "four", "five")}
-            else:
-                change = {
-                    "last_failure_category": (
-                        "api_error"
-                        if type(result) is StepRuntimeExecutionSuccess
-                        else "transport_error"
-                    )
-                }
-            state_bytes = serialize_workflow_execution_state_json(
-                replace(current, **change)
-            ).encode("utf-8")
-        state_path.write_bytes(state_bytes)  # type: ignore[union-attr]
-        return replace(persisted, state_bytes_written=len(state_bytes))
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-@pytest.mark.parametrize("result_factory", [runtime_success, runtime_failure])
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        "prefix_removal",
-        "prefix_duplication",
-        "prefix_reorder",
-        "prefix_rewrite",
-        "terminal_missing",
-        "terminal_twice",
-        "terminal_malformed",
-        "unrelated_extra",
-    ],
-)
-def test_persisted_event_prefix_and_append_invariants_are_compensated(
-    tmp_path: Path, result_factory: object, mutation: str
-) -> None:
-    values = setup(tmp_path)
-    result = result_factory()  # type: ignore[operator]
-    values["result"] = result
-    original_events = values["events_path"].read_bytes()  # type: ignore[union-attr]
-    lines = original_events.splitlines(keepends=True)
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        valid_append = values["events_path"].read_bytes()[len(original_events) :]  # type: ignore[union-attr]
-        unrelated = serialize_runtime_step_event_jsonl(
-            predecessor_event("unrelated", 99)
-        ).encode("utf-8")
-        if mutation == "prefix_removal":
-            content = b"".join(lines[:-1]) + valid_append
-        elif mutation == "prefix_duplication":
-            content = original_events + lines[-1] + valid_append
-        elif mutation == "prefix_reorder":
-            content = lines[1] + lines[0] + lines[2] + lines[3] + lines[4] + valid_append
-        elif mutation == "prefix_rewrite":
-            rewritten = serialize_runtime_step_event_jsonl(
-                predecessor_event("rewritten", 1)
-            ).encode("utf-8")
-            content = rewritten + b"".join(lines[1:]) + valid_append
-        elif mutation == "terminal_missing":
-            content = original_events
-        elif mutation == "terminal_twice":
-            content = original_events + valid_append + valid_append
-        elif mutation == "terminal_malformed":
-            valid_append = b"{malformed terminal event}\n"
-            content = original_events + valid_append
-        else:
-            content = original_events + valid_append + unrelated
-        values["events_path"].write_bytes(content)  # type: ignore[union-attr]
-        return replace(
-            persisted, event_bytes_appended=len(content) - len(original_events)
-        )
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-def test_event_bytes_appended_wrong_positive_is_rejected_and_compensated(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    original_events = values["events_path"].read_bytes()  # type: ignore[union-attr]
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        actual = len(values["events_path"].read_bytes()) - len(original_events)  # type: ignore[union-attr]
-        return replace(persisted, event_bytes_appended=actual + 1)
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("failure_category", "transport_error"),
-        ("message", "wrong failure message"),
-        ("request_id", "wrong-request"),
-        ("response_id", "unexpected-response"),
-        ("output_text", "unexpected-output"),
-        ("provider", "other"),
-        ("provider", 4),
-    ],
-)
-def test_failed_terminal_event_semantics_are_revalidated_and_compensated(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = runtime_failure()
-    original_events = values["events_path"].read_bytes()  # type: ignore[union-attr]
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        event = terminal_event(values["result"], **{field: value})  # type: ignore[arg-type]
-        appended = serialize_runtime_step_event_jsonl(event).encode("utf-8")
-        values["events_path"].write_bytes(original_events + appended)  # type: ignore[union-attr]
-        return replace(persisted, event_bytes_appended=len(appended))
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("event_type", "step_failed"),
-        ("next_status", "failed"),
-        ("failure_category", "api_error"),
-        ("response_id", None),
-        ("output_text", None),
-        ("message", "wrong success message"),
-    ],
-)
-def test_invalid_persisted_terminal_event_semantics_are_rejected(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    values = setup(tmp_path)
-    before = values["events_path"].read_bytes()  # type: ignore[union-attr]
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        event = terminal_event(values["result"], **{field: value})  # type: ignore[arg-type]
-        appended = serialize_runtime_step_event_jsonl(event).encode("utf-8")
-        values["events_path"].write_bytes(before + appended)  # type: ignore[union-attr]
-        return replace(persisted, event_bytes_appended=len(appended))
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-def test_invalid_persisted_terminal_event_kind_and_linkage_is_rejected(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    before = values["events_path"].read_bytes()  # type: ignore[union-attr]
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        event = terminal_event(
-            values["result"],  # type: ignore[arg-type]
-            event_type="step_failed",
-            next_status="failed",
-            failure_category="api_error",
-            response_id=None,
-            output_text=None,
-            message="wrong linkage",
-        )
-        appended = serialize_runtime_step_event_jsonl(event).encode("utf-8")
-        values["events_path"].write_bytes(before + appended)  # type: ignore[union-attr]
-        return replace(persisted, event_bytes_appended=len(appended))
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-def test_invalid_persisted_predecessor_history_is_rejected_and_restored(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    before = values["events_path"].read_bytes()  # type: ignore[union-attr]
-
-    def dependency(*args: object) -> object:
-        persisted = persist_fake(*args)  # type: ignore[arg-type]
-        appended = values["events_path"].read_bytes()[len(before) :]  # type: ignore[union-attr]
-        rewritten = (
-            serialize_runtime_step_event_jsonl(
-                predecessor_event("two", 1, "other")
-            ).encode("utf-8")
-            + serialize_runtime_step_event_jsonl(
-                predecessor_event("one", 2, "other")
-            ).encode("utf-8")
-            + serialize_runtime_step_event_jsonl(
-                predecessor_event("three", 3, "other")
-            ).encode("utf-8")
-            + serialize_runtime_step_event_jsonl(
-                predecessor_event("four", 4, "other")
-            ).encode("utf-8")
-            + serialize_runtime_step_event_jsonl(
-                predecessor_event("five", 5, "openai")
-            ).encode("utf-8")
-            + appended
-        )
-        values["events_path"].write_bytes(rewritten)  # type: ignore[union-attr]
-        return replace(persisted, event_bytes_appended=len(appended))
-
-    reject_with_dependency(values, dependency, "persistence_contract")
-
-
-@pytest.mark.parametrize("mutation", [None, "state", "events", "both"])
-def test_safe_phase142_error_identity_is_preserved_after_compensation(
-    tmp_path: Path, mutation: str | None
-) -> None:
-    values = setup(tmp_path)
-    state, events = values["state_path"], values["events_path"]
-    before = state.read_bytes(), events.read_bytes()  # type: ignore[union-attr]
-    supplied_error = Phase142Error("safe detail")
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        if mutation in ("state", "both"):
-            state.write_bytes(b"mutated-state")  # type: ignore[union-attr]
-        if mutation in ("events", "both"):
-            events.write_bytes(b"mutated-events")  # type: ignore[union-attr]
-        raise supplied_error
-
-    with pytest.raises(Phase142Error) as caught:
-        call(values, dependency)
-    assert caught.value is supplied_error and calls == 1
-    assert (state.read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
-
-
-@pytest.mark.parametrize("mutation", [None, "state", "events", "both"])
-def test_unexpected_error_is_sanitized_and_compensated(
-    tmp_path: Path, mutation: str | None
-) -> None:
-    values = setup(tmp_path)
-    state, events = values["state_path"], values["events_path"]
-    before = state.read_bytes(), events.read_bytes()  # type: ignore[union-attr]
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        if mutation in ("state", "both"):
-            state.write_bytes(b"mutated-state")  # type: ignore[union-attr]
-        if mutation in ("events", "both"):
-            events.write_bytes(b"mutated-events")  # type: ignore[union-attr]
-        raise RuntimeError("secret detail")
-
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        call(values, dependency)
-    assert caught.value.detail.classification == "dependency_error"
-    assert "secret detail" not in str(caught.value) and calls == 1
-    assert (state.read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
-
-
-@pytest.mark.parametrize("mutation", [None, "state", "events", "both"])
-def test_malformed_return_is_compensated_without_retry(
-    tmp_path: Path, mutation: str | None
-) -> None:
-    values = setup(tmp_path)
-    state, events = values["state_path"], values["events_path"]
-    before = state.read_bytes(), events.read_bytes()  # type: ignore[union-attr]
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        if mutation in ("state", "both"):
-            state.write_bytes(b"mutated-state")  # type: ignore[union-attr]
-        if mutation in ("events", "both"):
-            events.write_bytes(b"mutated-events")  # type: ignore[union-attr]
-        return object()
-
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        call(values, dependency)
-    assert caught.value.detail.classification == "persistence_contract"
-    assert calls == 1
-    assert (state.read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
-
-
-@pytest.mark.parametrize("failed_target", ["state", "events", "both"])
-def test_rollback_failure_attempts_both_targets_once_without_retry(
-    tmp_path: Path, failed_target: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    values = setup(tmp_path)
-    state, events = values["state_path"], values["events_path"]
-    original_write = Path.write_bytes
-    restore_calls = {"state": 0, "events": 0}
-    dependency_calls = 0
-
-    def restore(path: Path, data: bytes) -> int:
-        key = "state" if path == state else "events"
-        restore_calls[key] += 1
-        if failed_target in (key, "both"):
-            raise OSError("rollback")
-        return original_write(path, data)
-
-    monkeypatch.setattr(Path, "write_bytes", restore)
-
-    def dependency(*_: object) -> object:
-        nonlocal dependency_calls
-        dependency_calls += 1
-        original_write(state, b"mutated-state")
-        original_write(events, b"mutated-events")
-        return object()
-
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        call(values, dependency)
-    assert caught.value.detail.classification == "dependency_rollback"
-    assert restore_calls == {"state": 1, "events": 1}
-    assert dependency_calls == 1
-
-
-@pytest.mark.parametrize("kind", ["complete", "failure"])
-def test_stop_routes_allow_non_openai_terminal_provider_and_are_zero_call(
-    tmp_path: Path, kind: str
-) -> None:
-    values, result = stop_values(tmp_path, kind)
-    calls = 0
-    values["state_path"], values["events_path"] = (
-        success_targets(tmp_path, "other")
-        if kind == "complete"
-        else failure_targets(tmp_path, "other")
-    )
-    before = (
-        values["state_path"].read_bytes(),  # type: ignore[union-attr]
-        values["events_path"].read_bytes(),  # type: ignore[union-attr]
-    )
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert call(values, dependency) is result
-    assert calls == 0
-    assert (
-        values["state_path"].read_bytes(),  # type: ignore[union-attr]
-        values["events_path"].read_bytes(),  # type: ignore[union-attr]
-    ) == before
-
-
-@pytest.mark.parametrize("kind", ["complete", "failure"])
-def test_stop_routes_allow_empty_predecessor_output_and_non_openai_terminal_provider(
-    tmp_path: Path, kind: str
-) -> None:
-    values, result = stop_values(tmp_path, kind)
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    payload = json.loads(lines[2])
-    payload["output_text"] = ""
-    lines[2] = json.dumps(payload, separators=(",", ":")) + "\n"
-    events.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert call(values, dependency) is result
-    assert calls == 0
-
-
-@pytest.mark.parametrize("kind", ["complete", "failure"])
-def test_stop_subclasses_and_compatible_substitutes_are_zero_call_rejected(
-    tmp_path: Path, kind: str
-) -> None:
-    values, result = stop_values(tmp_path, kind)
-    child = (
-        DecisionChild(*result.__dict__.values())
-        if kind == "complete"
-        else OutcomeChild(*result.__dict__.values())
-    )
-    substitute = SimpleNamespace(**result.__dict__)
-    for replacement in (child, substitute):
-        reject(values, "result_type", result=replacement)
-
-
-@pytest.mark.parametrize("kind", ["complete", "failure"])
-def test_stop_current_step_index_bool_and_int_subclass_are_zero_call_rejected(
-    tmp_path: Path, kind: str
-) -> None:
-    values, result = stop_values(tmp_path, kind)
-    classification = "completion_contract" if kind == "complete" else "failure_contract"
-    for replacement in (True, IntChild(6)):
-        reject(values, classification, result=replace(result, current_step_index=replacement))
-
-
-def test_stop_malformed_values_and_unsupported_results_are_zero_call_rejected(
-    tmp_path: Path,
-) -> None:
-    values, complete = stop_values(tmp_path, "complete")
-    reject(values, "completion_contract", result=replace(complete, reason="wrong"))
-    values, failure = stop_values(tmp_path, "failure")
-    reject(values, "failure_contract", result=replace(failure, failure_category="unknown"))
-    unsupported = WorkflowProgressionDecision(
-        "prepare_next_step", "w", "six", 6, "e", None, None, None, "unsupported"
-    )
-    reject(setup(tmp_path), "completion_contract", result=unsupported)
-
-
-def test_workflow_complete_stop_empty_terminal_output_is_rejected(
-    tmp_path: Path,
-) -> None:
-    values, _result = stop_values(tmp_path, "complete")
-    state_path, events_path = values["state_path"], values["events_path"]
-    lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        terminal_event(runtime_success(), output_text="")
-    )
-    events_path.write_text("".join(lines[:-1]) + replacement, encoding="utf-8")  # type: ignore[union-attr]
-    before = state_path.read_bytes(), events_path.read_bytes()  # type: ignore[union-attr]
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            **values, phase142_function=dependency  # type: ignore[arg-type]
-        )
-    assert caught.value.detail.classification == "terminal_contract"
-    assert calls == 0
-    assert (state_path.read_bytes(), events_path.read_bytes()) == before  # type: ignore[union-attr]
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        WorkflowExecutionPersistenceResult(Path("s"), Path("e"), 1, 1),
-        RunningStatePersistenceResult(state_bytes_written=1),
-        PreparedStepExecutionStart(
-            request=ModelInvocationRequest(
-                model="m",
-                system_instructions="s",
-                task_instructions="t",
-                allowed_tools=(),
-            ),
-            running_state=WorkflowExecutionState(
-                workflow_id="w",
-                status="running",
-                current_step_id="six",
-                current_step_index=6,
-                current_employee_id="e",
-                completed_step_ids=(),
-                last_failure_category=None,
-            ),
-        ),
-        SimpleNamespace(request="request", running_state="state"),
-    ],
-)
-def test_direct_non_phase142_results_are_zero_call_rejected(
-    tmp_path: Path, value: object
-) -> None:
-    reject(setup(tmp_path), "result_type", result=value)
-
-
-@pytest.mark.parametrize("target", ["state_path", "events_path"])
-def test_missing_and_directory_targets_are_rejected_before_phase142(
-    tmp_path: Path, target: str
-) -> None:
-    values = setup(tmp_path)
-    path = values[target]
-    path.unlink()  # type: ignore[union-attr]
-    reject(values, "state_target" if target == "state_path" else "event_target")
-    path.mkdir()
-    reject(values, "state_target" if target == "state_path" else "event_target")
-
-
-def test_target_conflict_and_non_callable_dependency_are_rejected(
-    tmp_path: Path,
-) -> None:
-    values = setup(tmp_path)
-    reject(values, "target_conflict", events_path=values["state_path"])
-    with pytest.raises(
-        RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
-    ) as caught:
-        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            **values, phase142_function=object()  # type: ignore[arg-type]
-        )
-    assert caught.value.detail.classification == "persistence_contract"
-
-
-@pytest.mark.parametrize("operation", ["is_file", "read_bytes"])
-@pytest.mark.parametrize("target", ["state_path", "events_path"])
-def test_target_oserror_is_classified_by_target(
-    tmp_path: Path,
-    operation: str,
-    target: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = setup(tmp_path)
-    selected = values[target]
-    original = getattr(Path, operation)
-
-    def raising(path: Path, *args: object, **kwargs: object) -> object:
-        if path == selected:
-            raise OSError("synthetic")
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, operation, raising)
-    reject(values, "state_target" if target == "state_path" else "event_target")
-
-
-@pytest.mark.parametrize(
-    "result",
-    [
-        SimpleNamespace(
-            workflow_id="w",
-            step_id="six",
-            step_index=6,
-            employee_id="e",
-            invocation_result=runtime_success().invocation_result,
-        ),
-        SimpleNamespace(
-            workflow_id="w",
-            step_id="six",
-            step_index=6,
-            employee_id="e",
-            invocation_result=runtime_failure().invocation_result,
-        ),
-    ],
-)
-def test_runtime_result_fully_compatible_substitutes_are_zero_call_rejected(
-    tmp_path: Path, result: object
-) -> None:
-    reject_unchanged(setup(tmp_path), "result_type", result=result)
-
-
-@pytest.mark.parametrize("result_factory", [runtime_success, runtime_failure])
-@pytest.mark.parametrize(
-    "field",
-    [
-        "current_step_index_bool",
-        "current_step_index_int_subclass",
-        "status",
-        "current_step_id",
-        "current_employee_id",
-        "completed_step_ids_tuple",
-        "completed_step_ids_list",
-        "last_failure_category",
-        "workflow_id",
-    ],
-)
-def test_persisted_running_state_contract_is_revalidated_before_phase142(
-    tmp_path: Path,
-    result_factory: object,
-    field: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = setup(tmp_path)
-    values["result"] = result_factory()  # type: ignore[operator]
-    state_path = values["state_path"]
-    state = load_workflow_execution_state(state_path)  # type: ignore[arg-type]
-    result = values["result"]
-    if field == "current_step_index_bool":
-        change = {"current_step_index": True}
-    elif field == "current_step_index_int_subclass":
-        change = {"current_step_index": IntChild(6)}
-    elif field == "status":
-        change = {"status": "succeeded"}
-    elif field == "current_step_id":
-        change = {"current_step_id": "other-step"}
-    elif field == "current_employee_id":
-        change = {"current_employee_id": "other-employee"}
-    elif field == "completed_step_ids_tuple":
-        change = {"completed_step_ids": ("one", "two", "three", "four", "wrong")}
-    elif field == "completed_step_ids_list":
-        change = {"completed_step_ids": ["one", "two", "three", "four", "five"]}
-    elif field == "last_failure_category":
-        change = {
-            "last_failure_category": (
-                "api_error"
-                if type(result) is StepRuntimeExecutionSuccess
-                else "transport_error"
-            )
-        }
-    else:
-        change = {"workflow_id": "other-workflow"}
-    corrupted = replace(state, **change)
-    state_bytes = serialize_workflow_execution_state_json(corrupted).encode("utf-8")
-    state_path.write_bytes(state_bytes)  # type: ignore[union-attr]
-    loaded_events = tuple(
-        predecessor_event(step_id, index, provider)
-        for step_id, index, provider in (
-            ("one", 1, "other"),
-            ("two", 2, "other"),
-            ("three", 3, "other"),
-            ("four", 4, "other"),
-            ("five", 5, "openai"),
-        )
-    )
-    if field in {"current_step_index_int_subclass", "completed_step_ids_list"}:
-        monkeypatch.setattr(
-            "ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.load_workflow_execution_history",
-            lambda _targets: SimpleNamespace(state=corrupted, events=loaded_events),
-        )
-    reject_unchanged(values, "runtime_contract")
-
-
-def _real_default_values(tmp_path: Path) -> dict[str, object]:
-    """Phase-155-provenance running step-6 inputs for the real-default regression.
-
-    Earlier (positions 2-4) and immediate (position 5) predecessors carry the
-    exact empty built-in ``output_text`` and the immediate predecessor carries
-    the exact ``request_id is None`` provenance; earlier request IDs are exact
-    non-empty built-in strings; every predecessor provider is exact ``"openai"``.
-    No injected Phase 142 and no monkeypatching: the only outer entry invoked is
-    the public Phase 161 boundary, and the whole real default chain persists
-    through actual Phase 30.
-    """
-    state_path, events_path = tmp_path / "real-state", tmp_path / "real-events"
-    state = WorkflowExecutionState(
-        "w", "running", "six", 6, "e", ("one", "two", "three", "four", "five"), None
-    )
-    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
-    events = [
-        predecessor_event(step_id, index, "openai", output_text=output)
-        for index, (step_id, output) in enumerate(
-            (
-                ("one", "output"),
-                ("two", ""),
-                ("three", ""),
-                ("four", ""),
-                ("five", ""),
-            ),
-            start=1,
-        )
-    ]
-    # Immediate step-5 request_id is the exact None provenance (Phase 149/155).
-    events[-1] = predecessor_event("five", 5, "openai", output_text="", request_id=None)
-    events_path.write_text(
-        "".join(serialize_runtime_step_event_jsonl(event) for event in events),
-        encoding="utf-8",
-    )
-    return {
-        "result": runtime_success(),
-        "workflow": workflow(),
-        "state_path": state_path,
-        "events_path": events_path,
-    }
-
-
-def _assert_real_default_persisted(
-    values: dict[str, object],
-    result: object,
-    state_before: bytes,
-    events_before: bytes,
-    *,
-    success: bool,
-) -> None:
-    assert type(result) is WorkflowExecutionPersistenceResult
-    assert result.state_path is values["state_path"]
-    assert result.events_path is values["events_path"]
-    state_path = values["state_path"]
-    events_path = values["events_path"]
-    assert result.state_bytes_written == len(state_path.read_bytes())  # type: ignore[union-attr]
-    assert result.event_bytes_appended == len(  # type: ignore[union-attr]
-        events_path.read_bytes()  # type: ignore[union-attr]
-    ) - len(events_before)
-    history = load_workflow_execution_history(
-        WorkflowExecutionPersistenceTargets(
-            values["state_path"], values["events_path"]  # type: ignore[arg-type]
-        )
-    )
-    assert len(history.events) == 6
-    final = history.state
-    event = history.events[-1]
-    if success:
-        assert final.status == "succeeded"
-        assert final.completed_step_ids == (
-            "one", "two", "three", "four", "five", "six",
-        )
-        assert final.last_failure_category is None
-        assert event.event_type == "step_succeeded"
-        assert event.previous_status == "running"
-        assert event.next_status == "succeeded"
-        assert event.provider == "openai"
-        assert event.response_id == "response-six"
-        assert event.request_id == "request-six"
-        assert event.output_text == "output"
-        assert event.message is None
-    else:
-        assert final.status == "failed"
-        assert final.completed_step_ids == (
-            "one", "two", "three", "four", "five",
-        )
-        assert final.last_failure_category == "api_error"
-        assert event.event_type == "step_failed"
-        assert event.previous_status == "running"
-        assert event.next_status == "failed"
-        assert event.provider == "openai"
-        assert event.response_id is None
-        assert event.request_id == "request-six"
-        assert event.output_text is None
-        assert event.message == "safe failure"
-    assert [item.output_text for item in history.events[:5]] == [
-        "output", "", "", "", "",
-    ]
-    assert [item.request_id for item in history.events[:4]] == [
-        "request-one", "request-two", "request-three", "request-four",
-    ]
-    assert history.events[4].request_id is None
-    assert [item.provider for item in history.events[:5]] == ["openai"] * 5
-    assert all(
-        type(item.response_id) is str and item.response_id
-        for item in history.events[:5]
-    )
-
-
-def test_real_default_success_persists_through_actual_phase30(
-    tmp_path: Path,
-) -> None:
-    values = _real_default_values(tmp_path)
-    state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
-    events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
-    result = route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-        **values  # type: ignore[arg-type]
-    )
-    _assert_real_default_persisted(
-        values, result, state_before, events_before, success=True
-    )
-
-
-def test_real_default_failure_persists_through_actual_phase30(
-    tmp_path: Path,
-) -> None:
-    values = _real_default_values(tmp_path)
-    values["result"] = runtime_failure()
-    state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
-    events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
-    result = route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-        **values  # type: ignore[arg-type]
-    )
-    _assert_real_default_persisted(
-        values, result, state_before, events_before, success=False
-    )
-
-
-def accumulated_workflow() -> WorkflowDefinition:
-    """Eight-step workflow exposing positions 5 and 6 as accumulated history."""
-    return WorkflowDefinition.model_validate(
-        {
-            "id": "w",
-            "name": "W",
-            "description": "D",
+            "id": "workflow",
+            "name": "Workflow",
+            "description": "runtime-result transition persistence behavior",
             "steps": [
                 {
                     "id": f"step-{index}",
                     "name": f"Step {index}",
-                    "employee": "e",
-                    "instructions": f"step-{index}",
+                    "employee": f"employee-{index}",
+                    "instructions": f"instructions-{index}",
                 }
-                for index in range(1, 9)
+                for index in range(1, count + 1)
             ],
         }
     )
 
 
-def setup_accumulated(
-    tmp_path: Path,
-    *,
-    five_provider: object = "openai",
-    six_provider: object = "openai",
-    current: int = 7,
-    six_request_id: object = None,
-) -> dict[str, object]:
-    """Running step-``current`` state with ``current-1`` predecessors.
-
-    Positions 1-4 use the default non-openai predecessors; position 5 and
-    the immediate predecessor (``current-1``) carry accumulated None request
-    ids with the openai provider by default.  For ``current=8`` the
-    non-contiguous Issue #380 case 2 is built: step 5 None, step 6 a
-    non-empty request id, immediate step 7 None.
-    """
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    wf = accumulated_workflow()
-    state = WorkflowExecutionState(
-        "w",
-        "running",
-        f"step-{current}",
-        current,
-        "e",
-        tuple(step.id for step in wf.steps[: current - 1]),
-        None,
-    )
-    lines = []
-    for position, step in enumerate(wf.steps[: current - 1], 1):
-        if position == 5:
-            lines.append(
-                serialize_runtime_step_event_jsonl(
-                    predecessor_event(step.id, position, five_provider, request_id=None)
-                )
-            )
-        elif position == 6 and current == 8:
-            lines.append(
-                serialize_runtime_step_event_jsonl(
-                    predecessor_event(
-                        step.id, position, six_provider, request_id=six_request_id
-                    )
-                )
-            )
-        elif position >= 5:
-            provider = six_provider
-            lines.append(
-                serialize_runtime_step_event_jsonl(
-                    predecessor_event(step.id, position, provider, request_id=None)
-                )
-            )
-        else:
-            lines.append(
-                serialize_runtime_step_event_jsonl(
-                    predecessor_event(step.id, position, "other")
-                )
-            )
-    events_path.write_text("".join(lines), encoding="utf-8")
-    state_path.write_text(serialize_workflow_execution_state_json(state), encoding="utf-8")
-    result = StepRuntimeExecutionSuccess(
-        "w",
-        f"step-{current}",
-        current,
-        "e",
+def successor_result(
+    definition: WorkflowDefinition, index: int
+) -> StepRuntimeExecutionSuccess:
+    step = definition.steps[index - 1]
+    return StepRuntimeExecutionSuccess(
+        definition.id,
+        step.id,
+        index,
+        step.employee,
         ModelInvocationSuccess(
-            "openai", "response", "request", "completed", ("out",), "out"
+            "openai", f"response-{index}", f"request-{index}", "completed", ("out",), "out"
         ),
     )
+
+
+def failing_result(
+    definition: WorkflowDefinition, index: int
+) -> StepRuntimeExecutionFailure:
+    step = definition.steps[index - 1]
+    return StepRuntimeExecutionFailure(
+        definition.id,
+        step.id,
+        index,
+        step.employee,
+        ModelInvocationFailure(
+            "openai", "api_error", "safe failure", f"request-{index}", 500, None, None
+        ),
+    )
+
+
+_UNSET = object()
+
+
+def predecessor_event(
+    definition: WorkflowDefinition,
+    index: int,
+    *,
+    provider: object = "openai",
+    request_id: object = _UNSET,
+    output_text: object = _UNSET,
+) -> RuntimeStepEvent:
+    step = definition.steps[index - 1]
+    return RuntimeStepEvent(
+        "step_succeeded",
+        definition.id,
+        step.id,
+        index,
+        step.employee,
+        "running",
+        "succeeded",
+        provider,  # type: ignore[arg-type]
+        None,
+        f"predecessor-response-{index}",
+        f"predecessor-request-{index}" if request_id is _UNSET else request_id,  # type: ignore[arg-type]
+        f"predecessor-output-{index}" if output_text is _UNSET else output_text,  # type: ignore[arg-type]
+        None,
+    )
+
+
+def write_history(
+    tmp_path: Path,
+    definition: WorkflowDefinition,
+    *,
+    current: int,
+    status: str = "running",
+    terminal_provider: object = "other",
+    events: list[RuntimeStepEvent] | None = None,
+) -> tuple[Path, Path, bytes, bytes]:
+    state_path = tmp_path / "state.json"
+    events_path = tmp_path / "events.jsonl"
+    previous = tuple(step.id for step in definition.steps[: current - 1])
+    current_step = definition.steps[current - 1]
+    completed = previous + ((current_step.id,) if status == "succeeded" else ())
+    state = WorkflowExecutionState(
+        definition.id,
+        status,  # type: ignore[arg-type]
+        current_step.id,
+        current,
+        current_step.employee,
+        completed,
+        "api_error" if status == "failed" else None,
+    )
+    if events is None:
+        events = [
+            predecessor_event(definition, index)
+            for index in range(1, current)
+        ]
+        if status in ("succeeded", "failed"):
+            if status == "succeeded":
+                events.append(
+                    RuntimeStepEvent(
+                        "step_succeeded",
+                        definition.id,
+                        current_step.id,
+                        current,
+                        current_step.employee,
+                        "running",
+                        "succeeded",
+                        terminal_provider,  # type: ignore[arg-type]
+                        None,
+                        f"terminal-response-{current}",
+                        f"terminal-request-{current}",
+                        "out",
+                        None,
+                    )
+                )
+            else:
+                events.append(
+                    RuntimeStepEvent(
+                        "step_failed",
+                        definition.id,
+                        current_step.id,
+                        current,
+                        current_step.employee,
+                        "running",
+                        "failed",
+                        terminal_provider,  # type: ignore[arg-type]
+                        "api_error",
+                        None,
+                        f"terminal-request-{current}",
+                        None,
+                        "safe failure",
+                    )
+                )
+    state_bytes = serialize_workflow_execution_state_json(state).encode("utf-8")
+    event_bytes = "".join(
+        serialize_runtime_step_event_jsonl(event) for event in events
+    ).encode("utf-8")
+    state_path.write_bytes(state_bytes)
+    events_path.write_bytes(event_bytes)
+    return state_path, events_path, state_bytes, event_bytes
+
+
+def running_case(
+    tmp_path: Path,
+    *,
+    index: int = 6,
+    events: list[RuntimeStepEvent] | None = None,
+) -> dict[str, object]:
+    definition = workflow()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    state_path, events_path, state_bytes, event_bytes = write_history(
+        tmp_path, definition, current=index, events=events
+    )
     return {
-        "result": result,
-        "workflow": wf,
-        "state_path": state_path,
-        "events_path": events_path,
+        "workflow": definition,
+        "result": successor_result(definition, index),
+        "state": state_path,
+        "events": events_path,
+        "before": (state_bytes, event_bytes),
     }
 
 
-def test_accumulated_none_request_id_positions_five_six_success_delegates_once(
-    tmp_path: Path,
-) -> None:
-    values = setup_accumulated(tmp_path)
-    seen: list[tuple[object, ...]] = []
-    expected: object = None
+def stop_case(tmp_path: Path, *, status: str, index: int = 6) -> dict[str, object]:
+    definition = workflow(index)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    state_path, events_path, state_bytes, event_bytes = write_history(
+        tmp_path, definition, current=index, status=status
+    )
+    step = definition.steps[index - 1]
+    if status == "succeeded":
+        result: object = WorkflowProgressionDecision(
+            "workflow_complete",
+            definition.id,
+            step.id,
+            index,
+            step.employee,
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        )
+    else:
+        result = PersistedExecutionOutcome(
+            "persisted_failure", definition.id, step.id, index, step.employee, "api_error"
+        )
+    return {
+        "workflow": definition,
+        "result": result,
+        "state": state_path,
+        "events": events_path,
+        "before": (state_bytes, event_bytes),
+    }
 
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
 
-    assert call(values, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                values[key]
-                for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
+def assert_classification(callable_object: object, expected: str) -> None:
+    with pytest.raises(_ERROR) as caught:
+        callable_object()  # type: ignore[operator]
+    assert caught.value.detail.classification == expected
+
+
+def route_case(case: dict[str, object]) -> object:
+    return public_route(
+        case["result"],
+        case["workflow"],
+        case["state"],
+        case["events"],
+    )
+
+
+def committed_history(case: dict[str, object]) -> object:
+    return load_workflow_execution_history(
+        WorkflowExecutionPersistenceTargets(
+            case["state"], case["events"]  # type: ignore[arg-type]
         )
     )
 
 
-def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
-    tmp_path: Path,
+def test_valid_success_persists_exact_state_and_single_event(tmp_path: Path) -> None:
+    case = running_case(tmp_path)
+    result = case["result"]
+    before = case["before"]
+    persisted = route_case(case)
+    assert type(persisted) is WorkflowExecutionPersistenceResult
+    assert persisted.state_path is case["state"]
+    assert persisted.events_path is case["events"]
+    history = committed_history(case)
+    state = history.state
+    assert state.status == "succeeded"
+    assert state.workflow_id == "workflow"
+    assert state.current_step_index == 6
+    assert state.current_step_id == "step-6"
+    assert state.current_employee_id == "employee-6"
+    assert state.completed_step_ids == (
+        "step-1", "step-2", "step-3", "step-4", "step-5", "step-6",
+    )
+    assert state.last_failure_category is None
+    assert len(history.events) == 6
+    assert history.events[:-1] == tuple(
+        predecessor_event(case["workflow"], index)  # type: ignore[arg-type]
+        for index in range(1, 6)
+    )
+    event = history.events[-1]
+    assert event.event_type == "step_succeeded"
+    assert event.previous_status == "running"
+    assert event.next_status == "succeeded"
+    assert event.provider == result.invocation_result.provider  # type: ignore[union-attr]
+    assert event.response_id == result.invocation_result.response_id  # type: ignore[union-attr]
+    assert event.request_id == result.invocation_result.request_id  # type: ignore[union-attr]
+    assert event.output_text == result.invocation_result.text  # type: ignore[union-attr]
+    assert event.message is None
+    assert persisted.state_bytes_written == len(case["state"].read_bytes())  # type: ignore[union-attr]
+    assert persisted.event_bytes_appended == (
+        len(case["events"].read_bytes()) - len(before[1])  # type: ignore[union-attr]
+    )
+    assert case["events"].read_bytes().startswith(before[1])  # type: ignore[union-attr]
+    assert case["events"].read_bytes()[len(before[1]):] == (  # type: ignore[union-attr]
+        serialize_runtime_step_event_jsonl(event).encode("utf-8")
+    )
+
+
+def test_valid_failure_persists_exact_state_and_single_event(tmp_path: Path) -> None:
+    case = running_case(tmp_path)
+    case["result"] = failing_result(case["workflow"], 6)  # type: ignore[arg-type]
+    before = case["before"]
+    persisted = route_case(case)
+    assert type(persisted) is WorkflowExecutionPersistenceResult
+    history = committed_history(case)
+    state = history.state
+    assert state.status == "failed"
+    assert state.completed_step_ids == (
+        "step-1", "step-2", "step-3", "step-4", "step-5",
+    )
+    assert state.last_failure_category == "api_error"
+    assert len(history.events) == 6
+    event = history.events[-1]
+    assert event.event_type == "step_failed"
+    assert event.previous_status == "running"
+    assert event.next_status == "failed"
+    assert event.provider == "openai"
+    assert event.request_id == "request-6"
+    assert event.failure_category == "api_error"
+    assert event.response_id is None
+    assert event.output_text is None
+    assert event.message == "safe failure"
+    assert persisted.event_bytes_appended == (
+        len(case["events"].read_bytes()) - len(before[1])  # type: ignore[union-attr]
+    )
+
+
+@pytest.mark.parametrize("index", [1, 2, 3, 5, 6, 8])
+def test_valid_result_at_any_index_persists_once(tmp_path: Path, index: int) -> None:
+    case = running_case(tmp_path, index=index)
+    before = case["before"]
+    route_case(case)
+    history = committed_history(case)
+    assert history.state.status == "succeeded"
+    assert history.state.current_step_index == index
+    assert len(history.events) == index
+    assert history.events[-1].step_index == index
+    appended = case["events"].read_bytes()[len(before[1]):]  # type: ignore[union-attr]
+    assert appended.count(b"\n") == 1
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_stop_routes_are_identity_preserving_and_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
-    """Issue #380 case 2: step8 with step5=None, step6 non-empty, step7=None.
+    case = stop_case(tmp_path, status=status)
+    before = case["before"]
+    calls = 0
 
-    The non-contiguous accumulated None provenance (step 5 None, step 6 a
-    non-empty request id, immediate step 7 None, all openai) delegates
-    exactly once; the failure route over the same provenance delegates
-    exactly once as an inline subcase.
-    """
-    values = setup_accumulated(
-        tmp_path, current=8, six_request_id="req-6"
+    def unexpected_owner(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("stop route must not persist a transition")
+
+    monkeypatch.setattr(phase161_module, "persist_executed_step_transition", unexpected_owner)
+    assert route_case(case) is case["result"]
+    assert calls == 0
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_stop_routes_reject_malformed_values_without_writing(
+    tmp_path: Path, status: str
+) -> None:
+    case = stop_case(tmp_path, status=status)
+    before = case["before"]
+    classification = "completion_contract" if status == "succeeded" else "failure_contract"
+    malformed = replace(case["result"], reason="wrong") if status == "succeeded" else replace(
+        case["result"], failure_category="not-a-category"
     )
-    seen: list[tuple[object, ...]] = []
-    expected: object = None
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        nonlocal expected
-        expected = persist_fake(*args)  # type: ignore[arg-type]
-        return expected
-
-    assert call(values, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                values[key]
-                for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
-
-    failure_values = setup_accumulated(
-        tmp_path / "failure", current=8, six_request_id="req-6"
-    )
-    failure_values["result"] = StepRuntimeExecutionFailure(
-        "w",
-        "step-8",
-        8,
-        "e",
-        ModelInvocationFailure(
-            "openai", "api_error", "safe failure", "request", 500, None, None
+    assert_classification(
+        lambda: public_route(
+            malformed, case["workflow"], case["state"], case["events"]
         ),
+        classification,
     )
-    failed_seen: list[tuple[object, ...]] = []
-    failed_expected: object = None
-
-    def failure_dependency(*args: object) -> object:
-        failed_seen.append(args)
-        nonlocal failed_expected
-        failed_expected = persist_fake(*args)  # type: ignore[arg-type]
-        return failed_expected
-
-    assert call(failure_values, failure_dependency) is failed_expected
-    assert len(failed_seen) == 1
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
 
 
-def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase142(
+def test_stop_route_empty_success_output_is_rejected_without_writing(
     tmp_path: Path,
 ) -> None:
-    values = setup_accumulated(tmp_path, five_provider="other")
-    reject_unchanged(values, "runtime_contract")
+    case = stop_case(tmp_path, status="succeeded")
+    events_path = case["events"]
+    lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    payload = json.loads(lines[-1])
+    payload["output_text"] = ""
+    lines[-1] = json.dumps(payload, separators=(",", ":")) + "\n"
+    events_path.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
+    before = case["state"].read_bytes(), case["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(case), "terminal_contract")
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
 
 
-def test_accumulated_none_position_four_remains_rejected_before_phase142(
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("status", "succeeded"),
+        ("current_step_index", 5),
+        ("current_step_id", "step-2"),
+        ("current_employee_id", "employee-2"),
+        ("completed_step_ids", ("step-1", "step-2")),
+        ("last_failure_category", "transport_error"),
+        ("workflow_id", "other-workflow"),
+    ],
+)
+def test_malformed_or_stale_state_fails_closed_before_write(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    case = running_case(tmp_path)
+    state = load_workflow_execution_state(case["state"])  # type: ignore[arg-type]
+    corrupted = replace(state, **{field: value})
+    case["state"].write_bytes(  # type: ignore[union-attr]
+        serialize_workflow_execution_state_json(corrupted).encode("utf-8")
+    )
+    before = case["state"].read_bytes(), case["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(case), "runtime_contract")
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_malformed_predecessor_history_fails_closed_before_write(
     tmp_path: Path,
 ) -> None:
-    values = setup_accumulated(tmp_path)
-    events = values["events_path"]
-    lines = events.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    replacement = serialize_runtime_step_event_jsonl(
-        predecessor_event("step-4", 4, "other", request_id=None)
+    case = running_case(tmp_path)
+    events_path = case["events"]
+    lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    payload = json.loads(lines[1])
+    payload["next_status"] = "failed"
+    lines[1] = json.dumps(payload, separators=(",", ":")) + "\n"
+    events_path.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
+    before = case["state"].read_bytes(), case["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(case), "runtime_contract")
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_truncated_predecessor_history_fails_closed_before_write(
+    tmp_path: Path,
+) -> None:
+    case = running_case(tmp_path)
+    events_path = case["events"]
+    lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
+    events_path.write_text("".join(lines[:-1]), encoding="utf-8")  # type: ignore[union-attr]
+    before = case["state"].read_bytes(), case["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(case), "runtime_contract")
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("workflow_id", "other-workflow"),
+        ("step_id", "step-2"),
+        ("step_index", 5),
+        ("employee_id", "employee-2"),
+    ],
+)
+def test_mismatched_runtime_result_fails_closed_before_write(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    case = running_case(tmp_path)
+    case["result"] = replace(case["result"], **{field: value})  # type: ignore[arg-type]
+    before = case["state"].read_bytes(), case["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(case), "runtime_contract")
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("kind", ["success", "failure"])
+def test_invocation_contract_rejections_fail_closed_before_write(
+    tmp_path: Path, kind: str
+) -> None:
+    case = running_case(tmp_path)
+    result = case["result"]
+    if kind == "success":
+        broken = replace(
+            result,
+            invocation_result=replace(  # type: ignore[arg-type]
+                result.invocation_result, response_id=""  # type: ignore[union-attr]
+            ),
+        )
+    else:
+        case["result"] = failing_result(case["workflow"], 6)  # type: ignore[arg-type]
+        broken = replace(
+            case["result"],
+            invocation_result=replace(  # type: ignore[arg-type]
+                case["result"].invocation_result,  # type: ignore[union-attr]
+                category="not-a-category",
+            ),
+        )
+    case["result"] = broken
+    before = case["state"].read_bytes(), case["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(case), "runtime_contract")
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_unsupported_result_is_rejected_without_side_effects(tmp_path: Path) -> None:
+    case = running_case(tmp_path)
+    before = case["state"].read_bytes(), case["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(
+        lambda: public_route(object(), case["workflow"], case["state"], case["events"]),
+        "result_type",
     )
-    events.write_text("".join(lines[:3]) + replacement + "".join(lines[4:]), encoding="utf-8")  # type: ignore[union-attr]
-    reject_unchanged(values, "runtime_contract")
+    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_target_conflict_and_missing_targets_are_rejected_without_writing(
+    tmp_path: Path,
+) -> None:
+    case = running_case(tmp_path)
+    assert_classification(
+        lambda: public_route(
+            case["result"], case["workflow"], case["state"], case["state"]
+        ),
+        "target_conflict",
+    )
+    case["state"].unlink()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(case), "state_target")
+
+
+def test_provider_compatibility_preserves_immediate_and_earlier_rules(
+    tmp_path: Path,
+) -> None:
+    definition = workflow()
+    accepted = [
+        predecessor_event(definition, index, provider="other", output_text="")
+        for index in range(1, 5)
+    ]
+    accepted.append(
+        predecessor_event(definition, 5, provider="openai", output_text="")
+    )
+    case = running_case(tmp_path / "accepted", index=6, events=accepted)
+    persisted = route_case(case)
+    assert type(persisted) is WorkflowExecutionPersistenceResult
+    assert committed_history(case).state.status == "succeeded"
+
+    rejected = [
+        predecessor_event(definition, index, provider="other", output_text="")
+        for index in range(1, 5)
+    ]
+    rejected.append(
+        predecessor_event(definition, 5, provider="other", output_text="")
+    )
+    bad = running_case(tmp_path / "rejected", index=6, events=rejected)
+    before = bad["state"].read_bytes(), bad["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(bad), "runtime_contract")
+    assert (bad["state"].read_bytes(), bad["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_accumulated_none_request_id_is_bounded(tmp_path: Path) -> None:
+    definition = workflow()
+    # Positions 5-7 carry the accumulated None provenance; positions 1-4 do not.
+    accepted = [
+        predecessor_event(definition, index, provider="openai")
+        for index in range(1, 5)
+    ]
+    accepted.append(
+        predecessor_event(definition, 5, provider="openai", request_id=None, output_text="")
+    )
+    accepted.append(
+        predecessor_event(definition, 6, provider="openai", request_id=None, output_text="")
+    )
+    accepted.append(
+        predecessor_event(definition, 7, provider="openai", request_id=None, output_text="")
+    )
+    case = running_case(tmp_path / "accepted", index=8, events=accepted)
+    persisted = route_case(case)
+    assert type(persisted) is WorkflowExecutionPersistenceResult
+    assert committed_history(case).state.status == "succeeded"
+
+    # Position 4 is below the bounded accumulated-None window.
+    rejected = [
+        predecessor_event(definition, index, provider="openai")
+        for index in range(1, 4)
+    ]
+    rejected.append(
+        predecessor_event(definition, 4, provider="openai", request_id=None, output_text="")
+    )
+    for index in range(5, 8):
+        rejected.append(
+            predecessor_event(definition, index, provider="openai", request_id=None, output_text="")
+        )
+    bad = running_case(tmp_path / "rejected", index=8, events=rejected)
+    before = bad["state"].read_bytes(), bad["events"].read_bytes()  # type: ignore[union-attr]
+    assert_classification(lambda: route_case(bad), "runtime_contract")
+    assert (bad["state"].read_bytes(), bad["events"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_empty_predecessor_output_remains_accepted(tmp_path: Path) -> None:
+    definition = workflow()
+    events = []
+    for index in range(1, 6):
+        provider = "openai" if index == 5 else "other"
+        events.append(
+            predecessor_event(
+                definition, index, provider=provider, output_text=""
+            )
+        )
+    case = running_case(tmp_path, events=events)
+    persisted = route_case(case)
+    assert type(persisted) is WorkflowExecutionPersistenceResult
+    assert committed_history(case).state.status == "succeeded"
+
+
+def test_persistence_exception_is_sanitized_and_bytes_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = running_case(tmp_path)
+    state = case["state"]
+    events = case["events"]
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def failing_owner(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(b"mutated-state")
+        events.write_bytes(b"mutated-events")
+        raise RuntimeError("secret persistence detail")
+
+    monkeypatch.setattr(phase161_module, "persist_executed_step_transition", failing_owner)
+    with pytest.raises(_ERROR) as caught:
+        route_case(case)
+    assert caught.value.detail.classification == "dependency_error"
+    assert "secret persistence detail" not in str(caught.value)
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_invalid_persistence_postcondition_is_restored_without_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = running_case(tmp_path)
+    state = case["state"]
+    events = case["events"]
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def malformed_owner(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(b"malformed-state")
+        events.write_bytes(b"mutated-events")
+        return object()
+
+    monkeypatch.setattr(phase161_module, "persist_executed_step_transition", malformed_owner)
+    assert_classification(lambda: route_case(case), "persistence_contract")
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_owner_rollback_failure_is_safe_and_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = running_case(tmp_path)
+    state = case["state"]
+    events = case["events"]
+    before = state.read_bytes(), events.read_bytes()
+    calls = 0
+
+    def rollback_owner(*_: object) -> object:
+        nonlocal calls
+        calls += 1
+        state.write_bytes(b"mutated-state")
+        events.write_bytes(b"mutated-events")
+        raise WorkflowExecutionPersistenceRollbackError(
+            WorkflowExecutionPersistenceFailureDetail("persistence"),
+            (WorkflowExecutionPersistenceFailureDetail("restore_state"),),
+        )
+
+    monkeypatch.setattr(phase161_module, "persist_executed_step_transition", rollback_owner)
+    assert_classification(lambda: route_case(case), "dependency_rollback")
+    assert calls == 1
+    assert (state.read_bytes(), events.read_bytes()) == before
+
+
+def test_real_default_success_composition(tmp_path: Path) -> None:
+    """No injected owner: the whole default route persists through the real owner."""
+    case = running_case(tmp_path)
+    before = case["before"]
+    persisted = route_case(case)
+    assert type(persisted) is WorkflowExecutionPersistenceResult
+    history = committed_history(case)
+    assert history.state.status == "succeeded"
+    assert len(history.events) == 6
+    assert history.events[-1].event_type == "step_succeeded"
+    assert case["events"].read_bytes().startswith(before[1])  # type: ignore[union-attr]
+
+
+def test_real_default_failure_composition(tmp_path: Path) -> None:
+    case = running_case(tmp_path)
+    case["result"] = failing_result(case["workflow"], 6)  # type: ignore[arg-type]
+    persisted = route_case(case)
+    assert type(persisted) is WorkflowExecutionPersistenceResult
+    history = committed_history(case)
+    assert history.state.status == "failed"
+    assert len(history.events) == 6
+    assert history.events[-1].event_type == "step_failed"

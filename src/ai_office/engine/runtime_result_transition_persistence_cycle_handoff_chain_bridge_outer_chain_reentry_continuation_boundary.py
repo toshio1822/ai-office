@@ -2,7 +2,6 @@
 
 # ruff: noqa: E501,E701,I001
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
@@ -10,10 +9,6 @@ from typing import Literal, get_args
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
-)
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase142Error,
-    route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
@@ -27,11 +22,15 @@ from ai_office.runtime import (
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
 )
+from ai_office.runtime.executed_step_transition_persistence import (
+    persist_executed_step_transition,
+)
 from ai_office.storage import (
     WorkflowExecutionDataError,
     WorkflowExecutionHistoryInconsistencyError,
     WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceResult,
+    WorkflowExecutionPersistenceRollbackError,
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
     serialize_runtime_step_event_jsonl,
@@ -51,12 +50,6 @@ Classification = Literal[
     "persistence_contract",
     "dependency_error",
     "dependency_rollback",
-]
-Phase142Function = Callable[
-    [object, object, object, object],
-    WorkflowExecutionPersistenceResult
-    | WorkflowProgressionDecision
-    | PersistedExecutionOutcome,
 ]
 _PATH_TYPE = type(Path())
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
@@ -96,17 +89,13 @@ def route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer
     workflow: object,
     state_path: object,
     events_path: object,
-    *,
-    phase142_function: Phase142Function = (
-        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
-    ),
 ) -> (
     WorkflowExecutionPersistenceResult
     | WorkflowProgressionDecision
     | PersistedExecutionOutcome
 ):
-    """Route one exact Phase 155 runtime result through public Phase 142 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase142_function)
+    """Validate one exact runtime result and persist its transition once."""
+    _check_inputs(result, workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -135,11 +124,12 @@ def route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer
     _check_predecessor_history(workflow, state, history.events)
 
     try:
-        value = phase142_function(result, workflow, state_path, events_path)
-    except Phase142Error as error:
-        _compensate_dependency_error(state_path, events_path, original, error)
+        value = persist_executed_step_transition(result, state_path, events_path)
+    except WorkflowExecutionPersistenceRollbackError:
+        _restore_if_changed(state_path, events_path, original)
+        _fail("dependency_rollback")
     except Exception:
-        _compensate_dependency_error(state_path, events_path, original, None)
+        _compensate_dependency_error(state_path, events_path, original)
 
     try:
         _check_persistence(
@@ -164,7 +154,6 @@ def _check_inputs(
     workflow: object,
     state: object,
     events: object,
-    function: object,
 ) -> None:
     if type(result) not in (
         StepRuntimeExecutionSuccess,
@@ -181,8 +170,6 @@ def _check_inputs(
         _fail("event_target")
     if state == events:
         _fail("target_conflict")
-    if not callable(function):
-        _fail("persistence_contract")
 
 
 def _valid_workflow(workflow: WorkflowDefinition) -> bool:
@@ -779,11 +766,8 @@ def _compensate_dependency_error(
     state: Path,
     events: Path,
     original: tuple[bytes, bytes],
-    safe_error: Phase142Error | None,
 ) -> None:
     _restore_if_changed(state, events, original)
-    if safe_error is not None:
-        raise safe_error
     _fail("dependency_error")
 
 
