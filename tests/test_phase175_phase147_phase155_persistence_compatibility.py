@@ -13,10 +13,10 @@ Requirement-to-test mapping (Issue #367):
   -> test_real_chain_accepts_canonical_step7_start_and_persists
 - Phase 147 workflow_complete stop is exact identity with unchanged committed
   bytes
-  -> test_phase147_workflow_complete_stop_identity_zero_phase139
+  -> test_phase147_workflow_complete_stop_identity_read_only
 - Phase 147 persisted_failure stop is exact identity with unchanged committed
   bytes
-  -> test_phase147_persisted_failure_stop_identity_zero_phase139
+  -> test_phase147_persisted_failure_stop_identity_read_only
 - missing approval stays Phase-175-owned: approval_contract rejection,
   Phase 173 once / Phase 146 zero / Phase 147 zero, step-6 terminal bytes
   durably committed and unchanged
@@ -358,7 +358,7 @@ def test_real_chain_accepts_canonical_step7_start_and_persists(
     assert len(history.events) == 6
 
 
-def test_phase147_workflow_complete_stop_identity_zero_phase139(
+def test_phase147_workflow_complete_stop_identity_read_only(
     tmp_path: Path,
 ) -> None:
     values = canonical_running_setup(tmp_path, steps=6, current=6)
@@ -382,7 +382,7 @@ def test_phase147_workflow_complete_stop_identity_zero_phase139(
     assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
 
 
-def test_phase147_persisted_failure_stop_identity_zero_phase139(
+def test_phase147_persisted_failure_stop_identity_read_only(
     tmp_path: Path,
 ) -> None:
     values = canonical_running_setup(tmp_path, steps=6, current=6)

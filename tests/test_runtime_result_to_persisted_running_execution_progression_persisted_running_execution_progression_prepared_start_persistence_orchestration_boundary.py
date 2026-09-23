@@ -25,9 +25,6 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_oute
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase147Error,
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase147,
 )
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase139Error,
-)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_persisted_running_execution_progression_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPersistedRunningExecutionProgressionOrchestrationBoundaryCompatibilityError as Phase183Error,
 )
@@ -269,7 +266,6 @@ def test_01_public_signature_exports_defaults_and_source_audit() -> None:
     source = Path(phase186.__code__.co_filename).read_text()
     assert source.count("phase185_function(") == 1
     assert source.count("phase147_function(") == 1
-    assert "phase139_function(" not in source and "phase132_function(" not in source
     assert "phase155" not in source
     assert "while " not in source[source.index("def route_"):source.index("def _check_inputs")]
 
@@ -478,7 +474,7 @@ def test_13_malformed_phase185_output_is_contract_error_without_rollback(tmp_pat
     assert case["state_path"].read_bytes() == before + b"owned"
 
 
-def test_14_provenance_narrowness_reuses_phase147_and_phase139_contracts(tmp_path: Path) -> None:
+def test_14_provenance_narrowness_is_enforced_by_phase147_contract(tmp_path: Path) -> None:
     valid = _prepared_case(tmp_path / "aged-none")[0]
     valid_start = _prepared_case(tmp_path / "aged-none-start")[1]
     _rewrite_event(valid["events_path"], 5, provider="openai", request_id=None)
@@ -493,7 +489,7 @@ def test_14_provenance_narrowness_reuses_phase147_and_phase139_contracts(tmp_pat
         case, start = _prepared_case(tmp_path / label)
         _rewrite_event(case["events_path"], position, **changes)
         before = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
-        with pytest.raises((Phase147Error, Phase139Error)) as caught:
+        with pytest.raises(Phase147Error) as caught:
             _call(case, phase185_function=lambda *args, start=start: start)
         assert caught.value.detail.classification == "terminal_contract"
         assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == before
@@ -527,24 +523,23 @@ def test_14_provenance_narrowness_reuses_phase147_and_phase139_contracts(tmp_pat
     ) == unknown_bytes
 
 
-def test_15_phase147_and_phase139_safe_errors_restore_post_phase185_bytes(tmp_path: Path) -> None:
-    for error_type in (Phase147Error, Phase139Error):
-        for mode in ("state", "events", "both"):
-            case, start = _prepared_case(tmp_path / f"{error_type.__name__}-{mode}")
-            committed = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
-            safe = error_type("safe")
+def test_15_phase147_safe_errors_restore_post_phase185_bytes(tmp_path: Path) -> None:
+    for mode in ("state", "events", "both"):
+        case, start = _prepared_case(tmp_path / f"{mode}")
+        committed = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
+        safe = Phase147Error("safe")
 
-            def dependency(*args: object, mode=mode, safe=safe) -> object:
-                if mode in ("state", "both"):
-                    args[3].write_bytes(committed[0] + b"mutated")
-                if mode in ("events", "both"):
-                    args[4].write_bytes(committed[1] + b"mutated")
-                raise safe
+        def dependency(*args: object, mode=mode) -> object:
+            if mode in ("state", "both"):
+                args[3].write_bytes(committed[0] + b"mutated")
+            if mode in ("events", "both"):
+                args[4].write_bytes(committed[1] + b"mutated")
+            raise safe
 
-            with pytest.raises(type(safe)) as caught:
-                _call(case, phase185_function=lambda *args: start, phase147_function=dependency)
-            assert caught.value is safe
-            assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == committed
+        with pytest.raises(Phase147Error) as caught:
+            _call(case, phase185_function=lambda *args: start, phase147_function=dependency)
+        assert caught.value is safe
+        assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == committed
 
 
 def test_16_unexpected_phase147_error_is_sanitized_and_compensated(tmp_path: Path) -> None:

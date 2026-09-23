@@ -1,9 +1,10 @@
-"""Issue #394 Phase 181 prerequisite prepared-start persistence compatibility.
+"""Prepared-start persistence compatibility owned by the live Phase 147 facade.
 
 The real Phase 180 boundary can produce an exact PreparedStepExecutionStart for
 step 8 while the durable step-7 success history retains an aged OpenAI
-request_id=None at position 5.  This prerequisite repairs only the prepared
-routes of Phase 147 and Phase 139; Phase 181 itself is not implemented.
+request_id=None at position 5.  The historical lower wrapper chain is no
+longer part of the live route; Phase 147 owns the observable persistence
+contract directly.
 
 Synthetic transport only.  The behavioral tests use inline matrices to pin
 canonical provenance, bounded compatibility, persistence, rollback, and
@@ -26,19 +27,10 @@ from ai_office.engine import (
     PreparedStepExecutionStart,
     WorkflowProgressionDecision,
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase147,
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary as phase139,
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary as phase132,
 )
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase147Error,
     _valid_history as phase147_valid_history,
-)
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase139Error,
-    _valid_history as phase139_valid_history,
-)
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError as Phase132Error,
 )
 import ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase147_module
 from ai_office.invocation import ModelInvocationRequest, UpstreamStepOutput
@@ -224,27 +216,6 @@ def _scenario(
     }
 
 
-def _persisted_result(start: PreparedStepExecutionStart) -> RunningStatePersistenceResult:
-    return RunningStatePersistenceResult(
-        len(serialize_workflow_execution_state_json(start.running_state).encode())
-    )
-
-
-def _persistence_stub(scenario: dict[str, object], calls: list[tuple]) -> object:
-    start = scenario["start"]
-    state_path = scenario["state_path"]
-    events_path = scenario["events_path"]
-    assert type(start) is PreparedStepExecutionStart
-    assert isinstance(state_path, Path) and isinstance(events_path, Path)
-
-    def dependency(*args: object, **kwargs: object) -> RunningStatePersistenceResult:
-        calls.append((args, kwargs))
-        state_path.write_text(serialize_workflow_execution_state_json(start.running_state))
-        return _persisted_result(start)
-
-    return dependency
-
-
 def _assert_unchanged(scenario: dict[str, object]) -> None:
     state_path = scenario["state_path"]
     events_path = scenario["events_path"]
@@ -340,27 +311,8 @@ def test_02_canonical_provenance_real_phase180(tmp_path: Path) -> None:
     assert (state_path.read_bytes(), events_path.read_bytes()) == case["committed"]
 
 
-# 3. Stage 0: Phase 132 -> Phase 125 -> unchanged lower chain.
-def test_03_stage0_lower_chain_proof(tmp_path: Path) -> None:
-    case = _canonical(tmp_path)
-    state_path = case["state_path"]
-    events_path = case["events_path"]
-    assert isinstance(state_path, Path) and isinstance(events_path, Path)
-    output = phase132(case["start"], case["workflow"], case["employee"], state_path, events_path)
-    assert type(output) is RunningStatePersistenceResult
-    assert state_path.read_bytes() == serialize_workflow_execution_state_json(
-        case["start"].running_state
-    ).encode()
-    assert events_path.read_bytes() == case["committed"][1]
-
-
-# 4. Stage 1/2/3 localization and Phase 147 bounded rule.
+# 3. Phase 147 bounded accumulated-provenance rule.
 def test_04_phase147_bounded_accumulated_rule(tmp_path: Path) -> None:
-    # The source-change-free Stage 1/2 localization is recorded by
-    # /tmp/preflight394_stage0_3.py: the unmodified Phase147 rejects before
-    # Phase139, an isolated Phase147 copy repair reaches unchanged Phase139,
-    # and only the two-copy repair reaches the lower chain.  The implemented
-    # route is now exercised here with its bounded acceptance and strictness.
     accepted = _scenario(tmp_path / "accepted", none_positions=(5,))
     output = phase147(
         accepted["start"], accepted["workflow"], accepted["employee"],
@@ -427,76 +379,7 @@ def test_04_phase147_bounded_accumulated_rule(tmp_path: Path) -> None:
     assert type(output) is RunningStatePersistenceResult
 
 
-# 5. Phase 139 bounded rule and exact Phase 139 -> Phase 132 shape.
-def test_05_phase139_bounded_accumulated_rule(tmp_path: Path) -> None:
-    accepted = _scenario(tmp_path / "accepted", none_positions=(5,))
-    calls: list[tuple] = []
-    output = phase139(
-        accepted["start"], accepted["workflow"], accepted["employee"],
-        accepted["state_path"], accepted["events_path"],
-        phase132_function=_persistence_stub(accepted, calls),
-    )
-    assert type(output) is RunningStatePersistenceResult
-    assert len(calls) == 1
-    assert calls[0][0] == (
-        accepted["start"], accepted["workflow"], accepted["employee"],
-        accepted["state_path"], accepted["events_path"],
-    )
-    for label, scenario in (
-        ("position4", _scenario(tmp_path / "position4", none_positions=(4,))),
-        ("non-openai", _scenario(tmp_path / "non-openai", none_positions=(5,), non_openai_positions=(5,))),
-        ("empty", _scenario(tmp_path / "empty", empty_positions=(5,))),
-        ("wrong-type", _scenario(tmp_path / "wrong-type", wrong_type_positions=(5,))),
-    ):
-        with pytest.raises(Phase139Error) as error:
-            phase139(
-                scenario["start"], scenario["workflow"], scenario["employee"],
-                scenario["state_path"], scenario["events_path"],
-                phase132_function=lambda *args, **kwargs: pytest.fail("Phase132 must not run"),
-            )
-        assert error.value.detail.classification == "terminal_contract", label
-
-    # Pin the accumulated threshold independently of immediate-predecessor
-    # compatibility: position 5 None is false at persisted index 6 and true
-    # at persisted index 7 when immediate None is disabled.
-    lower = _scenario(tmp_path / "lower-index", prepared_index=7, current=6, none_positions=(5,))
-    lower_loaded = load_workflow_execution_history(
-        WorkflowExecutionPersistenceTargets(lower["state_path"], lower["events_path"])
-    )
-    assert not phase139_valid_history(
-        lower["workflow"], lower_loaded.state, lower_loaded.events,
-        "succeeded", None,
-        require_immediate_openai=True,
-        allow_empty_success_output=True,
-        allow_empty_predecessor_output=True,
-        allow_immediate_none_request_id=False,
-        allow_accumulated_openai_none=True,
-    )
-    threshold = _scenario(tmp_path / "threshold", prepared_index=8, current=7, none_positions=(5,))
-    threshold_loaded = load_workflow_execution_history(
-        WorkflowExecutionPersistenceTargets(threshold["state_path"], threshold["events_path"])
-    )
-    assert phase139_valid_history(
-        threshold["workflow"], threshold_loaded.state, threshold_loaded.events,
-        "succeeded", None,
-        require_immediate_openai=True,
-        allow_empty_success_output=True,
-        allow_empty_predecessor_output=True,
-        allow_immediate_none_request_id=False,
-        allow_accumulated_openai_none=True,
-    )
-
-    immediate = _scenario(tmp_path / "immediate", prepared_index=7, current=6, none_positions=(5,))
-    calls = []
-    phase139(
-        immediate["start"], immediate["workflow"], immediate["employee"],
-        immediate["state_path"], immediate["events_path"],
-        phase132_function=_persistence_stub(immediate, calls),
-    )
-    assert len(calls) == 1
-
-
-# 6. full real Phase 180 -> repaired Phase147 -> repaired Phase139 -> lower chain.
+# 4. Full real Phase 180 -> live Phase 147 route.
 def test_06_full_repaired_real_chain_success(tmp_path: Path) -> None:
     case = _canonical(tmp_path)
     output = phase147(

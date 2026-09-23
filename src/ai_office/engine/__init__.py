@@ -791,107 +791,11 @@ from ai_office.engine.post_terminal_facts import (
     serialize_publication_readiness_audit_canonical,
     validate_publication_claim_contract,
 )
-from ai_office.engine.prepared_running_state_reentry import (
-    PreparedRunningStateReentryCompatibilityError,
-    PreparedRunningStateReentryError,
-    PreparedRunningStateReentryFailureDetail,
-    persist_prepared_running_state_reentry,
-)
-from ai_office.engine.prepared_start_persistence_bridge_reentry import (
-    PreparedStartPersistenceBridgeCompatibilityError,
-    PreparedStartPersistenceBridgeError,
-    PreparedStartPersistenceBridgeFailureDetail,
-    route_prepared_start_persistence_bridge_reentry,
-)
-from ai_office.engine.prepared_start_persistence_cycle_continuation_boundary import (
-    PreparedStartPersistenceCycleContinuationCompatibilityError,
-    PreparedStartPersistenceCycleContinuationError,
-    PreparedStartPersistenceCycleContinuationFailureDetail,
-    route_prepared_start_persistence_cycle_continuation_boundary,
-)
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (  # noqa: E501
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError,
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError,
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail,
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-)
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (  # noqa: E501
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError,
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError,
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationFailureDetail,
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
-)
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary import (  # noqa: E501
-    PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError,
-    PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationError,
-    PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationFailureDetail,
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary,
-)
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_reentry_continuation_boundary import (  # noqa: E501
-    PreparedStartPersistenceCycleHandoffChainReentryContinuationCompatibilityError,
-    PreparedStartPersistenceCycleHandoffChainReentryContinuationError,
-    PreparedStartPersistenceCycleHandoffChainReentryContinuationFailureDetail,
-    route_prepared_start_persistence_cycle_handoff_chain_reentry_continuation_boundary,
-)
-from ai_office.engine.prepared_start_persistence_cycle_handoff_reentry_continuation_boundary import (  # noqa: E501
-    PreparedStartPersistenceCycleHandoffReentryContinuationCompatibilityError,
-    PreparedStartPersistenceCycleHandoffReentryContinuationError,
-    PreparedStartPersistenceCycleHandoffReentryContinuationFailureDetail,
-    route_prepared_start_persistence_cycle_handoff_reentry_continuation_boundary,
-)
-from ai_office.engine.prepared_start_persistence_cycle_reentry_continuation_boundary import (  # noqa: E501
-    PreparedStartPersistenceCycleReentryContinuationCompatibilityError,
-    PreparedStartPersistenceCycleReentryContinuationError,
-    PreparedStartPersistenceCycleReentryContinuationFailureDetail,
-    route_prepared_start_persistence_cycle_reentry_continuation_boundary,
-)
-from ai_office.engine.prepared_start_persistence_dispatch_continuation_boundary import (
-    PreparedStartPersistenceDispatchContinuationCompatibilityError,
-    PreparedStartPersistenceDispatchContinuationError,
-    PreparedStartPersistenceDispatchContinuationFailureDetail,
-    route_prepared_start_persistence_dispatch_continuation_boundary,
-)
-from ai_office.engine.prepared_start_persistence_dispatch_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
-    PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError,
-    PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationError,
-    PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationFailureDetail,
-    route_prepared_start_persistence_dispatch_phase_bridge_cycle_reentry_continuation,
-)
-from ai_office.engine.prepared_start_persistence_phase_bridge_reentry import (
-    PreparedStartPersistencePhaseBridgeCompatibilityError,
-    PreparedStartPersistencePhaseBridgeError,
-    PreparedStartPersistencePhaseBridgeFailureDetail,
-    route_prepared_start_persistence_phase_bridge_reentry,
-)
-from ai_office.engine.prepared_start_persistence_routing_phase_bridge_continuation import (  # noqa: E501
-    PreparedStartPersistenceRoutingPhaseBridgeContinuationCompatibilityError,
-    PreparedStartPersistenceRoutingPhaseBridgeContinuationError,
-    PreparedStartPersistenceRoutingPhaseBridgeContinuationFailureDetail,
-    route_prepared_start_persistence_routing_phase_bridge_continuation,
-)
-from ai_office.engine.prepared_start_persistence_routing_phase_bridge_cycle_continuation import (  # noqa: E501
-    PreparedStartPersistenceRoutingPhaseBridgeCycleContinuationCompatibilityError,
-    PreparedStartPersistenceRoutingPhaseBridgeCycleContinuationError,
-    PreparedStartPersistenceRoutingPhaseBridgeCycleContinuationFailureDetail,
-    route_prepared_start_persistence_routing_phase_bridge_cycle_continuation,
-)
-from ai_office.engine.prepared_start_persistence_routing_phase_bridge_cycle_reentry_continuation import (  # noqa: E501
-    PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationCompatibilityError,
-    PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationError,
-    PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationFailureDetail,
-    route_prepared_start_persistence_routing_phase_bridge_cycle_reentry_continuation,
-)
-from ai_office.engine.prepared_start_persistence_routing_phase_bridge_reentry import (
-    PreparedStartPersistenceRoutingPhaseBridgeCompatibilityError,
-    PreparedStartPersistenceRoutingPhaseBridgeError,
-    PreparedStartPersistenceRoutingPhaseBridgeFailureDetail,
-    route_prepared_start_persistence_routing_phase_bridge_reentry,
-)
-from ai_office.engine.prepared_start_persistence_routing_reentry import (
-    PreparedStartPersistenceRoutingCompatibilityError,
-    PreparedStartPersistenceRoutingError,
-    PreparedStartPersistenceRoutingFailureDetail,
-    route_prepared_start_persistence_reentry,
 )
 from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStart,
@@ -1804,74 +1708,10 @@ __all__ = [
     "UpstreamStepOutputHandoffError",
     "UpstreamStepOutputHandoffFailureDetail",
     "build_immediate_predecessor_upstream_inputs",
-    "PreparedStartPersistencePhaseBridgeCompatibilityError",
-    "PreparedStartPersistencePhaseBridgeError",
-    "PreparedStartPersistencePhaseBridgeFailureDetail",
-    "route_prepared_start_persistence_phase_bridge_reentry",
-    "PreparedStartPersistenceRoutingPhaseBridgeCompatibilityError",
-    "PreparedStartPersistenceRoutingPhaseBridgeError",
-    "PreparedStartPersistenceRoutingPhaseBridgeFailureDetail",
-    "route_prepared_start_persistence_routing_phase_bridge_reentry",
-    "PreparedStartPersistenceRoutingPhaseBridgeContinuationCompatibilityError",
-    "PreparedStartPersistenceRoutingPhaseBridgeContinuationError",
-    "PreparedStartPersistenceRoutingPhaseBridgeContinuationFailureDetail",
-    "route_prepared_start_persistence_routing_phase_bridge_continuation",
-    "PreparedStartPersistenceRoutingPhaseBridgeCycleContinuationCompatibilityError",
-    "PreparedStartPersistenceRoutingPhaseBridgeCycleContinuationError",
-    "PreparedStartPersistenceRoutingPhaseBridgeCycleContinuationFailureDetail",
-    "route_prepared_start_persistence_routing_phase_bridge_cycle_continuation",
-    "PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationCompatibilityError",
-    "PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationError",
-    "PreparedStartPersistenceRoutingPhaseBridgeCycleReentryContinuationFailureDetail",
-    "route_prepared_start_persistence_routing_phase_bridge_cycle_reentry_continuation",
-    "PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationCompatibilityError",
-    "PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationError",
-    "PreparedStartPersistenceDispatchPhaseBridgeCycleReentryContinuationFailureDetail",
-    "route_prepared_start_persistence_dispatch_phase_bridge_cycle_reentry_continuation",
-    "PreparedStartPersistenceDispatchContinuationCompatibilityError",
-    "PreparedStartPersistenceDispatchContinuationError",
-    "PreparedStartPersistenceDispatchContinuationFailureDetail",
-    "route_prepared_start_persistence_dispatch_continuation_boundary",
-    "PreparedStartPersistenceCycleContinuationCompatibilityError",
-    "PreparedStartPersistenceCycleContinuationError",
-    "PreparedStartPersistenceCycleContinuationFailureDetail",
-    "route_prepared_start_persistence_cycle_continuation_boundary",
-    "PreparedStartPersistenceCycleHandoffChainReentryContinuationCompatibilityError",
-    "PreparedStartPersistenceCycleHandoffChainReentryContinuationError",
-    "PreparedStartPersistenceCycleHandoffChainReentryContinuationFailureDetail",
-    "route_prepared_start_persistence_cycle_handoff_chain_reentry_continuation_boundary",
-    "PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError",
-    "PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationError",
-    "PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationFailureDetail",
-    "route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary",
     "PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError",
     "PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError",
     "PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail",
     "route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
-    "PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError",
-    "PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError",
-    "PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationFailureDetail",
-    "route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
-    "PreparedStartPersistenceCycleReentryContinuationCompatibilityError",
-    "PreparedStartPersistenceCycleReentryContinuationError",
-    "PreparedStartPersistenceCycleReentryContinuationFailureDetail",
-    "route_prepared_start_persistence_cycle_reentry_continuation_boundary",
-    "PreparedStartPersistenceCycleHandoffReentryContinuationCompatibilityError",
-    "PreparedStartPersistenceCycleHandoffReentryContinuationError",
-    "PreparedStartPersistenceCycleHandoffReentryContinuationFailureDetail",
-    "route_prepared_start_persistence_cycle_handoff_reentry_continuation_boundary",
-    "PreparedStartPersistenceRoutingCompatibilityError",
-    "PreparedStartPersistenceRoutingError",
-    "PreparedStartPersistenceRoutingFailureDetail",
-    "route_prepared_start_persistence_reentry",
-    "PreparedStartPersistenceBridgeCompatibilityError",
-    "PreparedStartPersistenceBridgeError",
-    "PreparedStartPersistenceBridgeFailureDetail",
-    "route_prepared_start_persistence_bridge_reentry",
-    "PreparedRunningStateReentryCompatibilityError",
-    "PreparedRunningStateReentryError",
-    "PreparedRunningStateReentryFailureDetail",
-    "persist_prepared_running_state_reentry",
     "PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError",
     "PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError",
     "PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail",
