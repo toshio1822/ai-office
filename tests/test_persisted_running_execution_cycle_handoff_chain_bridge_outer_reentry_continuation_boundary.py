@@ -1379,7 +1379,7 @@ def test_unsupported_progression_is_zero_call_rejected(tmp_path: Path, decision:
 
 
 @pytest.mark.parametrize("value", [runtime_success(), runtime_failure(), WorkflowExecutionPersistenceResult(Path("s"), Path("e"), 1, 1)])
-def test_direct_non_phase139_results_are_zero_call_rejected(tmp_path: Path, value: object) -> None:
+def test_direct_non_supported_results_are_zero_call_rejected(tmp_path: Path, value: object) -> None:
     reject(setup(tmp_path), "result_type", result=value)
 
 

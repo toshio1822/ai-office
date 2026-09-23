@@ -411,8 +411,6 @@ def test_public_signature_default_dependencies_and_source_audit() -> None:
             "route_runtime_result_to_approved_preparation_orchestration_boundary",
             "route_runtime_result_to_progression_orchestration_boundary",
             "route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
-            "route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary",
-            "route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary",
         )
     ]
     assert lower_direct_calls == []

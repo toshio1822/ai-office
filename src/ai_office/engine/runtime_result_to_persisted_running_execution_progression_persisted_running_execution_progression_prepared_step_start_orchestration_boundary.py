@@ -20,9 +20,6 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147Error,
 )
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase139Error,
-)
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
@@ -111,7 +108,6 @@ _SAFE_PHASE184_ERRORS = (
     Phase145Error,
     Phase146Error,
     Phase147Error,
-    Phase139Error,
     Phase155Error,
     Phase141Error,
     Phase177CompatibilityError,

@@ -64,9 +64,6 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain
 from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as real146,
 )
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase147Error,
-)
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147BoundaryError,
 )
@@ -103,7 +100,7 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_cha
 # seam. These test oracles intentionally do not import production tuples.
 PHASE145_SAFE_ERRORS = (Phase145BoundaryError,)
 PHASE146_SAFE_ERRORS = (Phase146BoundaryError,)
-PHASE147_SAFE_ERRORS = (Phase147BoundaryError, Phase147Error)
+PHASE147_SAFE_ERRORS = (Phase147BoundaryError,)
 PHASE155_SAFE_ERRORS = (Phase155BoundaryError, Phase155Error)
 PHASE172_SAFE_ERRORS = (
     Phase172Error,

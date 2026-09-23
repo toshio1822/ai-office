@@ -21,9 +21,6 @@ from ai_office.engine import (
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase147Error,
 )
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase139Error,
-)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPreparedStepStartOrchestrationBoundaryCompatibilityError as Phase180Error,
 )
@@ -177,7 +174,6 @@ def test_01_public_signature_defaults_exports_and_no_lower_calls() -> None:
     source = Path(phase181.__code__.co_filename).read_text()
     assert source.count("phase180_function(") == 1
     assert source.count("phase147_function(") == 1
-    assert "phase139_function(" not in source and "phase132_function(" not in source
     assert "route_persisted_running_execution" not in source
 
 
@@ -349,19 +345,20 @@ def test_15_malformed_phase180_output_has_no_phase180_rollback(tmp_path: Path) -
     assert case["state_path"].read_bytes() == before + b"owned"
 
 
-def test_16_phase147_and_phase139_safe_errors_compensate_exactly(tmp_path: Path) -> None:
-    for error_type in (Phase147Error, Phase139Error):
-        case, start = _prepared_case(tmp_path / error_type.__name__)
-        committed = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
-        safe = error_type("terminal_contract")
-        def p147(*args: object, safe=safe) -> object:
-            case["state_path"].write_bytes(b"state-mutated")
-            case["events_path"].write_bytes(b"events-mutated")
-            raise safe
-        with pytest.raises(type(safe)) as caught:
-            phase181(*_args(case), phase180_function=lambda *a: start, phase147_function=p147)
-        assert caught.value is safe
-        assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == committed
+def test_16_phase147_safe_errors_compensate_exactly(tmp_path: Path) -> None:
+    case, start = _prepared_case(tmp_path / "phase147")
+    committed = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
+    safe = Phase147Error("terminal_contract")
+
+    def p147(*args: object) -> object:
+        case["state_path"].write_bytes(b"state-mutated")
+        case["events_path"].write_bytes(b"events-mutated")
+        raise safe
+
+    with pytest.raises(Phase147Error) as caught:
+        phase181(*_args(case), phase180_function=lambda *a: start, phase147_function=p147)
+    assert caught.value is safe
+    assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == committed
 
 
 def test_17_unexpected_phase147_error_sanitizes_and_compensates(tmp_path: Path) -> None:
@@ -407,7 +404,7 @@ def test_19_mutation_and_rollback_failure_attempt_both_targets_once(tmp_path: Pa
         events.unlink()
         with events.open("wb") as handle:
             handle.write(b"mutated")
-        raise Phase139Error("terminal_contract")
+        raise Phase147Error("terminal_contract")
     monkeypatch.setattr(Path, "write_bytes", fail_restore)
     _classification(lambda: phase181(*_args(case), phase180_function=lambda *a: start, phase147_function=p147_fail), "rollback_failure")
     assert attempts == [state, events]
