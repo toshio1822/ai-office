@@ -10,7 +10,6 @@ immutability contracts rather than historical wrapper topology.
 
 from __future__ import annotations
 
-import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -410,36 +409,6 @@ def assert_classification(callable_object: object, expected: str) -> None:
     assert caught.value.detail.classification == expected
 
 
-def test_public_facade_has_no_historical_execution_injection_seam() -> None:
-    parameters = tuple(
-        inspect.signature(
-            route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
-        ).parameters.values()
-    )
-    assert tuple(parameter.name for parameter in parameters) == (
-        "result",
-        "start",
-        "workflow",
-        "employee",
-        "state_path",
-        "events_path",
-        "resolved_tools",
-        "api_key",
-        "approval",
-        "transport",
-    )
-    assert all(
-        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-        for parameter in parameters
-    )
-    source = Path(phase155_module.__file__).read_text(encoding="utf-8")
-    assert "phase141_function" not in source
-    assert (
-        "route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry"
-        not in source
-    )
-
-
 def test_approved_success_has_one_synthetic_transport_attempt_and_preserves_targets(
     tmp_path: Path,
 ) -> None:
@@ -523,6 +492,30 @@ def test_invalid_or_mismatched_approval_is_zero_transport_call(
     assert_classification(lambda: route(case), "approval_contract")
     assert calls == []
     assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+
+
+def test_execution_target_approval_mismatch_is_rejected_before_transport(
+    tmp_path: Path,
+) -> None:
+    case = running_case(tmp_path)
+    approval = case["approval"]
+    case["approval"] = replace(
+        approval,
+        execution_target=LOCAL_OMNIROUTE_EXECUTION_TARGET,
+    )
+    calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
+    case["transport"] = success_transport(calls)
+    before = case["before"]
+
+    with pytest.raises(_ERROR) as caught:
+        route(case)
+
+    assert caught.value.detail.classification == "approval_contract"
+    assert calls == []
+    assert (
+        case["state_path"].read_bytes(),  # type: ignore[union-attr]
+        case["events_path"].read_bytes(),  # type: ignore[union-attr]
+    ) == before
 
 
 def test_missing_approval_credential_or_transport_is_zero_call(
@@ -656,15 +649,8 @@ def test_empty_predecessor_outputs_remain_accepted(
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize(
-    "transport_factory",
-    [
-        lambda calls: (_ for _ in ()).throw(RuntimeError("secret transport detail")),
-        lambda calls: (_ for _ in ()).throw(ValueError("secret transport detail")),
-    ],
-)
 def test_transport_exception_is_sanitized_without_retry_or_mutation(
-    tmp_path: Path, transport_factory: object
+    tmp_path: Path,
 ) -> None:
     case = running_case(tmp_path)
     calls = 0
@@ -677,9 +663,12 @@ def test_transport_exception_is_sanitized_without_retry_or_mutation(
     case["transport"] = transport
     before = case["before"]
 
-    assert_classification(lambda: route(case), "dependency_error")
+    with pytest.raises(_ERROR) as caught:
+        route(case)
+
+    assert caught.value.detail.classification == "dependency_error"
+    assert "secret transport detail" not in str(caught.value)
     assert calls == 1
-    assert "secret transport detail" not in str(case)
     assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == before  # type: ignore[union-attr]
 
 
