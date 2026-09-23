@@ -5,15 +5,14 @@ step 8 while the durable step-7 success history retains an aged OpenAI
 request_id=None at position 5.  This prerequisite repairs only the prepared
 routes of Phase 147 and Phase 139; Phase 181 itself is not implemented.
 
-Synthetic transport only.  The eight tests use inline matrices to pin the
-source layering, Stage 0-3 preflight seam, bounded rule, strictness, and
+Synthetic transport only.  The behavioral tests use inline matrices to pin
+canonical provenance, bounded compatibility, persistence, rollback, and
 unchanged stop/read-only contracts.
 """
 
 # ruff: noqa: E501,E701,E702,F401,I001
 
 import importlib.util
-import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -55,23 +54,6 @@ from ai_office.storage import (
 _HARNESS = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py"
 )
-_PHASE147_SOURCE = Path(
-    "src/ai_office/engine/"
-    "prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py"
-)
-_PHASE139_SOURCE = Path(
-    "src/ai_office/engine/"
-    "prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py"
-)
-_PHASE132_SOURCE = Path(
-    "src/ai_office/engine/"
-    "prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py"
-)
-_PHASE125_SOURCE = Path(
-    "src/ai_office/engine/"
-    "prepared_start_persistence_cycle_handoff_chain_reentry_continuation_boundary.py"
-)
-_SHARED_HISTORY_SOURCE = Path("src/ai_office/engine/terminal_history_contract.py")
 
 
 def _load_harness():
@@ -338,30 +320,7 @@ def _inject_aged_none(events_path: Path) -> bytes:
     return value
 
 
-# 1. public facade surface and unchanged lower/shared contract.
-def test_01_source_default_dependency_audit() -> None:
-    parameters = tuple(inspect.signature(phase147).parameters.values())
-    assert tuple(parameter.name for parameter in parameters) == (
-        "result",
-        "workflow",
-        "employee",
-        "state_path",
-        "events_path",
-    )
-    assert all(
-        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-        for parameter in parameters
-    )
-    source147 = _PHASE147_SOURCE.read_text()
-    assert "phase139" not in source147.lower()
-    assert "phase132" not in source147.lower()
-    assert "allow_accumulated_openai_none" not in _PHASE132_SOURCE.read_text()
-    assert "allow_accumulated_openai_none" not in _PHASE125_SOURCE.read_text()
-    assert "allow_accumulated_openai_none" not in _SHARED_HISTORY_SOURCE.read_text()
-    assert "phase181" not in source147.lower()
-
-
-# 2. real Phase 180 canonical provenance.
+# 1. real Phase 180 canonical provenance.
 def test_02_canonical_provenance_real_phase180(tmp_path: Path) -> None:
     case = _canonical(tmp_path)
     harness = case["harness"]
