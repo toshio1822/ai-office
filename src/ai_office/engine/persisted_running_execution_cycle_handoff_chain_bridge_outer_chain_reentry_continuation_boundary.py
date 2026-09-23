@@ -2,7 +2,6 @@
 
 # ruff: noqa: E501,E701,I001
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
@@ -13,12 +12,6 @@ from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
-)
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase141Error,
-)
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
@@ -35,6 +28,9 @@ from ai_office.runtime import (
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
     is_valid_step_runtime_execution_result,
+)
+from ai_office.runtime.persisted_start_execution import (
+    execute_persisted_start_openai_step,
 )
 from ai_office.storage import (
     RunningStatePersistenceResult,
@@ -66,13 +62,6 @@ Classification = Literal[
     "runtime_contract",
     "dependency_error",
     "dependency_rollback",
-]
-Phase141Function = Callable[
-    [object, object, object, object, object, object, object, object, object, object],
-    StepRuntimeExecutionSuccess
-    | StepRuntimeExecutionFailure
-    | WorkflowProgressionDecision
-    | PersistedExecutionOutcome,
 ]
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 _PATH_TYPE = type(Path())
@@ -116,18 +105,14 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_ree
     api_key: object,
     approval: object,
     transport: object,
-    *,
-    phase141_function: Phase141Function = (
-        route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
-    ),
 ) -> (
     StepRuntimeExecutionSuccess
     | StepRuntimeExecutionFailure
     | WorkflowProgressionDecision
     | PersistedExecutionOutcome
 ):
-    """Route one exact Phase 147 persisted-running result through public Phase 141 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase141_function)
+    """Execute one validated persisted-running step through its current owner."""
+    _check_inputs(result, workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -169,22 +154,18 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_ree
     _check_predecessor(start, workflow, state_path, events_path)
 
     try:
-        value = phase141_function(
-            result,
+        value = execute_persisted_start_openai_step(
             start,
+            state_path,
             workflow,
             employee,
-            state_path,
-            events_path,
             resolved_tools,
             api_key,
             approval,
-            transport,
+            transport=transport,
         )
-    except Phase141Error as error:
-        _compensate_dependency_error(state_path, events_path, original, error)
     except Exception:
-        _compensate_dependency_error(state_path, events_path, original, None)
+        _compensate_dependency_error(state_path, events_path, original)
 
     try:
         _require_unchanged(state_path, events_path, original, "runtime_contract")
@@ -215,7 +196,6 @@ def _check_inputs(
     workflow: object,
     state_path: object,
     events_path: object,
-    dependency: object,
 ) -> None:
     if type(result) not in (
         RunningStatePersistenceResult,
@@ -231,8 +211,6 @@ def _check_inputs(
         _fail("event_target")
     if state_path == events_path:
         _fail("target_conflict")
-    if not callable(dependency):
-        _fail("execution_inputs")
 
 
 def _valid_workflow(workflow: WorkflowDefinition) -> bool:
@@ -330,12 +308,14 @@ def _check_execution_inputs(
 
     request = start.request
     running = start.running_state
-    if type(request) is not ModelInvocationRequest or type(running) is not WorkflowExecutionState:
-        _fail("start_contract")
     if (
-        type(running.current_step_index) is not int
-        or not 2 <= running.current_step_index <= len(workflow.steps)
+        type(request) is not ModelInvocationRequest
+        or type(running) is not WorkflowExecutionState
     ):
+        _fail("start_contract")
+    if type(
+        running.current_step_index
+    ) is not int or not 2 <= running.current_step_index <= len(workflow.steps):
         _fail("start_contract")
     step = workflow.steps[running.current_step_index - 1]
     expected_prefix = tuple(
@@ -365,7 +345,11 @@ def _check_execution_inputs(
         _fail("start_contract")
     try:
         validate_model_invocation_execution_approval(
-            request, tools, approval, provider=approval.provider, execution_target=approval.execution_target
+            request,
+            tools,
+            approval,
+            provider=approval.provider,
+            execution_target=approval.execution_target,
         )
     except (TypeError, ValueError):
         _fail("approval_contract")
@@ -391,7 +375,9 @@ def _check_persistence_result(
         _fail("persistence_result_contract")
 
 
-def _check_completion(value: WorkflowProgressionDecision, workflow: WorkflowDefinition) -> None:
+def _check_completion(
+    value: WorkflowProgressionDecision, workflow: WorkflowDefinition
+) -> None:
     final = workflow.steps[-1]
     if not (
         _exact_string(value.decision, "workflow_complete")
@@ -408,7 +394,9 @@ def _check_completion(value: WorkflowProgressionDecision, workflow: WorkflowDefi
         _fail("completion_contract")
 
 
-def _check_failure(value: PersistedExecutionOutcome, workflow: WorkflowDefinition) -> None:
+def _check_failure(
+    value: PersistedExecutionOutcome, workflow: WorkflowDefinition
+) -> None:
     index = value.current_step_index
     if not (
         _exact_string(value.outcome, "persisted_failure")
@@ -460,7 +448,10 @@ def _load_history(
         )
     except Exception:
         _fail("terminal_contract")
-    if type(loaded.state) is not WorkflowExecutionState or type(loaded.events) is not tuple:
+    if (
+        type(loaded.state) is not WorkflowExecutionState
+        or type(loaded.events) is not tuple
+    ):
         _fail("terminal_contract")
     return loaded.state, loaded.events
 
@@ -500,7 +491,11 @@ def _valid_history(
     allow_empty_success_output: bool,
     allow_empty_predecessor_output: bool,
 ) -> bool:
-    if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
+    if (
+        type(state) is not WorkflowExecutionState
+        or type(history) is not tuple
+        or not history
+    ):
         return False
     index = state.current_step_index
     if not (
@@ -530,7 +525,9 @@ def _valid_history(
         return False
     if any(type(event) is not RuntimeStepEvent for event in history):
         return False
-    for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
+    for position, (event, step) in enumerate(
+        zip(history[:-1], prior_steps, strict=True), 1
+    ):
         if not _valid_predecessor(
             event,
             step,
@@ -664,7 +661,12 @@ def _check_predecessor(
         history = load_workflow_execution_history(
             WorkflowExecutionPersistenceTargets(state, events)
         )
-    except (OSError, UnicodeError, WorkflowExecutionDataError, WorkflowExecutionLoadError):
+    except (
+        OSError,
+        UnicodeError,
+        WorkflowExecutionDataError,
+        WorkflowExecutionLoadError,
+    ):
         _fail("persistence_result_contract")
     running = start.running_state
     if (
@@ -704,7 +706,8 @@ def _valid_predecessor_event(
 ) -> bool:
     none_request_id = event.request_id is None
     provider_valid = _nonempty_string(event.provider) and (
-        (not require_openai and not none_request_id) or event.provider in {"openai", "omniroute"}
+        (not require_openai and not none_request_id)
+        or event.provider in {"openai", "omniroute"}
     )
     request_id_valid = (none_request_id and allow_none_request_id) or (
         _nonempty_string(event.request_id)
@@ -766,11 +769,8 @@ def _compensate_dependency_error(
     state: Path,
     events: Path,
     original: tuple[bytes, bytes],
-    safe_error: Phase141Error | None,
 ) -> None:
     _restore_if_changed(state, events, original)
-    if safe_error is not None:
-        raise safe_error
     _fail("dependency_error")
 
 
