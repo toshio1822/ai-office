@@ -5,15 +5,14 @@ step 8 while the durable step-7 success history retains an aged OpenAI
 request_id=None at position 5.  This prerequisite repairs only the prepared
 routes of Phase 147 and Phase 139; Phase 181 itself is not implemented.
 
-Synthetic transport only.  The eight tests use inline matrices to pin the
-source layering, Stage 0-3 preflight seam, bounded rule, strictness, and
+Synthetic transport only.  The behavioral tests use inline matrices to pin
+canonical provenance, bounded compatibility, persistence, rollback, and
 unchanged stop/read-only contracts.
 """
 
 # ruff: noqa: E501,E701,E702,F401,I001
 
 import importlib.util
-import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -41,6 +40,7 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_oute
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeReentryContinuationCompatibilityError as Phase132Error,
 )
+import ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase147_module
 from ai_office.invocation import ModelInvocationRequest, UpstreamStepOutput
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
@@ -54,23 +54,6 @@ from ai_office.storage import (
 _HARNESS = Path(__file__).with_name(
     "test_runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py"
 )
-_PHASE147_SOURCE = Path(
-    "src/ai_office/engine/"
-    "prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py"
-)
-_PHASE139_SOURCE = Path(
-    "src/ai_office/engine/"
-    "prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py"
-)
-_PHASE132_SOURCE = Path(
-    "src/ai_office/engine/"
-    "prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py"
-)
-_PHASE125_SOURCE = Path(
-    "src/ai_office/engine/"
-    "prepared_start_persistence_cycle_handoff_chain_reentry_continuation_boundary.py"
-)
-_SHARED_HISTORY_SOURCE = Path("src/ai_office/engine/terminal_history_contract.py")
 
 
 def _load_harness():
@@ -337,25 +320,7 @@ def _inject_aged_none(events_path: Path) -> bytes:
     return value
 
 
-# 1. source/default dependency audit and unchanged lower/shared contract.
-def test_01_source_default_dependency_audit() -> None:
-    sig147 = inspect.signature(phase147)
-    sig139 = inspect.signature(phase139)
-    assert sig147.parameters["phase139_function"].default is phase139
-    assert sig139.parameters["phase132_function"].default is phase132
-    source147 = _PHASE147_SOURCE.read_text()
-    source139 = _PHASE139_SOURCE.read_text()
-    assert "phase139_function(result, workflow, employee, state_path, events_path)" in source147
-    assert "phase132_function(result, workflow, employee, state_path, events_path)" in source139
-    assert "phase132" not in source147.lower()
-    assert "phase147" not in source139.lower()
-    assert "allow_accumulated_openai_none" not in _PHASE132_SOURCE.read_text()
-    assert "allow_accumulated_openai_none" not in _PHASE125_SOURCE.read_text()
-    assert "allow_accumulated_openai_none" not in _SHARED_HISTORY_SOURCE.read_text()
-    assert "phase181" not in source147.lower()
-
-
-# 2. real Phase 180 canonical provenance.
+# 1. real Phase 180 canonical provenance.
 def test_02_canonical_provenance_real_phase180(tmp_path: Path) -> None:
     case = _canonical(tmp_path)
     harness = case["harness"]
@@ -397,18 +362,15 @@ def test_04_phase147_bounded_accumulated_rule(tmp_path: Path) -> None:
     # and only the two-copy repair reaches the lower chain.  The implemented
     # route is now exercised here with its bounded acceptance and strictness.
     accepted = _scenario(tmp_path / "accepted", none_positions=(5,))
-    calls: list[tuple] = []
     output = phase147(
         accepted["start"], accepted["workflow"], accepted["employee"],
         accepted["state_path"], accepted["events_path"],
-        phase139_function=_persistence_stub(accepted, calls),
     )
     assert type(output) is RunningStatePersistenceResult
-    assert len(calls) == 1
-    assert calls[0][0] == (
-        accepted["start"], accepted["workflow"], accepted["employee"],
-        accepted["state_path"], accepted["events_path"],
-    )
+    assert accepted["state_path"].read_bytes() == serialize_workflow_execution_state_json(
+        accepted["start"].running_state
+    ).encode()
+    assert accepted["events_path"].read_bytes() == accepted["before"][1]
 
     for label, scenario in (
         ("position4", _scenario(tmp_path / "position4", none_positions=(4,))),
@@ -416,15 +378,16 @@ def test_04_phase147_bounded_accumulated_rule(tmp_path: Path) -> None:
         ("empty", _scenario(tmp_path / "empty", empty_positions=(5,))),
         ("wrong-type", _scenario(tmp_path / "wrong-type", wrong_type_positions=(5,))),
     ):
-        calls: list[tuple] = []
         with pytest.raises(Phase147Error) as error:
             phase147(
                 scenario["start"], scenario["workflow"], scenario["employee"],
                 scenario["state_path"], scenario["events_path"],
-                phase139_function=lambda *args, _calls=calls, **kwargs: _calls.append((args, kwargs)),
             )
         assert error.value.detail.classification == "terminal_contract", label
-        assert calls == []
+        assert (
+            scenario["state_path"].read_bytes(),
+            scenario["events_path"].read_bytes(),
+        ) == scenario["before"]
 
     # Pin the accumulated threshold independently of immediate-predecessor
     # compatibility: position 5 None is false at persisted index 6 and true
@@ -457,13 +420,11 @@ def test_04_phase147_bounded_accumulated_rule(tmp_path: Path) -> None:
     )
 
     immediate = _scenario(tmp_path / "immediate", prepared_index=7, current=6, none_positions=(5,))
-    calls = []
-    phase147(
+    output = phase147(
         immediate["start"], immediate["workflow"], immediate["employee"],
         immediate["state_path"], immediate["events_path"],
-        phase139_function=_persistence_stub(immediate, calls),
     )
-    assert len(calls) == 1
+    assert type(output) is RunningStatePersistenceResult
 
 
 # 5. Phase 139 bounded rule and exact Phase 139 -> Phase 132 shape.
@@ -594,114 +555,85 @@ def test_07_non_contiguous_multiple_valid_none_provenance(tmp_path: Path) -> Non
             phase147(
                 scenario["start"], scenario["workflow"], scenario["employee"],
                 scenario["state_path"], scenario["events_path"],
-                phase139_function=lambda *args, **kwargs: pytest.fail("not delegated"),
             )
         assert error.value.detail.classification == "terminal_contract", label
+        assert (
+            scenario["state_path"].read_bytes(),
+            scenario["events_path"].read_bytes(),
+        ) == scenario["before"]
 
 
-# 8. stop/read-only/error identity, compensation, and no retry are unchanged.
-def test_08_unchanged_stop_readonly_error_behavior(tmp_path: Path) -> None:
+# 8. stop/read-only, persistence failure compensation, and no retry.
+def test_08_unchanged_stop_readonly_error_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     for failed in (False, True):
         stop = _stop_scenario(tmp_path / f"stop-{failed}", failed=failed)
-        calls: list[tuple] = []
         output = phase147(
             stop["result"], stop["workflow"], None,
             stop["state_path"], stop["events_path"],
-            phase139_function=lambda *args, _calls=calls, **kwargs: _calls.append((args, kwargs)),
         )
-        assert output is stop["result"] and calls == []
+        assert output is stop["result"]
         _assert_unchanged(stop)
 
-    # Stop routes do not gain the accumulated exception.
+    # Stop routes stay read-only and do not gain the accumulated exception.
     aged = _stop_scenario(tmp_path / "aged-stop")
     injected = _inject_aged_none(aged["events_path"])
     with pytest.raises(Phase147Error) as error:
         phase147(
             aged["result"], aged["workflow"], None,
             aged["state_path"], aged["events_path"],
-            phase139_function=lambda *args: pytest.fail("stop dependency called"),
         )
     assert error.value.detail.classification == "terminal_contract"
     assert aged["events_path"].read_bytes() == injected
 
-    # Prepared-route safe dependency identity and both-target compensation.
+    # Persistence-owner failure is sanitized, restored once, and not retried.
     case = _canonical(tmp_path / "safe")
-    safe = Phase139Error("dependency_error")
-    attempts: list[tuple] = []
     before = case["committed"]
+    attempts = 0
 
-    def failing_dependency(*args: object, **kwargs: object) -> object:
-        attempts.append((args, kwargs))
+    def failing_owner(*_: object) -> object:
+        nonlocal attempts
+        attempts += 1
         case["state_path"].write_bytes(b"mutated-state")
         case["events_path"].write_bytes(b"mutated-events")
-        raise safe
+        raise RuntimeError("secret owner detail")
 
-    with pytest.raises(Phase139Error) as caught:
-        phase147(
-            case["start"], case["workflow"], case["employee"],
-            case["state_path"], case["events_path"], phase139_function=failing_dependency,
-        )
-    assert caught.value is safe
-    assert len(attempts) == 1
+    with monkeypatch.context() as patch:
+        patch.setattr(phase147_module, "persist_prepared_running_state", failing_owner)
+        with pytest.raises(Phase147Error) as caught:
+            phase147(
+                case["start"], case["workflow"], case["employee"],
+                case["state_path"], case["events_path"],
+            )
+    assert caught.value.detail.classification == "dependency_error"
+    assert "secret owner detail" not in str(caught.value)
+    assert attempts == 1
     assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == before
 
-    # Phase139 does the same for its Phase132 dependency.
-    lower = _scenario(tmp_path / "lower-safe", none_positions=(5,))
-    safe132 = Phase132Error("dependency_error")
-    lower_attempts: list[tuple] = []
+    # Invalid postcondition: rejected once as persistence_contract, then
+    # both targets are restored to the pre-persistence bytes.
+    contract_case = _canonical(tmp_path / "persistence-contract")
+    contract_before = contract_case["committed"]
+    contract_attempts = 0
 
-    def failing_lower(*args: object, **kwargs: object) -> object:
-        lower_attempts.append((args, kwargs))
-        lower["state_path"].write_bytes(b"mutated-state")
-        lower["events_path"].write_bytes(b"mutated-events")
-        raise safe132
-
-    with pytest.raises(Phase132Error) as caught:
-        phase139(
-            lower["start"], lower["workflow"], lower["employee"],
-            lower["state_path"], lower["events_path"], phase132_function=failing_lower,
-        )
-    assert caught.value is safe132
-    assert len(lower_attempts) == 1
-    _assert_unchanged(lower)
-
-    # Persistence-contract strictness: malformed dependency results and invalid
-    # persisted state are rejected once, then both targets are restored.
-    phase147_case = _canonical(tmp_path / "phase147-persistence-contract")
-    phase147_before = phase147_case["committed"]
-    phase147_calls = 0
-
-    def malformed_phase147(*args: object, **kwargs: object) -> object:
-        nonlocal phase147_calls
-        phase147_calls += 1
-        phase147_case["state_path"].write_bytes(b"invalid persisted state")
+    def malformed_owner(*_: object) -> object:
+        nonlocal contract_attempts
+        contract_attempts += 1
+        contract_case["state_path"].write_bytes(b"invalid persisted state")
+        contract_case["events_path"].write_bytes(b"mutated-events")
         return object()
 
-    with pytest.raises(Phase147Error) as caught:
-        phase147(
-            phase147_case["start"], phase147_case["workflow"], phase147_case["employee"],
-            phase147_case["state_path"], phase147_case["events_path"],
-            phase139_function=malformed_phase147,
-        )
+    with monkeypatch.context() as patch:
+        patch.setattr(phase147_module, "persist_prepared_running_state", malformed_owner)
+        with pytest.raises(Phase147Error) as caught:
+            phase147(
+                contract_case["start"], contract_case["workflow"], contract_case["employee"],
+                contract_case["state_path"], contract_case["events_path"],
+            )
     assert caught.value.detail.classification == "persistence_contract"
-    assert phase147_calls == 1
-    assert (phase147_case["state_path"].read_bytes(), phase147_case["events_path"].read_bytes()) == phase147_before
-
-    phase139_case = _scenario(tmp_path / "phase139-persistence-contract", none_positions=(5,))
-    phase139_calls = 0
-
-    def malformed_phase139(*args: object, **kwargs: object) -> object:
-        nonlocal phase139_calls
-        phase139_calls += 1
-        phase139_case["state_path"].write_bytes(b"invalid persisted state")
-        return object()
-
-    with pytest.raises(Phase139Error) as caught:
-        phase139(
-            phase139_case["start"], phase139_case["workflow"], phase139_case["employee"],
-            phase139_case["state_path"], phase139_case["events_path"],
-            phase132_function=malformed_phase139,
-        )
-    assert caught.value.detail.classification == "persistence_contract"
-    assert phase139_calls == 1
-    _assert_unchanged(phase139_case)
+    assert contract_attempts == 1
+    assert (
+        contract_case["state_path"].read_bytes(),
+        contract_case["events_path"].read_bytes(),
+    ) == contract_before

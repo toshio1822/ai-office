@@ -1,22 +1,21 @@
-"""Real composition tests for Issue #367: Phase 147 -> Phase 139 request_id seam.
+"""Real-composition tests for prepared-start persistence.
 
-The public Phase 175 -> real Phase 147 -> real Phase 139 -> real Phase 132
-chain must accept the canonical Phase-155 provenance whose immediate
-predecessor carries ``request_id=None`` (with ``output_text=""``) once the
-prepared route is at step 7 or later.  Phase 147 prepared routes pass the
-immediate predecessor through to Phase 139 exactly once; Phase 139 passes it
-through to Phase 132 exactly once.  Stop routes remain identity-preserving
-zero-call stops, and the missing-approval rejection stays owned by Phase 175.
+The public Phase 175 -> real Phase 147 composition must accept the canonical
+Phase-155 provenance whose immediate predecessor carries ``request_id=None``
+(with ``output_text=""``) once the prepared route is at step 7 or later.
+Phase 147 owns the running-state persistence directly.  Stop routes remain
+identity-preserving read-only stops, and the missing-approval rejection stays
+owned by Phase 175.
 
 Requirement-to-test mapping (Issue #367):
-- real Phase 147 -> Phase 139 -> Phase 132 accepts the canonical 7-step
-  immediate-None prepared start and persists the exact step-7 running state
+- real Phase 147 accepts the canonical 7-step immediate-None prepared start
+  and persists the exact step-7 running state
   -> test_real_chain_accepts_canonical_step7_start_and_persists
-- Phase 147 workflow_complete stop is exact identity with zero Phase 139
-  calls and unchanged committed bytes
+- Phase 147 workflow_complete stop is exact identity with unchanged committed
+  bytes
   -> test_phase147_workflow_complete_stop_identity_zero_phase139
-- Phase 147 persisted_failure stop is exact identity with zero Phase 139
-  calls and unchanged committed bytes
+- Phase 147 persisted_failure stop is exact identity with unchanged committed
+  bytes
   -> test_phase147_persisted_failure_stop_identity_zero_phase139
 - missing approval stays Phase-175-owned: approval_contract rejection,
   Phase 173 once / Phase 146 zero / Phase 147 zero, step-6 terminal bytes
@@ -38,8 +37,6 @@ from ai_office.engine import (
     PreparedStepExecutionStart,
     WorkflowProgressionDecision,
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary,
     route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
     route_runtime_result_to_approved_preparation_orchestration_boundary,
     route_runtime_result_to_prepared_step_start_orchestration_boundary,
@@ -71,8 +68,6 @@ from ai_office.storage import (
 )
 
 phase147 = route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
-phase139 = route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
-phase132 = route_prepared_start_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary
 phase175 = route_runtime_result_to_prepared_step_start_orchestration_boundary
 
 
@@ -342,39 +337,18 @@ def test_real_chain_accepts_canonical_step7_start_and_persists(
     assert type(start) is PreparedStepExecutionStart
     wf = values["workflow"]
     employee = employee_for(prepare_decision(wf, 6))  # type: ignore[arg-type]
-    calls: dict[str, int] = {"phase139": 0, "phase132": 0}
-
-    def counting139(*_: object) -> object:
-        calls["phase139"] += 1
-        return phase139(
-            start,
-            wf,
-            employee,
-            values["state_path"],
-            values["events_path"],
-            phase132_function=counting132,  # type: ignore[arg-type]
-        )
-
-    def counting132(*_: object) -> object:
-        calls["phase132"] += 1
-        return phase132(
-            start, wf, employee, values["state_path"], values["events_path"]
-        )
-
     out = phase147(
         start,
         wf,
         employee,
         values["state_path"],
         values["events_path"],
-        phase139_function=counting139,  # type: ignore[arg-type]
     )
     assert type(out) is RunningStatePersistenceResult
     expected = serialize_workflow_execution_state_json(start.running_state).encode("utf-8")
     assert values["state_path"].read_bytes() == expected  # type: ignore[union-attr]
     assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
     assert values["state_path"].read_bytes() != state_before  # type: ignore[union-attr]
-    assert calls == {"phase139": 1, "phase132": 1}
     history = load_workflow_execution_history(
         WorkflowExecutionPersistenceTargets(
             values["state_path"], values["events_path"]  # type: ignore[arg-type]
@@ -392,11 +366,6 @@ def test_phase147_workflow_complete_stop_identity_zero_phase139(
     wf = values["workflow"]
     state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
-    calls: dict[str, int] = {"phase139": 0}
-
-    def counting139(*_: object) -> object:
-        calls["phase139"] += 1
-        return stop
 
     out = phase147(
         stop,
@@ -404,13 +373,11 @@ def test_phase147_workflow_complete_stop_identity_zero_phase139(
         None,
         values["state_path"],
         values["events_path"],
-        phase139_function=counting139,  # type: ignore[arg-type]
     )
     assert out is stop
     assert type(out) is WorkflowProgressionDecision
     assert out.decision == "workflow_complete"
     assert out.reason == "last_step_succeeded"
-    assert calls["phase139"] == 0
     assert values["state_path"].read_bytes() == state_before  # type: ignore[union-attr]
     assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
 
@@ -423,11 +390,6 @@ def test_phase147_persisted_failure_stop_identity_zero_phase139(
     wf = values["workflow"]
     state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
-    calls: dict[str, int] = {"phase139": 0}
-
-    def counting139(*_: object) -> object:
-        calls["phase139"] += 1
-        return stop
 
     out = phase147(
         stop,
@@ -435,13 +397,11 @@ def test_phase147_persisted_failure_stop_identity_zero_phase139(
         None,
         values["state_path"],
         values["events_path"],
-        phase139_function=counting139,  # type: ignore[arg-type]
     )
     assert out is stop
     assert type(out) is PersistedExecutionOutcome
     assert out.outcome == "persisted_failure"
     assert out.failure_category == "api_error"
-    assert calls["phase139"] == 0
     assert values["state_path"].read_bytes() == state_before  # type: ignore[union-attr]
     assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
 

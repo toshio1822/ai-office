@@ -2,7 +2,6 @@
 
 # ruff: noqa: E501
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
@@ -12,21 +11,17 @@ from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefin
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterReentryContinuationError as Phase139Error,
-)
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
-)
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory, ModelInvocationRequest
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
     RunningStatePersistenceResult,
+    RunningStatePersistenceRollbackError,
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
     load_workflow_execution_state,
+    persist_prepared_running_state,
     serialize_workflow_execution_state_json,
 )
 
@@ -44,10 +39,6 @@ Classification = Literal[
     "persistence_contract",
     "dependency_error",
     "dependency_rollback",
-]
-Phase139Function = Callable[
-    [object, object, object, object, object],
-    RunningStatePersistenceResult | WorkflowProgressionDecision | PersistedExecutionOutcome,
 ]
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 _PATH_TYPE = type(Path())
@@ -88,13 +79,9 @@ def route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reen
     employee: object,
     state_path: object,
     events_path: object,
-    *,
-    phase139_function: Phase139Function = (
-        route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
-    ),
 ) -> RunningStatePersistenceResult | WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Handoff one exact Phase 146 continuation result through public Phase 139 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase139_function)
+    """Validate one prepared start and persist its proposed running state once."""
+    _check_inputs(result, workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -138,13 +125,14 @@ def route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reen
 
     assert type(result) is PreparedStepExecutionStart
     assert type(employee) is EmployeeDefinition
-    predecessor = _check_predecessor(result, workflow, state_path, events_path)
+    _check_predecessor(result, workflow, state_path, events_path)
     try:
-        value = phase139_function(result, workflow, employee, state_path, events_path)
-    except Phase139Error as error:
-        _compensate_dependency_error(state_path, events_path, original, error)
+        value = persist_prepared_running_state(result, state_path)
+    except RunningStatePersistenceRollbackError:
+        _restore_if_changed(state_path, events_path, original)
+        _fail("dependency_rollback")
     except Exception:
-        _compensate_dependency_error(state_path, events_path, original, None)
+        _compensate_dependency_error(state_path, events_path, original)
 
     try:
         _check_persistence(value, result, state_path, events_path, original)
@@ -152,7 +140,6 @@ def route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reen
         if error.detail.classification != "dependency_rollback":
             _restore_if_changed(state_path, events_path, original)
         raise
-    _check_predecessor_identity(predecessor, result, workflow)
     return value
 
 
@@ -161,7 +148,6 @@ def _check_inputs(
     workflow: object,
     state_path: object,
     events_path: object,
-    dependency: object,
 ) -> None:
     if type(result) not in (
         PreparedStepExecutionStart,
@@ -177,8 +163,6 @@ def _check_inputs(
         _fail("event_target")
     if state_path == events_path:
         _fail("target_conflict")
-    if not callable(dependency):
-        _fail("persistence_contract")
 
 
 def _valid_workflow(workflow: WorkflowDefinition) -> bool:
@@ -614,22 +598,6 @@ def _check_persistence(
         _fail("persistence_contract")
 
 
-def _check_predecessor_identity(
-    predecessor: WorkflowExecutionState,
-    start: PreparedStepExecutionStart,
-    workflow: WorkflowDefinition,
-) -> None:
-    previous_index = start.running_state.current_step_index - 1
-    previous = workflow.steps[previous_index - 1]
-    if (
-        predecessor.workflow_id,
-        predecessor.current_step_id,
-        predecessor.current_step_index,
-        predecessor.current_employee_id,
-    ) != (workflow.id, previous.id, previous_index, previous.employee):
-        _fail("terminal_contract")
-
-
 def _changed(state: Path, events: Path, original: tuple[bytes, bytes]) -> bool:
     try:
         return (
@@ -671,12 +639,9 @@ def _compensate_dependency_error(
     state: Path,
     events: Path,
     original: tuple[bytes, bytes],
-    safe_error: Phase139Error | None,
 ) -> None:
     if _changed(state, events, original):
         _restore_if_changed(state, events, original)
-    if safe_error is not None:
-        raise safe_error
     _fail("dependency_error")
 
 
