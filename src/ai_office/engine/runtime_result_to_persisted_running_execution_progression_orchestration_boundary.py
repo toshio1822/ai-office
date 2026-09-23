@@ -18,9 +18,6 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155Error,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase141Error,
-)
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
 )
@@ -194,7 +191,6 @@ def route_runtime_result_to_persisted_running_execution_progression_orchestratio
         Phase146Error,
         Phase147Error,
         Phase155Error,
-        Phase141Error,
         Phase177CompatibilityError,
     ) as error:
         # Exact identity re-raise; Phase 172 zero calls; no outer rollback.

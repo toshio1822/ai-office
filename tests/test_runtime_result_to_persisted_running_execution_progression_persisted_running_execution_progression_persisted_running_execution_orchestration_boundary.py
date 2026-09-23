@@ -28,9 +28,6 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155Error,
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase155,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase141Error,
-)
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147Error,
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase147,
@@ -205,7 +202,7 @@ _PHASE186_SAFE_ERRORS = (
     Phase180Error, Phase179Error, Phase178Error, Phase176Error, Phase175Error,
     Phase173Error, Phase172Error, Phase172CompatibilityError, Phase145Error,
     Phase146Error, Phase147Error,
-    Phase155Error, Phase141Error, Phase177CompatibilityError, Phase161Error,
+    Phase155Error, Phase177CompatibilityError, Phase161Error,
     Phase143Error, Phase144Error,
 )
 
@@ -559,7 +556,7 @@ def test_14_malformed_capture_or_phase186_output_is_contract_error(tmp_path: Pat
         assert after == before if mode == "missing" else after != before
 
 def test_15_phase155_safe_error_restores_committed_bytes(tmp_path: Path) -> None:
-    for index, safe_type in enumerate((Phase155Error, Phase141Error)):
+    for index, safe_type in enumerate((Phase155Error,)):
         for mode in ("state", "events", "both"):
             case, start = _prepared(tmp_path / f"p155safe-{index}-{mode}")
             committed=[]; safe=safe_type("safe")

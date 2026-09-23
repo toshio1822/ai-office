@@ -70,10 +70,6 @@ from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_oute
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as real147,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationError as Phase155Error,
-)
-
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155BoundaryError,
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as real155,
@@ -101,7 +97,7 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_cha
 PHASE145_SAFE_ERRORS = (Phase145BoundaryError,)
 PHASE146_SAFE_ERRORS = (Phase146BoundaryError,)
 PHASE147_SAFE_ERRORS = (Phase147BoundaryError,)
-PHASE155_SAFE_ERRORS = (Phase155BoundaryError, Phase155Error)
+PHASE155_SAFE_ERRORS = (Phase155BoundaryError,)
 PHASE172_SAFE_ERRORS = (
     Phase172Error,
     Phase172CompatibilityError,
@@ -544,10 +540,10 @@ def test_08_phase147_failure_malformed_or_unauthorized_restores_terminal_snapsho
 def test_09_phase147_success_is_durable_state_only_commit(tmp_path: Path) -> None:
     v = setup(tmp_path); wf = v["workflow"]; assert isinstance(wf, WorkflowDefinition); st = started(wf, 10); p = prepared(wf, 10); before_events = v["events_path"].read_bytes(); calls = []; ctx = execution_context(wf, 10)
     def p147(*a): calls.append(a); return write_running(v["state_path"], st)
-    safe = Phase155Error("safe")
+    safe = Phase155BoundaryError("safe")
     def p155(*a):
         raise safe
-    with pytest.raises(Phase155Error) as caught:
+    with pytest.raises(Phase155BoundaryError) as caught:
         phase190(decision(wf, 9), wf, None, employee(wf, 10), v["state_path"], v["events_path"], ctx["resolved_tools"], ctx["api_key"], ctx["execution_approval"], object(), phase145_function=lambda *a: p, phase146_function=lambda *a: st, phase147_function=p147, phase155_function=p155)
     assert caught.value is safe and len(calls) == 1 and load_workflow_execution_state(v["state_path"]) == st.running_state and v["events_path"].read_bytes() == before_events
 

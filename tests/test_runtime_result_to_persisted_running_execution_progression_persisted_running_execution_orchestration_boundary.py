@@ -23,9 +23,6 @@ from ai_office.engine import (
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase155Error,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase141Error,
-)
 from ai_office.engine.runtime_result_to_persisted_running_execution_progression_prepared_start_persistence_orchestration_boundary import (
     RuntimeResultToPersistedRunningExecutionProgressionPreparedStartPersistenceOrchestrationBoundaryCompatibilityError as Phase181Error,
 )
@@ -509,7 +506,7 @@ def test_12_phase181_safe_unexpected_and_malformed_are_identity_sanitized_or_con
 
 
 def test_13_phase155_safe_error_identity_restores_post_phase181_snapshot(tmp_path: Path) -> None:
-    for error_type in (Phase155Error, Phase141Error):
+    for error_type in (Phase155Error,):
         case = _case(tmp_path / error_type.__name__)
         persisted, start, _ = _real_phase181(case)
         committed = (case["state_path"].read_bytes(), case["events_path"].read_bytes())
