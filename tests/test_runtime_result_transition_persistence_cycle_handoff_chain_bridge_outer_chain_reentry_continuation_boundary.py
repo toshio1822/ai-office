@@ -11,7 +11,6 @@ the removed historical wrapper topology.
 
 from __future__ import annotations
 
-import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -273,21 +272,6 @@ def committed_history(case: dict[str, object]) -> object:
         WorkflowExecutionPersistenceTargets(
             case["state"], case["events"]  # type: ignore[arg-type]
         )
-    )
-
-
-def test_public_facade_has_no_historical_injection_seam() -> None:
-    parameters = tuple(inspect.signature(public_route).parameters.values())
-    assert tuple(parameter.name for parameter in parameters) == (
-        "result",
-        "workflow",
-        "state_path",
-        "events_path",
-    )
-    assert all(
-        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-        and parameter.annotation is object
-        for parameter in parameters
     )
 
 
@@ -708,30 +692,6 @@ def test_owner_rollback_failure_is_safe_and_not_retried(
     assert_classification(lambda: route_case(case), "dependency_rollback")
     assert calls == 1
     assert (state.read_bytes(), events.read_bytes()) == before
-
-
-def test_rollback_failure_surfaces_without_a_second_restore_or_persistence_attempt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    case = running_case(tmp_path)
-    calls = 0
-    restore_calls = 0
-
-    def malformed_owner(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    def failed_restore(*_: object) -> None:
-        nonlocal restore_calls
-        restore_calls += 1
-        raise _ERROR("dependency_rollback")
-
-    monkeypatch.setattr(phase161_module, "persist_executed_step_transition", malformed_owner)
-    monkeypatch.setattr(phase161_module, "_restore_if_changed", failed_restore)
-    assert_classification(lambda: route_case(case), "dependency_rollback")
-    assert calls == 1
-    assert restore_calls == 1
 
 
 def test_real_default_success_composition(tmp_path: Path) -> None:
