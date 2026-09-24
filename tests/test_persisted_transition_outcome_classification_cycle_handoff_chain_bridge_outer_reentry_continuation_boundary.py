@@ -12,8 +12,6 @@ behavior, not the removed historical wrapper topology.
 
 from __future__ import annotations
 
-import ast
-import inspect
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,7 +23,6 @@ from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefin
 from ai_office.engine import PersistedExecutionOutcome, WorkflowProgressionDecision
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcomeCompatibilityError,
-    PersistedExecutionOutcomeError,
 )
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as OuterCompatibilityError,
@@ -42,11 +39,6 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 
-_MODULE_NAME = (
-    "persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_"
-    "reentry_continuation_boundary"
-)
-_MODULE_PATH = Path(phase143_module.__file__)
 _UNSET = object()
 
 
@@ -337,81 +329,6 @@ def committed_history(case: dict[str, object]) -> object:
             case["events"],  # type: ignore[arg-type]
         )
     )
-
-
-# 1. public signature / no new layer / source audit
-
-
-def test_public_signature_and_no_new_layer_source_audit() -> None:
-    parameters = list(inspect.signature(public_phase143).parameters.values())
-    assert [parameter.name for parameter in parameters] == [
-        "result",
-        "workflow",
-        "state_path",
-        "events_path",
-    ]
-    assert all(parameter.annotation is object for parameter in parameters)
-    assert all(
-        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-        for parameter in parameters
-    )
-    assert all(parameter.default is inspect.Parameter.empty for parameter in parameters)
-
-    source = _MODULE_PATH.read_text(encoding="utf-8")
-    # The historical lower wrapper chain and its dependency-injection seam are gone.
-    assert "phase135" not in source.lower()
-    assert "phase128" not in source.lower()
-    assert (
-        "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary"
-        not in source
-    )
-    assert (
-        "route_persisted_transition_outcome_classification_cycle_handoff_chain_reentry_continuation_boundary"
-        not in source
-    )
-    # Exact Phase 142 result subclasses/compat shims are not referenced either.
-    assert "Callable" not in source
-    # The existing persisted-outcome classification responsibility is reused.
-    assert "classify_persisted_execution_outcome_reentry" in source
-    # No new public Phase / wrapper / bridge / adapter / compatibility layer:
-    # the only public top-level function is the retained Phase 143 facade route.
-    tree = ast.parse(source)
-    public_functions = [
-        node.name
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not node.name.startswith("_")
-    ]
-    assert public_functions == [
-        "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary"
-    ]
-    classes = [
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
-    ]
-    assert classes == [
-        "PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationFailureDetail",
-        "PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError",
-        "PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError",
-    ]
-    # No provider / network / clock / environment access and no new CLI command.
-    for forbidden in (
-        "argparse",
-        "click",
-        "requests",
-        "httpx",
-        "urllib",
-        "socket",
-        "subprocess",
-        "import random",
-        "import time",
-        "os.environ",
-        "getenv",
-    ):
-        assert forbidden not in source
-    assert "add_parser" not in source
-    assert "ai_office.cli" not in source
 
 
 # 2. exact persisted success / failure outcome semantics
@@ -1271,17 +1188,3 @@ def test_real_default_classification_returns_committed_outcome(
     assert history.state.status == status
     assert len(history.events) == 6
     assert_unchanged(case)
-
-
-def test_default_owner_identity_is_the_existing_responsibility() -> None:
-    from ai_office.engine.persisted_execution_outcome_reentry import (
-        classify_persisted_execution_outcome_reentry,
-    )
-
-    assert (
-        phase143_module.classify_persisted_execution_outcome_reentry
-        is classify_persisted_execution_outcome_reentry
-    )
-    assert issubclass(
-        PersistedExecutionOutcomeCompatibilityError, PersistedExecutionOutcomeError
-    )

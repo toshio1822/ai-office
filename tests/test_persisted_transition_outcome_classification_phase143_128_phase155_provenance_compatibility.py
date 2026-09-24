@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-import ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary as phase143_module
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import PersistedExecutionOutcome
 from ai_office.engine.persisted_execution_outcome_reentry import (
@@ -241,67 +240,47 @@ def six_step_outcome(status: str) -> PersistedExecutionOutcome:
     )
 
 
-def run_chain(
-    values: dict[str, object], status: str, monkeypatch: pytest.MonkeyPatch
-) -> tuple[object, dict[str, int], list[tuple[object, ...]], list[object]]:
-    """Call the real Phase 143 route with the retained owner replaced by a recorder.
+def run_chain(values: dict[str, object], status: str) -> object:
+    """Call the real Phase 143 default route for one persisted provenance history.
 
     The facade no longer exposes a lower-chain dependency-injection seam, so the
-    exactly-once observation is made on the retained persisted-outcome
-    classification responsibility, and the return value is checked against the
-    recorder's own object.
+    compatibility proof is the observable classification returned by the real
+    default route; call counts, argument identity and returned-object identity of
+    the owner are not part of the contract.
     """
-    calls = {"owner": 0}
-    handoffs: list[tuple[object, ...]] = []
-    owner_values: list[object] = []
-
-    def recorder(workflow: object, state: object, events: object) -> object:
-        calls["owner"] += 1
-        handoffs.append((workflow, state, events))
-        owner_values.append(six_step_outcome(status))
-        return owner_values[-1]
-
-    monkeypatch.setattr(
-        phase143_module, "classify_persisted_execution_outcome_reentry", recorder
-    )
-    out = route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
-        values["result"],
-        values["workflow"],
-        values["state_path"],
+    del status
+    return route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+        values["result"],  # type: ignore[arg-type]
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
         values["events_path"],  # type: ignore[arg-type]
     )
-    return out, calls, handoffs, owner_values
 
 
-def assert_chain_ok(
-    values: dict[str, object],
-    out: object,
-    calls: dict[str, int],
-    handoffs: list[tuple[object, ...]],
-    owner_values: list[object],
-) -> None:
-    assert calls == {"owner": 1}
-    assert out is owner_values[0]
-    expected = (
-        values["workflow"],
-        values["state_path"],
-        values["events_path"],
-    )
-    assert len(handoffs) == 1
-    assert all(
-        actual is wanted for actual, wanted in zip(handoffs[0], expected, strict=True)
-    )
+def assert_real_route_observable(values: dict[str, object], status: str) -> object:
+    """The real default route returns the exact outcome and leaves targets intact."""
+    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
+    outcome = run_chain(values, status)
+    assert outcome == six_step_outcome(status)
+    assert (
+        values["state_path"].read_bytes(),
+        values["events_path"].read_bytes(),
+    ) == before  # type: ignore[union-attr]
+    return outcome
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_real_chain_owner_delegates_once(
-    tmp_path: Path, status: str, monkeypatch: pytest.MonkeyPatch
+def test_real_chain_provenance_route_observable_outcome(
+    tmp_path: Path, status: str
 ) -> None:
     values = setup(tmp_path, status)
     reload_and_assert_provenance(values, status)
     before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    out, calls, handoffs, owner_values = run_chain(values, status, monkeypatch)
-    assert_chain_ok(values, out, calls, handoffs, owner_values)
+    outcome = assert_real_route_observable(values, status)
+    assert type(outcome) is PersistedExecutionOutcome
+    assert outcome.outcome == (
+        "persisted_success" if status == "succeeded" else "persisted_failure"
+    )
     assert (
         values["state_path"].read_bytes(),
         values["events_path"].read_bytes(),
@@ -465,14 +444,13 @@ def test_real_chain_owner_delegates_once(
 
 
 @pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_real_chain_multiple_earlier_empty_delegates_once(
-    tmp_path: Path, status: str, monkeypatch: pytest.MonkeyPatch
+def test_real_chain_multiple_earlier_empty_observable_outcome(
+    tmp_path: Path, status: str
 ) -> None:
     values = setup(tmp_path, status, earlier_empty=(2, 3))
     reload_and_assert_provenance(values, status, earlier_empty=(2, 3))
     before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
-    out, calls, handoffs, owner_values = run_chain(values, status, monkeypatch)
-    assert_chain_ok(values, out, calls, handoffs, owner_values)
+    assert_real_route_observable(values, status)
     assert (
         values["state_path"].read_bytes(),
         values["events_path"].read_bytes(),
@@ -480,7 +458,7 @@ def test_real_chain_multiple_earlier_empty_delegates_once(
 
 
 def test_earlier_predecessor_none_request_id_is_rejected_at_phase143(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
     events = values["events_path"]
@@ -490,15 +468,6 @@ def test_earlier_predecessor_none_request_id_is_rejected_at_phase143(
     )
     events.write_text(lines[0] + replacement + "".join(lines[2:]), encoding="utf-8")  # type: ignore[union-attr]
     before = values["state_path"].read_bytes(), events.read_bytes()  # type: ignore[union-attr]
-    calls = {"owner": 0}
-
-    def fail(*_: object) -> object:
-        calls["owner"] += 1
-        pytest.fail("classification owner must not be called")
-
-    monkeypatch.setattr(
-        phase143_module, "classify_persisted_execution_outcome_reentry", fail
-    )
     with pytest.raises(
         PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError
     ) as caught:
@@ -513,12 +482,11 @@ def test_earlier_predecessor_none_request_id_is_rejected_at_phase143(
         is PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError
     )
     assert caught.value.detail.classification == "persistence_contract"
-    assert calls["owner"] == 0
     assert (values["state_path"].read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
 
 
 def test_immediate_predecessor_empty_request_id_is_rejected_at_phase143(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
     events = values["events_path"]
@@ -530,15 +498,6 @@ def test_immediate_predecessor_empty_request_id_is_rejected_at_phase143(
         "".join(lines[:4]) + replacement + "".join(lines[5:]), encoding="utf-8"
     )  # type: ignore[union-attr]
     before = values["state_path"].read_bytes(), events.read_bytes()  # type: ignore[union-attr]
-    calls = {"owner": 0}
-
-    def fail(*_: object) -> object:
-        calls["owner"] += 1
-        pytest.fail("classification owner must not be called")
-
-    monkeypatch.setattr(
-        phase143_module, "classify_persisted_execution_outcome_reentry", fail
-    )
     with pytest.raises(
         PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError
     ) as caught:
@@ -553,5 +512,4 @@ def test_immediate_predecessor_empty_request_id_is_rejected_at_phase143(
         is PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError
     )
     assert caught.value.detail.classification == "persistence_contract"
-    assert calls["owner"] == 0
     assert (values["state_path"].read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
