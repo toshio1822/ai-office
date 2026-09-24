@@ -1,8 +1,7 @@
-"""Focused tests for the Phase 144 classified persisted-outcome outer bridge."""
+"""Focused behavioral tests for the Phase 144 classified persisted-outcome outer bridge."""
 
 # ruff: noqa: E501,E701,E702,F401,I001
 
-import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary as facade_module
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine import (
     ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError,
@@ -23,10 +23,8 @@ from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_cha
     ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationFailureDetail,
     route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary as public_phase144,
 )
-from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeReentryContinuationCompatibilityError as Phase136CompatibilityError,
-    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeReentryContinuationError as Phase136Error,
-    route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary as public_phase136,
+from ai_office.engine.persisted_success_progression import (
+    PersistedSuccessProgressionCompatibilityError as OwnerCompatibilityError,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.invocation import ModelInvocationFailure, ModelInvocationSuccess
@@ -39,7 +37,6 @@ from ai_office.runtime import (
 from ai_office.storage import (
     RunningStatePersistenceResult,
     WorkflowExecutionPersistenceResult,
-    load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -280,13 +277,12 @@ def unchanged(data_set: dict[str, object]) -> None:
     assert before(data_set) == (data_set["before_state"], data_set["before_events"])
 
 
-def call(data_set: dict[str, object], dependency: object) -> object:
+def call(data_set: dict[str, object]) -> object:
     return public_phase144(
         data_set["result"],
         data_set["workflow"],
         data_set["state_path"],
         data_set["events_path"],
-        phase136_function=dependency,
     )
 
 
@@ -302,44 +298,23 @@ def reject(
 ) -> None:
     if not preserve_before:
         set_before(data_set)
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
     with pytest.raises(PublicPhase144CompatibilityError) as caught:
         public_phase144(
             data_set["result"] if result is None else result,
             data_set["workflow"] if workflow_value is None else workflow_value,
             data_set["state_path"] if state_path is None else state_path,
             data_set["events_path"] if events_path is None else events_path,
-            phase136_function=dependency,
         )
     assert type(caught.value) is PublicPhase144CompatibilityError
     assert caught.value.detail.classification == classification
-    assert calls == 0
     if not preserve_before:
         unchanged(data_set)
 
 
-def reject_after_call(
-    data_set: dict[str, object], dependency: object, classification: str
-) -> None:
-    set_before(data_set)
-    calls = 0
-
-    def counted(*args: object) -> object:
-        nonlocal calls
-        calls += 1
-        return dependency(*args)  # type: ignore[operator]
-
-    with pytest.raises(PublicPhase144CompatibilityError) as caught:
-        call(data_set, counted)
-    assert caught.value.detail.classification == classification
-    assert calls == 1
-    unchanged(data_set)
+def patch_owner(monkeypatch: pytest.MonkeyPatch, fake: object) -> None:
+    monkeypatch.setattr(
+        facade_module, "decide_persisted_success_progression", fake
+    )
 
 
 def expected_decision(data_set: dict[str, object]) -> WorkflowProgressionDecision:
@@ -347,30 +322,6 @@ def expected_decision(data_set: dict[str, object]) -> WorkflowProgressionDecisio
     definition = data_set["workflow"]
     final = result.current_step_index == len(definition.steps)
     next_step = None if final else definition.steps[result.current_step_index]
-    return WorkflowProgressionDecision(
-        "workflow_complete" if final else "prepare_next_step",
-        result.workflow_id,
-        result.current_step_id,
-        result.current_step_index,
-        result.current_employee_id,
-        None if final else next_step.id,
-        None if final else result.current_step_index + 1,
-        None if final else next_step.employee,
-        "last_step_succeeded" if final else "next_step_available",
-    )
-
-
-def phase136_fake(
-    result: object, workflow: object, state_path: Path, events_path: Path
-) -> WorkflowProgressionDecision:
-    assert type(result) is PersistedExecutionOutcome
-    assert result.outcome == "persisted_success"
-    assert type(workflow) is WorkflowDefinition
-    state = load_workflow_execution_state(state_path)
-    assert state.status == "succeeded"
-    assert state.current_step_index == result.current_step_index
-    final = result.current_step_index == len(workflow.steps)
-    next_step = None if final else workflow.steps[result.current_step_index]
     return WorkflowProgressionDecision(
         "workflow_complete" if final else "prepare_next_step",
         result.workflow_id,
@@ -446,128 +397,56 @@ def rewrite_state_json(data_set: dict[str, object], **changes: object) -> None:
     set_before(data_set)
 
 
-def test_public_signature_and_source_audit() -> None:
-    signature = inspect.signature(public_phase144)
-    parameters = list(signature.parameters.values())
-    assert [item.name for item in parameters] == [
-        "result",
-        "workflow",
-        "state_path",
-        "events_path",
-        "phase136_function",
-        "_allow_accumulated_none_request_id_for_active_failure",
-    ]
-    assert all(item.annotation is object for item in parameters[:4])
-    assert [item.kind for item in parameters[:4]] == [
-        inspect.Parameter.POSITIONAL_OR_KEYWORD
-    ] * 4
-    assert parameters[4].kind is inspect.Parameter.KEYWORD_ONLY
-    assert parameters[4].default is public_phase136
-    assert parameters[5].kind is inspect.Parameter.KEYWORD_ONLY
-    assert parameters[5].annotation is bool
-    assert parameters[5].default is False
-    source = Path(
-        "src/ai_office/engine/"
-        "classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py"
-    ).read_text(encoding="utf-8")
-    assert (
-        "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary"
-        in source
-    )
-    assert "phase129" not in source.lower()
-    assert (
-        "route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary"
-        not in source
-    )
-    assert (
-        "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary"
-        not in source
-    )
-    assert "._validate_" not in source
-    assert "._top" not in source
-    assert "._raise" not in source
-
-
-def test_valid_nonfinal_persisted_success_delegates_once_canonical_order_identity(
+def test_valid_nonfinal_persisted_success_returns_exact_prepare_next_step(
     tmp_path: Path,
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
-    decision = expected_decision(data_set)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> WorkflowProgressionDecision:
-        calls.append(args)
-        return decision
-
-    assert call(data_set, dependency) is decision
-    assert calls == [
-        (
-            data_set["result"],
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-        )
-    ]
-    assert_unchanged(data_set)
+    returned = call(data_set)
+    assert type(returned) is WorkflowProgressionDecision
+    assert returned == expected_decision(data_set)
+    assert returned.decision == "prepare_next_step"
+    assert returned.workflow_id == "w"
+    assert returned.current_step_id == "five"
+    assert returned.current_step_index == 5
+    assert returned.current_employee_id == "e"
+    assert returned.next_step_id == "six"
+    assert returned.next_step_index == 6
+    assert returned.next_employee_id == "f"
+    assert returned.reason == "next_step_available"
+    unchanged(data_set)
 
 
-def test_valid_final_persisted_success_delegates_once_canonical_order_identity(
+def test_valid_final_persisted_success_returns_exact_workflow_complete(
     tmp_path: Path,
 ) -> None:
     data_set = values(tmp_path, definition=workflow(), index=5)
-    decision = expected_decision(data_set)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> WorkflowProgressionDecision:
-        calls.append(args)
-        return decision
-
-    assert call(data_set, dependency) is decision
-    assert calls == [
-        (
-            data_set["result"],
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-        )
-    ]
-    assert_unchanged(data_set)
+    returned = call(data_set)
+    assert type(returned) is WorkflowProgressionDecision
+    assert returned == expected_decision(data_set)
+    assert returned.decision == "workflow_complete"
+    assert returned.current_step_id == "five"
+    assert returned.current_step_index == 5
+    assert returned.next_step_id is None
+    assert returned.next_step_index is None
+    assert returned.next_employee_id is None
+    assert returned.reason == "last_step_succeeded"
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("index", [1, 2, 3, 4])
-def test_indices_one_two_three_four_are_rejected_before_phase136(
+def test_indices_one_two_three_four_progress_or_stop(
     tmp_path: Path, index: int
 ) -> None:
     data_set = values(tmp_path, index=index)
-    expected = expected_decision(data_set)
-    returned = public_phase144(
-        data_set["result"],
-        data_set["workflow"],
-        data_set["state_path"],
-        data_set["events_path"],
-    )
+    returned = call(data_set)
     assert type(returned) is WorkflowProgressionDecision
-    assert returned == expected
-    assert returned is not data_set["result"]
+    assert returned == expected_decision(data_set)
     unchanged(data_set)
 
     failed = values(tmp_path / "failure", index=index, status="failed")
-    failure_calls: list[tuple[object, ...]] = []
-
-    def forbidden_failure(*args: object) -> object:
-        failure_calls.append(args)
-        raise AssertionError(args)
-
-    returned_failure = public_phase144(
-        failed["result"],
-        failed["workflow"],
-        failed["state_path"],
-        failed["events_path"],
-        phase136_function=forbidden_failure,
-    )
+    returned_failure = call(failed)
     assert returned_failure is failed["result"]
     assert returned_failure.failure_category == "api_error"  # type: ignore[union-attr]
-    assert failure_calls == []
     unchanged(failed)
 
     complete = values(tmp_path / "complete", index=index)
@@ -599,28 +478,17 @@ def test_indices_one_two_three_four_are_rejected_before_phase136(
         None,
         "last_step_succeeded",
     )
-    complete_calls: list[tuple[object, ...]] = []
-
-    def forbidden_complete(*args: object) -> object:
-        complete_calls.append(args)
-        raise AssertionError(args)
-
-    returned_complete = public_phase144(
-        complete_result,
-        complete["workflow"],
-        complete["state_path"],
-        complete["events_path"],
-        phase136_function=forbidden_complete,
-    )
+    returned_complete = call({**complete, "result": complete_result})
     assert returned_complete is complete_result
-    assert complete_calls == []
     unchanged(complete)
 
     if index == 1:
         one_step = workflow()
         one_step.steps = one_step.steps[:1]
         one_step_success = values(tmp_path / "one-step", definition=one_step, index=1)
-        one_step_expected = WorkflowProgressionDecision(
+        one_step_returned = call(one_step_success)
+        assert type(one_step_returned) is WorkflowProgressionDecision
+        assert one_step_returned == WorkflowProgressionDecision(
             "workflow_complete",
             "w",
             "one",
@@ -631,20 +499,10 @@ def test_indices_one_two_three_four_are_rejected_before_phase136(
             None,
             "last_step_succeeded",
         )
-        one_step_returned = public_phase144(
-            one_step_success["result"],
-            one_step_success["workflow"],
-            one_step_success["state_path"],
-            one_step_success["events_path"],
-        )
-        assert type(one_step_returned) is WorkflowProgressionDecision
-        assert one_step_returned == one_step_expected
         unchanged(one_step_success)
 
 
-def test_immediate_predecessor_empty_output_text_delegates_once_canonical_order(
-    tmp_path: Path,
-) -> None:
+def test_immediate_predecessor_empty_output_text_progresses(tmp_path: Path) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
     replace_predecessor(
         data_set,
@@ -653,22 +511,9 @@ def test_immediate_predecessor_empty_output_text_delegates_once_canonical_order(
             data_set["workflow"].steps[3], 4, provider="openai", output_text=""
         ),
     )
-    decision = expected_decision(data_set)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> WorkflowProgressionDecision:
-        calls.append(args)
-        return decision
-
-    assert call(data_set, dependency) is decision
-    assert calls == [
-        (
-            data_set["result"],
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-        )
-    ]
+    returned = call(data_set)
+    assert type(returned) is WorkflowProgressionDecision
+    assert returned == expected_decision(data_set)
     assert_unchanged(data_set)
 
 
@@ -683,28 +528,20 @@ def test_earlier_empty_output_text_survives_later_succeeded_predecessor(
             data_set["workflow"].steps[1], 2, provider="other", output_text=""
         ),
     )
-    decision = expected_decision(data_set)
-
-    def dependency(*_: object) -> WorkflowProgressionDecision:
-        return decision
-
-    assert call(data_set, dependency) is decision
+    returned = call(data_set)
+    assert returned == expected_decision(data_set)
     assert_unchanged(data_set)
 
 
 def test_predecessor_nonempty_output_text_remains_accepted(tmp_path: Path) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
-    decision = expected_decision(data_set)
-
-    def dependency(*_: object) -> WorkflowProgressionDecision:
-        return decision
-
-    assert call(data_set, dependency) is decision
+    returned = call(data_set)
+    assert returned == expected_decision(data_set)
     assert_unchanged(data_set)
 
 
 @pytest.mark.parametrize("output_text", [None, 4, ["output"]])
-def test_predecessor_output_text_non_string_is_rejected_before_phase136(
+def test_predecessor_output_text_non_string_is_rejected(
     tmp_path: Path, output_text: object
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
@@ -787,23 +624,15 @@ def test_earlier_nonopenai_predecessor_remains_accepted(tmp_path: Path) -> None:
         index=5,
         predecessor_providers={1: "other", 2: "vendor", 3: "openai", 4: "openai"},
     )
-    decision = expected_decision(data_set)
-
-    def dependency(*_: object) -> WorkflowProgressionDecision:
-        return decision
-
-    assert call(data_set, dependency) is decision
+    returned = call(data_set)
+    assert returned == expected_decision(data_set)
     assert_unchanged(data_set)
 
 
 def test_succeeded_terminal_exact_empty_output_remains_accepted(tmp_path: Path) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5, terminal_output="")
-    decision = expected_decision(data_set)
-
-    def dependency(*_: object) -> WorkflowProgressionDecision:
-        return decision
-
-    assert call(data_set, dependency) is decision
+    returned = call(data_set)
+    assert returned == expected_decision(data_set)
     assert_unchanged(data_set)
 
 
@@ -819,7 +648,7 @@ def test_succeeded_terminal_exact_empty_output_remains_accepted(tmp_path: Path) 
         ("message", "wrong"),
     ],
 )
-def test_invalid_persisted_terminal_event_semantics_are_rejected_before_phase136(
+def test_invalid_persisted_terminal_event_semantics_are_rejected(
     tmp_path: Path, field: str, value: object
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
@@ -850,12 +679,8 @@ def test_terminal_request_id_is_optional_or_nonempty_exact_string(
         data_set = values(
             tmp_path, definition=workflow_six(), index=5, terminal_request_id=request_id
         )
-        decision = expected_decision(data_set)
-
-        def dependency(*_: object) -> WorkflowProgressionDecision:
-            return decision
-
-        assert call(data_set, dependency) is decision
+        returned = call(data_set)
+        assert returned == expected_decision(data_set)
         assert_unchanged(data_set)
     else:
         reject(
@@ -889,7 +714,7 @@ def test_terminal_response_id_requires_nonempty_exact_string(
         ("status", "failed"),
     ],
 )
-def test_persisted_terminal_state_matrix_is_rejected_before_phase136(
+def test_persisted_terminal_state_matrix_is_rejected(
     tmp_path: Path, field: str, value: object
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
@@ -903,7 +728,7 @@ def test_persisted_terminal_state_matrix_is_rejected_before_phase136(
 @pytest.mark.parametrize(
     "mode", ["duplicate", "missing", "reordered", "unrelated", "malformed", "extra"]
 )
-def test_history_matrix_is_rejected_before_phase136(tmp_path: Path, mode: str) -> None:
+def test_history_matrix_is_rejected(tmp_path: Path, mode: str) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
     lines = data_set["events_path"].read_bytes().splitlines(keepends=True)  # type: ignore[union-attr]
     extra = serialize_runtime_step_event_jsonl(
@@ -944,12 +769,16 @@ def test_history_matrix_is_rejected_before_phase136(tmp_path: Path, mode: str) -
         ("reason", "last_step_succeeded"),
     ],
 )
-def test_dependency_progression_contract_is_revalidated(
-    tmp_path: Path, field: str, value: object
+def test_malformed_owner_decision_is_rejected_as_progression_contract(
+    tmp_path: Path, field: str, value: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
     bad = replace(expected_decision(data_set), **{field: value})
-    reject_after_call(data_set, lambda *_: bad, "progression_contract")
+    patch_owner(monkeypatch, lambda *_: bad)
+    with pytest.raises(PublicPhase144CompatibilityError) as caught:
+        call(data_set)
+    assert caught.value.detail.classification == "progression_contract"
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize(
@@ -970,64 +799,74 @@ def test_dependency_progression_contract_is_revalidated(
         object(),
     ],
 )
-def test_dependency_return_must_be_exact_workflow_progression_decision(
-    tmp_path: Path, bad: object
+def test_owner_return_must_be_exact_workflow_progression_decision(
+    tmp_path: Path, bad: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    reject_after_call(values(tmp_path, definition=workflow_six(), index=5), lambda *_: bad, "progression_contract")
+    data_set = values(tmp_path, definition=workflow_six(), index=5)
+    patch_owner(monkeypatch, lambda *_: bad)
+    with pytest.raises(PublicPhase144CompatibilityError) as caught:
+        call(data_set)
+    assert caught.value.detail.classification == "progression_contract"
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("mutation", ["state", "events", "both"])
 def test_valid_return_target_mutation_is_compensated_without_retry(
-    tmp_path: Path, mutation: str
+    tmp_path: Path, mutation: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
     calls = 0
+    decision = expected_decision(data_set)
 
-    def dependency(*_: object) -> object:
+    def fake(*_: object) -> object:
         nonlocal calls
         calls += 1
         if mutation in {"state", "both"}:
             data_set["state_path"].write_bytes(b"changed-state")  # type: ignore[union-attr]
         if mutation in {"events", "both"}:
             data_set["events_path"].write_bytes(b"changed-events")  # type: ignore[union-attr]
-        return expected_decision(data_set)
+        return decision
 
-    reject_after_call(data_set, dependency, "progression_contract")
+    patch_owner(monkeypatch, fake)
+    with pytest.raises(PublicPhase144CompatibilityError) as caught:
+        call(data_set)
+    assert caught.value.detail.classification == "progression_contract"
     assert calls == 1
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("mutation", ["unchanged", "state", "events", "both"])
-def test_safe_phase136_error_identity_is_preserved_after_compensation(
-    tmp_path: Path, mutation: str
+def test_safe_owner_error_is_sanitized_after_compensation(
+    tmp_path: Path, mutation: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
-    supplied_error = Phase136CompatibilityError("progression_contract")
     calls = 0
 
-    def dependency(*_: object) -> object:
+    def fake(*_: object) -> object:
         nonlocal calls
         calls += 1
         if mutation in {"state", "both"}:
             data_set["state_path"].write_bytes(b"changed-state")  # type: ignore[union-attr]
         if mutation in {"events", "both"}:
             data_set["events_path"].write_bytes(b"changed-events")  # type: ignore[union-attr]
-        raise supplied_error
+        raise OwnerCompatibilityError("decision_contract")
 
-    with pytest.raises(Phase136Error) as caught:
-        call(data_set, dependency)
-    assert caught.value is supplied_error
+    patch_owner(monkeypatch, fake)
+    with pytest.raises(PublicPhase144CompatibilityError) as caught:
+        call(data_set)
+    assert caught.value.detail.classification == "dependency_error"
     assert calls == 1
-    assert_unchanged(data_set)
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("mutation", ["unchanged", "state", "events", "both"])
-def test_unexpected_phase136_error_is_sanitized_and_compensated(
-    tmp_path: Path, mutation: str
+def test_unexpected_owner_error_is_sanitized_and_compensated(
+    tmp_path: Path, mutation: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
     calls = 0
 
-    def dependency(*_: object) -> object:
+    def fake(*_: object) -> object:
         nonlocal calls
         calls += 1
         if mutation in {"state", "both"}:
@@ -1036,28 +875,37 @@ def test_unexpected_phase136_error_is_sanitized_and_compensated(
             data_set["events_path"].write_bytes(b"changed-events")  # type: ignore[union-attr]
         raise RuntimeError("secret detail")
 
+    patch_owner(monkeypatch, fake)
     with pytest.raises(PublicPhase144CompatibilityError) as caught:
-        call(data_set, dependency)
+        call(data_set)
     assert caught.value.detail.classification == "dependency_error"
     assert "secret detail" not in str(caught.value)
     assert calls == 1
-    assert_unchanged(data_set)
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("mutation", ["state", "events", "both"])
-def test_malformed_dependency_return_with_mutation_is_compensated_without_retry(
-    tmp_path: Path, mutation: str
+def test_malformed_owner_return_with_mutation_is_compensated_without_retry(
+    tmp_path: Path, mutation: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
+    calls = 0
 
-    def dependency(*_: object) -> object:
+    def fake(*_: object) -> object:
+        nonlocal calls
+        calls += 1
         if mutation in {"state", "both"}:
             data_set["state_path"].write_bytes(b"changed-state")  # type: ignore[union-attr]
         if mutation in {"events", "both"}:
             data_set["events_path"].write_bytes(b"changed-events")  # type: ignore[union-attr]
         return object()
 
-    reject_after_call(data_set, dependency, "progression_contract")
+    patch_owner(monkeypatch, fake)
+    with pytest.raises(PublicPhase144CompatibilityError) as caught:
+        call(data_set)
+    assert caught.value.detail.classification == "progression_contract"
+    assert calls == 1
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("failed_target", ["state", "events", "both"])
@@ -1068,7 +916,7 @@ def test_rollback_failure_attempts_both_targets_once_without_retry(
     state, events = data_set["state_path"], data_set["events_path"]
     original_write = Path.write_bytes
     restore_calls = {"state": 0, "events": 0}
-    dependency_calls = 0
+    owner_calls = 0
 
     def restore(path: Path, content: bytes) -> int:
         key = "state" if path == state else "events"
@@ -1079,35 +927,29 @@ def test_rollback_failure_attempts_both_targets_once_without_retry(
 
     monkeypatch.setattr(Path, "write_bytes", restore)
 
-    def dependency(*_: object) -> object:
-        nonlocal dependency_calls
-        dependency_calls += 1
+    def fake(*_: object) -> object:
+        nonlocal owner_calls
+        owner_calls += 1
         original_write(state, b"changed-state")
         original_write(events, b"changed-events")
         return object()
 
+    patch_owner(monkeypatch, fake)
     with pytest.raises(PublicPhase144CompatibilityError) as caught:
-        call(data_set, dependency)
+        call(data_set)
     assert caught.value.detail.classification == "dependency_rollback"
     assert restore_calls == {"state": 1, "events": 1}
-    assert dependency_calls == 1
+    assert owner_calls == 1
 
 
 @pytest.mark.parametrize("kind", ["complete", "failure"])
-def test_stop_routes_are_identity_preserving_zero_call_stops(
+def test_stop_routes_are_identity_preserving_read_only(
     tmp_path: Path, kind: str
 ) -> None:
     data_set, supplied = stop_values(tmp_path, kind)
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert call(data_set, dependency) is supplied
-    assert calls == 0
-    assert_unchanged(data_set)
+    returned = call(data_set)
+    assert returned is supplied
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("kind", ["complete", "failure"])
@@ -1115,20 +957,13 @@ def test_stop_routes_allow_non_openai_terminal_provider_without_stricter_rule(
     tmp_path: Path, kind: str
 ) -> None:
     data_set, supplied = stop_values(tmp_path, kind, provider="other")
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert call(data_set, dependency) is supplied
-    assert calls == 0
-    assert_unchanged(data_set)
+    returned = call(data_set)
+    assert returned is supplied
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("kind", ["complete", "failure"])
-def test_stop_routes_allow_empty_predecessor_output_text_zero_call_unchanged(
+def test_stop_routes_allow_empty_predecessor_output_text_unchanged(
     tmp_path: Path, kind: str
 ) -> None:
     data_set, supplied = stop_values(tmp_path, kind)
@@ -1139,16 +974,9 @@ def test_stop_routes_allow_empty_predecessor_output_text_zero_call_unchanged(
             data_set["workflow"].steps[3], 4, provider="openai", output_text=""
         ),
     )
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert call(data_set, dependency) is supplied
-    assert calls == 0
-    assert_unchanged(data_set)
+    returned = call(data_set)
+    assert returned is supplied
+    unchanged(data_set)
 
 
 def test_workflow_complete_stop_empty_terminal_output_is_rejected(tmp_path: Path) -> None:
@@ -1160,32 +988,15 @@ def test_workflow_complete_stop_empty_terminal_output_is_rejected(tmp_path: Path
             output_text="",
         ),
     )
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    with pytest.raises(PublicPhase144CompatibilityError) as caught:
-        call(data_set, dependency)
-    assert caught.value.detail.classification == "terminal_contract"
-    assert calls == 0
+    reject(data_set, "terminal_contract")
 
 
 def test_persisted_failure_stop_allows_index_one_contract(tmp_path: Path) -> None:
     data_set = values(tmp_path, index=1, status="failed", terminal_provider="other")
     supplied = data_set["result"]
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert call(data_set, dependency) is supplied
-    assert calls == 0
-    assert_unchanged(data_set)
+    returned = call(data_set)
+    assert returned is supplied
+    unchanged(data_set)
 
 
 @pytest.mark.parametrize("kind", ["complete", "failure"])
@@ -1222,7 +1033,7 @@ def test_stop_subclasses_and_attribute_compatible_substitutes_are_result_type(
 
 @pytest.mark.parametrize("kind", ["complete", "failure"])
 @pytest.mark.parametrize("index", [True, IntChild(5)])
-def test_stop_bool_and_int_subclass_indices_are_zero_call(
+def test_stop_bool_and_int_subclass_indices_are_rejected(
     tmp_path: Path, kind: str, index: object
 ) -> None:
     data_set, result = stop_values(tmp_path, kind)
@@ -1265,7 +1076,7 @@ def test_stop_bool_and_int_subclass_indices_are_zero_call(
         (SimpleNamespace(outcome="persisted_success"), "result_type"),
     ],
 )
-def test_direct_unsupported_exact_inputs_are_result_type_zero_call(
+def test_direct_unsupported_exact_inputs_are_result_type(
     tmp_path: Path, bad: object, expected: str
 ) -> None:
     reject(values(tmp_path, definition=workflow_six(), index=5), expected, result=bad)
@@ -1365,7 +1176,7 @@ def test_completion_input_contract_is_exact(tmp_path: Path, field: str, value: o
 
 
 @pytest.mark.parametrize("target", ["state_path", "events_path"])
-def test_missing_and_directory_targets_are_rejected_before_phase136(
+def test_missing_and_directory_targets_are_rejected(
     tmp_path: Path, target: str
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
@@ -1409,23 +1220,13 @@ def test_target_oserrors_are_safely_classified(
     )
 
 
-def test_target_conflict_path_subclass_and_noncallable_dependency_are_zero_call(
+def test_target_conflict_path_subclass_are_rejected(
     tmp_path: Path,
 ) -> None:
     data_set = values(tmp_path, definition=workflow_six(), index=5)
     reject(data_set, "target_conflict", events_path=data_set["state_path"])
     reject(data_set, "state_target", state_path="state")
     reject(data_set, "event_target", events_path=PathChild(data_set["events_path"]))
-    with pytest.raises(PublicPhase144CompatibilityError) as caught:
-        public_phase144(
-            data_set["result"],
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-            phase136_function=object(),
-        )
-    assert caught.value.detail.classification == "dependency_error"
-    unchanged(data_set)
 
 
 def test_public_error_detail_has_only_safe_classification() -> None:
@@ -1436,12 +1237,16 @@ def test_public_error_detail_has_only_safe_classification() -> None:
     )
     assert detail.classification == "result_type"
     assert OuterError is not None
+    assert (
+        PublicPhase144CompatibilityError
+        is ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError
+    )
 
 
 def phase155_six_values(
     tmp_path: Path, *, status: str = "succeeded"
 ) -> dict[str, object]:
-    """Six-step Phase-155 provenance fixture accepted by the Phase 144 fix."""
+    """Six-step Phase-155 provenance fixture accepted by the Phase 144 gate."""
     data_set = values(tmp_path, definition=workflow_six(), index=6, status=status)
     steps = data_set["workflow"].steps
     replace_predecessor(
@@ -1459,36 +1264,19 @@ def phase155_six_values(
     return data_set
 
 
-def test_phase155_six_step_success_accepts_empty_and_none_provenance_delegates_once(
+def test_phase155_six_step_success_accepts_empty_and_none_provenance(
     tmp_path: Path,
 ) -> None:
     data_set = phase155_six_values(tmp_path)
-    decision = expected_decision(data_set)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> WorkflowProgressionDecision:
-        calls.append(args)
-        return decision
-
-    assert call(data_set, dependency) is decision
-    assert len(calls) == 1
-    assert len(calls[0]) == 4
-    for actual, expected in zip(
-        calls[0],
-        (
-            data_set["result"],
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-        ),
-        strict=True,
-    ):
-        assert actual is expected
+    returned = call(data_set)
+    assert type(returned) is WorkflowProgressionDecision
+    assert returned == expected_decision(data_set)
+    assert returned.decision == "workflow_complete"
     assert_unchanged(data_set)
     steps = data_set["workflow"].steps
     # Inline pin: the immediate predecessor request_id="" stays rejected in
     # the exact >=6 Phase-155 domain (empty-string predecessor request ID
-    # remains invalid at Phase 144 / 136).
+    # remains invalid at Phase 144).
     replace_predecessor(
         data_set,
         5,
@@ -1521,26 +1309,17 @@ def test_phase155_six_step_success_accepts_empty_and_none_provenance_delegates_o
     reject(data_set, "terminal_contract")
 
 
-def test_phase155_six_step_failure_accepts_empty_and_none_provenance_zero_call_stop(
+def test_phase155_six_step_failure_accepts_empty_and_none_provenance_stops(
     tmp_path: Path,
 ) -> None:
     data_set = phase155_six_values(tmp_path, status="failed")
     supplied = data_set["result"]
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert call(data_set, dependency) is supplied
-    assert calls == 0
-    assert_unchanged(data_set)
+    returned = call(data_set)
+    assert returned is supplied
+    unchanged(data_set)
 
 
-def test_phase155_six_step_multiple_empty_outputs_success_delegates_once(
-    tmp_path: Path,
-) -> None:
+def test_phase155_six_step_multiple_empty_outputs_success(tmp_path: Path) -> None:
     data_set = phase155_six_values(tmp_path)
     steps = data_set["workflow"].steps
     replace_predecessor(
@@ -1548,53 +1327,20 @@ def test_phase155_six_step_multiple_empty_outputs_success_delegates_once(
         3,
         predecessor_event(steps[2], 3, provider="other", output_text=""),
     )
-    decision = expected_decision(data_set)
-    calls: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> WorkflowProgressionDecision:
-        calls.append(args)
-        return decision
-
-    assert call(data_set, dependency) is decision
-    assert len(calls) == 1
-    assert len(calls[0]) == 4
-    for actual, expected in zip(
-        calls[0],
-        (
-            data_set["result"],
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-        ),
-        strict=True,
-    ):
-        assert actual is expected
+    returned = call(data_set)
+    assert returned == expected_decision(data_set)
     assert_unchanged(data_set)
     # Inline pin: the persisted-success terminal empty output_text stays
-    # accepted (narrow Phase-144 empty-terminal-output compatibility) and the
-    # canonical four-argument identity/order delegation still holds.
+    # accepted (narrow Phase-144 empty-terminal-output compatibility).
     replace_terminal(
         data_set, terminal_event(steps[5], 6, "succeeded", output_text="")
     )
-    calls = []
-    assert call(data_set, dependency) is decision
-    assert len(calls) == 1
-    assert len(calls[0]) == 4
-    for actual, expected in zip(
-        calls[0],
-        (
-            data_set["result"],
-            data_set["workflow"],
-            data_set["state_path"],
-            data_set["events_path"],
-        ),
-        strict=True,
-    ):
-        assert actual is expected
+    returned = call(data_set)
+    assert returned == expected_decision(data_set)
     assert_unchanged(data_set)
 
 
-def test_phase155_six_step_multiple_empty_outputs_failure_zero_call_stop(
+def test_phase155_six_step_multiple_empty_outputs_failure_stops(
     tmp_path: Path,
 ) -> None:
     data_set = phase155_six_values(tmp_path, status="failed")
@@ -1605,19 +1351,12 @@ def test_phase155_six_step_multiple_empty_outputs_failure_zero_call_stop(
         predecessor_event(steps[2], 3, provider="other", output_text=""),
     )
     supplied = data_set["result"]
-    calls = 0
-
-    def dependency(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object()
-
-    assert call(data_set, dependency) is supplied
-    assert calls == 0
-    assert_unchanged(data_set)
+    returned = call(data_set)
+    assert returned is supplied
+    unchanged(data_set)
 
 
-def test_phase155_six_step_earlier_output_none_is_rejected_before_phase136(
+def test_phase155_six_step_earlier_output_none_is_rejected(
     tmp_path: Path,
 ) -> None:
     data_set = phase155_six_values(tmp_path)
@@ -1630,7 +1369,7 @@ def test_phase155_six_step_earlier_output_none_is_rejected_before_phase136(
     reject(data_set, "terminal_contract")
 
 
-def test_phase155_six_step_immediate_output_non_string_is_rejected_before_phase136(
+def test_phase155_six_step_immediate_output_non_string_is_rejected(
     tmp_path: Path,
 ) -> None:
     data_set = phase155_six_values(tmp_path)
@@ -1722,36 +1461,14 @@ def accumulated_none_data_set(
     return data_set
 
 
-def test_accumulated_none_request_id_positions_five_six_delegates_once(
-    tmp_path: Path,
-) -> None:
+def test_accumulated_none_request_id_positions_five_six(tmp_path: Path) -> None:
     data_set = accumulated_none_data_set(tmp_path, "succeeded")
-    expected = expected_decision(data_set)
-    seen: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        return expected
-
-    assert call(data_set, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                data_set[key]
-                for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
+    returned = call(data_set)
+    assert returned == expected_decision(data_set)
     unchanged(data_set)
 
 
-def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
-    tmp_path: Path,
-) -> None:
+def test_accumulated_none_step8_noncontiguous_six_request_id(tmp_path: Path) -> None:
     """Issue #380 case 2: step8 with step5=None, step6 non-empty, step7=None.
 
     The non-contiguous accumulated None provenance (step 5 None, step 6 a
@@ -1762,26 +1479,8 @@ def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
     data_set = accumulated_none_data_set(
         tmp_path, "succeeded", current=8, six_request_id="req-6"
     )
-    expected = expected_decision(data_set)
-    seen: list[tuple[object, ...]] = []
-
-    def dependency(*args: object) -> object:
-        seen.append(args)
-        return expected
-
-    assert call(data_set, dependency) is expected
-    assert len(seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            seen[0],
-            tuple(
-                data_set[key]
-                for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
+    returned = call(data_set)
+    assert returned == expected_decision(data_set)
     unchanged(data_set)
 
     failed = accumulated_none_data_set(
@@ -1790,14 +1489,14 @@ def test_accumulated_none_step8_noncontiguous_six_request_id_delegates_once(
     reject(failed, "terminal_contract")
 
 
-def test_accumulated_none_position_five_non_openai_provider_is_rejected_before_phase136(
+def test_accumulated_none_position_five_non_openai_provider_is_rejected(
     tmp_path: Path,
 ) -> None:
     data_set = accumulated_none_data_set(tmp_path, "succeeded", five_provider="other")
     reject(data_set, "terminal_contract")
 
 
-def test_accumulated_none_position_four_remains_rejected_before_phase136(
+def test_accumulated_none_position_four_remains_rejected(
     tmp_path: Path,
 ) -> None:
     data_set = values(
@@ -1825,28 +1524,20 @@ def test_active_failure_opt_in_accepts_bounded_accumulated_failure_provenance(
     """Issue #383: the private active-failure opt-in accepts the exact
     Issue #377 C mismatch: terminal failed step-7 with step5=None and
     step6=None (both ``openai``) returns the exact same persisted_failure
-    object with Phase 136 zero-call and bytes unchanged.
+    object with bytes unchanged.
     """
     data_set = accumulated_none_data_set(tmp_path, "failed")
     result = data_set["result"]
     assert type(result) is PersistedExecutionOutcome
     assert result.outcome == "persisted_failure"
-    calls: list[tuple[object, ...]] = []
-
-    def counting(*args: object) -> object:
-        calls.append(args)
-        return object()
-
     out = public_phase144(
         result,
         data_set["workflow"],
         data_set["state_path"],
         data_set["events_path"],
-        phase136_function=counting,
         _allow_accumulated_none_request_id_for_active_failure=True,
     )
     assert out is result  # exact same outcome object by identity
-    assert calls == []  # Phase 136 zero calls for persisted_failure
     unchanged(data_set)
 
 
@@ -1881,7 +1572,6 @@ def test_active_failure_opt_in_narrow_default_stays_strict(tmp_path: Path) -> No
             data_p4["workflow"],
             data_p4["state_path"],
             data_p4["events_path"],
-            phase136_function=lambda *_: object(),
             _allow_accumulated_none_request_id_for_active_failure=True,
         )
     assert caught_p4.value.detail.classification == "terminal_contract"
@@ -1897,7 +1587,6 @@ def test_active_failure_opt_in_narrow_default_stays_strict(tmp_path: Path) -> No
             data_other["workflow"],
             data_other["state_path"],
             data_other["events_path"],
-            phase136_function=lambda *_: object(),
             _allow_accumulated_none_request_id_for_active_failure=True,
         )
     assert caught_other.value.detail.classification == "terminal_contract"
@@ -1927,7 +1616,6 @@ def test_active_failure_opt_in_narrow_default_stays_strict(tmp_path: Path) -> No
                 data_bad["workflow"],
                 data_bad["state_path"],
                 data_bad["events_path"],
-                phase136_function=lambda *_: object(),
                 _allow_accumulated_none_request_id_for_active_failure=True,
             )
         assert caught_bad.value.detail.classification == "terminal_contract"
@@ -1935,52 +1623,24 @@ def test_active_failure_opt_in_narrow_default_stays_strict(tmp_path: Path) -> No
 
     # 5. workflow_complete stop unchanged even with the opt-in supplied
     complete_set, complete = stop_values(tmp_path / "complete", "complete")
-    complete_calls: list[tuple[object, ...]] = []
-
-    def complete_counting(*args: object) -> object:
-        complete_calls.append(args)
-        return object()
-
     out_complete = public_phase144(
         complete,
         complete_set["workflow"],
         complete_set["state_path"],
         complete_set["events_path"],
-        phase136_function=complete_counting,
         _allow_accumulated_none_request_id_for_active_failure=True,
     )
     assert out_complete is complete
-    assert complete_calls == []
     unchanged(complete_set)
 
     # 6. persisted_success Issue-#380 accumulated behavior unchanged with opt-in
     success_set = accumulated_none_data_set(tmp_path / "success", "succeeded")
-    expected = expected_decision(success_set)
-    success_seen: list[tuple[object, ...]] = []
-
-    def success_counting(*args: object) -> object:
-        success_seen.append(args)
-        return expected
-
     out_success = public_phase144(
         success_set["result"],
         success_set["workflow"],
         success_set["state_path"],
         success_set["events_path"],
-        phase136_function=success_counting,
         _allow_accumulated_none_request_id_for_active_failure=True,
     )
-    assert out_success is expected
-    assert len(success_seen) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            success_seen[0],
-            tuple(
-                success_set[key]
-                for key in ("result", "workflow", "state_path", "events_path")
-            ),
-            strict=True,
-        )
-    )
+    assert out_success == expected_decision(success_set)
     unchanged(success_set)

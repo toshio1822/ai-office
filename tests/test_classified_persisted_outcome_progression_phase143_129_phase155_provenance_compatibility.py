@@ -1,5 +1,11 @@
-"""Real Phase 143 classify -> real Phase 144 -> 136 -> 129 segment with Phase-155
-provenance and synthetic Phase 122 seam, plus inline real Phase 122 next-seam proof."""
+"""Real Phase 143 classify -> real Phase 144 observable progression with Phase-155
+provenance, plus inline negative provenance proofs.
+
+The Phase 144 facade no longer delegates into the Phase 136 and lower historical
+progression chain, so this file asserts observable Phase 144 behavior only: the
+exact returned progression decision, the identity-preserving stop, the
+classification rejections and the read-only state/events guarantee.
+"""
 
 # ruff: noqa: E501,E701,E702,F401,I001
 
@@ -12,22 +18,6 @@ from ai_office.engine import PersistedExecutionOutcome, WorkflowProgressionDecis
 from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationCompatibilityError as Phase144CompatError,
     route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
-)
-from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary,
-)
-from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary import (
-    route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary,
-)
-from ai_office.engine.classified_outcome_routing_phase_bridge_cycle_continuation import (
-    route_classified_outcome_routing_phase_bridge_cycle_continuation,
-)
-from ai_office.engine.classified_outcome_cycle_closure_continuation_boundary import (
-    route_classified_outcome_cycle_closure_continuation_boundary,
-)
-from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary import (
-    ClassifiedPersistedOutcomeProgressionCycleHandoffReentryContinuationCompatibilityError as Phase122CompatError,
-    route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary,
 )
 from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
     route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
@@ -186,7 +176,7 @@ def reload_and_assert_provenance(
         assert events[position - 1].step_id == _STEP_IDS[position - 1]
         assert events[position - 1].output_text == ""
     # Issue #341: earlier predecessor request IDs stay exact non-empty built-in
-    # strings at Phase 144 / 136.
+    # strings at Phase 144.
     for position in (1, 2, 3, 4):
         assert isinstance(events[position - 1].request_id, str)
         assert events[position - 1].request_id
@@ -267,250 +257,85 @@ def classify(values: dict[str, object], status: str) -> PersistedExecutionOutcom
     return outcome
 
 
-def run_chain(
+def progress(
     values: dict[str, object], outcome: PersistedExecutionOutcome
-) -> tuple[object, dict[str, int], list[tuple[str, tuple[object, ...]]], list[object]]:
-    calls = {"phase144": 0, "phase136": 0, "phase129": 0, "seam122": 0}
-    handoffs: list[tuple[str, tuple[object, ...]]] = []
-    seam_values: list[object] = []
-
-    def seam122(result: object, workflow: object, state: object, events: object) -> object:
-        calls["seam122"] += 1
-        handoffs.append(("seam122", (result, workflow, state, events)))
-        seam_values.append(expected_decision())
-        return seam_values[-1]
-
-    def phase129(result: object, workflow: object, state: object, events: object) -> object:
-        calls["phase129"] += 1
-        handoffs.append(("phase129", (result, workflow, state, events)))
-        return route_classified_persisted_outcome_progression_cycle_handoff_chain_reentry_continuation_boundary(
-            result, workflow, state, events, phase122_function=seam122  # type: ignore[arg-type]
-        )
-
-    def phase136(result: object, workflow: object, state: object, events: object) -> object:
-        calls["phase136"] += 1
-        handoffs.append(("phase136", (result, workflow, state, events)))
-        return route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary(
-            result, workflow, state, events, phase129_function=phase129  # type: ignore[arg-type]
-        )
-
-    def phase144(result: object, workflow: object, state: object, events: object) -> object:
-        calls["phase144"] += 1
-        handoffs.append(("phase144", (result, workflow, state, events)))
-        return route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
-            result, workflow, state, events, phase136_function=phase136  # type: ignore[arg-type]
-        )
-
-    out = phase144(outcome, values["workflow"], values["state_path"], values["events_path"])
-    return out, calls, handoffs, seam_values
-
-
-def assert_chain_ok(
-    values: dict[str, object],
-    outcome: PersistedExecutionOutcome,
-    out: object,
-    calls: dict[str, int],
-    handoffs: list[tuple[str, tuple[object, ...]]],
-    seam_values: list[object],
-) -> None:
-    assert calls == {"phase144": 1, "phase136": 1, "phase129": 1, "seam122": 1}
-    assert out is seam_values[0]
-    expected = tuple(
-        [outcome, values["workflow"], values["state_path"], values["events_path"]]
+) -> object:
+    """Call the real Phase 144 default route (no synthetic seam)."""
+    return route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+        outcome,
+        values["workflow"],  # type: ignore[arg-type]
+        values["state_path"],  # type: ignore[arg-type]
+        values["events_path"],  # type: ignore[arg-type]
     )
-    assert [name for name, _ in handoffs] == ["phase144", "phase136", "phase129", "seam122"]
-    for _, args in handoffs:
-        assert all(
-            actual is wanted for actual, wanted in zip(args, expected, strict=True)
-        )
 
 
-def test_real_chain_synthetic_seam_success_delegates_once(
+def snapshot(values: dict[str, object]) -> tuple[bytes, bytes]:
+    return (
+        values["state_path"].read_bytes(),  # type: ignore[union-attr]
+        values["events_path"].read_bytes(),  # type: ignore[union-attr]
+    )
+
+
+def test_real_classification_success_progresses_to_exact_workflow_complete(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
     reload_and_assert_provenance(values, "succeeded")
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
+    before = snapshot(values)
     outcome = classify(values, "succeeded")
-    out, calls, handoffs, seam_values = run_chain(values, outcome)
-    assert_chain_ok(values, outcome, out, calls, handoffs, seam_values)
-    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
-    # Inline next-seam proof: real Phase 122 now accepts the intact persisted
-    # Phase-155 success and delegates to a synthetic Phase 115 seam exactly once
-    # with canonical four-argument object identity, exact returned-object
-    # identity and unchanged targets.
-    phase115_calls = {"phase115": 0}
-    handoffs: list[tuple[object, ...]] = []
-
-    synthetic_phase115_decision = expected_decision()
-
-    def fake115(result: object, workflow: object, state: object, events: object) -> object:
-        phase115_calls["phase115"] += 1
-        handoffs.append((result, workflow, state, events))
-        return synthetic_phase115_decision
-
-    phase115_out = route_classified_persisted_outcome_progression_cycle_handoff_reentry_continuation_boundary(
-        outcome,
-        values["workflow"],  # type: ignore[arg-type]
-        values["state_path"],  # type: ignore[arg-type]
-        values["events_path"],  # type: ignore[arg-type]
-        phase115_function=fake115,  # type: ignore[arg-type]
-    )
-    assert phase115_calls == {"phase115": 1}
-    assert len(handoffs) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            handoffs[0],
-            (
-                outcome,
-                values["workflow"],
-                values["state_path"],
-                values["events_path"],
-            ),
-            strict=True,
-        )
-    )
-    assert phase115_out is synthetic_phase115_decision
-    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
-    # Inline next-seam proof: real Phase 101 now accepts the intact persisted
-    # Phase-155 success and delegates to a synthetic Phase 94 seam exactly once
-    # with canonical four-argument object identity, exact returned-object
-    # identity and unchanged targets.
-    phase94_calls = {"phase94": 0}
-    phase94_handoffs: list[tuple[object, ...]] = []
-
-    synthetic_phase94_decision = expected_decision()
-
-    def fake94(result: object, workflow: object, state: object, events: object) -> object:
-        phase94_calls["phase94"] += 1
-        phase94_handoffs.append((result, workflow, state, events))
-        return synthetic_phase94_decision
-
-    phase94_out = route_classified_outcome_cycle_closure_continuation_boundary(
-        outcome,
-        values["workflow"],  # type: ignore[arg-type]
-        values["state_path"],  # type: ignore[arg-type]
-        values["events_path"],  # type: ignore[arg-type]
-        phase94_function=fake94,  # type: ignore[arg-type]
-    )
-    assert phase94_calls == {"phase94": 1}
-    assert len(phase94_handoffs) == 1
-    assert all(
-        actual is wanted
-        for actual, wanted in zip(
-            phase94_handoffs[0],
-            (
-                outcome,
-                values["workflow"],
-                values["state_path"],
-                values["events_path"],
-            ),
-            strict=True,
-        )
-    )
-    assert phase94_out is synthetic_phase94_decision
-    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
-    # Inline next-boundary proof: real Phase 80 now accepts the same persisted
-    # Phase-155 history through its local bounded fallback and delegates to
-    # public Phase 73 exactly once with canonical four-argument object
-    # identity/order, returning the exact synthetic decision object with
-    # unchanged targets and no retry.
-    phase73_calls = {"phase73": 0}
-    seam_args: list[tuple[object, object, object, object]] = []
-    seam_decision = expected_decision()
-
-    def fake73(
-        result_arg: object,
-        workflow_arg: object,
-        state_arg: object,
-        events_arg: object,
-    ) -> object:
-        phase73_calls["phase73"] += 1
-        seam_args.append((result_arg, workflow_arg, state_arg, events_arg))
-        return seam_decision
-
-    returned = route_classified_outcome_routing_phase_bridge_cycle_continuation(
-        outcome,
-        values["workflow"],  # type: ignore[arg-type]
-        values["state_path"],  # type: ignore[arg-type]
-        values["events_path"],  # type: ignore[arg-type]
-        phase73_function=fake73,  # type: ignore[arg-type]
-    )
-    assert returned is seam_decision
-    assert phase73_calls["phase73"] == 1
-    assert len(seam_args) == 1
-    result_arg, workflow_arg, state_arg, events_arg = seam_args[0]
-    assert result_arg is outcome
-    assert workflow_arg is values["workflow"]
-    assert state_arg is values["state_path"]
-    assert events_arg is values["events_path"]
-    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+    out = progress(values, outcome)
+    assert type(out) is WorkflowProgressionDecision
+    assert out == expected_decision()
+    assert out.decision == "workflow_complete"
+    assert out.current_step_id == "six"
+    assert out.current_step_index == 6
+    assert out.next_step_id is None
+    assert out.next_step_index is None
+    assert out.next_employee_id is None
+    assert out.reason == "last_step_succeeded"
+    assert snapshot(values) == before
 
 
-def test_real_chain_failure_stops_at_phase144_with_zero_progression_calls(
+def test_real_classification_failure_stops_identity_preserving_read_only(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "failed")
     reload_and_assert_provenance(values, "failed")
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
+    before = snapshot(values)
     outcome = classify(values, "failed")
     assert outcome.outcome == "persisted_failure"
-    calls = {"phase136": 0, "phase129": 0, "seam122": 0}
-
-    def forbidden(*_: object) -> object:
-        pytest.fail("progression dependency must not be called")
-
-    out = route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
-        outcome,
-        values["workflow"],  # type: ignore[arg-type]
-        values["state_path"],  # type: ignore[arg-type]
-        values["events_path"],  # type: ignore[arg-type]
-        phase136_function=forbidden,  # type: ignore[arg-type]
-    )
+    out = progress(values, outcome)
     assert out is outcome
-    assert calls == {"phase136": 0, "phase129": 0, "seam122": 0}
-    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+    assert snapshot(values) == before
 
 
-def test_real_chain_multiple_earlier_empty_success_delegates_once(
+def test_real_classification_multiple_earlier_empty_success_progresses(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded", earlier_empty=(2, 3))
     reload_and_assert_provenance(values, "succeeded", earlier_empty=(2, 3))
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
+    before = snapshot(values)
     outcome = classify(values, "succeeded")
-    out, calls, handoffs, seam_values = run_chain(values, outcome)
-    assert_chain_ok(values, outcome, out, calls, handoffs, seam_values)
-    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+    out = progress(values, outcome)
+    assert type(out) is WorkflowProgressionDecision
+    assert out == expected_decision()
+    assert snapshot(values) == before
 
 
-def test_real_chain_multiple_earlier_empty_failure_stops_at_phase144(
+def test_real_classification_multiple_earlier_empty_failure_stops(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "failed", earlier_empty=(2, 3))
     reload_and_assert_provenance(values, "failed", earlier_empty=(2, 3))
-    before = values["state_path"].read_bytes(), values["events_path"].read_bytes()  # type: ignore[union-attr]
+    before = snapshot(values)
     outcome = classify(values, "failed")
     assert outcome.outcome == "persisted_failure"
-    calls = {"phase136": 0, "phase129": 0, "seam122": 0}
-
-    def forbidden(*_: object) -> object:
-        pytest.fail("progression dependency must not be called")
-
-    out = route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
-        outcome,
-        values["workflow"],  # type: ignore[arg-type]
-        values["state_path"],  # type: ignore[arg-type]
-        values["events_path"],  # type: ignore[arg-type]
-        phase136_function=forbidden,  # type: ignore[arg-type]
-    )
+    out = progress(values, outcome)
     assert out is outcome
-    assert calls == {"phase136": 0, "phase129": 0, "seam122": 0}
-    assert (values["state_path"].read_bytes(), values["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+    assert snapshot(values) == before
 
 
-def test_step2_output_none_mutation_is_rejected_at_phase144_before_phase136(
+def test_step2_output_none_mutation_is_rejected_at_phase144(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
@@ -522,26 +347,18 @@ def test_step2_output_none_mutation_is_rejected_at_phase144_before_phase136(
     )
     events.write_text(lines[0] + replacement + "".join(lines[2:]), encoding="utf-8")  # type: ignore[union-attr]
     before = values["state_path"].read_bytes(), events.read_bytes()  # type: ignore[union-attr]
-    calls = {"phase136": 0}
-
-    def fail(*_: object) -> object:
-        calls["phase136"] += 1
-        pytest.fail("Phase 136 must not be called")
-
     with pytest.raises(Phase144CompatError) as caught:
         route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
             outcome,
             values["workflow"],  # type: ignore[arg-type]
             values["state_path"],  # type: ignore[arg-type]
             events,
-            phase136_function=fail,  # type: ignore[arg-type]
         )
     assert caught.value.detail.classification == "terminal_contract"
-    assert calls["phase136"] == 0
     assert (values["state_path"].read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]
 
 
-def test_step5_output_non_string_mutation_is_rejected_at_phase144_before_phase136(
+def test_step5_output_non_string_mutation_is_rejected_at_phase144(
     tmp_path: Path,
 ) -> None:
     values = setup(tmp_path, "succeeded")
@@ -553,20 +370,12 @@ def test_step5_output_non_string_mutation_is_rejected_at_phase144_before_phase13
     )
     events.write_text("".join(lines[:4]) + replacement + "".join(lines[5:]), encoding="utf-8")  # type: ignore[union-attr]
     before = values["state_path"].read_bytes(), events.read_bytes()  # type: ignore[union-attr]
-    calls = {"phase136": 0}
-
-    def fail(*_: object) -> object:
-        calls["phase136"] += 1
-        pytest.fail("Phase 136 must not be called")
-
     with pytest.raises(Phase144CompatError) as caught:
         route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
             outcome,
             values["workflow"],  # type: ignore[arg-type]
             values["state_path"],  # type: ignore[arg-type]
             events,
-            phase136_function=fail,  # type: ignore[arg-type]
         )
     assert caught.value.detail.classification == "terminal_contract"
-    assert calls["phase136"] == 0
     assert (values["state_path"].read_bytes(), events.read_bytes()) == before  # type: ignore[union-attr]

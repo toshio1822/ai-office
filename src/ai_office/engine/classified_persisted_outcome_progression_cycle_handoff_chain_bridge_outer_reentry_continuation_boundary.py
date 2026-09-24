@@ -2,18 +2,17 @@
 
 # ruff: noqa: E501,E701
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
 
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
-from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeReentryContinuationError,
-    route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary,
-)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
+)
+from ai_office.engine.persisted_success_progression import (
+    PersistedSuccessProgressionError,
+    decide_persisted_success_progression,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
@@ -37,9 +36,6 @@ Classification = Literal[
     "progression_contract",
     "dependency_error",
     "dependency_rollback",
-]
-Phase136Function = Callable[
-    [object, object, object, object], WorkflowProgressionDecision | PersistedExecutionOutcome
 ]
 _PATH_TYPE = type(Path())
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
@@ -80,21 +76,18 @@ def route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_ou
     state_path: object,
     events_path: object,
     *,
-    phase136_function: Phase136Function = (
-        route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary
-    ),
     _allow_accumulated_none_request_id_for_active_failure: bool = False,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Route one exact Phase 143 result through public Phase 136 once.
+    """Progress one exact Phase 143 persisted result without executing a step.
 
-    ``persisted_success`` keeps the Issue #380 bounded accumulated aged-None
-    compatibility.  ``persisted_failure`` keeps the strict immediate-None-only
+    ``persisted_success`` is progressed through the current persisted-success
+    progression owner.  ``persisted_failure`` keeps the strict immediate-None-only
     stop semantics unless the private route-provenance control is True: the
     active Phase 172 runtime-failure path alone may enable it so a just-
     produced ``persisted_failure`` may carry the same bounded accumulated
     aged-None predecessor provenance without broadening any direct stop.
     """
-    _check_inputs(result, workflow, state_path, events_path, phase136_function)
+    _check_inputs(result, workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -154,11 +147,13 @@ def route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_ou
         return result
 
     try:
-        progressed = phase136_function(result, workflow, state_path, events_path)
-    except ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeReentryContinuationError as error:
-        _compensate_dependency_error(state_path, events_path, original, error)
+        progressed = decide_persisted_success_progression(
+            workflow, state_path, events_path
+        )
+    except PersistedSuccessProgressionError:
+        _compensate_dependency_error(state_path, events_path, original)
     except Exception:
-        _compensate_dependency_error(state_path, events_path, original, None)
+        _compensate_dependency_error(state_path, events_path, original)
 
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
@@ -172,7 +167,6 @@ def _check_inputs(
     workflow: object,
     state_path: object,
     events_path: object,
-    dependency: object,
 ) -> None:
     if type(result) not in {PersistedExecutionOutcome, WorkflowProgressionDecision}:
         _fail("result_type")
@@ -184,8 +178,6 @@ def _check_inputs(
         _fail("event_target")
     if state_path == events_path:
         _fail("target_conflict")
-    if not callable(dependency):
-        _fail("dependency_error")
 
 
 def _valid_workflow(workflow: WorkflowDefinition) -> bool:
@@ -608,13 +600,9 @@ def _compensate_dependency_error(
     state_path: Path,
     events_path: Path,
     original: tuple[bytes, bytes],
-    safe_error: ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeReentryContinuationError
-    | None,
 ) -> None:
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
-    if safe_error is not None:
-        raise safe_error
     _fail("dependency_error")
 
 
