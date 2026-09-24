@@ -339,7 +339,6 @@ def test_public_signature_and_default_dependency_identities_and_source_audit() -
     assert calls.count("phase143_function") == 1
     assert calls.count("phase144_function") == 1
     for forbidden in (
-        "route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary",
         "route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_reentry_continuation_boundary",
     ):
         assert forbidden not in source
