@@ -2,7 +2,6 @@
 
 # ruff: noqa: E501,E701,I001
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
@@ -10,10 +9,8 @@ from typing import Literal, get_args
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
-)
-from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary import (
-    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeReentryContinuationError as Phase135Error,
-    route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary,
+    PersistedExecutionOutcomeCompatibilityError,
+    classify_persisted_execution_outcome_reentry,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
@@ -40,9 +37,6 @@ Classification = Literal[
     "outcome_contract",
     "dependency_error",
     "dependency_rollback",
-]
-Phase135Function = Callable[
-    [object, object, object, object], PersistedExecutionOutcome | WorkflowProgressionDecision
 ]
 _PATH_TYPE = type(Path())
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
@@ -80,13 +74,9 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
     workflow: object,
     state_path: object,
     events_path: object,
-    *,
-    phase135_function: Phase135Function = (
-        route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_reentry_continuation_boundary
-    ),
 ) -> PersistedExecutionOutcome | WorkflowProgressionDecision:
-    """Route one exact Phase 142 result through public Phase 135 once."""
-    _check_inputs(result, workflow, state_path, events_path, phase135_function)
+    """Classify one exact persisted transition result without progressing."""
+    _check_inputs(result, workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
@@ -132,10 +122,14 @@ def route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge
     assert type(result) is WorkflowExecutionPersistenceResult
     state = _check_persistence(result, workflow, state_path, events_path)
     try:
-        value = phase135_function(result, workflow, state_path, events_path)
-    except Phase135Error as error:
+        value = classify_persisted_execution_outcome_reentry(
+            workflow, state_path, events_path
+        )
+    except PersistedExecutionOutcomeCompatibilityError as error:
         _restore_if_changed(state_path, events_path, original)
-        raise error
+        if error.detail.classification == "history_rollback":
+            _fail("dependency_rollback")
+        _fail("dependency_error")
     except Exception:
         _restore_if_changed(state_path, events_path, original)
         _fail("dependency_error")
@@ -159,7 +153,6 @@ def _check_inputs(
     workflow: object,
     state: object,
     events: object,
-    function: object,
 ) -> None:
     if type(result) not in (
         WorkflowExecutionPersistenceResult,
@@ -175,8 +168,6 @@ def _check_inputs(
         _fail("event_target")
     if state == events:
         _fail("target_conflict")
-    if not callable(function):
-        _fail("persistence_contract")
 
 
 def _valid_workflow(workflow: WorkflowDefinition) -> bool:
@@ -201,7 +192,9 @@ def _valid_workflow(workflow: WorkflowDefinition) -> bool:
     return len(step_ids) == len(set(step_ids))
 
 
-def _check_completion(value: WorkflowProgressionDecision, workflow: WorkflowDefinition) -> None:
+def _check_completion(
+    value: WorkflowProgressionDecision, workflow: WorkflowDefinition
+) -> None:
     final = workflow.steps[-1]
     if not (
         _exact_string(value.decision, "workflow_complete")
@@ -218,7 +211,9 @@ def _check_completion(value: WorkflowProgressionDecision, workflow: WorkflowDefi
         _fail("completion_contract")
 
 
-def _check_failure(value: PersistedExecutionOutcome, workflow: WorkflowDefinition) -> None:
+def _check_failure(
+    value: PersistedExecutionOutcome, workflow: WorkflowDefinition
+) -> None:
     index = value.current_step_index
     if not (
         _exact_string(value.outcome, "persisted_failure")
@@ -358,16 +353,16 @@ def _valid_history(
         return False
     if any(type(event) is not RuntimeStepEvent for event in history):
         return False
-    for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
+    for position, (event, step) in enumerate(
+        zip(history[:-1], prior_steps, strict=True), 1
+    ):
         last_position = len(prior_steps)
         allow_none = (
             allow_immediate_none_request_id
             and position == last_position
             and position >= 5
         ) or (
-            allow_accumulated_none_request_id
-            and last_position >= 6
-            and position >= 5
+            allow_accumulated_none_request_id and last_position >= 6 and position >= 5
         )
         if not _valid_predecessor(
             event,
@@ -379,7 +374,11 @@ def _valid_history(
             allow_none_request_id=allow_none,
         ):
             return False
-        if allow_none and event.request_id is None and event.provider not in {"openai", "omniroute"}:
+        if (
+            allow_none
+            and event.request_id is None
+            and event.provider not in {"openai", "omniroute"}
+        ):
             return False
     return _valid_terminal_event(
         history[-1],
@@ -391,7 +390,9 @@ def _valid_history(
 
 
 def _valid_state(state: WorkflowExecutionState, workflow: WorkflowDefinition) -> bool:
-    if type(state.current_step_index) is not int or not 1 <= state.current_step_index <= len(workflow.steps):
+    if type(
+        state.current_step_index
+    ) is not int or not 1 <= state.current_step_index <= len(workflow.steps):
         return False
     current = workflow.steps[state.current_step_index - 1]
     return (
@@ -553,7 +554,9 @@ def _check_outcome(
 ) -> None:
     if type(value) is not PersistedExecutionOutcome:
         _fail("outcome_contract")
-    expected = "persisted_success" if state.status == "succeeded" else "persisted_failure"
+    expected = (
+        "persisted_success" if state.status == "succeeded" else "persisted_failure"
+    )
     valid_failure = (
         value.failure_category is None
         if state.status == "succeeded"
@@ -585,7 +588,9 @@ def _require_unchanged(
         _fail(classification)
 
 
-def _restore_if_changed(state: Path, events: Path, original: tuple[bytes, bytes]) -> None:
+def _restore_if_changed(
+    state: Path, events: Path, original: tuple[bytes, bytes]
+) -> None:
     if not (_changed(state, original[0]) or _changed(events, original[1])):
         return
     failed = False
