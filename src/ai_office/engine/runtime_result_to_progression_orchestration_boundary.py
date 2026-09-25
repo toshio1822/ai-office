@@ -74,22 +74,18 @@ def route_runtime_result_to_progression_orchestration_boundary(
     state_path: object,
     events_path: object,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Route one exact Phase-155 result through Phase 161 → 143 → 144 once.
+    """Handle one runtime result at the persistence/progression boundary.
 
-    Phase 161 stays the authoritative first-stage input/terminal/history
-    validator. Once Phase 161 returns an exact persistence result, its
-    post-call target bytes become the durable commit point; Phase 143 and
-    Phase 144 may never cause a rollback to the pre-Phase161 running state.
+    An active runtime result is persisted as a terminal transition. Successful
+    persistence establishes the durable commit point; the persisted outcome is
+    then classified, with successful outcomes yielding a progression decision
+    and persisted failure or workflow completion yielding a stop outcome. Any
+    failure after persistence preserves the committed snapshot and never rolls
+    back to the pre-persistence running state.
 
-    Route provenance (Issue #383): when the original input is an exact
-    ``StepRuntimeExecutionFailure`` and Phase 143 newly classifies it as an
-    exact ``PersistedExecutionOutcome(persisted_failure)``, Phase 144 receives
-    the private active-failure opt-in
-    (``_allow_accumulated_none_request_id_for_active_failure=True``) so the
-    accumulated aged-None provenance preserved by Issue #380 is accepted on
-    this active runtime-failure path only. Direct/original ``persisted_failure``
-    stop inputs are not broadened and Phase 136 remains zero-call for
-    persisted_failure.
+    Only the active runtime-failure route permits accumulated aged-None
+    compatibility. Direct/original persisted-failure stop inputs retain their
+    narrow validation contract.
     """
     _check_inputs(
         result,
