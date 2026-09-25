@@ -2,7 +2,6 @@
 
 # ruff: noqa: E501,E701,I001
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -36,27 +35,12 @@ Classification = Literal[
     "state_target",
     "event_target",
     "target_conflict",
-    "configuration",
     "phase161_contract",
     "phase143_contract",
     "phase144_contract",
     "dependency_error",
     "committed_mutation",
     "rollback_failure",
-]
-Phase161Function = Callable[
-    [object, object, object, object],
-    WorkflowExecutionPersistenceResult
-    | WorkflowProgressionDecision
-    | PersistedExecutionOutcome,
-]
-Phase143Function = Callable[
-    [object, object, object, object],
-    PersistedExecutionOutcome | WorkflowProgressionDecision,
-]
-Phase144Function = Callable[
-    [object, object, object, object],
-    WorkflowProgressionDecision | PersistedExecutionOutcome,
 ]
 _PATH_TYPE = type(Path())
 
@@ -78,13 +62,9 @@ class RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError(
     """Raised when a post-runtime orchestration cannot safely complete."""
 
     def __init__(self, classification: Classification) -> None:
-        super().__init__(
-            "post-runtime orchestration boundary inputs are incompatible"
-        )
-        self.detail = (
-            RuntimeResultToProgressionOrchestrationBoundaryFailureDetail(
-                classification
-            )
+        super().__init__("post-runtime orchestration boundary inputs are incompatible")
+        self.detail = RuntimeResultToProgressionOrchestrationBoundaryFailureDetail(
+            classification
         )
 
 
@@ -93,16 +73,6 @@ def route_runtime_result_to_progression_orchestration_boundary(
     workflow: object,
     state_path: object,
     events_path: object,
-    *,
-    phase161_function: Phase161Function = (
-        route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
-    ),
-    phase143_function: Phase143Function = (
-        route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
-    ),
-    phase144_function: Phase144Function = (
-        route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
-    ),
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
     """Route one exact Phase-155 result through Phase 161 → 143 → 144 once.
 
@@ -113,23 +83,19 @@ def route_runtime_result_to_progression_orchestration_boundary(
 
     Route provenance (Issue #383): when the original input is an exact
     ``StepRuntimeExecutionFailure`` and Phase 143 newly classifies it as an
-    exact ``PersistedExecutionOutcome(persisted_failure)``, the exact built-in
-    default Phase 144 receives the private active-failure opt-in
+    exact ``PersistedExecutionOutcome(persisted_failure)``, Phase 144 receives
+    the private active-failure opt-in
     (``_allow_accumulated_none_request_id_for_active_failure=True``) so the
     accumulated aged-None provenance preserved by Issue #380 is accepted on
-    this active runtime-failure path only. A custom injected Phase 144
-    dependency is never given the opt-in; it keeps the exact four-positional
-    call contract. Direct/original ``persisted_failure`` stop inputs are not
-    broadened and Phase 136 remains zero-call for persisted_failure.
+    this active runtime-failure path only. Direct/original ``persisted_failure``
+    stop inputs are not broadened and Phase 136 remains zero-call for
+    persisted_failure.
     """
     _check_inputs(
         result,
         workflow,
         state_path,
         events_path,
-        phase161_function,
-        phase143_function,
-        phase144_function,
     )
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
@@ -141,13 +107,18 @@ def route_runtime_result_to_progression_orchestration_boundary(
         stop = True
     else:
         stop = False
-        assert type(result) in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
+        assert type(result) in (
+            StepRuntimeExecutionSuccess,
+            StepRuntimeExecutionFailure,
+        )
 
     _check_targets(state_path, events_path)
     original = _capture_targets(state_path, events_path)
 
     try:
-        value = phase161_function(result, workflow, state_path, events_path)
+        value = route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+            result, workflow, state_path, events_path
+        )
     except Phase161Error as error:
         _restore_if_changed(state_path, events_path, original)
         raise error
@@ -159,9 +130,7 @@ def route_runtime_result_to_progression_orchestration_boundary(
         if value is not result:
             _restore_if_changed(state_path, events_path, original)
             _fail("phase161_contract")
-        _require_unchanged(
-            state_path, events_path, original, "phase161_contract"
-        )
+        _require_unchanged(state_path, events_path, original, "phase161_contract")
         return value
 
     if not _valid_phase161_result(value, state_path, events_path):
@@ -171,7 +140,9 @@ def route_runtime_result_to_progression_orchestration_boundary(
     committed = _capture_targets(state_path, events_path)
 
     try:
-        classified = phase143_function(value, workflow, state_path, events_path)
+        classified = route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
+            value, workflow, state_path, events_path
+        )
     except Phase143Error as error:
         _restore_if_changed(state_path, events_path, committed)
         raise error
@@ -188,13 +159,11 @@ def route_runtime_result_to_progression_orchestration_boundary(
         type(result) is StepRuntimeExecutionFailure
         and type(classified) is PersistedExecutionOutcome
         and classified.outcome == "persisted_failure"
-        and phase144_function
-        is route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary
     ):
         phase144_kwargs["_allow_accumulated_none_request_id_for_active_failure"] = True
 
     try:
-        progressed = phase144_function(
+        progressed = route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
             classified,
             workflow,
             state_path,
@@ -219,9 +188,6 @@ def _check_inputs(
     workflow: object,
     state: object,
     events: object,
-    phase161: object,
-    phase143: object,
-    phase144: object,
 ) -> None:
     if type(result) not in (
         StepRuntimeExecutionSuccess,
@@ -238,10 +204,6 @@ def _check_inputs(
         _fail("event_target")
     if state == events:
         _fail("target_conflict")
-    if not (
-        callable(phase161) and callable(phase143) and callable(phase144)
-    ):
-        _fail("configuration")
 
 
 def _check_targets(state: Path, events: Path) -> None:
