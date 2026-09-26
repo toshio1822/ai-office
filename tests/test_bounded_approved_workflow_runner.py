@@ -12,6 +12,10 @@ import pytest
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
+from ai_office.execution_target import (
+    DIRECT_OPENAI_EXECUTION_TARGET,
+    LOCAL_OMNIROUTE_EXECUTION_TARGET,
+)
 import ai_office.engine.approved_workflow_continuation_cycle as continuation_module
 
 from ai_office.engine.approved_workflow_continuation_cycle import (
@@ -517,6 +521,70 @@ def test_09_context_members_must_be_exact_public_dataclass(tmp_path: Path) -> No
         ),
         "context_type",
     )
+
+
+def test_incompatible_execution_target_provider_binding_fails_closed_before_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    values = real_setup(tmp_path, current=9, count=11)
+    wf = values["workflow"]
+    assert isinstance(wf, WorkflowDefinition)
+    valid = real_context(wf, 10)
+    owner_calls: list[object] = []
+    owner = continuation_module.route_approved_workflow_continuation_cycle
+
+    def observe_owner(*args: object, **kwargs: object) -> object:
+        owner_calls.append((args, kwargs))
+        return owner(*args, **kwargs)
+
+    monkeypatch.setattr(
+        continuation_module,
+        "route_approved_workflow_continuation_cycle",
+        observe_owner,
+    )
+    cases = (
+        (LOCAL_OMNIROUTE_EXECUTION_TARGET, valid.execution_approval),
+        (
+            DIRECT_OPENAI_EXECUTION_TARGET,
+            replace(valid.execution_approval, provider="omniroute"),
+        ),
+        (
+            LOCAL_OMNIROUTE_EXECUTION_TARGET,
+            replace(valid.execution_approval, provider="omniroute"),
+        ),
+    )
+
+    for execution_target, execution_approval in cases:
+        calls: list[object] = []
+        mismatched = replace(
+            valid,
+            execution_approval=execution_approval,
+            transport=synthetic_transport(calls),
+            execution_target=execution_target,
+        )
+        before = values["state_path"].read_bytes(), values["events_path"].read_bytes()
+
+        with pytest.raises(RunnerError) as caught:
+            route_bounded_approved_workflow_continuation(
+                preparation(wf, 9),
+                wf,
+                values["state_path"],
+                values["events_path"],
+                (mismatched,),
+            )
+
+        assert caught.value.detail.classification == "context_type"
+        assert (
+            mismatched.execution_approval.execution_target
+            is DIRECT_OPENAI_EXECUTION_TARGET
+        )
+        assert mismatched.execution_target is execution_target
+        assert owner_calls == []
+        assert calls == []
+        assert (
+            values["state_path"].read_bytes(),
+            values["events_path"].read_bytes(),
+        ) == before
 
 
 def test_11_real_composition_first_context_failure_stops_without_retry(
