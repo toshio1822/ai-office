@@ -8,7 +8,6 @@ contract and persistence semantics.
 
 # ruff: noqa: E501,E701,I001
 
-from collections.abc import Callable
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -102,7 +101,6 @@ Classification = Literal[
     "state_target",
     "event_target",
     "target_conflict",
-    "configuration",
     "phase145_contract",
     "phase146_contract",
     "phase147_contract",
@@ -113,12 +111,6 @@ Classification = Literal[
     "committed_mutation",
     "rollback_failure",
 ]
-
-Phase145Function = Callable[..., object]
-Phase146Function = Callable[..., object]
-Phase147Function = Callable[..., object]
-Phase155Function = Callable[..., object]
-Phase172Function = Callable[..., object]
 
 _PATH_TYPE = type(Path())
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
@@ -149,15 +141,14 @@ class ApprovedWorkflowContinuationCycleCompatibilityError(
 # boundaries.  They are aliases, not another error family.
 ApprovedWorkflowContinuationCycleFailure = ApprovedWorkflowContinuationCycleError
 
-# Each immediate public boundary has an intentionally independent safe-error
-# family. An error from another stage must be sanitized as a Phase-190
-# dependency error rather than preserved by identity.
+# Preserve the current safe-error identity for the owners on the active route;
+# unexpected errors are sanitized as a Phase-190 dependency error.
 _SAFE_PHASE145_ERRORS = (Phase145BoundaryError,)
 _SAFE_PHASE146_ERRORS = (Phase146BoundaryError,)
 _SAFE_PHASE147_ERRORS = (Phase147BoundaryError,)
 _SAFE_PHASE155_ERRORS = (Phase155BoundaryError,)
-# This is the Phase-188 precedent for the real Phase-172 public surface. The
-# Phase-161 outer-chain error is required because it is the default first seam.
+# The runtime/progression owner may surface these nested safe errors, which
+# must remain safe to callers without becoming new public injection seams.
 _SAFE_PHASE172_ERRORS = (
     Phase172BoundaryError,
     Phase172CompatibilityError,
@@ -178,18 +169,13 @@ def route_approved_workflow_continuation_cycle(
     api_key: object,
     execution_approval: object,
     transport: object,
-    *,
-    phase145_function=route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-    phase146_function=route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-    phase147_function=route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-    phase155_function=route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-    phase172_function=route_runtime_result_to_progression_orchestration_boundary,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
     """Execute exactly one approved next workflow step and then stop.
 
     Terminal decisions are authoritative stop values and are returned before
-    operational context is inspected.  A prepare decision crosses the five
-    public boundaries once, in order 145 → 146 → 147 → 155 → 172.
+    operational context is inspected.  A prepare decision is handled by the
+    current preparation, start, persistence, execution, and progression
+    owners, and then stops after one step.
     """
     _check_result_and_workflow(result, workflow)
     assert type(workflow) is WorkflowDefinition
@@ -214,17 +200,12 @@ def route_approved_workflow_continuation_cycle(
         workflow,
         state_path,
         events_path,
-        phase145_function,
-        phase146_function,
-        phase147_function,
-        phase155_function,
-        phase172_function,
     )
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
     original = _capture_targets(state_path, events_path)
 
     try:
-        prepared = phase145_function(
+        prepared = route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
             result,
             workflow,
             preparation_approval,
@@ -247,7 +228,7 @@ def route_approved_workflow_continuation_cycle(
     assert type(prepared) is PreparedWorkflowStep
 
     try:
-        prepared_start = phase146_function(
+        prepared_start = route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
             prepared,
             workflow,
             employee,
@@ -265,11 +246,7 @@ def route_approved_workflow_continuation_cycle(
     )
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
-        _fail(
-            "committed_mutation"
-            if prepared_start_valid
-            else "phase146_contract"
-        )
+        _fail("committed_mutation" if prepared_start_valid else "phase146_contract")
     if not prepared_start_valid:
         _fail("phase146_contract")
     assert type(prepared_start) is PreparedStepExecutionStart
@@ -294,7 +271,7 @@ def route_approved_workflow_continuation_cycle(
 
     pre_persistence = _capture_targets(state_path, events_path)
     try:
-        persisted_running = phase147_function(
+        persisted_running = route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
             prepared_start,
             workflow,
             employee,
@@ -319,7 +296,7 @@ def route_approved_workflow_continuation_cycle(
     running_snapshot = _capture_targets(state_path, events_path)
 
     try:
-        runtime_result = phase155_function(
+        runtime_result = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
             persisted_running,
             prepared_start,
             workflow,
@@ -347,18 +324,19 @@ def route_approved_workflow_continuation_cycle(
         runtime_result_valid = False
     if _changed(state_path, events_path, running_snapshot):
         _restore_or_fail(state_path, events_path, running_snapshot)
-        _fail(
-            "committed_mutation" if runtime_result_valid else "phase155_contract"
-        )
+        _fail("committed_mutation" if runtime_result_valid else "phase155_contract")
     if not runtime_result_valid:
         _fail("phase155_contract")
-    assert type(runtime_result) in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
+    assert type(runtime_result) in (
+        StepRuntimeExecutionSuccess,
+        StepRuntimeExecutionFailure,
+    )
 
     # Phase 172 owns the next durable terminal commit.  In particular, no
     # outer restoration is permitted from this point onward, even if its
     # result is malformed or the dependency raises.
     try:
-        progressed = phase172_function(
+        progressed = route_runtime_result_to_progression_orchestration_boundary(
             runtime_result,
             workflow,
             state_path,
@@ -391,11 +369,6 @@ def _check_prepare_configuration(
     workflow: WorkflowDefinition,
     state_path: object,
     events_path: object,
-    phase145: object,
-    phase146: object,
-    phase147: object,
-    phase155: object,
-    phase172: object,
 ) -> None:
     del workflow
     if type(state_path) is not _PATH_TYPE:
@@ -404,14 +377,6 @@ def _check_prepare_configuration(
         _fail("event_target")
     if state_path == events_path:
         _fail("target_conflict")
-    if not (
-        callable(phase145)
-        and callable(phase146)
-        and callable(phase147)
-        and callable(phase155)
-        and callable(phase172)
-    ):
-        _fail("configuration")
     _check_regular_file(state_path, "state_target")
     _check_regular_file(events_path, "event_target")
 
@@ -517,7 +482,10 @@ def _check_prepared(
     workflow: WorkflowDefinition,
     employee: object,
 ) -> None:
-    if type(value) is not PreparedWorkflowStep or type(employee) is not EmployeeDefinition:
+    if (
+        type(value) is not PreparedWorkflowStep
+        or type(employee) is not EmployeeDefinition
+    ):
         _fail("phase145_contract")
     assert type(value) is PreparedWorkflowStep and type(employee) is EmployeeDefinition
     if not _valid_employee(employee):
@@ -565,12 +533,20 @@ def _check_prepared_start(
         or not _valid_employee(employee)
     ):
         _fail("phase146_contract")
-    assert type(value) is PreparedStepExecutionStart and type(employee) is EmployeeDefinition
+    assert (
+        type(value) is PreparedStepExecutionStart
+        and type(employee) is EmployeeDefinition
+    )
     request = value.request
     running = value.running_state
-    if type(request) is not ModelInvocationRequest or type(running) is not WorkflowExecutionState:
+    if (
+        type(request) is not ModelInvocationRequest
+        or type(running) is not WorkflowExecutionState
+    ):
         _fail("phase146_contract")
-    expected_prefix = tuple(step.id for step in workflow.steps[: prepared.step_index - 1])
+    expected_prefix = tuple(
+        step.id for step in workflow.steps[: prepared.step_index - 1]
+    )
     if not (
         _exact(running.workflow_id, workflow.id)
         and _exact(running.status, "running")
@@ -773,7 +749,9 @@ def _valid_phase172_result(
         result_ok = (
             type(value) is PersistedExecutionOutcome
             and _exact(value.outcome, "persisted_failure")
-            and _exact(value.failure_category, runtime_result.invocation_result.category)
+            and _exact(
+                value.failure_category, runtime_result.invocation_result.category
+            )
             and type(value.failure_category) is str
             and value.failure_category in _FAILURE_CATEGORIES
         )
@@ -828,7 +806,9 @@ def _valid_phase172_persistence(
         if serialize_runtime_step_event_jsonl(event).encode("utf-8") != appended:
             return False
         state = load_workflow_execution_state(state_path)
-        if state_bytes != serialize_workflow_execution_state_json(state).encode("utf-8"):
+        if state_bytes != serialize_workflow_execution_state_json(state).encode(
+            "utf-8"
+        ):
             return False
     except Exception:
         return False
