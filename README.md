@@ -720,7 +720,7 @@ future explicit outcome routing
 
 ## Persisted Execution Outcome Routing Reentry Boundary（Phase 38）
 
-`route_persisted_execution_outcome_reentry()`は、正確なPhase 37 outcome を明示 target に対して再分類し、field-for-field で照合します。`persisted_success`だけを既存Phase 31へ一度委譲して同じdecision objectを返し、`persisted_failure`はPhase 31を呼ばず同じsupplied outcome objectを返します。target bytes は各依存呼出し後に検証・必要時のみ復元します。次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みは行いません。
+`route_persisted_execution_outcome_reentry()`は、caller suppliedな正確なPhase 37 outcome、workflow、state target、event targetの4 business inputsだけを受けるread-only boundaryです。`classification_function`と`progression_function`によるPhase 37 classification / Phase 31 progressionのowner差し替えはpublic extension pointではなく、canonical ownerを内部で使用します。正確なPhase 37 outcomeを明示targetに対して再分類し、field-for-fieldで照合します。`persisted_success`だけを既存Phase 31へ一度委譲して同じdecision objectを返し、`persisted_failure`はPhase 31を呼ばず同じsupplied outcome objectを返します。target bytesは各依存呼出し後に検証し、必要時のみ復元します。次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みは行いません。
 
 ## Classified Persisted Outcome Routing Bridge（Phase 45）
 
