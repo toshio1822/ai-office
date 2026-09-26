@@ -1,6 +1,5 @@
 """Read-only routing between persisted outcome classification and progression."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, get_args
@@ -32,8 +31,6 @@ PersistedExecutionOutcomeRoutingClassification = Literal[
 ]
 _ERROR_MESSAGE = "persisted execution outcome routing inputs are incompatible"
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
-ClassificationFunction = Callable[[object, object, object], PersistedExecutionOutcome]
-ProgressionFunction = Callable[[object, object, object], WorkflowProgressionDecision]
 
 
 @dataclass(frozen=True)
@@ -60,36 +57,20 @@ def route_persisted_execution_outcome_reentry(
     workflow: object,
     state_path: object,
     events_path: object,
-    *,
-    classification_function: ClassificationFunction = (
-        classify_persisted_execution_outcome_reentry
-    ),
-    progression_function: ProgressionFunction = decide_persisted_success_progression,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
     """Reclassify once and route only persisted success to Phase 31."""
-    _validate_inputs(
-        outcome,
-        workflow,
-        state_path,
-        events_path,
-        classification_function,
-        progression_function,
-    )
+    _validate_inputs(outcome, workflow, state_path, events_path)
     assert type(outcome) is PersistedExecutionOutcome
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
     original = _capture(state_path, events_path)
-    reclassified = _call_classification(
-        classification_function, workflow, state_path, events_path, original
-    )
+    reclassified = _call_classification(workflow, state_path, events_path, original)
     _validate_outcome(reclassified, "classification_contract", workflow)
     if not _same_outcome(outcome, reclassified):
         _raise("classification_contract")
     if outcome.outcome == "persisted_failure":
         return outcome
-    decision = _call_progression(
-        progression_function, workflow, state_path, events_path, original
-    )
+    decision = _call_progression(workflow, state_path, events_path, original)
     _validate_decision(decision, workflow, outcome)
     return decision
 
@@ -99,8 +80,6 @@ def _validate_inputs(
     workflow: object,
     state_path: object,
     events_path: object,
-    classification_function: object,
-    progression_function: object,
 ) -> None:
     if type(outcome) is not PersistedExecutionOutcome:
         _raise("outcome_type")
@@ -113,10 +92,6 @@ def _validate_inputs(
         _raise("event_target")
     if state_path == events_path:
         _raise("target_conflict")
-    if not callable(classification_function):
-        _raise("classification_contract")
-    if not callable(progression_function):
-        _raise("progression_contract")
     try:
         if not state_path.is_file():
             _raise("state_target")
@@ -175,14 +150,15 @@ def _capture(state_path: Path, events_path: Path) -> tuple[bytes, bytes]:
 
 
 def _call_classification(
-    function: ClassificationFunction,
     workflow: WorkflowDefinition,
     state_path: Path,
     events_path: Path,
     original: tuple[bytes, bytes],
 ) -> object:
     try:
-        result = function(workflow, state_path, events_path)
+        result = classify_persisted_execution_outcome_reentry(
+            workflow, state_path, events_path
+        )
     except PersistedExecutionOutcomeError:
         _restore_changed(state_path, events_path, original)
         raise
@@ -194,14 +170,13 @@ def _call_classification(
 
 
 def _call_progression(
-    function: ProgressionFunction,
     workflow: WorkflowDefinition,
     state_path: Path,
     events_path: Path,
     original: tuple[bytes, bytes],
 ) -> object:
     try:
-        result = function(workflow, state_path, events_path)
+        result = decide_persisted_success_progression(workflow, state_path, events_path)
     except PersistedSuccessProgressionError:
         _restore_changed(state_path, events_path, original)
         raise
