@@ -22,10 +22,8 @@ from ai_office.invocation import ModelInvocationFailureCategory
 ApprovedFreshWorkflowBoundedRunnerClassification = Literal[
     "contexts_type",
     "context_type",
-    "configuration",
     "fresh_start_contract",
     "bounded_continuation_contract",
-    "dependency_error",
 ]
 
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
@@ -63,66 +61,41 @@ def route_approved_fresh_workflow_bounded(
     events_path: object,
     bootstrap_context: object,
     continuation_contexts: object,
-    *,
-    fresh_start_function=route_approved_workflow_fresh_start,
-    bounded_continuation_function=route_bounded_approved_workflow_continuation,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Compose one fresh Phase-208 start with one bounded Phase-192 handoff."""
-    _check_preconfiguration(
-        continuation_contexts,
-        fresh_start_function,
-        bounded_continuation_function,
+    """Compose one canonical fresh start with one bounded continuation handoff."""
+    _check_preconfiguration(continuation_contexts)
+
+    fresh_result = route_approved_workflow_fresh_start(
+        workflow,
+        state_path,
+        events_path,
+        bootstrap_context,
     )
-
-    try:
-        fresh_result = fresh_start_function(
-            workflow,
-            state_path,
-            events_path,
-            bootstrap_context,
-        )
-    except Exception:
-        if fresh_start_function is route_approved_workflow_fresh_start:
-            raise
-        _fail("dependency_error")
-
     if not _valid_result(fresh_result, workflow):
         _fail("fresh_start_contract")
     if _is_terminal(fresh_result):
         return fresh_result
 
-    try:
-        bounded_result = bounded_continuation_function(
-            fresh_result,
-            workflow,
-            state_path,
-            events_path,
-            continuation_contexts,
-        )
-    except Exception:
-        if bounded_continuation_function is route_bounded_approved_workflow_continuation:
-            raise
-        _fail("dependency_error")
-
+    bounded_result = route_bounded_approved_workflow_continuation(
+        fresh_result,
+        workflow,
+        state_path,
+        events_path,
+        continuation_contexts,
+    )
     if not _valid_result(bounded_result, workflow):
         _fail("bounded_continuation_contract")
     return bounded_result
 
 
-def _check_preconfiguration(
-    continuation_contexts: object,
-    fresh_start_function: object,
-    bounded_continuation_function: object,
-) -> None:
-    """Perform only the pre-Phase-208 structural/configuration checks."""
+def _check_preconfiguration(continuation_contexts: object) -> None:
+    """Perform only the pre-Phase-208 continuation-context checks."""
     if type(continuation_contexts) is not tuple:
         _fail("contexts_type")
     if tuple(map(type, continuation_contexts)) != (
         ApprovedWorkflowContinuationContext,
     ) * len(continuation_contexts):
         _fail("context_type")
-    if not callable(fresh_start_function) or not callable(bounded_continuation_function):
-        _fail("configuration")
 
 
 def _valid_result(value: object, workflow: object) -> bool:
@@ -223,11 +196,7 @@ def _workflow_steps(workflow: object) -> object:
 
 def _step_at(workflow: object, index: object) -> object:
     steps = _workflow_steps(workflow)
-    if (
-        steps is _MISSING
-        or type(index) is not int
-        or not 1 <= index <= len(steps)
-    ):
+    if steps is _MISSING or type(index) is not int or not 1 <= index <= len(steps):
         return _MISSING
     step = steps[index - 1]
     if type(step) is not WorkflowStepDefinition:
