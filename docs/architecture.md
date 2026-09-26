@@ -4340,28 +4340,34 @@ terminal workflow. It is intentionally separate from the Phase-210 fresh
 bounded start: it accepts no bootstrap context and performs no target-existence
 detection or fresh/resume auto-selection.
 
+Its public boundary is the four-input operation
+`route_persisted_terminal_workflow_bounded(workflow, state_path, events_path,
+continuation_contexts)`. The former `classification_function`,
+`routing_function`, and `bounded_continuation_function` keyword parameters are
+intentionally removed public extension points; they are not retained through a
+compatibility keyword path. The Phase-212 runner remains the persisted-terminal
+boundary and the CLI keeps its existing composition.
+
 ```text
 authoritative persisted state/events
           ↓
-Phase37: classify_persisted_execution_outcome_reentry (exactly once)
+Phase37: classify persisted terminal outcome
           ↓
-Phase38: route_persisted_execution_outcome_reentry (exactly once)
+Phase38: route and revalidate persisted outcome
           ↓
-Phase38-owned duplicate read-only Phase37 classification (exactly once)
+Phase38-owned stale read-only reclassification
           ├─ persisted_failure
-          │      → exact outer Phase37 object, terminal stop
-          │      → Phase31 zero-call, Phase192 zero-call
+          │      → unchanged failure result, terminal stop
           └─ persisted_success
                  ↓
-              Phase31 exactly once
+              Phase31 progression
                  ├─ workflow_complete
-                 │      → exact Phase38/31 object, terminal stop
-                 │      → Phase192 zero-call
+                 │      → unchanged completion result, terminal stop
                  └─ prepare_next_step
                         ↓
                  deferred continuation validation
                         ↓
-                 Phase192 exactly once
+                 bounded Phase192 continuation
                         ↓
                  finite caller-supplied contexts
                         ↓
@@ -4370,19 +4376,19 @@ Phase38-owned duplicate read-only Phase37 classification (exactly once)
                        STOP
 ```
 
-The duplicate read-only Phase37 classification is by design: Phase 38 owns
-stale-outcome revalidation, target invariance, routing, and lower error
-ownership. Phase 212 does not reread or revalidate full history at either
-thin result seam. A valid persisted failure must be the exact outer Phase37
-object; a valid final success must be the exact Phase38/31 result. Neither
-terminal route validates, consumes, or requires continuation contexts.
+The stale read-only reclassification remains a Phase-38 responsibility:
+Phase 38 owns stale-outcome revalidation, target invariance, routing, and lower
+error ownership. Phase 212 does not independently redesign or duplicate that
+logic. A valid persisted failure and a valid final success remain unchanged
+terminal results. Neither terminal route validates, consumes, or requires
+continuation contexts.
 
 Only a valid `prepare_next_step` result reaches continuation validation. The
 container must then be an exact built-in tuple of exact
-`ApprovedWorkflowContinuationContext` instances and the bounded dependency
-must be callable. Preparation approval, employee, tools, API key, execution
-approval, and transport contents remain Phase 192/190/lower-owned. The
-Phase-212 wrapper has no continuation loop and no retry.
+`ApprovedWorkflowContinuationContext` instances. Preparation approval,
+employee, tools, API key, execution approval, and transport contents remain
+Phase 192/190/lower-owned. The Phase-212 boundary has no continuation loop and
+no retry.
 
 Persisted `ready` and `running` states are rejected by Phase 37 before Phase
 38 or Phase 192. A persisted `running` state does not prove whether an
@@ -4394,11 +4400,14 @@ state/event changes. Phase 212 never restores the pre-resume snapshot after
 that ownership boundary, even when the lower dependency raises or returns a
 malformed result.
 
-The Phase-212 focused suite contains exactly 20 top-level tests and uses only
+The Phase-212 focused suite contains 16 focused tests and uses only
 deterministic synthetic transports. No context or approval generation,
 employee/tool/key/transport lookup, automatic replay, fresh/resume router,
 recursion, unbounded loop, scheduler, finalizer, parallelism, CLI/GUI,
-provider/network, or paid API behavior is added.
+provider/network, or paid API behavior is added. The focused tests observe
+single execution, conditional handoff, terminal stops, finite-context
+behavior, fail-closed validation, and durable ownership; they do not make
+private owner-call topology or source/AST shape a public contract.
 
 ## Phase 214: 明示承認付き1-step CLI boundary
 
