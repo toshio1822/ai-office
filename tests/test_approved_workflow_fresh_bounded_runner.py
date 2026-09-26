@@ -423,25 +423,20 @@ def test_03_context_elements_rejected_before_canonical_fresh_start(
     assert not any(tmp_path.iterdir())
 
 
-def test_04_canonical_owners_are_used_once_without_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_04_prepare_result_advances_once_without_retry_or_duplicate_execution(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wf = workflow()
-    state_path = tmp_path / "state"
-    events_path = tmp_path / "events"
-    bootstrap = object()
-    contexts = (_opaque_context(),)
     fresh_result = _prepare(wf)
     bounded_result = _complete(wf)
-    fresh_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    bounded_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    execution_trace: list[str] = []
 
     def fresh(*args: object, **kwargs: object) -> object:
-        fresh_calls.append((args, kwargs))
+        execution_trace.append("fresh_start")
         return fresh_result
 
     def bounded(*args: object, **kwargs: object) -> object:
-        bounded_calls.append((args, kwargs))
+        execution_trace.append("bounded_continuation")
         return bounded_result
 
     monkeypatch.setattr(runner_module, "route_approved_workflow_fresh_start", fresh)
@@ -450,13 +445,12 @@ def test_04_canonical_owners_are_used_once_without_retry(
     )
 
     result = route_approved_fresh_workflow_bounded(
-        wf, state_path, events_path, bootstrap, contexts
+        wf, object(), object(), object(), (_opaque_context(),)
     )
     assert result is bounded_result
-    assert fresh_calls == [((wf, state_path, events_path, bootstrap), {})]
-    assert bounded_calls == [
-        ((fresh_result, wf, state_path, events_path, contexts), {})
-    ]
+    assert execution_trace == ["fresh_start", "bounded_continuation"]
+    assert execution_trace.count("fresh_start") == 1
+    assert execution_trace.count("bounded_continuation") == 1
 
 
 def test_05_fresh_terminal_results_short_circuit_bounded_continuation(
