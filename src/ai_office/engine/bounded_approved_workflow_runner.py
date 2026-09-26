@@ -12,9 +12,7 @@ from ai_office.execution_target import (
     ModelExecutionTarget,
     validate_execution_target_for_provider,
 )
-from ai_office.engine.approved_workflow_continuation_cycle import (
-    route_approved_workflow_continuation_cycle,
-)
+import ai_office.engine.approved_workflow_continuation_cycle as continuation_module
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
@@ -30,9 +28,7 @@ Classification = Literal[
     "target_conflict",
     "contexts_type",
     "context_type",
-    "configuration",
     "phase190_contract",
-    "dependency_error",
 ]
 
 _PATH_TYPE = type(Path())
@@ -74,17 +70,14 @@ class BoundedApprovedWorkflowRunnerCompatibilityError(
         self.detail = BoundedApprovedWorkflowRunnerFailureDetail(classification)
 
 
-
 def route_bounded_approved_workflow_continuation(
     result: object,
     workflow: object,
     state_path: object,
     events_path: object,
     contexts: object,
-    *,
-    phase190_function=route_approved_workflow_continuation_cycle,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Run one public Phase-190 cycle for each supplied context, at most."""
+    """Run one current approved-workflow continuation cycle per context, at most."""
     _check_workflow(workflow)
     _check_result(result, workflow)
     assert type(workflow) is WorkflowDefinition
@@ -96,8 +89,6 @@ def route_bounded_approved_workflow_continuation(
         _fail("contexts_type")
     _check_targets(state_path, events_path)
     _check_contexts(contexts)
-    if not callable(phase190_function):
-        _fail("configuration")
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
     assert type(contexts) is tuple
 
@@ -112,24 +103,19 @@ def route_bounded_approved_workflow_continuation(
             and _exact(_attribute(current, "decision"), "prepare_next_step")
         ):
             _fail("phase190_contract")
-        try:
-            next_result = phase190_function(
-                current,
-                workflow,
-                context.preparation_approval,
-                context.employee,
-                state_path,
-                events_path,
-                context.resolved_tools,
-                context.api_key,
-                context.execution_approval,
-                context.transport,
-            )
-        except Exception:
-            if phase190_function is route_approved_workflow_continuation_cycle:
-                raise
-            _fail("dependency_error")
-        _check_phase190_result(next_result, workflow)
+        next_result = continuation_module.route_approved_workflow_continuation_cycle(
+            current,
+            workflow,
+            context.preparation_approval,
+            context.employee,
+            state_path,
+            events_path,
+            context.resolved_tools,
+            context.api_key,
+            context.execution_approval,
+            context.transport,
+        )
+        _check_continuation_result(next_result, workflow)
         _check_transition_result(next_result, workflow, current)
         current = next_result
 
@@ -141,9 +127,7 @@ def _check_workflow(workflow: object) -> None:
         _fail("workflow_definition")
 
 
-def _check_result(
-    result: object, workflow: WorkflowDefinition
-) -> None:
+def _check_result(result: object, workflow: WorkflowDefinition) -> None:
     if type(result) not in (WorkflowProgressionDecision, PersistedExecutionOutcome):
         _fail("result_type")
     if type(result) is WorkflowProgressionDecision:
@@ -167,10 +151,7 @@ def _check_transition_result(
     previous: WorkflowProgressionDecision,
 ) -> None:
     expected_index = _attribute(previous, "next_step_index")
-    if not (
-        type(expected_index) is int
-        and 1 <= expected_index <= len(workflow.steps)
-    ):
+    if not (type(expected_index) is int and 1 <= expected_index <= len(workflow.steps)):
         _fail("phase190_contract")
     step = workflow.steps[expected_index - 1]
     discriminator = _attribute(result, "decision")
@@ -199,10 +180,8 @@ def _check_transition_result(
         _fail("phase190_contract")
 
 
-def _check_phase190_result(
-    result: object, workflow: WorkflowDefinition
-) -> None:
-    """Validate an injected Phase-190 result as the runner's seam contract."""
+def _check_continuation_result(result: object, workflow: WorkflowDefinition) -> None:
+    """Validate one current owner's result at the runner boundary."""
     try:
         _check_result(result, workflow)
     except BoundedApprovedWorkflowRunnerCompatibilityError:
@@ -268,9 +247,7 @@ def _check_failure_result(
         and type(index) is int
         and 1 <= index <= len(workflow.steps)
         and _exact(_attribute(result, "workflow_id"), workflow.id)
-        and _exact(
-            _attribute(result, "current_step_id"), workflow.steps[index - 1].id
-        )
+        and _exact(_attribute(result, "current_step_id"), workflow.steps[index - 1].id)
         and _exact(
             _attribute(result, "current_employee_id"),
             workflow.steps[index - 1].employee,
