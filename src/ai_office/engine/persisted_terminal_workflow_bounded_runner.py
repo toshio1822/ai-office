@@ -21,13 +21,11 @@ from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
 
 PersistedTerminalWorkflowBoundedRunnerClassification = Literal[
-    "configuration",
     "classification_contract",
     "routing_contract",
     "contexts_type",
     "context_type",
     "bounded_continuation_contract",
-    "dependency_error",
 ]
 
 _ERROR_MESSAGE = "persisted terminal workflow bounded runner inputs are incompatible"
@@ -65,44 +63,26 @@ def route_persisted_terminal_workflow_bounded(
     state_path: object,
     events_path: object,
     continuation_contexts: object,
-    *,
-    classification_function=classify_persisted_execution_outcome_reentry,
-    routing_function=route_persisted_execution_outcome_reentry,
-    bounded_continuation_function=route_bounded_approved_workflow_continuation,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
     """Resume one persisted terminal outcome and stop at one bounded handoff."""
-    if not callable(classification_function) or not callable(routing_function):
-        _fail("configuration")
-
-    try:
-        classified_outcome = classification_function(
-            workflow,
-            state_path,
-            events_path,
-        )
-    except Exception:
-        if classification_function is classify_persisted_execution_outcome_reentry:
-            raise
-        _fail("dependency_error")
+    classified_outcome = classify_persisted_execution_outcome_reentry(
+        workflow,
+        state_path,
+        events_path,
+    )
     if not _valid_persisted_outcome(classified_outcome, workflow):
         _fail("classification_contract")
 
-    try:
-        routed_result = routing_function(
-            classified_outcome,
-            workflow,
-            state_path,
-            events_path,
-        )
-    except Exception:
-        if routing_function is route_persisted_execution_outcome_reentry:
-            raise
-        _fail("dependency_error")
+    routed_result = route_persisted_execution_outcome_reentry(
+        classified_outcome,
+        workflow,
+        state_path,
+        events_path,
+    )
 
     if _exact(_attribute(classified_outcome, "outcome"), "persisted_failure"):
-        if (
-            routed_result is not classified_outcome
-            or not _valid_persisted_outcome(routed_result, workflow)
+        if routed_result is not classified_outcome or not _valid_persisted_outcome(
+            routed_result, workflow
         ):
             _fail("routing_contract")
         return routed_result
@@ -112,22 +92,14 @@ def route_persisted_terminal_workflow_bounded(
     if _exact(_attribute(routed_result, "decision"), "workflow_complete"):
         return routed_result
 
-    _validate_continuation_configuration(
+    _validate_continuation_contexts(continuation_contexts)
+    bounded_result = route_bounded_approved_workflow_continuation(
+        routed_result,
+        workflow,
+        state_path,
+        events_path,
         continuation_contexts,
-        bounded_continuation_function,
     )
-    try:
-        bounded_result = bounded_continuation_function(
-            routed_result,
-            workflow,
-            state_path,
-            events_path,
-            continuation_contexts,
-        )
-    except Exception:
-        if bounded_continuation_function is route_bounded_approved_workflow_continuation:
-            raise
-        _fail("dependency_error")
     if not _valid_bounded_result(
         bounded_result,
         workflow,
@@ -138,18 +110,13 @@ def route_persisted_terminal_workflow_bounded(
     return bounded_result
 
 
-def _validate_continuation_configuration(
-    continuation_contexts: object,
-    bounded_continuation_function: object,
-) -> None:
+def _validate_continuation_contexts(continuation_contexts: object) -> None:
     if type(continuation_contexts) is not tuple:
         _fail("contexts_type")
     if tuple(map(type, continuation_contexts)) != (
         ApprovedWorkflowContinuationContext,
     ) * len(continuation_contexts):
         _fail("context_type")
-    if not callable(bounded_continuation_function):
-        _fail("configuration")
 
 
 def _valid_persisted_outcome(value: object, workflow: object) -> bool:
@@ -157,8 +124,7 @@ def _valid_persisted_outcome(value: object, workflow: object) -> bool:
         return False
     outcome = _attribute(value, "outcome")
     if not (
-        _exact(outcome, "persisted_success")
-        or _exact(outcome, "persisted_failure")
+        _exact(outcome, "persisted_success") or _exact(outcome, "persisted_failure")
     ):
         return False
     if not _valid_current_linkage(value, workflow):
@@ -166,10 +132,7 @@ def _valid_persisted_outcome(value: object, workflow: object) -> bool:
     failure_category = _attribute(value, "failure_category")
     if _exact(outcome, "persisted_success"):
         return failure_category is None
-    return (
-        type(failure_category) is str
-        and failure_category in _FAILURE_CATEGORIES
-    )
+    return type(failure_category) is str and failure_category in _FAILURE_CATEGORIES
 
 
 def _valid_routed_success(
@@ -218,10 +181,7 @@ def _valid_bounded_result(
 
     steps = _workflow_steps(workflow)
     start_index = _attribute(previous, "next_step_index")
-    if (
-        steps is _MISSING
-        or type(start_index) is not int
-    ):
+    if steps is _MISSING or type(start_index) is not int:
         return False
     maximum_index = min(len(steps), start_index + len(contexts) - 1)
     if not _valid_bounded_position(value, workflow, start_index, maximum_index):
@@ -258,16 +218,17 @@ def _valid_exhausted_prepare(
     workflow: object,
     maximum_index: int,
 ) -> bool:
-    return (
-        _attribute(value, "current_step_index") == maximum_index
-        and _valid_prepare(value, workflow)
+    return _attribute(value, "current_step_index") == maximum_index and _valid_prepare(
+        value, workflow
     )
 
 
 def _valid_persisted_failure(value: object, workflow: object) -> bool:
-    return type(value) is PersistedExecutionOutcome and _exact(
-        _attribute(value, "outcome"), "persisted_failure"
-    ) and _valid_persisted_outcome(value, workflow)
+    return (
+        type(value) is PersistedExecutionOutcome
+        and _exact(_attribute(value, "outcome"), "persisted_failure")
+        and _valid_persisted_outcome(value, workflow)
+    )
 
 
 def _valid_prepare(value: object, workflow: object) -> bool:
@@ -337,11 +298,7 @@ def _workflow_steps(workflow: object) -> object:
 
 def _step_at(workflow: object, index: object) -> object:
     steps = _workflow_steps(workflow)
-    if (
-        steps is _MISSING
-        or type(index) is not int
-        or not 1 <= index <= len(steps)
-    ):
+    if steps is _MISSING or type(index) is not int or not 1 <= index <= len(steps):
         return _MISSING
     step = steps[index - 1]
     if type(step) is not WorkflowStepDefinition:
@@ -363,7 +320,9 @@ def _exact(value: object, expected: object) -> bool:
 def _fail(
     classification: PersistedTerminalWorkflowBoundedRunnerClassification,
 ) -> None:
-    raise PersistedTerminalWorkflowBoundedRunnerCompatibilityError(classification) from None
+    raise PersistedTerminalWorkflowBoundedRunnerCompatibilityError(
+        classification
+    ) from None
 
 
 __all__ = [

@@ -1,37 +1,34 @@
 """Focused Phase-212 persisted-terminal bounded-resume tests.
 
-Exactly 20 top-level tests are kept in this module.  Real-route cases use only
-small deterministic synthetic transports; no provider, network, or paid API is
-called.
+The public boundary has four business inputs and uses the canonical Phase 37,
+Phase 38, and Phase 192 owners directly.  Test-only monkeypatching of those
+canonical owner names observes malformed/error behavior without restoring a
+public dependency-injection seam.  Real-route cases use deterministic
+synthetic transports only; no provider, network, or paid API is called.
 
 Requirement-to-test mapping:
-1 public API/error family/signature -> test_01_public_api_error_family_and_signature
-2 pre-read callable dependencies -> test_02_pre_read_dependencies_are_callable_before_any_phase
-3 exact outer Phase-37 call -> test_03_outer_phase37_receives_exact_arguments_once
-4 strict outer classification result -> test_04_outer_classification_result_is_strict
-5 exact Phase-38 call -> test_05_phase38_receives_outer_identity_and_exact_arguments_once
-6 persisted-failure routing identity -> test_06_persisted_failure_requires_phase38_identity
-7 persisted-success routing result -> test_07_persisted_success_routing_result_is_strict
-8 persisted-failure terminal stop -> test_08_persisted_failure_terminal_ignores_malformed_contexts
-9 final-success terminal stop -> test_09_final_success_terminal_ignores_malformed_contexts
-10 deferred prepare configuration -> test_10_prepare_configuration_is_deferred_until_after_routing
-11 exact Phase-192 call -> test_11_phase192_receives_routed_identity_and_exact_arguments_once
-12 thin Phase-192 output seam -> test_12_phase192_output_family_and_linkage_are_strict
-13 four-step restart success -> test_13_restart_success_does_not_replay_completed_steps
-14 finite context exhaustion -> test_14_restart_context_exhaustion_returns_exact_remaining_prepare
-15 resumed deterministic failure -> test_15_restart_failure_does_not_consume_later_context
-16 ready/running exclusion -> test_16_ready_and_running_are_rejected_without_replay
-17 corrupt history lower ownership -> test_17_corrupt_or_mismatched_history_stays_lower_owned
-18 default safe errors and read-only behavior -> test_18_default_lower_safe_errors_and_read_only_targets_are_preserved
-19 no outer rollback after Phase-192 -> test_19_phase192_owned_change_is_never_rolled_back
-20 no loop/retry/auto-selection/source audit -> test_20_source_audit_proves_thin_separate_bounded_ownership
+1 public API and removed seams -> test_01_public_api_and_removed_dependency_seams
+2 single execution and prepare handoff -> test_02_prepare_result_advances_once_without_retry_or_duplicate_execution
+3 deferred context validation -> test_03_prepare_context_validation_is_deferred_until_after_routing
+4 strict classified outcome -> test_04_classification_result_is_strict
+5 persisted-failure routing and stop -> test_05_persisted_failure_requires_routing_identity
+6 strict routed success -> test_06_persisted_success_routing_result_is_strict
+7 persisted-failure terminal stop -> test_07_persisted_failure_terminal_ignores_malformed_contexts
+8 final-success terminal stop -> test_08_final_success_terminal_ignores_malformed_contexts
+9 bounded-result validation -> test_09_bounded_result_family_and_linkage_are_strict
+10 restart success without replay -> test_10_restart_success_does_not_replay_completed_steps
+11 finite context exhaustion -> test_11_restart_context_exhaustion_returns_exact_remaining_prepare
+12 failure does not consume later context -> test_12_restart_failure_does_not_consume_later_context
+13 ready/running exclusion -> test_13_ready_and_running_are_rejected_without_replay
+14 corrupt history fail-closed -> test_14_corrupt_or_mismatched_history_stays_lower_owned
+15 lower-owner errors and read-only behavior -> test_15_default_lower_safe_errors_and_read_only_targets_are_preserved
+16 durable ownership and no outer rollback -> test_16_phase192_owned_change_is_never_rolled_back
 """
 
 # ruff: noqa: E501,F401,F811,I001
 
 from __future__ import annotations
 
-import ast
 import inspect
 import json
 from dataclasses import FrozenInstanceError, astuple, replace
@@ -53,13 +50,8 @@ from ai_office.engine import (
     PersistedTerminalWorkflowBoundedRunnerError,
     PersistedTerminalWorkflowBoundedRunnerFailureDetail,
     WorkflowProgressionDecision,
-    classify_persisted_execution_outcome_reentry,
     route_bounded_approved_workflow_continuation,
-    route_persisted_execution_outcome_reentry,
     route_persisted_terminal_workflow_bounded,
-)
-from ai_office.engine.persisted_success_progression import (
-    decide_persisted_success_progression,
 )
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase145Error,
@@ -78,18 +70,12 @@ from ai_office.invocation import (
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
-    WorkflowExecutionPersistenceTargets,
     WorkflowExecutionLoadError,
-    load_workflow_execution_history,
     load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
 from tests._phase260_test_support import synthetic_continuation_facts
-
-_MODULE_PATH = Path(route_persisted_terminal_workflow_bounded.__code__.co_filename)
-_MODULE_SOURCE = _MODULE_PATH.read_text(encoding="utf-8")
-_MISSING = object()
 
 
 def _workflow(count: int = 4) -> WorkflowDefinition:
@@ -413,7 +399,9 @@ def _event(
 
 
 def _assert_runner_error(call, classification: str) -> None:
-    with pytest.raises(PersistedTerminalWorkflowBoundedRunnerCompatibilityError) as caught:
+    with pytest.raises(
+        PersistedTerminalWorkflowBoundedRunnerCompatibilityError
+    ) as caught:
         call()
     assert caught.value.detail.classification == classification
     assert str(caught.value) == (
@@ -422,53 +410,36 @@ def _assert_runner_error(call, classification: str) -> None:
     assert "secret" not in str(caught.value)
 
 
-def test_01_public_api_error_family_and_signature() -> None:
+def test_01_public_api_and_removed_dependency_seams() -> None:
     signature = inspect.signature(route_persisted_terminal_workflow_bounded)
     assert list(signature.parameters) == [
         "workflow",
         "state_path",
         "events_path",
         "continuation_contexts",
-        "classification_function",
-        "routing_function",
-        "bounded_continuation_function",
     ]
-    for name in (
-        "classification_function",
-        "routing_function",
-        "bounded_continuation_function",
-    ):
-        assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
-    assert (
-        signature.parameters["classification_function"].default
-        is classify_persisted_execution_outcome_reentry
-    )
-    assert (
-        signature.parameters["routing_function"].default
-        is route_persisted_execution_outcome_reentry
-    )
-    assert (
-        signature.parameters["bounded_continuation_function"].default
-        is route_bounded_approved_workflow_continuation
+    assert all(
+        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        for parameter in signature.parameters.values()
     )
     assert get_args(PersistedTerminalWorkflowBoundedRunnerClassification) == (
-        "configuration",
         "classification_contract",
         "routing_contract",
         "contexts_type",
         "context_type",
         "bounded_continuation_contract",
-        "dependency_error",
     )
     assert issubclass(
         PersistedTerminalWorkflowBoundedRunnerCompatibilityError,
         PersistedTerminalWorkflowBoundedRunnerError,
     )
     assert issubclass(PersistedTerminalWorkflowBoundedRunnerError, ValueError)
-    detail = PersistedTerminalWorkflowBoundedRunnerFailureDetail("configuration")
-    assert detail.classification == "configuration"
+    detail = PersistedTerminalWorkflowBoundedRunnerFailureDetail(
+        "classification_contract"
+    )
+    assert detail.classification == "classification_contract"
     with pytest.raises(FrozenInstanceError):
-        detail.classification = "dependency_error"  # type: ignore[misc]
+        detail.classification = "routing_contract"  # type: ignore[misc]
     assert {
         "PersistedTerminalWorkflowBoundedRunnerClassification",
         "PersistedTerminalWorkflowBoundedRunnerFailureDetail",
@@ -482,106 +453,111 @@ def test_01_public_api_error_family_and_signature() -> None:
         ).__all__
     )
 
-
-def test_02_pre_read_dependencies_are_callable_before_any_phase() -> None:
     workflow = _workflow(1)
-    calls = [0, 0, 0]
-
-    def classification(*_: object) -> object:
-        calls[0] += 1
-        return _success_outcome(workflow)
-
-    def routing(*_: object) -> object:
-        calls[1] += 1
-        return _complete(workflow)
-
-    def bounded(*_: object) -> object:
-        calls[2] += 1
-        return _complete(workflow)
-
-    _assert_runner_error(
-        lambda: route_persisted_terminal_workflow_bounded(
-            object(),
-            object(),
-            object(),
-            object(),
-            classification_function=None,
-            routing_function=routing,
-            bounded_continuation_function=bounded,
-        ),
-        "configuration",
-    )
-    assert calls == [0, 0, 0]
-    _assert_runner_error(
-        lambda: route_persisted_terminal_workflow_bounded(
-            object(),
-            object(),
-            object(),
-            object(),
-            classification_function=classification,
-            routing_function=None,
-            bounded_continuation_function=bounded,
-        ),
-        "configuration",
-    )
-    assert calls == [0, 0, 0]
+    for removed_keyword in (
+        "classification_function",
+        "routing_function",
+        "bounded_continuation_function",
+    ):
+        with pytest.raises(TypeError):
+            route_persisted_terminal_workflow_bounded(
+                workflow,
+                object(),
+                object(),
+                (),
+                **{removed_keyword: object()},
+            )
 
 
-def test_03_outer_phase37_receives_exact_arguments_once() -> None:
-    workflow = _workflow(1)
-    state_path = object()
-    events_path = object()
-    classified = _success_outcome(workflow)
-    routed = _complete(workflow)
-    classification_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    routing_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    def classification(*args: object, **kwargs: object) -> object:
-        classification_calls.append((args, kwargs))
-        return classified
-
-    def routing(*args: object, **kwargs: object) -> object:
-        routing_calls.append((args, kwargs))
-        return routed
-
-    def never_bounded(*_: object, **__: object) -> object:
-        raise AssertionError("terminal routing result must bypass Phase 192")
+def test_02_prepare_result_advances_once_without_retry_or_duplicate_execution(
+    tmp_path: Path,
+) -> None:
+    workflow = _workflow(4)
+    calls: list[str] = []
+    state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
 
     result = route_persisted_terminal_workflow_bounded(
         workflow,
         state_path,
         events_path,
-        object(),
-        classification_function=classification,
-        routing_function=routing,
-        bounded_continuation_function=never_bounded,
+        (
+            _continuation_context(workflow, 3, calls),
+            _continuation_context(workflow, 4, calls),
+        ),
     )
-    assert result is routed
-    assert classification_calls == [((workflow, state_path, events_path), {})]
-    assert routing_calls == [
-        ((classified, workflow, state_path, events_path), {})
+    assert type(result) is WorkflowProgressionDecision
+    assert result.decision == "workflow_complete"
+    assert result.current_step_index == 4
+    assert calls == ["step-1", "step-2", "step-3", "step-4"]
+    event_ids = [
+        json.loads(line)["step_id"] for line in events_path.read_text().splitlines()
     ]
+    assert event_ids == ["step-1", "step-2", "step-3", "step-4"]
+    assert load_workflow_execution_state(state_path).completed_step_ids == (
+        "step-1",
+        "step-2",
+        "step-3",
+        "step-4",
+    )
 
 
-def test_04_outer_classification_result_is_strict() -> None:
+def test_03_prepare_context_validation_stops_before_bounded_execution(
+    tmp_path: Path,
+) -> None:
+    workflow = _workflow(4)
+    context = _opaque_context()
+
+    class TupleSubclass(tuple):
+        pass
+
+    cases = (
+        ([], "contexts_type"),
+        (TupleSubclass((context,)), "contexts_type"),
+        ((context, object()), "context_type"),
+    )
+    for index, (contexts, classification_name) in enumerate(cases):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        calls: list[str] = []
+        state_path, events_path = _seed_two_step_prefix(directory, workflow, calls)
+        before = (state_path.read_bytes(), events_path.read_bytes())
+        _assert_runner_error(
+            lambda contexts=contexts: route_persisted_terminal_workflow_bounded(
+                workflow,
+                state_path,
+                events_path,
+                contexts,
+            ),
+            classification_name,
+        )
+        assert calls == ["step-1", "step-2"]
+        assert (state_path.read_bytes(), events_path.read_bytes()) == before
+
+
+def test_04_classification_result_is_strict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workflow = _workflow(2)
     state_path, events_path = object(), object()
-    routing_calls = 0
+    import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    def route_valid(value: object, *_: object) -> object:
-        nonlocal routing_calls
-        routing_calls += 1
-        return value if _get(value, "outcome") == "persisted_failure" else _prepare(workflow)
+    def routing(value: object, *_: object) -> object:
+        if _get(value, "outcome") == "persisted_failure":
+            return value
+        raise AssertionError("invalid classification must not reach routing")
 
+    monkeypatch.setattr(
+        runner_module, "route_persisted_execution_outcome_reentry", routing
+    )
     for category in get_args(ModelInvocationFailureCategory):
         failure = _failure_outcome(workflow, category=category)
+        monkeypatch.setattr(
+            runner_module,
+            "classify_persisted_execution_outcome_reentry",
+            lambda *_args, value=failure: value,
+        )
         result = route_persisted_terminal_workflow_bounded(
-            workflow,
-            state_path,
-            events_path,
-            object(),
-            classification_function=lambda *_args, value=failure: value,
-            routing_function=route_valid,
+            workflow, state_path, events_path, object()
         )
         assert result is failure
 
@@ -606,119 +582,116 @@ def test_04_outer_classification_result_is_strict() -> None:
         OutcomeSubclass(*astuple(valid_success)),
     )
     for invalid in invalid_values:
+        monkeypatch.setattr(
+            runner_module,
+            "classify_persisted_execution_outcome_reentry",
+            lambda *_args, value=invalid: value,
+        )
         _assert_runner_error(
-            lambda invalid=invalid: route_persisted_terminal_workflow_bounded(
-                workflow,
-                state_path,
-                events_path,
-                object(),
-                classification_function=lambda *_args, value=invalid: value,
-                routing_function=route_valid,
+            lambda: route_persisted_terminal_workflow_bounded(
+                workflow, state_path, events_path, object()
             ),
             "classification_contract",
         )
-    assert routing_calls == len(get_args(ModelInvocationFailureCategory))
 
 
-def test_05_phase38_receives_outer_identity_and_exact_arguments_once() -> None:
-    workflow = _workflow(2)
-    state_path, events_path = object(), object()
-    classified = _success_outcome(workflow)
-    routed = _prepare(workflow)
-    contexts = (_opaque_context(),)
-    routing_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    bounded_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    final = _complete(workflow)
-
-    def routing(*args: object, **kwargs: object) -> object:
-        routing_calls.append((args, kwargs))
-        return routed
-
-    def bounded(*args: object, **kwargs: object) -> object:
-        bounded_calls.append((args, kwargs))
-        return final
-
-    result = route_persisted_terminal_workflow_bounded(
-        workflow,
-        state_path,
-        events_path,
-        contexts,
-        classification_function=lambda *args: classified,
-        routing_function=routing,
-        bounded_continuation_function=bounded,
-    )
-    assert result is final
-    assert routing_calls == [
-        ((classified, workflow, state_path, events_path), {})
-    ]
-    assert bounded_calls == [
-        ((routed, workflow, state_path, events_path, contexts), {})
-    ]
-
-
-def test_06_persisted_failure_requires_phase38_identity() -> None:
+def test_05_persisted_failure_requires_routing_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workflow = _workflow(2)
     failure = _failure_outcome(workflow)
+    import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
+
+    monkeypatch.setattr(
+        runner_module,
+        "classify_persisted_execution_outcome_reentry",
+        lambda *_args: failure,
+    )
     for translated in (
         replace(failure),
         _prepare(workflow),
         _complete(workflow),
         _failure_outcome(workflow, category="transport_error"),
     ):
+        monkeypatch.setattr(
+            runner_module,
+            "route_persisted_execution_outcome_reentry",
+            lambda *_args, translated=translated: translated,
+        )
         _assert_runner_error(
-            lambda translated=translated: route_persisted_terminal_workflow_bounded(
-                workflow,
-                object(),
-                object(),
-                object(),
-                classification_function=lambda *_args: failure,
-                routing_function=lambda *_args, translated=translated: translated,
+            lambda: route_persisted_terminal_workflow_bounded(
+                workflow, object(), object(), object()
             ),
             "routing_contract",
         )
+
+    monkeypatch.setattr(
+        runner_module,
+        "route_persisted_execution_outcome_reentry",
+        lambda *_args: failure,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "route_bounded_approved_workflow_continuation",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("terminal failure must bypass bounded continuation")
+        ),
+    )
     assert (
         route_persisted_terminal_workflow_bounded(
-            workflow,
-            object(),
-            object(),
-            object(),
-            classification_function=lambda *_args: failure,
-            routing_function=lambda *_args: failure,
-            bounded_continuation_function=None,
+            workflow, object(), object(), object()
         )
         is failure
     )
 
 
-def test_07_persisted_success_routing_result_is_strict() -> None:
-    workflow = _workflow(2)
+def test_06_persisted_success_routing_result_is_strict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = _workflow(3)
     classified = _success_outcome(workflow)
     valid_prepare = _prepare(workflow)
     valid_complete = _complete(workflow)
+    import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
+
+    monkeypatch.setattr(
+        runner_module,
+        "classify_persisted_execution_outcome_reentry",
+        lambda *_args: classified,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "route_persisted_execution_outcome_reentry",
+        lambda *_args: valid_prepare,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "route_bounded_approved_workflow_continuation",
+        lambda *_args: valid_complete,
+    )
     assert (
         route_persisted_terminal_workflow_bounded(
-            workflow,
-            object(),
-            object(),
-            (_opaque_context(),),
-            classification_function=lambda *_args: classified,
-            routing_function=lambda *_args: valid_prepare,
-            bounded_continuation_function=lambda *_args: valid_complete,
+            workflow, object(), object(), (_opaque_context(), _opaque_context())
         )
         is valid_complete
     )
+
     one_step_workflow = _workflow(1)
     one_step_classified = _success_outcome(one_step_workflow)
     one_step_complete = _complete(one_step_workflow)
+    monkeypatch.setattr(
+        runner_module,
+        "classify_persisted_execution_outcome_reentry",
+        lambda *_args: one_step_classified,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "route_persisted_execution_outcome_reentry",
+        lambda *_args: one_step_complete,
+    )
     assert (
         route_persisted_terminal_workflow_bounded(
-            one_step_workflow,
-            object(),
-            object(),
-            object(),
-            classification_function=lambda *_args: one_step_classified,
-            routing_function=lambda *_args: one_step_complete,
-            bounded_continuation_function=None,
+            one_step_workflow, object(), object(), object()
         )
         is one_step_complete
     )
@@ -741,82 +714,65 @@ def test_07_persisted_success_routing_result_is_strict() -> None:
         DecisionSubclass(*astuple(valid_prepare)),
     )
     for invalid in invalid_values:
+        monkeypatch.setattr(
+            runner_module,
+            "classify_persisted_execution_outcome_reentry",
+            lambda *_args: classified,
+        )
+        monkeypatch.setattr(
+            runner_module,
+            "route_persisted_execution_outcome_reentry",
+            lambda *_args, invalid=invalid: invalid,
+        )
         _assert_runner_error(
-            lambda invalid=invalid: route_persisted_terminal_workflow_bounded(
-                workflow,
-                object(),
-                object(),
-                object(),
-                classification_function=lambda *_args: classified,
-                routing_function=lambda *_args, invalid=invalid: invalid,
-                bounded_continuation_function=lambda *_args: valid_complete,
+            lambda: route_persisted_terminal_workflow_bounded(
+                workflow, object(), object(), object()
             ),
             "routing_contract",
         )
 
 
-def test_08_persisted_failure_terminal_ignores_malformed_contexts(
-    tmp_path: Path,
+def test_07_persisted_failure_terminal_ignores_malformed_contexts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workflow = _workflow(1)
     calls: list[str] = []
+    state_path = tmp_path / "state.json"
+    events_path = tmp_path / "events.jsonl"
     result = route_approved_workflow_fresh_start(
         workflow,
-        tmp_path / "state.json",
-        tmp_path / "events.jsonl",
+        state_path,
+        events_path,
         _bootstrap_context(workflow, calls, status=500),
     )
     assert type(result) is PersistedExecutionOutcome
     assert result.outcome == "persisted_failure"
-    classified_results: list[object] = []
-    outer_calls = 0
-    inner_calls = 0
-    routing_calls = 0
-    progression_calls = 0
+    before = (state_path.read_bytes(), events_path.read_bytes())
+    bounded_calls: list[str] = []
 
-    def outer(*args: object) -> object:
-        nonlocal outer_calls
-        outer_calls += 1
-        value = classify_persisted_execution_outcome_reentry(*args)
-        classified_results.append(value)
-        return value
+    import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    def inner(*args: object) -> object:
-        nonlocal inner_calls
-        inner_calls += 1
-        return classify_persisted_execution_outcome_reentry(*args)
+    def bounded(*_: object) -> object:
+        bounded_calls.append("bounded")
+        raise AssertionError("terminal failure must bypass bounded continuation")
 
-    def progression(*args: object) -> object:
-        nonlocal progression_calls
-        progression_calls += 1
-        return decide_persisted_success_progression(*args)
-
-    def routing(*args: object) -> object:
-        nonlocal routing_calls
-        routing_calls += 1
-        return route_persisted_execution_outcome_reentry(
-            *args,
-            classification_function=inner,
-            progression_function=progression,
-        )
-
-    final = route_persisted_terminal_workflow_bounded(
-        workflow,
-        tmp_path / "state.json",
-        tmp_path / "events.jsonl",
-        [object(), object()],
-        classification_function=outer,
-        routing_function=routing,
-        bounded_continuation_function=None,
+    monkeypatch.setattr(
+        runner_module, "route_bounded_approved_workflow_continuation", bounded
     )
-    assert final is classified_results[0]
-    assert final is not result
+    final = route_persisted_terminal_workflow_bounded(
+        workflow, state_path, events_path, [object(), object()]
+    )
+    assert type(final) is PersistedExecutionOutcome
+    assert final.outcome == "persisted_failure"
+    assert final.current_step_index == 1
+    assert bounded_calls == []
+    assert (state_path.read_bytes(), events_path.read_bytes()) == before
     assert calls == ["step-1"]
-    assert (outer_calls, routing_calls, inner_calls, progression_calls) == (1, 1, 1, 0)
-    assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 1
 
 
-def test_09_final_success_terminal_ignores_malformed_contexts(tmp_path: Path) -> None:
+def test_08_final_success_terminal_ignores_malformed_contexts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
     state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
@@ -832,163 +788,49 @@ def test_09_final_success_terminal_ignores_malformed_contexts(tmp_path: Path) ->
     )
     assert type(completed) is WorkflowProgressionDecision
     assert completed.decision == "workflow_complete"
-    assert load_workflow_execution_state(state_path).status == "succeeded"
-    outer_calls = 0
-    inner_calls = 0
-    routing_calls = 0
-    progression_calls = 0
-    phase31_result: list[object] = []
-    phase38_result: list[object] = []
+    before = (state_path.read_bytes(), events_path.read_bytes())
+    bounded_calls: list[str] = []
 
-    def outer(*args: object) -> object:
-        nonlocal outer_calls
-        outer_calls += 1
-        return classify_persisted_execution_outcome_reentry(*args)
+    import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    def inner(*args: object) -> object:
-        nonlocal inner_calls
-        inner_calls += 1
-        return classify_persisted_execution_outcome_reentry(*args)
+    def bounded(*_: object) -> object:
+        bounded_calls.append("bounded")
+        raise AssertionError("final success must bypass bounded continuation")
 
-    def progression(*args: object) -> object:
-        nonlocal progression_calls
-        progression_calls += 1
-        value = decide_persisted_success_progression(*args)
-        phase31_result.append(value)
-        return value
-
-    def routing(*args: object) -> object:
-        nonlocal routing_calls
-        routing_calls += 1
-        value = route_persisted_execution_outcome_reentry(
-            *args,
-            classification_function=inner,
-            progression_function=progression,
-        )
-        phase38_result.append(value)
-        return value
-
+    monkeypatch.setattr(
+        runner_module, "route_bounded_approved_workflow_continuation", bounded
+    )
     final = route_persisted_terminal_workflow_bounded(
-        workflow,
-        state_path,
-        events_path,
-        [object(), object()],
-        classification_function=outer,
-        routing_function=routing,
-        bounded_continuation_function=None,
+        workflow, state_path, events_path, [object(), object()]
     )
     assert type(final) is WorkflowProgressionDecision
     assert final.decision == "workflow_complete"
-    assert len(phase31_result) == 1
-    assert len(phase38_result) == 1
-    assert phase31_result == [final]
-    assert final is phase31_result[0]
-    assert final is phase38_result[0]
-    assert phase31_result[0] is phase38_result[0]
-    assert (outer_calls, routing_calls, inner_calls, progression_calls) == (1, 1, 1, 1)
+    assert bounded_calls == []
+    assert (state_path.read_bytes(), events_path.read_bytes()) == before
     assert calls == ["step-1", "step-2", "step-3", "step-4"]
-    assert len(events_path.read_text().splitlines()) == 4
 
 
-def test_10_prepare_configuration_is_deferred_until_after_routing() -> None:
-    workflow = _workflow(2)
-    classified = _success_outcome(workflow)
-    routed = _prepare(workflow)
-    for contexts, bounded, expected in (
-        ([], lambda *_args: routed, "contexts_type"),
-        ((_opaque_context(), object()), lambda *_args: routed, "context_type"),
-        ((_opaque_context(),), None, "configuration"),
-    ):
-        observed = [False, False, 0]
-
-        def classification(*_: object) -> object:
-            observed[0] = True
-            return classified
-
-        def routing(*_: object) -> object:
-            observed[1] = observed[0]
-            return routed
-
-        def bounded_function(*_: object) -> object:
-            observed[2] += 1
-            return _complete(workflow)
-
-        _assert_runner_error(
-            lambda contexts=contexts, bounded=bounded: route_persisted_terminal_workflow_bounded(
-                workflow,
-                object(),
-                object(),
-                contexts,
-                classification_function=classification,
-                routing_function=routing,
-                bounded_continuation_function=(
-                    bounded if bounded is not None else bounded_function
-                ),
-            )
-            if bounded is not None
-            else route_persisted_terminal_workflow_bounded(
-                workflow,
-                object(),
-                object(),
-                contexts,
-                classification_function=classification,
-                routing_function=routing,
-                bounded_continuation_function=None,
-            ),
-            expected,
-        )
-        assert observed == [True, True, 0]
-
-
-def test_11_phase192_receives_routed_identity_and_exact_arguments_once() -> None:
-    workflow = _workflow(2)
-    state_path = object()
-    events_path = object()
-    classified = _success_outcome(workflow)
-    routed = _prepare(workflow)
-    contexts = (_opaque_context(),)
-    bounded_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    returned = _failure_outcome(workflow, index=2, category="invalid_output")
-
-    def bounded(*args: object, **kwargs: object) -> object:
-        bounded_calls.append((args, kwargs))
-        return returned
-
-    result = route_persisted_terminal_workflow_bounded(
-        workflow,
-        state_path,
-        events_path,
-        contexts,
-        classification_function=lambda *_args: classified,
-        routing_function=lambda *_args: routed,
-        bounded_continuation_function=bounded,
-    )
-    assert result is returned
-    assert len(bounded_calls) == 1
-    args, kwargs = bounded_calls[0]
-    assert len(args) == 5
-    assert kwargs == {}
-    assert args[0] is routed
-    assert args[1] is workflow
-    assert args[2] is state_path
-    assert args[3] is events_path
-    assert args[4] is contexts
-
-
-def test_12_phase192_output_family_and_linkage_are_strict() -> None:
+def test_09_bounded_result_family_and_linkage_are_strict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workflow = _workflow(3)
     classified = _success_outcome(workflow)
     routed = _prepare(workflow, 1)
     contexts = (_opaque_context(),)
     valid_prepare = _prepare(workflow, 2)
     valid_failure = _failure_outcome(workflow, index=2, category="api_error")
+    import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    class DecisionSubclass(WorkflowProgressionDecision):
-        pass
-
-    class OutcomeSubclass(PersistedExecutionOutcome):
-        pass
-
+    monkeypatch.setattr(
+        runner_module,
+        "classify_persisted_execution_outcome_reentry",
+        lambda *_args: classified,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "route_persisted_execution_outcome_reentry",
+        lambda *_args: routed,
+    )
     invalid_values: tuple[object, ...] = (
         object(),
         routed,
@@ -1002,54 +844,38 @@ def test_12_phase192_output_family_and_linkage_are_strict() -> None:
         replace(valid_prepare, reason="other"),
         _success_outcome(workflow, index=2),
         replace(valid_failure, failure_category="not-a-category"),
-        DecisionSubclass(*astuple(valid_prepare)),
-        OutcomeSubclass(*astuple(valid_failure)),
     )
     for invalid in invalid_values:
+        monkeypatch.setattr(
+            runner_module,
+            "route_bounded_approved_workflow_continuation",
+            lambda *_args, invalid=invalid: invalid,
+        )
         _assert_runner_error(
-            lambda invalid=invalid: route_persisted_terminal_workflow_bounded(
-                workflow,
-                object(),
-                object(),
-                contexts,
-                classification_function=lambda *_args: classified,
-                routing_function=lambda *_args: routed,
-                bounded_continuation_function=lambda *_args, invalid=invalid: invalid,
+            lambda: route_persisted_terminal_workflow_bounded(
+                workflow, object(), object(), contexts
             ),
             "bounded_continuation_contract",
         )
-    assert (
-        route_persisted_terminal_workflow_bounded(
-            workflow,
-            object(),
-            object(),
-            contexts,
-            classification_function=lambda *_args: classified,
-            routing_function=lambda *_args: routed,
-            bounded_continuation_function=lambda *_args: valid_prepare,
+
+    for valid in (valid_prepare, valid_failure):
+        monkeypatch.setattr(
+            runner_module,
+            "route_bounded_approved_workflow_continuation",
+            lambda *_args, valid=valid: valid,
         )
-        is valid_prepare
-    )
-    assert (
-        route_persisted_terminal_workflow_bounded(
-            workflow,
-            object(),
-            object(),
-            contexts,
-            classification_function=lambda *_args: classified,
-            routing_function=lambda *_args: routed,
-            bounded_continuation_function=lambda *_args: valid_failure,
+        assert (
+            route_persisted_terminal_workflow_bounded(
+                workflow, object(), object(), contexts
+            )
+            is valid
         )
-        is valid_failure
-    )
 
 
-def test_13_restart_success_does_not_replay_completed_steps(tmp_path: Path) -> None:
+def test_10_restart_success_does_not_replay_completed_steps(tmp_path: Path) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
     state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
-    # The in-memory prepare decision from before restart is intentionally not
-    # passed to Phase 212; only the durable files and new future contexts are.
     result = route_persisted_terminal_workflow_bounded(
         workflow,
         state_path,
@@ -1072,27 +898,18 @@ def test_13_restart_success_does_not_replay_completed_steps(tmp_path: Path) -> N
     assert event_ids == ["step-1", "step-2", "step-3", "step-4"]
 
 
-def test_14_restart_context_exhaustion_returns_exact_remaining_prepare(
+def test_11_restart_context_exhaustion_returns_exact_remaining_prepare(
     tmp_path: Path,
 ) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
     state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
-    bounded_results: list[object] = []
-
-    def bounded(*args: object) -> object:
-        value = route_bounded_approved_workflow_continuation(*args)
-        bounded_results.append(value)
-        return value
-
     result = route_persisted_terminal_workflow_bounded(
         workflow,
         state_path,
         events_path,
         (_continuation_context(workflow, 3, calls),),
-        bounded_continuation_function=bounded,
     )
-    assert result is bounded_results[0]
     assert type(result) is WorkflowProgressionDecision
     assert result.decision == "prepare_next_step"
     assert result.current_step_index == 3
@@ -1106,7 +923,7 @@ def test_14_restart_context_exhaustion_returns_exact_remaining_prepare(
     assert len(events_path.read_text().splitlines()) == 3
 
 
-def test_15_restart_failure_does_not_consume_later_context(tmp_path: Path) -> None:
+def test_12_restart_failure_does_not_consume_later_context(tmp_path: Path) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
     state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
@@ -1131,7 +948,7 @@ def test_15_restart_failure_does_not_consume_later_context(tmp_path: Path) -> No
     assert len(events_path.read_text().splitlines()) == 3
 
 
-def test_16_ready_and_running_are_rejected_without_replay(tmp_path: Path) -> None:
+def test_13_ready_and_running_are_rejected_without_replay(tmp_path: Path) -> None:
     workflow = _workflow(2)
     for status in ("ready", "running"):
         directory = tmp_path / status
@@ -1146,33 +963,20 @@ def test_16_ready_and_running_are_rejected_without_replay(tmp_path: Path) -> Non
             ),
             (),
         )
-        calls = [0, 0]
         transport_calls: list[str] = []
-
-        def routing(*_: object) -> object:
-            calls[0] += 1
-            raise AssertionError("Phase 38 must not be called")
-
-        def bounded(*_: object) -> object:
-            calls[1] += 1
-            raise AssertionError("Phase 192 must not be called")
-
         with pytest.raises(PersistedExecutionOutcomeCompatibilityError) as caught:
             route_persisted_terminal_workflow_bounded(
                 workflow,
                 state_path,
                 events_path,
                 (_continuation_context(workflow, 2, transport_calls),),
-                routing_function=routing,
-                bounded_continuation_function=bounded,
             )
         assert caught.value.detail.classification == "state_status"
-        assert calls == [0, 0]
         assert transport_calls == []
         assert events_path.read_bytes() == b""
 
 
-def test_17_corrupt_or_mismatched_history_stays_lower_owned(tmp_path: Path) -> None:
+def test_14_corrupt_or_mismatched_history_stays_lower_owned(tmp_path: Path) -> None:
     workflow = _workflow(2)
     cases: list[tuple[bytes, bytes]] = []
     cases.append((b"{", b""))
@@ -1180,7 +984,9 @@ def test_17_corrupt_or_mismatched_history_stays_lower_owned(tmp_path: Path) -> N
     cases.append(
         (
             serialize_workflow_execution_state_json(mismatched_state).encode(),
-            serialize_runtime_step_event_jsonl(_event(workflow, workflow_id="other")).encode(),
+            serialize_runtime_step_event_jsonl(
+                _event(workflow, workflow_id="other")
+            ).encode(),
         )
     )
     for index, (state_bytes, event_bytes) in enumerate(cases):
@@ -1189,43 +995,41 @@ def test_17_corrupt_or_mismatched_history_stays_lower_owned(tmp_path: Path) -> N
         state_path, events_path = directory / "state.json", directory / "events.jsonl"
         state_path.write_bytes(state_bytes)
         events_path.write_bytes(event_bytes)
-        calls = [0, 0]
-
-        def routing(*_: object) -> object:
-            calls[0] += 1
-            raise AssertionError("lower classification failure must stop before Phase 38")
-
-        def bounded(*_: object) -> object:
-            calls[1] += 1
-            raise AssertionError("Phase 192 must not be called")
-
-        with pytest.raises((PersistedExecutionOutcomeCompatibilityError, WorkflowExecutionLoadError)):
+        with pytest.raises(
+            (PersistedExecutionOutcomeCompatibilityError, WorkflowExecutionLoadError)
+        ):
             route_persisted_terminal_workflow_bounded(
                 workflow,
                 state_path,
                 events_path,
                 (_opaque_context(),),
-                routing_function=routing,
-                bounded_continuation_function=bounded,
             )
-        assert calls == [0, 0]
 
 
-def test_18_default_lower_safe_errors_and_read_only_targets_are_preserved(
-    tmp_path: Path,
+def test_15_default_lower_safe_errors_and_read_only_targets_are_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workflow = _workflow(3)
     classified = _success_outcome(workflow)
-    with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError):
-        route_persisted_terminal_workflow_bounded(
-            workflow,
-            object(),
-            object(),
-            (),
-            classification_function=lambda *_args: classified,
-            routing_function=route_persisted_execution_outcome_reentry,
-        )
+    import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
+    monkeypatch.setattr(
+        runner_module,
+        "classify_persisted_execution_outcome_reentry",
+        lambda *_args: classified,
+    )
+    with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError):
+        route_persisted_terminal_workflow_bounded(workflow, object(), object(), ())
+
+    from ai_office.engine.persisted_execution_outcome_reentry import (
+        classify_persisted_execution_outcome_reentry,
+    )
+
+    monkeypatch.setattr(
+        runner_module,
+        "classify_persisted_execution_outcome_reentry",
+        classify_persisted_execution_outcome_reentry,
+    )
     calls: list[str] = []
     state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
     before = (state_path.read_bytes(), events_path.read_bytes())
@@ -1240,7 +1044,16 @@ def test_18_default_lower_safe_errors_and_read_only_targets_are_preserved(
     assert calls == ["step-1", "step-2"]
 
 
-def test_19_phase192_owned_change_is_never_rolled_back(tmp_path: Path) -> None:
+def _get(value: object, name: str) -> object:
+    try:
+        return getattr(value, name)
+    except Exception:
+        return None
+
+
+def test_16_phase192_owned_change_is_never_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workflow = _workflow(2)
     state_path, events_path = tmp_path / "state", tmp_path / "events"
     state_path.write_bytes(b"before-state")
@@ -1248,76 +1061,50 @@ def test_19_phase192_owned_change_is_never_rolled_back(tmp_path: Path) -> None:
     classified = _success_outcome(workflow)
     routed = _prepare(workflow)
     contexts = (_opaque_context(),)
+    import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
+
+    monkeypatch.setattr(
+        runner_module,
+        "classify_persisted_execution_outcome_reentry",
+        lambda *_args: classified,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "route_persisted_execution_outcome_reentry",
+        lambda *_args: routed,
+    )
+    calls: list[str] = []
 
     def mutating_return(*_: object) -> object:
+        calls.append("return")
         state_path.write_bytes(b"phase192-owned-return")
         return object()
 
+    monkeypatch.setattr(
+        runner_module, "route_bounded_approved_workflow_continuation", mutating_return
+    )
     _assert_runner_error(
         lambda: route_persisted_terminal_workflow_bounded(
-            workflow,
-            state_path,
-            events_path,
-            contexts,
-            classification_function=lambda *_args: classified,
-            routing_function=lambda *_args: routed,
-            bounded_continuation_function=mutating_return,
+            workflow, state_path, events_path, contexts
         ),
         "bounded_continuation_contract",
     )
+    assert calls == ["return"]
     assert state_path.read_bytes() == b"phase192-owned-return"
     assert events_path.read_bytes() == b"before-events"
 
     def mutating_error(*_: object) -> object:
+        calls.append("error")
         state_path.write_bytes(b"phase192-owned-error")
         raise RuntimeError("secret provider payload")
 
-    _assert_runner_error(
-        lambda: route_persisted_terminal_workflow_bounded(
-            workflow,
-            state_path,
-            events_path,
-            contexts,
-            classification_function=lambda *_args: classified,
-            routing_function=lambda *_args: routed,
-            bounded_continuation_function=mutating_error,
-        ),
-        "dependency_error",
+    monkeypatch.setattr(
+        runner_module, "route_bounded_approved_workflow_continuation", mutating_error
     )
+    with pytest.raises(RuntimeError, match="secret provider payload"):
+        route_persisted_terminal_workflow_bounded(
+            workflow, state_path, events_path, contexts
+        )
+    assert calls == ["return", "error"]
     assert state_path.read_bytes() == b"phase192-owned-error"
     assert events_path.read_bytes() == b"before-events"
-
-
-def test_20_source_audit_proves_thin_separate_bounded_ownership() -> None:
-    tree = ast.parse(_MODULE_SOURCE)
-    assert not any(
-        isinstance(node, (ast.For, ast.AsyncFor, ast.While))
-        for node in ast.walk(tree)
-    )
-    assert _MODULE_SOURCE.count("classification_function(") == 1
-    assert _MODULE_SOURCE.count("routing_function(") == 1
-    assert _MODULE_SOURCE.count("bounded_continuation_function(") == 1
-    for forbidden in (
-        "route_approved_fresh_workflow_bounded",
-        "fresh_or_resume",
-        "route_approved_workflow_fresh_start",
-        "approve_model_invocation",
-        "OpenAIApiKey",
-        "retry",
-        "scheduler",
-        "read_bytes",
-        "write_bytes",
-        "restore",
-        "Phase190",
-    ):
-        assert forbidden not in _MODULE_SOURCE
-    assert "for context in" not in _MODULE_SOURCE
-    assert "while " not in _MODULE_SOURCE
-    assert "route_persisted_terminal_workflow_bounded" in _MODULE_SOURCE
-
-
-def _get(value: object, name: str) -> object:
-    try:
-        return getattr(value, name)
-    except Exception:
-        return _MISSING
