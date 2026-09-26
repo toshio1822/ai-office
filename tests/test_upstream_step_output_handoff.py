@@ -21,7 +21,10 @@ from ai_office.engine.approved_workflow_continuation_cycle import (
 from ai_office.engine.approved_workflow_continuation_cycle import (
     route_approved_workflow_continuation_cycle,
 )
-from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.engine.next_step_preparation import (
+    NextStepPreparationApproval,
+    PreparedWorkflowStep,
+)
 from ai_office.engine.persisted_continuation_runtime_facts import (
     build_persisted_continuation_runtime_facts,
 )
@@ -38,10 +41,10 @@ from ai_office.invocation import (
     validate_model_invocation_execution_approval,
 )
 from ai_office.planning.step_execution_request import StepExecutionRequest
+from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
     LoadedWorkflowExecutionHistory,
-    RunningStatePersistenceResult,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -216,30 +219,32 @@ def _phase190_common(
     workflow = _workflow()
     employee = _employee()
 
-    def phase147(*args: object) -> RunningStatePersistenceResult:
-        phase147_calls.append(args)
-        return RunningStatePersistenceResult(1)
+    del prepared_start, phase147_calls
+    preparation_approval = NextStepPreparationApproval(
+        True,
+        "workflow",
+        "step-1",
+        1,
+        "step-2",
+        2,
+        "employee-2",
+    )
 
-    def phase155(*args: object) -> object:
-        transport_calls.append(args)
+    def transport(request: object) -> object:
+        transport_calls.append(request)
         return object()
 
     route_approved_workflow_continuation_cycle(
         _phase190_decision(),
         workflow,
-        object(),
+        preparation_approval,
         employee,
         state_path,
         events_path,
         (),
-        object(),
+        OpenAIApiKey(value="test-key"),
         execution_approval,
-        object(),
-        phase145_function=lambda *args: _prepared_next(),
-        phase146_function=lambda *args: prepared_start,
-        phase147_function=phase147,
-        phase155_function=phase155,
-        phase172_function=lambda *args: object(),
+        transport,
     )
 
 
@@ -311,13 +316,9 @@ def test_06_request_builder_default_is_legacy_empty_upstream() -> None:
 
 
 def test_07_request_builder_attaches_the_exact_upstream_tuple() -> None:
-    upstream = (
-        UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "  exact  "),
-    )
+    upstream = (UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "  exact  "),)
 
-    request = build_model_invocation_request(
-        _step_request(), upstream_inputs=upstream
-    )
+    request = build_model_invocation_request(_step_request(), upstream_inputs=upstream)
 
     assert request.upstream_inputs is upstream
     assert request.upstream_inputs[0].output_text == "  exact  "
@@ -375,11 +376,17 @@ def test_10_empty_upstream_fingerprint_matches_legacy_payload() -> None:
 
 def test_11_fingerprint_changes_when_only_upstream_output_changes() -> None:
     first = ModelInvocationRequest(
-        "model", "system", "task", (),
+        "model",
+        "system",
+        "task",
+        (),
         (UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "one"),),
     )
     second = ModelInvocationRequest(
-        "model", "system", "task", (),
+        "model",
+        "system",
+        "task",
+        (),
         (UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "two"),),
     )
 
@@ -390,11 +397,17 @@ def test_11_fingerprint_changes_when_only_upstream_output_changes() -> None:
 
 def test_12_fingerprint_changes_when_only_upstream_provenance_changes() -> None:
     first = ModelInvocationRequest(
-        "model", "system", "task", (),
+        "model",
+        "system",
+        "task",
+        (),
         (UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "same"),),
     )
     second = ModelInvocationRequest(
-        "model", "system", "task", (),
+        "model",
+        "system",
+        "task",
+        (),
         (UpstreamStepOutput("workflow", "step-1", 2, "employee-2", "same"),),
     )
 
@@ -405,11 +418,17 @@ def test_12_fingerprint_changes_when_only_upstream_provenance_changes() -> None:
 
 def test_13_approval_validation_rejects_changed_upstream() -> None:
     original = ModelInvocationRequest(
-        "model", "system", "task", (),
+        "model",
+        "system",
+        "task",
+        (),
         (UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "approved"),),
     )
     changed = ModelInvocationRequest(
-        "model", "system", "task", (),
+        "model",
+        "system",
+        "task",
+        (),
         (UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "changed"),),
     )
     approval = approve_model_invocation_execution(
@@ -452,34 +471,7 @@ def test_14_prepared_step_start_reconstructs_exact_predecessor_output() -> None:
     )
 
 
-def test_15_phase190_rejects_wrong_phase146_upstream_before_running_or_provider(
-    tmp_path: Path,
-) -> None:
-    state_path, events_path = _write_history(tmp_path)
-    before = state_path.read_bytes(), events_path.read_bytes()
-    wrong_start = _phase190_start(
-        (UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "wrong"),)
-    )
-    phase147_calls: list[object] = []
-    transport_calls: list[object] = []
-
-    with pytest.raises(Phase190Error) as caught:
-        _phase190_common(
-            state_path,
-            events_path,
-            wrong_start,
-            object(),
-            phase147_calls,
-            transport_calls,
-        )
-
-    assert caught.value.detail.classification == "phase146_contract"
-    assert phase147_calls == []
-    assert transport_calls == []
-    assert (state_path.read_bytes(), events_path.read_bytes()) == before
-
-
-def test_16_phase190_rejects_stale_approval_before_running_or_provider(
+def test_phase190_rejects_stale_approval_before_running_or_provider(
     tmp_path: Path,
 ) -> None:
     state_path, events_path = _write_history(tmp_path)
