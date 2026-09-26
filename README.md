@@ -4352,18 +4352,21 @@ call of its own. It is not a full automatic workflow runner.
 ## Phase 210: Fresh Workflow Bounded Top-Level Runner
 
 Phase 210 exposes
-`route_approved_fresh_workflow_bounded(workflow, state_path, events_path, bootstrap_context, continuation_contexts, *, fresh_start_function=route_approved_workflow_fresh_start, bounded_continuation_function=route_bounded_approved_workflow_continuation)`.
-It is the explicit top-level entry for a fresh Phase-208 step-1 start followed
-by at most one Phase-192 bounded continuation handoff. The caller supplies the
-frozen Phase-208 bootstrap context and a finite built-in tuple of exact frozen
-`ApprovedWorkflowContinuationContext` values.
+`route_approved_fresh_workflow_bounded(workflow, state_path, events_path, bootstrap_context, continuation_contexts)`.
+This is an intentional public-contract narrowing: the route no longer accepts
+`fresh_start_function` or `bounded_continuation_function` owner-substitution
+keywords. It is the explicit top-level entry for a fresh Phase-208 step-1
+start followed by at most one Phase-192 bounded continuation handoff. The
+caller supplies the frozen Phase-208 bootstrap context and a finite built-in
+tuple of exact frozen `ApprovedWorkflowContinuationContext` values.
 
 Before Phase 208, the boundary performs only shallow structure checks: the
-continuation container must be an exact built-in `tuple`, every element must be
-an exact `ApprovedWorkflowContinuationContext`, and both injected dependencies
-must be callable. Approval, employee, tool, API-key, execution-approval, and
-transport semantics remain owned by Phase 208 and Phase 192/190. No context,
-approval, employee, tool, key, or transport is generated or looked up.
+continuation container must be an exact built-in `tuple`, and every element
+must be an exact `ApprovedWorkflowContinuationContext`. The canonical Phase
+208 and Phase 192 owners are used directly; approval, employee, tool, API-key,
+execution-approval, and transport semantics remain owned by Phase 208 and
+Phase 192/190. No context, approval, employee, tool, key, or transport is
+generated or looked up by Phase 210.
 
 Phase 208 is called once with its canonical four positional arguments. A valid
 terminal `workflow_complete` or `persisted_failure` is returned by exact object
@@ -4377,8 +4380,10 @@ Phase 208 owns step-1 fresh-target initialization and ready/running/terminal
 durable commits; Phase 192/190 own later durable transitions and recognized
 safe errors. Phase 210 performs no state/event write, rollback, retry,
 recursion, unbounded loop, automatic continuation, scheduler, finalizer,
-parallel work, CLI/GUI behavior, or provider/network/paid API call. Persisted
-resume/reentry remains a separate future contract.
+parallel work, CLI/GUI behavior, or provider/network/paid API call. No
+compatibility shim, wrapper, adapter, or new Phase preserves the removed owner
+substitution contract. Persisted resume/reentry remains a separate future
+contract.
 
 ## Phase 212: Persisted-Terminal Bounded Top-Level Resume
 

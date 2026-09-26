@@ -4304,14 +4304,17 @@ workflow/path/bootstrap values plus a caller-supplied finite tuple of exact
 execution with one bounded continuation handoff; it is not a persisted
 resume/reentry entry point.
 
-The boundary shallowly prevalidates the continuation tuple before calling
-Phase 208: the container must be an exact built-in `tuple`, each element must
-be an exact `ApprovedWorkflowContinuationContext`, and the two injected public
-dependencies must be callable. This prevents an avoidable container/type
-mistake from durably executing step 1. It deliberately does not inspect
-approval, employee, resolved-tool, API-key, execution-approval, or transport
-contents. Those operational contracts remain with Phase 208 and the existing
-Phase 192/190 chain; no such values are generated or looked up here.
+The boundary intentionally exposes only the workflow/path/bootstrap values and
+finite continuation tuple; the former `fresh_start_function` and
+`bounded_continuation_function` owner-substitution keywords are no longer part
+of the public contract. Before calling Phase 208, the container must be an
+exact built-in `tuple` and each element must be an exact
+`ApprovedWorkflowContinuationContext`. This prevents an avoidable
+container/type mistake from durably executing step 1. The canonical Phase 208
+and Phase 192 owners are called directly. Phase 210 deliberately does not
+inspect approval, employee, resolved-tool, API-key, execution-approval, or
+transport contents. Those operational contracts remain with Phase 208 and the
+existing Phase 192/190 chain; no such values are generated or looked up here.
 
 After prevalidation, Phase 208 is called exactly once with four positional
 arguments. Its valid terminal `workflow_complete` or `persisted_failure` is
@@ -4326,8 +4329,9 @@ ready/running/terminal commits, while Phase 192/190 own later continuation
 commits and recognized safe errors. Phase 210 does not write or restore state
 or events, and has no top-level rollback, retry, recursion, unbounded loop,
 automatic continuation, scheduler, finalizer, parallel work, CLI/GUI behavior,
-or provider/network/paid API behavior. Persisted resume/reentry remains a
-separate future public contract.
+or provider/network/paid API behavior. No compatibility shim, wrapper,
+adapter, or new Phase preserves the removed owner-substitution contract.
+Persisted resume/reentry remains a separate future public contract.
 
 ## Phase 212: Persisted-Terminal Bounded Top-Level Resume
 
