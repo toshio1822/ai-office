@@ -2,21 +2,28 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
+    PersistedExecutionOutcomeCompatibilityError,
     PersistedExecutionOutcomeError,
-    classify_persisted_execution_outcome_reentry,
+    classify_loaded_persisted_execution_outcome,
 )
 from ai_office.engine.persisted_success_progression import (
     PersistedSuccessProgressionError,
-    decide_persisted_success_progression,
+    _decide_loaded_persisted_success_progression,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
-from ai_office.invocation import ModelInvocationFailureCategory
-from ai_office.storage.workflow_execution_history import WorkflowExecutionLoadError
+from ai_office.storage.workflow_execution_history import (
+    LoadedWorkflowExecutionHistory,
+    WorkflowExecutionLoadError,
+    load_workflow_execution_history,
+)
+from ai_office.storage.workflow_execution_persistence import (
+    WorkflowExecutionPersistenceTargets,
+)
 
 PersistedExecutionOutcomeRoutingClassification = Literal[
     "workflow_definition",
@@ -29,7 +36,6 @@ PersistedExecutionOutcomeRoutingClassification = Literal[
     "dependency_rollback",
 ]
 _ERROR_MESSAGE = "persisted execution outcome routing inputs are incompatible"
-_FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 
 
 @dataclass(frozen=True)
@@ -61,12 +67,12 @@ def route_persisted_execution_outcome_reentry(
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
     original = _capture(state_path, events_path)
-    outcome = _call_classification(workflow, state_path, events_path, original)
-    _validate_outcome(outcome, "classification_contract", workflow)
+    outcome, history = _call_classification(workflow, state_path, events_path, original)
+    _validate_outcome_route(outcome)
     if outcome.outcome == "persisted_failure":
         return outcome
-    decision = _call_progression(workflow, state_path, events_path, original)
-    _validate_decision(decision, workflow, outcome)
+    decision = _call_progression(workflow, history, state_path, events_path, original)
+    _validate_decision_route(decision)
     return decision
 
 
@@ -92,45 +98,15 @@ def _validate_inputs(
         _raise("dependency_error")
 
 
-def _validate_outcome(
-    value: object,
-    classification: PersistedExecutionOutcomeRoutingClassification,
-    workflow: WorkflowDefinition | None = None,
-) -> None:
+def _validate_outcome_route(value: object) -> None:
+    """Guard only the classified result family and route discriminator."""
     if type(value) is not PersistedExecutionOutcome:
-        _raise(classification)
-    valid_identity = (
-        all(
-            type(item) is str and item
-            for item in (
-                value.workflow_id,
-                value.current_step_id,
-                value.current_employee_id,
-            )
-        )
-        and type(value.current_step_index) is int
-        and value.current_step_index > 0
-    )
-    valid = valid_identity and (
-        (value.outcome == "persisted_success" and value.failure_category is None)
-        or (
-            value.outcome == "persisted_failure"
-            and value.failure_category in _FAILURE_CATEGORIES
-        )
-    )
-    if not valid:
-        _raise(classification)
-    if workflow is not None:
-        if value.workflow_id != workflow.id or not 1 <= value.current_step_index <= len(
-            workflow.steps
-        ):
-            _raise(classification)
-        step = workflow.steps[value.current_step_index - 1]
-        if (
-            value.current_step_id != step.id
-            or value.current_employee_id != step.employee
-        ):
-            _raise(classification)
+        _raise("classification_contract")
+    if type(value.outcome) is not str or value.outcome not in {
+        "persisted_success",
+        "persisted_failure",
+    }:
+        _raise("classification_contract")
 
 
 def _capture(state_path: Path, events_path: Path) -> tuple[bytes, bytes]:
@@ -145,29 +121,40 @@ def _call_classification(
     state_path: Path,
     events_path: Path,
     original: tuple[bytes, bytes],
-) -> object:
+) -> tuple[object, LoadedWorkflowExecutionHistory]:
     try:
-        result = classify_persisted_execution_outcome_reentry(
-            workflow, state_path, events_path
+        history = load_workflow_execution_history(
+            WorkflowExecutionPersistenceTargets(state_path, events_path)
         )
-    except (PersistedExecutionOutcomeError, WorkflowExecutionLoadError):
+    except WorkflowExecutionLoadError:
+        _restore_changed(state_path, events_path, original)
+        raise
+    except Exception:
+        _restore_changed(state_path, events_path, original)
+        raise PersistedExecutionOutcomeCompatibilityError("history_data") from None
+    try:
+        result = classify_loaded_persisted_execution_outcome(workflow, history)
+    except PersistedExecutionOutcomeError:
         _restore_changed(state_path, events_path, original)
         raise
     except Exception:
         _restore_changed(state_path, events_path, original)
         _raise("dependency_error")
     _reject_changed(state_path, events_path, original)
-    return result
+    if type(history) is not LoadedWorkflowExecutionHistory:
+        _raise("classification_contract")
+    return result, history
 
 
 def _call_progression(
     workflow: WorkflowDefinition,
+    history: LoadedWorkflowExecutionHistory,
     state_path: Path,
     events_path: Path,
     original: tuple[bytes, bytes],
 ) -> object:
     try:
-        result = decide_persisted_success_progression(workflow, state_path, events_path)
+        result = _decide_loaded_persisted_success_progression(workflow, history)
     except PersistedSuccessProgressionError:
         _restore_changed(state_path, events_path, original)
         raise
@@ -209,37 +196,14 @@ def _reject_changed(
         _raise("dependency_error")
 
 
-def _validate_decision(
-    value: object, workflow: WorkflowDefinition, outcome: PersistedExecutionOutcome
-) -> None:
+def _validate_decision_route(value: object) -> None:
+    """Guard only the decision family and routing discriminator."""
     if type(value) is not WorkflowProgressionDecision:
         _raise("progression_contract")
-    base = (
-        value.workflow_id == outcome.workflow_id
-        and value.current_step_id == outcome.current_step_id
-        and value.current_step_index == outcome.current_step_index
-        and value.current_employee_id == outcome.current_employee_id
-    )
-    if outcome.current_step_index == len(workflow.steps):
-        valid = (
-            base
-            and value.decision == "workflow_complete"
-            and value.next_step_id is None
-            and value.next_step_index is None
-            and value.next_employee_id is None
-            and value.reason == "last_step_succeeded"
-        )
-    else:
-        next_step = workflow.steps[outcome.current_step_index]
-        valid = (
-            base
-            and value.decision == "prepare_next_step"
-            and value.next_step_id == next_step.id
-            and value.next_step_index == outcome.current_step_index + 1
-            and value.next_employee_id == next_step.employee
-            and value.reason == "next_step_available"
-        )
-    if not valid:
+    if type(value.decision) is not str or value.decision not in {
+        "prepare_next_step",
+        "workflow_complete",
+    }:
         _raise("progression_contract")
 
 

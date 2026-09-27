@@ -1,6 +1,5 @@
 """Read-only classification for one persisted Phase 36 execution outcome."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -32,9 +31,6 @@ PersistedExecutionOutcomeClassification = Literal[
 ]
 PersistedExecutionOutcomeType = Literal["persisted_success", "persisted_failure"]
 _ERROR_MESSAGE = "persisted execution outcome inputs are incompatible"
-HistoryLoader = Callable[
-    [WorkflowExecutionPersistenceTargets], LoadedWorkflowExecutionHistory
-]
 
 
 @dataclass(frozen=True)
@@ -72,18 +68,16 @@ def classify_persisted_execution_outcome_reentry(
     workflow: object,
     state_path: object,
     events_path: object,
-    *,
-    history_loader: HistoryLoader = load_workflow_execution_history,
 ) -> PersistedExecutionOutcome:
     """Classify one persisted Phase 36 outcome without progressing."""
-    _validate_inputs(workflow, state_path, events_path, history_loader)
+    _validate_inputs(workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path)
     assert isinstance(events_path, Path)
 
     original = _capture_targets(state_path, events_path)
     try:
-        history = history_loader(
+        history = load_workflow_execution_history(
             WorkflowExecutionPersistenceTargets(state_path, events_path)
         )
     except WorkflowExecutionLoadError:
@@ -119,7 +113,6 @@ def _validate_inputs(
     workflow: object,
     state_path: object,
     events_path: object,
-    history_loader: object,
 ) -> None:
     if type(workflow) is not WorkflowDefinition:
         _raise("workflow_definition")
@@ -129,8 +122,6 @@ def _validate_inputs(
         _raise("event_target")
     if state_path == events_path:
         _raise("target_conflict")
-    if not callable(history_loader):
-        _raise("classification_contract")
     try:
         if not state_path.is_file():
             _raise("state_target")
