@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.persisted_execution_outcome_reentry import (
@@ -16,7 +16,6 @@ from ai_office.engine.persisted_success_progression import (
     _decide_loaded_persisted_success_progression,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
-from ai_office.invocation import ModelInvocationFailureCategory
 from ai_office.storage.workflow_execution_history import (
     LoadedWorkflowExecutionHistory,
     WorkflowExecutionLoadError,
@@ -37,7 +36,6 @@ PersistedExecutionOutcomeRoutingClassification = Literal[
     "dependency_rollback",
 ]
 _ERROR_MESSAGE = "persisted execution outcome routing inputs are incompatible"
-_FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 
 
 @dataclass(frozen=True)
@@ -108,13 +106,6 @@ def _validate_outcome_route(value: object) -> None:
         "persisted_success",
         "persisted_failure",
     }:
-        _raise("classification_contract")
-    if value.outcome == "persisted_success" and value.failure_category is not None:
-        _raise("classification_contract")
-    if value.outcome == "persisted_failure" and (
-        type(value.failure_category) is not str
-        or value.failure_category not in _FAILURE_CATEGORIES
-    ):
         _raise("classification_contract")
 
 

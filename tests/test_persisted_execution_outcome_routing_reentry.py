@@ -356,7 +356,7 @@ def test_phase38_keeps_only_minimum_classification_route_guard(
         current_step_id="other",
         current_step_index=99,
         current_employee_id="other",
-        failure_category=None,
+        failure_category="not-phase-37-owned",  # type: ignore[arg-type]
     )
 
     def classify(definition: object, history: object) -> object:
@@ -372,6 +372,45 @@ def test_phase38_keeps_only_minimum_classification_route_guard(
 
     assert type(result) is WorkflowProgressionDecision
     assert result.decision == "prepare_next_step"
+
+
+@pytest.mark.parametrize(
+    ("value", "history_event", "classification"),
+    [
+        (state(status="running", completed_step_ids=()), None, "state_status"),
+        (state(workflow_id="other"), event(workflow_id="other"), "workflow_identity"),
+    ],
+)
+def test_phase31_shared_processing_retains_success_eligibility_and_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: WorkflowExecutionState,
+    history_event: RuntimeStepEvent | None,
+    classification: str,
+) -> None:
+    targets = write_history(
+        tmp_path, value, *(tuple() if history_event is None else (history_event,))
+    )
+    fake_success = PersistedExecutionOutcome(
+        outcome="persisted_success",
+        workflow_id="workflow",
+        current_step_id="first",
+        current_step_index=1,
+        current_employee_id="one",
+        failure_category=None,
+    )
+    monkeypatch.setattr(
+        routing_module,
+        "classify_loaded_persisted_execution_outcome",
+        lambda *_args: fake_success,
+    )
+
+    with pytest.raises(PersistedSuccessProgressionCompatibilityError) as error:
+        route_persisted_execution_outcome_reentry(
+            workflow(), targets.state_path, targets.events_path
+        )
+
+    assert error.value.detail.classification == classification
 
 
 @pytest.mark.parametrize("contents", [b"bad", b"\xff"])

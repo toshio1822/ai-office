@@ -64,8 +64,6 @@ def decide_persisted_success_progression(
     assert isinstance(state_path, Path)
     assert isinstance(events_path, Path)
     history = _load_history(state_path, events_path)
-    _validate_persisted_success(history)
-    _validate_workflow_identity(workflow, history)
     return _decide_loaded_persisted_success_progression(workflow, history)
 
 
@@ -79,6 +77,8 @@ def _decide_loaded_persisted_success_progression(
         _raise("history_data")
     assert isinstance(workflow, WorkflowDefinition)
     assert type(history) is LoadedWorkflowExecutionHistory
+    _validate_persisted_success(history)
+    _validate_workflow_identity(workflow, history)
     decision = decide_workflow_progression(workflow, history)
     _validate_decision_contract(decision, workflow, history)
     return decision
