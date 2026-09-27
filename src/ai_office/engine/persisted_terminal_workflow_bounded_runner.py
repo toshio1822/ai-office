@@ -12,7 +12,6 @@ from ai_office.engine.bounded_approved_workflow_runner import (
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
-    classify_persisted_execution_outcome_reentry,
 )
 from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     route_persisted_execution_outcome_reentry,
@@ -64,30 +63,19 @@ def route_persisted_terminal_workflow_bounded(
     events_path: object,
     continuation_contexts: object,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Resume one persisted terminal outcome and stop at one bounded handoff."""
-    classified_outcome = classify_persisted_execution_outcome_reentry(
-        workflow,
-        state_path,
-        events_path,
-    )
-    if not _valid_persisted_outcome(classified_outcome, workflow):
-        _fail("classification_contract")
-
+    """Classify one persisted target and stop at one bounded handoff."""
     routed_result = route_persisted_execution_outcome_reentry(
-        classified_outcome,
         workflow,
         state_path,
         events_path,
     )
 
-    if _exact(_attribute(classified_outcome, "outcome"), "persisted_failure"):
-        if routed_result is not classified_outcome or not _valid_persisted_outcome(
-            routed_result, workflow
-        ):
+    if type(routed_result) is PersistedExecutionOutcome:
+        if not _valid_persisted_failure(routed_result, workflow):
             _fail("routing_contract")
         return routed_result
 
-    if not _valid_routed_success(routed_result, workflow, classified_outcome):
+    if not _valid_routed_success(routed_result, workflow):
         _fail("routing_contract")
     if _exact(_attribute(routed_result, "decision"), "workflow_complete"):
         return routed_result
@@ -138,27 +126,10 @@ def _valid_persisted_outcome(value: object, workflow: object) -> bool:
 def _valid_routed_success(
     value: object,
     workflow: object,
-    classified_outcome: PersistedExecutionOutcome,
 ) -> bool:
     if type(value) is not WorkflowProgressionDecision:
         return False
     if not _valid_current_linkage(value, workflow):
-        return False
-    if not (
-        _exact(_attribute(value, "workflow_id"), classified_outcome.workflow_id)
-        and _exact(
-            _attribute(value, "current_step_id"),
-            classified_outcome.current_step_id,
-        )
-        and _exact(
-            _attribute(value, "current_step_index"),
-            classified_outcome.current_step_index,
-        )
-        and _exact(
-            _attribute(value, "current_employee_id"),
-            classified_outcome.current_employee_id,
-        )
-    ):
         return False
     decision = _attribute(value, "decision")
     if _exact(decision, "prepare_next_step"):
