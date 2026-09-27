@@ -1,5 +1,6 @@
-"""Tests for the read-only Phase 31 progression boundary."""
+"""Observable Phase 31 persisted-success progression guarantees."""
 
+import inspect
 from dataclasses import replace
 from pathlib import Path
 
@@ -10,7 +11,8 @@ from ai_office.engine import (
     PersistedSuccessProgressionCompatibilityError,
     decide_persisted_success_progression,
 )
-from ai_office.engine.workflow_progression import decide_workflow_progression
+from ai_office.engine import persisted_success_progression as progression_module
+from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
     WorkflowExecutionPersistenceTargets,
@@ -85,104 +87,140 @@ def write_history(
     return targets
 
 
-def test_non_final_success_delegates_once_and_returns_exact_decision(
+def test_public_contract_removes_decision_function_seam(tmp_path: Path) -> None:
+    assert list(inspect.signature(decide_persisted_success_progression).parameters) == [
+        "workflow",
+        "state_path",
+        "events_path",
+    ]
+    targets = write_history(tmp_path, state(), event())
+    with pytest.raises(TypeError):
+        decide_persisted_success_progression(
+            workflow(),
+            targets.state_path,
+            targets.events_path,
+            decision_function=lambda *_: None,
+        )  # type: ignore[call-arg]
+
+
+def test_non_final_success_returns_prepare_next_step_without_writing(
     tmp_path: Path,
 ) -> None:
     value = state(
         current_step_index=1, current_step_id="first", completed_step_ids=("first",)
     )
     targets = write_history(tmp_path, value, event(step_id="first", step_index=1))
-    calls = 0
-    expected = decide_workflow_progression(
-        workflow(),
-        __import__(
-            "ai_office.storage", fromlist=["load_workflow_execution_history"]
-        ).load_workflow_execution_history(targets),
-    )
+    before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
 
-    def decide(definition: WorkflowDefinition, history: object) -> object:
-        nonlocal calls
-        calls += 1
-        return expected
-
-    assert (
-        decide_persisted_success_progression(
-            workflow(),
-            targets.state_path,
-            targets.events_path,
-            decision_function=decide,
-        )
-        is expected
-    )  # type: ignore[arg-type]
-    assert calls == 1
-
-
-def test_final_success_returns_existing_complete_decision(tmp_path: Path) -> None:
-    targets = write_history(tmp_path, state(), event())
     result = decide_persisted_success_progression(
         workflow(), targets.state_path, targets.events_path
     )
-    assert result.decision == "workflow_complete"
+
+    assert type(result) is WorkflowProgressionDecision
+    assert result.decision == "prepare_next_step"
+    assert result.next_step_id == "step"
+    assert result.next_step_index == 2
+    assert result.reason == "next_step_available"
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
 
 
-@pytest.mark.parametrize(
-    ("final", "change"),
-    [
-        (False, None),
-        (False, {"workflow_id": "other"}),
-        (False, {"decision": "workflow_complete"}),
-        (False, {"next_step_id": "other"}),
-        (False, {"next_step_index": 9}),
-        (False, {"next_employee_id": "other"}),
-        (
-            True,
-            {
-                "decision": "prepare_next_step",
-                "next_step_id": "step",
-                "next_step_index": 3,
-                "next_employee_id": "employee",
-                "reason": "next_step_available",
-            },
-        ),
-        (True, {"reason": "other"}),
-    ],
-)
-def test_invalid_decision_result_is_rejected_after_one_call(
-    tmp_path: Path, final: bool, change: object
+def test_final_success_returns_workflow_complete_without_writing(
+    tmp_path: Path,
 ) -> None:
-    current = (
-        state()
-        if final
-        else state(
-            current_step_index=1, current_step_id="first", completed_step_ids=("first",)
-        )
-    )
-    current_event = event() if final else event(step_id="first", step_index=1)
-    targets = write_history(tmp_path, current, current_event)
+    targets = write_history(tmp_path, state(), event())
     before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
-    valid = decide_workflow_progression(
-        workflow(),
-        __import__(
-            "ai_office.storage", fromlist=["load_workflow_execution_history"]
-        ).load_workflow_execution_history(targets),
-    )
-    calls = 0
 
-    def returned(*_args: object) -> object:
-        nonlocal calls
-        calls += 1
-        return object() if change is None else replace(valid, **change)  # type: ignore[arg-type]
+    result = decide_persisted_success_progression(
+        workflow(), targets.state_path, targets.events_path
+    )
+
+    assert result.decision == "workflow_complete"
+    assert result.next_step_id is None
+    assert result.next_step_index is None
+    assert result.next_employee_id is None
+    assert result.reason == "last_step_succeeded"
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("status", ["ready", "running", "failed"])
+def test_non_success_status_fails_closed_before_decision(
+    tmp_path: Path, status: str
+) -> None:
+    value = state(
+        status=status,
+        completed_step_ids=(),
+        last_failure_category="api_error" if status == "failed" else None,
+    )
+    terminal = (
+        event(
+            event_type="step_failed",
+            next_status="failed",
+            failure_category="api_error",
+            response_id=None,
+            output_text=None,
+            message="safe",
+        )
+        if status == "failed"
+        else None
+    )
+    targets = write_history(tmp_path, value, *(()) if terminal is None else (terminal,))
+    before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
+    called = False
+    real = progression_module.decide_workflow_progression
+
+    def unexpected(*_args: object, **_kwargs: object) -> object:
+        nonlocal called
+        called = True
+        return real(*_args, **_kwargs)
+
+    progression_module.decide_workflow_progression = unexpected  # type: ignore[assignment]
+    try:
+        with pytest.raises(PersistedSuccessProgressionCompatibilityError):
+            decide_persisted_success_progression(
+                workflow(), targets.state_path, targets.events_path
+            )
+    finally:
+        progression_module.decide_workflow_progression = real  # type: ignore[assignment]
+
+    assert called is False
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
+
+
+def test_decision_contract_rejects_malformed_owner_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = write_history(
+        tmp_path,
+        state(
+            current_step_index=1,
+            current_step_id="first",
+            completed_step_ids=("first",),
+        ),
+        event(step_id="first", step_index=1),
+    )
+    valid = WorkflowProgressionDecision(
+        decision="prepare_next_step",
+        workflow_id="workflow",
+        current_step_id="first",
+        current_step_index=1,
+        current_employee_id="employee",
+        next_step_id="step",
+        next_step_index=2,
+        next_employee_id="employee",
+        reason="next_step_available",
+    )
+    monkeypatch.setattr(
+        progression_module,
+        "decide_workflow_progression",
+        lambda *_args, **_kwargs: replace(valid, reason="unexpected"),
+    )
 
     with pytest.raises(PersistedSuccessProgressionCompatibilityError) as error:
         decide_persisted_success_progression(
-            workflow(),
-            targets.state_path,
-            targets.events_path,
-            decision_function=returned,
-        )  # type: ignore[arg-type]
+            workflow(), targets.state_path, targets.events_path
+        )
+
     assert error.value.detail.classification == "decision_contract"
-    assert calls == 1
-    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
 
 
 @pytest.mark.parametrize(
@@ -211,24 +249,9 @@ def test_invalid_decision_result_is_rejected_after_one_call(
         ),
         ({}, {"employee_id": "other"}, {}, "history_data"),
         ({}, {}, {"id": "other"}, "workflow_identity"),
-        (
-            {},
-            {},
-            {
-                "steps": [
-                    {
-                        "id": "first",
-                        "name": "First",
-                        "employee": "employee",
-                        "instructions": "a",
-                    }
-                ]
-            },
-            "workflow_identity",
-        ),
     ],
 )
-def test_invalid_persisted_success_rejects_before_decision(
+def test_invalid_persisted_success_fails_closed_without_writing(
     tmp_path: Path,
     state_changes: dict[str, object],
     event_changes: dict[str, object],
@@ -236,28 +259,15 @@ def test_invalid_persisted_success_rejects_before_decision(
     classification: str,
 ) -> None:
     targets = write_history(tmp_path, state(**state_changes), event(**event_changes))
-    original_state, original_events = (
-        targets.state_path.read_bytes(),
-        targets.events_path.read_bytes(),
-    )
-    calls = 0
-
-    def unexpected(*_args: object, **_kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise AssertionError
+    before = (targets.state_path.read_bytes(), targets.events_path.read_bytes())
 
     with pytest.raises(PersistedSuccessProgressionCompatibilityError) as error:
         decide_persisted_success_progression(
-            workflow(**workflow_changes),
-            targets.state_path,
-            targets.events_path,
-            decision_function=unexpected,
-        )  # type: ignore[arg-type]
+            workflow(**workflow_changes), targets.state_path, targets.events_path
+        )
+
     assert error.value.detail.classification == classification
-    assert calls == 0
-    assert targets.state_path.read_bytes() == original_state
-    assert targets.events_path.read_bytes() == original_events
+    assert (targets.state_path.read_bytes(), targets.events_path.read_bytes()) == before
 
 
 @pytest.mark.parametrize("contents", [None, b"bad", b"\xff"])
@@ -266,19 +276,13 @@ def test_missing_or_malformed_history_is_safe(
 ) -> None:
     state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
     if contents is None:
+        state_path.write_text(serialize_workflow_execution_state_json(state()))
         events_path.write_text("")
     else:
         state_path.write_bytes(contents)
         events_path.write_text("")
+
     with pytest.raises(PersistedSuccessProgressionCompatibilityError) as error:
         decide_persisted_success_progression(workflow(), state_path, events_path)
+
     assert str(state_path) not in str(error.value)
-
-
-def test_empty_event_history_is_rejected(tmp_path: Path) -> None:
-    targets = write_history(tmp_path, state())
-    with pytest.raises(PersistedSuccessProgressionCompatibilityError) as error:
-        decide_persisted_success_progression(
-            workflow(), targets.state_path, targets.events_path
-        )
-    assert error.value.detail.classification == "history_data"

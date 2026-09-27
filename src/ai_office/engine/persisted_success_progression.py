@@ -1,6 +1,5 @@
 """Read-only progression decision for one persisted successful step."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -33,9 +32,6 @@ PersistedSuccessProgressionClassification = Literal[
     "decision_contract",
 ]
 _ERROR_MESSAGE = "persisted-success progression inputs are incompatible"
-DecisionFunction = Callable[
-    [WorkflowDefinition, LoadedWorkflowExecutionHistory], WorkflowProgressionDecision
-]
 
 
 @dataclass(frozen=True)
@@ -61,24 +57,35 @@ def decide_persisted_success_progression(
     workflow: object,
     state_path: object,
     events_path: object,
-    *,
-    decision_function: DecisionFunction = decide_workflow_progression,
 ) -> WorkflowProgressionDecision:
     """Load one persisted success and delegate exactly once to Phase 25."""
-    _validate_explicit_inputs(workflow, state_path, events_path, decision_function)
+    _validate_explicit_inputs(workflow, state_path, events_path)
     assert isinstance(workflow, WorkflowDefinition)
     assert isinstance(state_path, Path)
     assert isinstance(events_path, Path)
     history = _load_history(state_path, events_path)
     _validate_persisted_success(history)
     _validate_workflow_identity(workflow, history)
-    decision = decision_function(workflow, history)
+    return _decide_loaded_persisted_success_progression(workflow, history)
+
+
+def _decide_loaded_persisted_success_progression(
+    workflow: object, history: object
+) -> WorkflowProgressionDecision:
+    """Progress one already-loaded history while retaining Phase 31 ownership."""
+    if not isinstance(workflow, WorkflowDefinition):
+        _raise("workflow_definition")
+    if type(history) is not LoadedWorkflowExecutionHistory:
+        _raise("history_data")
+    assert isinstance(workflow, WorkflowDefinition)
+    assert type(history) is LoadedWorkflowExecutionHistory
+    decision = decide_workflow_progression(workflow, history)
     _validate_decision_contract(decision, workflow, history)
     return decision
 
 
 def _validate_explicit_inputs(
-    workflow: object, state_path: object, events_path: object, decision_function: object
+    workflow: object, state_path: object, events_path: object
 ) -> None:
     if not isinstance(workflow, WorkflowDefinition):
         _raise("workflow_definition")
@@ -86,8 +93,6 @@ def _validate_explicit_inputs(
         _raise("state_target")
     if not isinstance(events_path, Path):
         _raise("event_target")
-    if not callable(decision_function):
-        _raise("decision_contract")
     try:
         if not state_path.is_file():
             _raise("state_target")

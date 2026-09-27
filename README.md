@@ -291,7 +291,7 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 
 ## Persisted-Success Progression Decision Boundary（Phase 31）
 
-`decide_persisted_success_progression()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受けます。既存Phase 24 history loaderでpersisted successと最新success eventを厳格に照合し、既存Phase 25 `decide_workflow_progression()`を一度だけ呼んで既存decisionをそのまま返します。承認、準備、persistence、provider実行、retry、自動継続、paid CLI、GUIは扱いません。順序は `Phase 25 → Phase 26 → Phase 27 → Phase 28 → Phase 29 → Phase 30 → Phase 31 persisted success reload + one Phase 25 decision → later explicit human approval/preparation or completion handling` です。
+`decide_persisted_success_progression()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受ける、他のproduction caller向けのPhase 31 public path-based boundaryです。`history_loader`やcaller-supplied `decision_function`のpublic dependency seamは持ちません。既存Phase 24 history loaderでpersisted successと最新success eventを厳格に照合し、Phase 31が既存Phase 25 `decide_workflow_progression()`への委譲とdecision contractを所有します。Phase 38のshared-history compositionでは、Phase 31-owned internal processingがPhase 37と同じloaded viewを消費するため、このpath-based public functionを呼ぶこと自体は必要としませんが、Phase 31のsemantic ownershipは維持されます。承認、準備、persistence、provider実行、retry、自動継続、paid CLI、GUIは扱いません。順序は `Phase 25 → Phase 26 → Phase 27 → Phase 28 → Phase 29 → Phase 30 → Phase 31 persisted success reload + one Phase 25 decision → later explicit human approval/preparation or completion handling` です。
 
 ## Approved Next-Step Reentry Boundary（Phase 32）
 
@@ -712,7 +712,7 @@ future explicit outcome routing
 
 ## Persisted Execution Outcome Classification Reentry Boundary（Phase 37）
 
-`classify_persisted_execution_outcome_reentry()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受け、既存Phase 24 history loaderを一度だけ使ってPhase 36の終端outcomeを厳格に再読込します。`succeeded`は`persisted_success`、`failed`は既存の安全なfailure categoryを含む`persisted_failure`として、不変の最小classification resultに分類するだけです。Phase 25とPhase 31は呼ばず、progression判断、次step準備、retry、workflow完了/finalization、provider実行、persistenceを行いません。
+`classify_persisted_execution_outcome_reentry()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受ける、他のproduction caller向けのPhase 37 public path-based boundaryです。public `history_loader` dependency seamは持たず、既存Phase 24 strict history loaderを一度だけ使ってPhase 36の終端outcomeを厳格に再読込します。`succeeded`は`persisted_success`、`failed`は既存の安全なfailure categoryを含む`persisted_failure`として、不変の最小classification resultに分類するだけです。Phase 25とPhase 31は呼ばず、progression判断、次step準備、retry、workflow完了/finalization、provider実行、persistenceを行いません。Phase 38はこのclassification ownershipを、同じloaded viewを使う内部compositionで利用します。
 
 ## Persisted Terminal Outcome Classification Routing Reentry Boundary（Phase 44）
 
@@ -720,7 +720,7 @@ future explicit outcome routing
 
 ## Persisted Execution Outcome Routing Reentry Boundary（Phase 38）
 
-`route_persisted_execution_outcome_reentry()`は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryです。現在の明示targetからcanonicalなPhase 37 classificationを内部で取得・検証し、workflow/current-step/employeeとcompleted-step/event historyのlinkageをfail-closedで再検証します。`persisted_failure`は値として正しいterminal stopを返し、Phase 31を呼ばず、progressionもstate/event writeも行いません。`persisted_success`だけを既存Phase 31へ一度委譲し、`workflow_complete`を含むdecisionを検証して返します。各依存呼出し後にtarget bytesの不変性を検証し、依存が改変した場合だけ既存の補償復元を行います。caller supplied outcome、旧4-input call shape、次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みはこのboundaryの契約ではありません。
+`route_persisted_execution_outcome_reentry()`は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryです。1回のrouting invocationでstrict historyを一度だけloadし、同じimmutableな`LoadedWorkflowExecutionHistory` viewをPhase 37のclassification processingと、Phase 31-owned persisted-success progression processingへ渡します。Phase 37がworkflow/current-step/employee、completed-step/event historyのlinkage、terminal status、failure-category整合性をclassification ownerとして検証し、Phase 31がsuccess progression、Phase 25への委譲、decision contractを所有します。Phase 31のpublic path-based boundaryは他のproduction caller向けに維持されますが、Phase 38はそのpublic functionを呼ぶことを契約にせず、Phase 31-owned internal processingで同じviewを扱います。Phase 38からPhase 25を直接呼びません。`persisted_failure`は値として正しいterminal stopを返し、progressionもstate/event writeも行いません。各処理後にtarget bytesの不変性を検証し、依存が改変した場合だけ既存の補償復元を行います。shared viewはこの呼出し内の重複loadをなくすだけで、atomicなcross-file snapshot、external writerの排除、locking/CAS/transactionなどのconcurrency保証は追加しません。CLI projection側の後続history reloadはこのboundaryの契約外です。caller supplied outcome、public loaded-history argument、旧4-input call shape、次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みはこのboundaryの契約ではありません。
 
 ## Classified Persisted Outcome Routing Bridge（Phase 45）
 
@@ -4535,11 +4535,14 @@ ai-office workflows result research-and-summarize \
 `--state-path` と `--events-path` は必須で、定義ディレクトリの既定値は
 `workflows` / `employees` です。このコマンドはworkflowとemployee定義を
 検証して対象workflowを選択した後、Phase38のcanonicalな永続terminal
-classification + routingを読み取ります。Phase38内部でPhase37 classification
-を行うため、CLIはPhase37 outcomeを事前に構築して渡しません。strictな
-`load_workflow_execution_history`で履歴を再読込し、step数からprogressionを
-推測せず、最後のterminal eventをcurrent stateとPhase38のresult identityへ
-照合してから、1個の決定的なJSON objectだけを出力します。
+classification + routingを読み取ります。Phase38は1回のrouting invocationで
+strict historyを一度だけloadし、Phase37-owned classification processingと
+Phase31-owned success progression processingに同じimmutable viewを渡すため、
+CLIはPhase37 outcomeを事前に構築して渡しません。Phase38後にCLIが行うstrictな
+`load_workflow_execution_history`はprojection-sideの別reloadです。このreloadで
+step数からprogressionを推測せず、最後のterminal eventをcurrent stateとPhase38の
+result identityへ照合してから、1個の決定的なJSON objectだけを出力します。shared
+viewはatomic snapshotや一般的なfilesystem concurrency safetyを保証しません。
 
 成功時の`output.output_text`は、最後のsuccessful stepに保存された値を
 trim、normalize、要約、連結せず、そのまま返します。途中stepの成功では

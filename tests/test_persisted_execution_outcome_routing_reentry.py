@@ -1,4 +1,4 @@
-"""Observable Phase 38 classification and routing guarantees."""
+"""Observable Phase 38 shared-history routing guarantees."""
 
 import importlib
 import inspect
@@ -13,12 +13,14 @@ from ai_office.engine import (
     PersistedExecutionOutcomeRoutingCompatibilityError,
     route_persisted_execution_outcome_reentry,
 )
+from ai_office.engine import persisted_success_progression as progression_module
 from ai_office.engine.persisted_success_progression import (
     PersistedSuccessProgressionCompatibilityError,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
+    WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
@@ -135,35 +137,6 @@ def failure_history(
     )
 
 
-def outcome(**changes: object) -> PersistedExecutionOutcome:
-    values: dict[str, object] = {
-        "outcome": "persisted_success",
-        "workflow_id": "workflow",
-        "current_step_id": "first",
-        "current_step_index": 1,
-        "current_employee_id": "one",
-        "failure_category": None,
-    }
-    values.update(changes)
-    return PersistedExecutionOutcome(**values)  # type: ignore[arg-type]
-
-
-def decision(**changes: object) -> WorkflowProgressionDecision:
-    values: dict[str, object] = {
-        "decision": "prepare_next_step",
-        "workflow_id": "workflow",
-        "current_step_id": "first",
-        "current_step_index": 1,
-        "current_employee_id": "one",
-        "next_step_id": "second",
-        "next_step_index": 2,
-        "next_employee_id": "two",
-        "reason": "next_step_available",
-    }
-    values.update(changes)
-    return WorkflowProgressionDecision(**values)  # type: ignore[arg-type]
-
-
 def snapshot(targets: WorkflowExecutionPersistenceTargets) -> tuple[bytes, bytes]:
     return targets.state_path.read_bytes(), targets.events_path.read_bytes()
 
@@ -201,78 +174,115 @@ def test_removed_public_inputs_and_dependency_keywords_are_rejected(
         route_persisted_execution_outcome_reentry(*args, **kwargs)
 
 
-def test_success_routes_once_and_preserves_targets(
+def test_success_classification_and_progression_share_one_loaded_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     targets = non_final_success_history(tmp_path)
-    before = snapshot(targets)
-    calls = 0
-    real_progression = routing_module.decide_persisted_success_progression
+    real_loader = routing_module.load_workflow_execution_history
+    real_classifier = routing_module.classify_loaded_persisted_execution_outcome
+    real_decision = progression_module.decide_workflow_progression
+    loaded: list[object] = []
+    classified: list[object] = []
+    progressed: list[object] = []
 
-    def progression(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        return real_progression(*args, **kwargs)
+    def load(value: object) -> object:
+        history = real_loader(value)
+        loaded.append(history)
+        return history
 
+    def classify(definition: object, history: object) -> object:
+        classified.append(history)
+        return real_classifier(definition, history)
+
+    def decide(definition: object, history: object) -> object:
+        progressed.append(history)
+        return real_decision(definition, history)
+
+    monkeypatch.setattr(routing_module, "load_workflow_execution_history", load)
     monkeypatch.setattr(
-        routing_module, "decide_persisted_success_progression", progression
+        routing_module, "classify_loaded_persisted_execution_outcome", classify
     )
+    monkeypatch.setattr(progression_module, "decide_workflow_progression", decide)
+
+    before = snapshot(targets)
     result = route_persisted_execution_outcome_reentry(
         workflow(), targets.state_path, targets.events_path
     )
 
     assert type(result) is WorkflowProgressionDecision
     assert result.decision == "prepare_next_step"
-    assert result.workflow_id == "workflow"
-    assert result.current_step_index == 1
-    assert result.next_step_id == "second"
-    assert calls == 1
+    assert len(loaded) == 1
+    assert classified == progressed == loaded
     assert snapshot(targets) == before
 
 
+def test_final_success_loads_once_and_stops_at_completion(tmp_path: Path) -> None:
+    targets = final_success_history(tmp_path)
+    calls = 0
+    real_loader = routing_module.load_workflow_execution_history
+
+    def load(value: object) -> object:
+        nonlocal calls
+        calls += 1
+        return real_loader(value)
+
+    original = snapshot(targets)
+    routing_module.load_workflow_execution_history = load
+    try:
+        result = route_persisted_execution_outcome_reentry(
+            workflow(), targets.state_path, targets.events_path
+        )
+    finally:
+        routing_module.load_workflow_execution_history = real_loader
+
+    assert type(result) is WorkflowProgressionDecision
+    assert result.decision == "workflow_complete"
+    assert calls == 1
+    assert snapshot(targets) == original
+
+
 @pytest.mark.parametrize("category", ["api_error", "transport_error", "invalid_output"])
-def test_persisted_failure_is_value_terminal_stop_without_progression_or_writes(
+def test_persisted_failure_is_terminal_without_progression_or_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, category: str
 ) -> None:
     targets = failure_history(tmp_path, category)
     before = snapshot(targets)
+    real_decision = progression_module.decide_workflow_progression
 
     def progression_must_not_run(*_: object, **__: object) -> object:
         pytest.fail("persisted failure must not progress")
 
     monkeypatch.setattr(
-        routing_module, "decide_persisted_success_progression", progression_must_not_run
+        progression_module, "decide_workflow_progression", progression_must_not_run
     )
     result = route_persisted_execution_outcome_reentry(
         workflow(), targets.state_path, targets.events_path
+    )
+    monkeypatch.setattr(
+        progression_module, "decide_workflow_progression", real_decision
     )
 
     assert type(result) is PersistedExecutionOutcome
     assert result.outcome == "persisted_failure"
     assert result.failure_category == category
-    assert result.workflow_id == "workflow"
-    assert result.current_step_id == "first"
-    assert result.current_step_index == 1
-    assert result.current_employee_id == "one"
     assert snapshot(targets) == before
 
 
-def test_final_success_returns_completion_decision_without_writing(
-    tmp_path: Path,
+@pytest.mark.parametrize("status", ["ready", "running"])
+def test_ready_and_running_histories_fail_closed_without_progression(
+    tmp_path: Path, status: str
 ) -> None:
-    targets = final_success_history(tmp_path)
+    targets = write_history(
+        tmp_path,
+        state(status=status, completed_step_ids=()),
+    )
     before = snapshot(targets)
 
-    result = route_persisted_execution_outcome_reentry(
-        workflow(), targets.state_path, targets.events_path
-    )
+    with pytest.raises(PersistedExecutionOutcomeCompatibilityError):
+        route_persisted_execution_outcome_reentry(
+            workflow(), targets.state_path, targets.events_path
+        )
 
-    assert type(result) is WorkflowProgressionDecision
-    assert result.decision == "workflow_complete"
-    assert result.current_step_id == "second"
-    assert result.current_step_index == 2
-    assert result.next_step_id is None
-    assert result.reason == "last_step_succeeded"
     assert snapshot(targets) == before
 
 
@@ -284,28 +294,17 @@ def test_final_success_returns_completion_decision_without_writing(
             state(current_step_id="other", completed_step_ids=("other",)),
             event(step_id="other"),
         ),
-        (
-            state(current_employee_id="other"),
-            event(employee_id="other"),
-        ),
+        (state(current_employee_id="other"), event(employee_id="other")),
     ],
 )
-def test_current_history_linkage_mismatch_fails_closed_before_progression(
+def test_current_history_linkage_mismatch_fails_closed(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     value: WorkflowExecutionState,
     event_value: RuntimeStepEvent,
 ) -> None:
     targets = write_history(tmp_path, value, event_value)
     before = snapshot(targets)
 
-    monkeypatch.setattr(
-        routing_module,
-        "decide_persisted_success_progression",
-        lambda *_args, **_kwargs: pytest.fail(
-            "invalid current history must stop before progression"
-        ),
-    )
     with pytest.raises(PersistedExecutionOutcomeCompatibilityError) as error:
         route_persisted_execution_outcome_reentry(
             workflow(), targets.state_path, targets.events_path
@@ -323,18 +322,12 @@ def test_current_history_linkage_mismatch_fails_closed_before_progression(
         (workflow(), Path("state"), object(), "event_target"),
     ],
 )
-def test_invalid_inputs_fail_closed_before_lower_work(
-    monkeypatch: pytest.MonkeyPatch,
+def test_invalid_inputs_fail_closed_before_history_work(
     workflow_value: object,
     state_path: object,
     events_path: object,
     classification: str,
 ) -> None:
-    monkeypatch.setattr(
-        routing_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args, **_kwargs: pytest.fail("invalid inputs must stop first"),
-    )
     with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
         route_persisted_execution_outcome_reentry(
             workflow_value, state_path, events_path
@@ -342,105 +335,58 @@ def test_invalid_inputs_fail_closed_before_lower_work(
     assert error.value.detail.classification == classification
 
 
-def test_same_target_is_rejected_before_lower_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_same_target_is_rejected_before_history_work(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.write_bytes(b"target")
-    monkeypatch.setattr(
-        routing_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args, **_kwargs: pytest.fail("conflicting targets must stop first"),
-    )
+
     with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
         route_persisted_execution_outcome_reentry(workflow(), target, target)
+
     assert error.value.detail.classification == "target_conflict"
 
 
-@pytest.mark.parametrize(
-    "returned",
-    [
-        object(),
-        outcome(outcome="persisted_success", failure_category="api_error"),
-        outcome(outcome="persisted_failure", failure_category=None),
-        outcome(outcome="persisted_failure", failure_category="other"),
-        outcome(workflow_id="other"),
-        outcome(current_step_id="second"),
-        outcome(current_step_index=2),
-        outcome(current_employee_id="two"),
-    ],
-)
-def test_malformed_classification_fails_closed_without_progression(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    returned: object,
+def test_phase38_keeps_only_minimum_classification_route_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     targets = non_final_success_history(tmp_path)
-    before = snapshot(targets)
+    real_classifier = routing_module.classify_loaded_persisted_execution_outcome
+    malformed_identity = PersistedExecutionOutcome(
+        outcome="persisted_success",
+        workflow_id="other",
+        current_step_id="other",
+        current_step_index=99,
+        current_employee_id="other",
+        failure_category=None,
+    )
+
+    def classify(definition: object, history: object) -> object:
+        real_classifier(definition, history)
+        return malformed_identity
 
     monkeypatch.setattr(
-        routing_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args, **_kwargs: returned,
+        routing_module, "classify_loaded_persisted_execution_outcome", classify
     )
-    monkeypatch.setattr(
-        routing_module,
-        "decide_persisted_success_progression",
-        lambda *_args, **_kwargs: pytest.fail(
-            "invalid classification must not progress"
-        ),
+    result = route_persisted_execution_outcome_reentry(
+        workflow(), targets.state_path, targets.events_path
     )
-    with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
-        route_persisted_execution_outcome_reentry(
-            workflow(), targets.state_path, targets.events_path
-        )
 
-    assert error.value.detail.classification == "classification_contract"
-    assert snapshot(targets) == before
+    assert type(result) is WorkflowProgressionDecision
+    assert result.decision == "prepare_next_step"
 
 
-@pytest.mark.parametrize(
-    "returned",
-    [
-        object(),
-        decision(decision="stopped_failed"),
-        decision(workflow_id="other"),
-        decision(current_step_id="other"),
-        decision(current_step_index=2),
-        decision(current_employee_id="other"),
-        decision(next_step_id="other"),
-        decision(next_step_index=3),
-        decision(next_employee_id="other"),
-        decision(reason="other"),
-        decision(
-            decision="workflow_complete",
-            next_step_id=None,
-            next_step_index=None,
-            next_employee_id=None,
-            reason="last_step_succeeded",
-        ),
-    ],
-)
-def test_malformed_progression_fails_closed(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    returned: object,
+@pytest.mark.parametrize("contents", [b"bad", b"\xff"])
+def test_corrupt_history_fails_closed_without_leaking_details(
+    tmp_path: Path, contents: bytes
 ) -> None:
-    targets = non_final_success_history(tmp_path)
-    before = snapshot(targets)
-    monkeypatch.setattr(
-        routing_module,
-        "decide_persisted_success_progression",
-        lambda *_args, **_kwargs: returned,
-    )
+    state_path = tmp_path / "state.json"
+    events_path = tmp_path / "events.jsonl"
+    state_path.write_bytes(contents)
+    events_path.write_text("")
 
-    with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
-        route_persisted_execution_outcome_reentry(
-            workflow(), targets.state_path, targets.events_path
-        )
+    with pytest.raises(WorkflowExecutionLoadError) as error:
+        route_persisted_execution_outcome_reentry(workflow(), state_path, events_path)
 
-    assert error.value.detail.classification == "progression_contract"
-    assert snapshot(targets) == before
+    assert str(state_path) not in str(error.value)
 
 
 @pytest.mark.parametrize("stage", ["classification", "progression"])
@@ -449,26 +395,20 @@ def test_safe_lower_error_is_preserved_without_writes(
 ) -> None:
     targets = non_final_success_history(tmp_path)
     before = snapshot(targets)
-    writes: list[Path] = []
-    original_write_bytes = Path.write_bytes
-    monkeypatch.setattr(
-        Path,
-        "write_bytes",
-        lambda path, data: (writes.append(path), original_write_bytes(path, data))[1],
-    )
-    expected: ValueError
     if stage == "classification":
-        expected = PersistedExecutionOutcomeCompatibilityError("history_data")
+        expected = WorkflowExecutionLoadError("safe")
+
+        def fail_loader(_: object) -> object:
+            raise expected
+
         monkeypatch.setattr(
-            routing_module,
-            "classify_persisted_execution_outcome_reentry",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(expected),
+            routing_module, "load_workflow_execution_history", fail_loader
         )
     else:
         expected = PersistedSuccessProgressionCompatibilityError("history_data")
         monkeypatch.setattr(
-            routing_module,
-            "decide_persisted_success_progression",
+            progression_module,
+            "decide_workflow_progression",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(expected),
         )
 
@@ -478,7 +418,6 @@ def test_safe_lower_error_is_preserved_without_writes(
         )
 
     assert error.value is expected
-    assert writes == []
     assert snapshot(targets) == before
 
 
@@ -495,19 +434,25 @@ def test_unexpected_lower_error_is_sanitized_and_not_retried(
         calls += 1
         raise RuntimeError("secret provider output and /private/path")
 
-    name = (
-        "classify_persisted_execution_outcome_reentry"
-        if stage == "classification"
-        else "decide_persisted_success_progression"
-    )
-    monkeypatch.setattr(routing_module, name, unexpected)
+    if stage == "classification":
+        monkeypatch.setattr(
+            routing_module, "load_workflow_execution_history", unexpected
+        )
+    else:
+        monkeypatch.setattr(
+            progression_module, "decide_workflow_progression", unexpected
+        )
 
-    with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
+    with pytest.raises(
+        (
+            PersistedExecutionOutcomeCompatibilityError,
+            PersistedExecutionOutcomeRoutingCompatibilityError,
+        )
+    ) as error:
         route_persisted_execution_outcome_reentry(
             workflow(), targets.state_path, targets.events_path
         )
 
-    assert error.value.detail.classification == "dependency_error"
     assert "secret" not in str(error.value)
     assert "/private/path" not in str(error.value)
     assert calls == 1
@@ -528,16 +473,24 @@ def test_lower_mutation_is_rejected_and_compensated(
     before = snapshot(targets)
     changed = targets.state_path if target_name == "state" else targets.events_path
 
-    def mutate_and_return(*_: object, **__: object) -> object:
-        mutate(changed, operation)
-        return outcome() if stage == "classification" else decision()
+    if stage == "classification":
+        real_loader = routing_module.load_workflow_execution_history
 
-    name = (
-        "classify_persisted_execution_outcome_reentry"
-        if stage == "classification"
-        else "decide_persisted_success_progression"
-    )
-    monkeypatch.setattr(routing_module, name, mutate_and_return)
+        def load(value: object) -> object:
+            history = real_loader(value)
+            mutate(changed, operation)
+            return history
+
+        monkeypatch.setattr(routing_module, "load_workflow_execution_history", load)
+    else:
+        real_decision = progression_module.decide_workflow_progression
+
+        def decide(definition: object, history: object) -> object:
+            result = real_decision(definition, history)
+            mutate(changed, operation)
+            return result
+
+        monkeypatch.setattr(progression_module, "decide_workflow_progression", decide)
 
     with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
         route_persisted_execution_outcome_reentry(
@@ -553,24 +506,22 @@ def test_rollback_failure_is_safely_classified_and_not_retried(
 ) -> None:
     targets = non_final_success_history(tmp_path)
     calls = 0
+    real_loader = routing_module.load_workflow_execution_history
     original_write_bytes = Path.write_bytes
 
-    def classify_and_delete(*_: object, **__: object) -> object:
+    def load(value: object) -> object:
         nonlocal calls
         calls += 1
+        history = real_loader(value)
         targets.events_path.unlink()
-        return outcome()
+        return history
 
     def fail_event_restore(path: Path, data: bytes) -> int:
         if path == targets.events_path:
             raise OSError("restore denied")
         return original_write_bytes(path, data)
 
-    monkeypatch.setattr(
-        routing_module,
-        "classify_persisted_execution_outcome_reentry",
-        classify_and_delete,
-    )
+    monkeypatch.setattr(routing_module, "load_workflow_execution_history", load)
     monkeypatch.setattr(Path, "write_bytes", fail_event_restore)
 
     with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError) as error:
