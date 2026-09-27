@@ -27,7 +27,6 @@ from ai_office.engine import (
     PublicationRegenerationExportReconciliation,
     build_immediate_predecessor_upstream_inputs,
     build_persisted_continuation_runtime_facts,
-    classify_persisted_execution_outcome_reentry,
     export_publication_regeneration_output,
     load_publication_regeneration_export_reconciliation,
     project_publication_regeneration_output,
@@ -849,15 +848,9 @@ def _read_persisted_continue_route(
     state_path: Path,
     events_path: Path,
 ) -> PersistedExecutionOutcome | WorkflowProgressionDecision:
-    """Run the canonical read-only Phase-37 → Phase-38 preflight."""
+    """Run the canonical read-only persisted-target classification and route."""
     try:
-        classified = classify_persisted_execution_outcome_reentry(
-            workflow,
-            state_path,
-            events_path,
-        )
         routed = route_persisted_execution_outcome_reentry(
-            classified,
             workflow,
             state_path,
             events_path,

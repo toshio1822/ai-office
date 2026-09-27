@@ -435,7 +435,7 @@ explicit environment mapping or current process environment
 - Executed-Result Transition Persistence Reentry Boundaryは、正確な既存Phase 21/35 runtime result、検証済みworkflow、caller suppliedなstate/event targetを入力にする。Phase 24 strict state loaderで`running` stateを再読込し、workflow ID、current step/index/employee、completed-step prefixとresult identityを検証してから、既存Phase 30 `persist_executed_step_transition()`へ一度だけ委譲する。returned既存`WorkflowExecutionPersistenceResult`、strictly reloaded final state/history、一つの追加event、byte countを照合し、注入依存のpartial/wrong writeやevent replacementは両targetを呼出し前bytesへ補償復元してsafe errorにする。provider execution、credential/tool resolution、retry、progression、自動継続、paid CLI、GUIは扱わない。順序はPhase 31 persisted success + Phase 25 → Phase 32 fresh approval + Phase 26 → Phase 33 PreparedWorkflowStep + Phase 27 → Phase 34 start + Phase 28 persistence → Phase 35 strict running verification + Phase 29 once → Phase 36 exact result + Phase 30 once → later explicit persisted-history progression/failure handlingである。
 - Executed-Result Transition Routing Reentry Boundaryは、正確なPhase 42 runtime success/failureを`persist_executed_result_transition_reentry()`へ正確に一度だけ渡し、同一のPhase 30 persistence resultを返す。terminal stateと一つのruntime eventの構築・保存は既存boundary内部のPhase 30 persistenceで行い、Phase 43自身は構築しない。strict running state/history、runtime identity、final terminal state、一つの追加event、byte countを検証し、dependencyのpartial/invalid writeまたはunexpected errorでは両targetを補償復元する。正確な`workflow_complete`はtargetをread-onlyで確認して同じdecisionを返し、retry、自動継続、progression、workflow completion finalization、paid CLI/GUIを行わない。順序はPhase 42 result → Phase 43 routing → runtime resultなら`persist_executed_result_transition_reentry()` + Phase 30 terminal transition/event、completionならunchanged stop → future explicit outcome routingである。
 - Persisted Terminal Outcome Classification Routing Reentry Boundaryは、正確なPhase 43 persistence resultをtarget bytesとstrict terminal historyへ照合してから、`classify_persisted_execution_outcome_reentry()`を正確に一度だけ呼ぶread-only boundaryである。同じPhase 37 `PersistedExecutionOutcome` objectを返し、`workflow_complete`は分類せず同じdecisionを返す。Phase 38 routing、Phase 31 progression、next-step preparation、retry、自動継続、workflow completion finalization、paid CLI/GUIは行わない。
-- Classified Persisted Outcome Routing Bridgeは、正確なPhase 44 `PersistedExecutionOutcome`をstrict terminal historyに照合してから、`route_persisted_execution_outcome_reentry()`（Phase 38）へ正確に一度だけ渡すread-only bridgeである。`workflow_complete`はPhase 38を呼ばず同じdecisionを返す。Phase 37 classificationやPhase 31 progressionを直接呼ばず、next-step preparation/execution、retry、自動継続、workflow completion/failure finalization、paid CLI/GUIは行わない。
+- Persisted outcome consumerは、caller suppliedなPhase 37/44 outcomeをPhase 38へ渡すことをpublic contractにしない。`route_persisted_execution_outcome_reentry()`（Phase 38）は`workflow`、`state_path`、`events_path`だけを受け、current targetからcanonical classificationとroutingを自身で行う。Phase 37 classificationやPhase 31 progressionをcaller側で事前実行せず、next-step preparation/execution、retry、自動継続、workflow completion/failure finalization、paid CLI/GUIを行わない。
 - 依存方向は `provider-independent invocation model -> provider-specific adapter -> provider-specific request model -> future runtime` とする。Runtimeからdefinitionsやplanningのモデルへ逆依存させない。
 - provider共通抽象は、複数providerの実装から実際の共通点が確認されるまで作らない。Codex CLIは承認・sandbox・tool実行・agent loopを伴う実行基盤であるため、将来は別のAdapterとRuntime経路として検討する。
 - 人間承認が必要な遷移は、承認済みの明示的な入力なしに進めない。
@@ -472,7 +472,7 @@ Phase 76 Prepared Start Persistence Routing Phase Bridge Cycle Continuation Boun
 
 Phase 77 Persisted Running Execution Routing Phase Bridge Cycle Continuation Boundaryは、Phase 76の正確な`RunningStatePersistenceResult`、`workflow_complete`、または`persisted_failure`を受けるread-only boundaryである。execution routeでは元の正確な`PreparedStepExecutionStart`、workflow、employee、resolved tools、OpenAI API key、approval、transportを検証し、state/event targetsと先行step historyを再検証した後、同じ10引数のobject identityで既存Phase 70へ正確に一度だけ委譲し、正確なruntime success/failureを返す。completion/failure stop routeはexecution-only inputsをすべてNoneとしてstrict terminal state/historyを検証し、Phase 70を呼ばず同じobjectで停止する。依存のtarget改変、不正返却、safe/unexpected error、rollback failureは両targetをbyte-for-byte補償復元し、安全なdetail classificationに変換する。Phase 70/63/56 logic、employee/tool/credential/approval選択、provider/tool実行、transition persistence、outcome分類、retry、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは複製・追加しない。
 
-Persisted Execution Outcome Routing Reentry Boundary（Phase 38）は、caller suppliedな正確なPhase 37 outcome、workflow、state target、event targetの4 business inputsを受けるread-only boundaryである。Phase 37 classificationとPhase 31 progressionのowner差し替えはpublic extension pointではなく、canonical ownerを内部で使用する。Phase 37 outcomeを同じ明示targetに対して再分類し、全fieldを照合する。成功だけをPhase 31へ一度委譲して同じdecision objectを返し、失敗はPhase 31を呼ばず同じoutcome objectを返す。各依存呼出し後にtarget bytesの不変性を確認し、改変時のみ補償復元する。next-step preparation、completion persistence/finalization、retry/recovery、provider execution、data persistenceを行わない。
+Persisted Execution Outcome Routing Reentry Boundary（Phase 38）は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryである。Phase 37 classificationとPhase 31 progressionのowner差し替えはpublic extension pointではなく、canonical ownerを内部で使用する。current targetからcanonicalなPhase 37 classificationを取得し、workflow/current-step/employee、completed-step、event-historyのlinkageをfail-closedで検証する。`persisted_failure`は正しいvalue-level terminal resultとして返し、Phase 31を呼ばず、progressionもstate/event writeも行わない。`persisted_success`だけをPhase 31へ一度委譲し、返却decisionを検証する。各依存呼出し後にtarget bytesの不変性を確認し、改変時のみ補償復元する。next-step preparation、completion persistence/finalization、retry/recovery、provider execution、data persistenceを行わない。
 
 Persisted Success Preparation Routing Reentry Boundary（Phase 39）は、caller suppliedな正確なPhase 31 decisionを明示targetに対して再判定し、全fieldを照合するread-only boundaryである。`prepare_next_step`だけをcaller supplied approval/employeeとともにPhase 32へ一度委譲して同じprepared-step objectを返し、`workflow_complete`はPhase 32を呼ばず同じdecision objectを返す。approval作成、prepared-step execution、running-state persistence、completion persistence/finalization、retry、provider execution、data persistenceを行わない。
 
@@ -3084,7 +3084,7 @@ Phase 52 (classified persisted outcome routing bridge reentry, final dependency:
 - **predecessorの空`output_text`のみ緩和**: `type(output_text) is str`（空文字列は許容、`None`・非strはinvalid維持）。predecessorのprovider / request-ID検証は追加しない（Phase 155の`request_id=None`・`provider="openai"`を許容するだけ）
 - **terminal検証はstrict維持**: succeededは`response_id`非空str・`output_text`非空str・`message None`。failedは`response_id None`・`output_text None`・failure-category連動・`message`はstr（空文字列許容）
 - **completionルートはstrictのまま**: fallbackはexact `PersistedExecutionOutcome` にのみ適用され、`WorkflowProgressionDecision(workflow_complete)` ルートがpredecessor空output互換を得ることはない
-- **下流実チェーンは無変更**: 実Phase 45（`_load_terminal_history`はpredecessor `output_text`をgateしない）・実Phase 38（公開Phase 37で再分類し、persisted failureは同一outcomeを返しprogressionを呼ばない）・実Phase 37 / 31 / 25が、同一provenanceを同一object identityで受け渡す
+- **下流実チェーンは無変更**: 実Phase 45（`_load_terminal_history`はpredecessor `output_text`をgateしない）・実Phase 38（current targetをcanonical Phase 37 classificationで分類し、persisted failureはvalue-level terminal stopとしてprogressionを呼ばない）・実Phase 37 / 31 / 25が、read-onlyとlinkage検証の責務を維持する
 
 ### 変更ファイル（正確に6ファイル）
 
@@ -4376,12 +4376,13 @@ Phase38-owned stale read-only reclassification
                        STOP
 ```
 
-The stale read-only reclassification remains a Phase-38 responsibility:
-Phase 38 owns stale-outcome revalidation, target invariance, routing, and lower
-error ownership. Phase 212 does not independently redesign or duplicate that
-logic. A valid persisted failure and a valid final success remain unchanged
-terminal results. Neither terminal route validates, consumes, or requires
-continuation contexts.
+The canonical read-only classification remains a Phase-38 responsibility:
+Phase 38 owns current-target validation, stale/mismatch rejection, target
+invariance, routing, and lower-error ownership. Phase 212 calls the narrowed
+three-input boundary directly and does not pre-classify or supply a
+`PersistedExecutionOutcome`. A valid persisted failure is a value-level
+terminal stop and a valid final success remains a read-only terminal result.
+Neither terminal route validates, consumes, or requires continuation contexts.
 
 Only a valid `prepare_next_step` result reaches continuation validation. The
 container must then be an exact built-in tuple of exact
@@ -4390,8 +4391,8 @@ employee, tools, API key, execution approval, and transport contents remain
 Phase 192/190/lower-owned. The Phase-212 boundary has no continuation loop and
 no retry.
 
-Persisted `ready` and `running` states are rejected by Phase 37 before Phase
-38 or Phase 192. A persisted `running` state does not prove whether an
+Persisted `ready` and `running` states are rejected by Phase 38's canonical
+Phase 37 classification before Phase 192. A persisted `running` state does not prove whether an
 external provider side effect completed before process death, so automatic
 replay could duplicate execution; explicit persisted-running boundaries
 remain separate. Phase 37, Phase 38, and Phase 31 are read-only owners.
@@ -4423,7 +4424,7 @@ CLI static/public request construction
   -> operator returns exact expected identity + fingerprint
   -> explicit approval construction
   -> start: Phase210 + ()
-  -> continue: read-only Phase37→38 preview, then Phase212 + (one context,)
+  -> continue: read-only Phase38 canonical classification + routing, then Phase212 + (one context,)
   -> STOP
 ```
 
@@ -4445,9 +4446,10 @@ independently prevents execution after the persisted terminal route becomes
 stale between preview and execution.
 
 `start` constructs an `ApprovedWorkflowBootstrapContext` and calls Phase 210
-with the exact empty continuation tuple. `continue` first performs the
-read-only Phase 37 → Phase 38 route on every invocation. Terminal persisted
-failure and workflow completion stop without future approval, key, or transport;
+with the exact empty continuation tuple. `continue` first calls the narrowed
+read-only Phase 38 classification-and-routing boundary on every invocation.
+Terminal persisted failure and workflow completion stop without future approval,
+key, or transport;
 only `prepare_next_step` constructs one
 `ApprovedWorkflowContinuationContext` and calls Phase 212 with the exact
 one-element tuple. Consequently one explicit CLI approval authorizes at most
@@ -4524,19 +4526,19 @@ start / continue
 read-side business-result path:
 load/validate definitions
   -> select exact WORKFLOW_ID
-  -> Phase37 classify persisted terminal outcome
-  -> Phase38 route/revalidate canonical progression
+  -> Phase38 canonical classification (internal Phase37) + route/revalidate progression
   -> strict load_workflow_execution_history
   -> exact latest terminal event projection
   -> deterministic safe JSON
   -> STOP
 ```
 
-`classify_persisted_execution_outcome_reentry` (Phase37) と
 `route_persisted_execution_outcome_reentry` (Phase38) が、persisted terminal
-outcomeの分類とprogressionのcanonical ownerである。result CLIはstep数や
-completed listから`prepare_next_step` / `workflow_complete`を手動推論せず、
-Phase38のdecision、reason、next-step metadataをそのまま使う。Phase38後の
+classificationとprogression routingのcanonical composition ownerである。
+Phase38は内部で`classify_persisted_execution_outcome_reentry` (Phase37)を使うが、
+result CLIはPhase37 outcomeを事前に構築せず、step数やcompleted listから
+`prepare_next_step` / `workflow_complete`を手動推論しない。Phase38のdecision、
+reason、next-step metadataをそのまま使う。Phase38後の
 strict `load_workflow_execution_history`の二重読み込みは意図的なread-side
 validationであり、strict history loaderが永続化されたstate/eventの整合性を
 所有する。

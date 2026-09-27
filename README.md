@@ -720,11 +720,11 @@ future explicit outcome routing
 
 ## Persisted Execution Outcome Routing Reentry Boundary（Phase 38）
 
-`route_persisted_execution_outcome_reentry()`は、caller suppliedな正確なPhase 37 outcome、workflow、state target、event targetの4 business inputsだけを受けるread-only boundaryです。`classification_function`と`progression_function`によるPhase 37 classification / Phase 31 progressionのowner差し替えはpublic extension pointではなく、canonical ownerを内部で使用します。正確なPhase 37 outcomeを明示targetに対して再分類し、field-for-fieldで照合します。`persisted_success`だけを既存Phase 31へ一度委譲して同じdecision objectを返し、`persisted_failure`はPhase 31を呼ばず同じsupplied outcome objectを返します。target bytesは各依存呼出し後に検証し、必要時のみ復元します。次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みは行いません。
+`route_persisted_execution_outcome_reentry()`は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryです。現在の明示targetからcanonicalなPhase 37 classificationを内部で取得・検証し、workflow/current-step/employeeとcompleted-step/event historyのlinkageをfail-closedで再検証します。`persisted_failure`は値として正しいterminal stopを返し、Phase 31を呼ばず、progressionもstate/event writeも行いません。`persisted_success`だけを既存Phase 31へ一度委譲し、`workflow_complete`を含むdecisionを検証して返します。各依存呼出し後にtarget bytesの不変性を検証し、依存が改変した場合だけ既存の補償復元を行います。caller supplied outcome、旧4-input call shape、次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みはこのboundaryの契約ではありません。
 
 ## Classified Persisted Outcome Routing Bridge（Phase 45）
 
-`route_classified_persisted_outcome_reentry()`は、正確なPhase 44 outcomeをterminal historyへ照合して`route_persisted_execution_outcome_reentry()`（Phase 38）へ正確に一度だけ渡すread-only bridgeです。`workflow_complete`はPhase 38を呼ばず同じdecision objectを返します。Phase 37やPhase 31を直接呼ばず、next-step preparation/execution、retry、自動継続、completion/failure finalization、paid CLI/GUIは行いません。
+`route_classified_persisted_outcome_reentry()`（既存の上位read-only bridgeがある場合）は、Phase 38のpublic contractを拡張するものではありません。Phase 38へは`workflow`、`state_path`、`events_path`だけを渡し、Phase 38自身にcurrent targetのclassificationとroutingを行わせます。Phase 37をcaller側で事前実行してoutcomeを供給する経路、旧4-input route、next-step preparation/execution、retry、自動継続、completion/failure finalization、paid CLI/GUIは追加しません。
 
 ## Progression Preparation Routing Bridge（Phase 46）
 
@@ -3318,7 +3318,7 @@ Phase 52 (classified persisted outcome routing bridge reentry, final dependency:
 - **predecessorの空`output_text`のみ緩和**: `type(output_text) is str`（空文字列は許容、`None`・非strはinvalid維持）。predecessorのprovider / request-ID検証は追加しない（Phase 155の`request_id=None`・`provider="openai"`を許容するだけ）
 - **terminal検証はstrict維持**: succeededは`response_id`非空str・`output_text`非空str・`message None`。failedは`response_id None`・`output_text None`・failure-category連動・`message`はstr（空文字列許容）
 - **completionルートはstrictのまま**: fallbackはexact `PersistedExecutionOutcome` にのみ適用され、`WorkflowProgressionDecision(workflow_complete)` ルートがpredecessor空output互換を得ることはない
-- **下流実チェーンは無変更**: 実Phase 45（`_load_terminal_history`はpredecessor `output_text`をgateしない）・実Phase 38（公開Phase 37で再分類し、persisted failureは同一outcomeを返しprogressionを呼ばない）・実Phase 37 / 31 / 25が、同一provenanceを同一object identityで受け渡す
+- **下流実チェーンは無変更**: 実Phase 45（`_load_terminal_history`はpredecessor `output_text`をgateしない）・実Phase 38（current targetをcanonical Phase 37 classificationで分類し、persisted failureは正しい値のterminal stopとしてprogressionを呼ばない）・実Phase 37 / 31 / 25が、read-onlyとlinkage検証の責務を維持する
 
 ### 変更ファイル（正確に6ファイル）
 
@@ -4403,13 +4403,15 @@ existing persisted-terminal target
   → route_persisted_terminal_workflow_bounded(...)
 ```
 
-The persisted-terminal operation uses the existing Phase 37 classification and
-Phase 38 routing, preserving the Phase-38-owned duplicate read-only Phase-37
-reclassification. A persisted failure is an identity-preserving terminal stop;
-final persisted success is routed through Phase 31 and is also an
-identity-preserving terminal stop. Only `prepare_next_step` validates the
-caller-supplied exact tuple of `ApprovedWorkflowContinuationContext` values and
-hands it to the existing bounded continuation owner.
+The persisted-terminal operation calls Phase 38 directly. Phase 38 is the
+canonical composition owner for current-target Phase 37 classification and
+Phase 31 routing; Phase 212 does not pre-classify or supply a
+`PersistedExecutionOutcome`. A persisted failure is a value-level terminal stop
+with no progression or state/event write. Final persisted success is routed
+through Phase 31 and remains a read-only terminal stop. Only `prepare_next_step`
+validates the caller-supplied exact tuple of
+`ApprovedWorkflowContinuationContext` values and hands it to the existing
+bounded continuation owner.
 
 Continuation-context validation is deferred until it is relevant. Terminal
 failure and final success do not validate or consume contexts. Persisted
@@ -4420,8 +4422,8 @@ Phase 192 begins, Phase 192/190 and lower stages own durable changes and Phase
 212 performs no outer rollback. There is no retry, generated input, loop,
 recursion, scheduler, finalizer, CLI/GUI, or provider/network/paid API behavior
 in this boundary, and it never automatically selects fresh versus
-persisted-terminal resume. The CLI continues to use the same four business
-inputs and its existing one-context route.
+persisted-terminal resume. The CLI calls Phase 38 with the same three
+persisted-target inputs and then uses the existing one-context route.
 
 ## 明示承認付きワークフロー実行（Phase 214）
 
@@ -4524,11 +4526,12 @@ ai-office workflows result research-and-summarize \
 
 `--state-path` と `--events-path` は必須で、定義ディレクトリの既定値は
 `workflows` / `employees` です。このコマンドはworkflowとemployee定義を
-検証して対象workflowを選択した後、Phase37 → Phase38のcanonicalな永続
-terminal routeを読み取り、strictな`load_workflow_execution_history`で
-履歴を再読込します。CLIはstep数からprogressionを推測せず、最後のterminal
-eventをcurrent stateとPhase38のresult identityへ照合してから、1個の決定的な
-JSON objectだけを出力します。
+検証して対象workflowを選択した後、Phase38のcanonicalな永続terminal
+classification + routingを読み取ります。Phase38内部でPhase37 classification
+を行うため、CLIはPhase37 outcomeを事前に構築して渡しません。strictな
+`load_workflow_execution_history`で履歴を再読込し、step数からprogressionを
+推測せず、最後のterminal eventをcurrent stateとPhase38のresult identityへ
+照合してから、1個の決定的なJSON objectだけを出力します。
 
 成功時の`output.output_text`は、最後のsuccessful stepに保存された値を
 trim、normalize、要約、連結せず、そのまま返します。途中stepの成功では

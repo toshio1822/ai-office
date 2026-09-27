@@ -16,10 +16,9 @@ from ai_office.engine.persisted_success_progression import (
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
+from ai_office.storage.workflow_execution_history import WorkflowExecutionLoadError
 
 PersistedExecutionOutcomeRoutingClassification = Literal[
-    "outcome_type",
-    "outcome_contract",
     "workflow_definition",
     "state_target",
     "event_target",
@@ -53,21 +52,17 @@ class PersistedExecutionOutcomeRoutingCompatibilityError(
 
 
 def route_persisted_execution_outcome_reentry(
-    outcome: object,
     workflow: object,
     state_path: object,
     events_path: object,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Reclassify once and route only persisted success to Phase 31."""
-    _validate_inputs(outcome, workflow, state_path, events_path)
-    assert type(outcome) is PersistedExecutionOutcome
+    """Classify one persisted target and route only persisted success onward."""
+    _validate_inputs(workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
     original = _capture(state_path, events_path)
-    reclassified = _call_classification(workflow, state_path, events_path, original)
-    _validate_outcome(reclassified, "classification_contract", workflow)
-    if not _same_outcome(outcome, reclassified):
-        _raise("classification_contract")
+    outcome = _call_classification(workflow, state_path, events_path, original)
+    _validate_outcome(outcome, "classification_contract", workflow)
     if outcome.outcome == "persisted_failure":
         return outcome
     decision = _call_progression(workflow, state_path, events_path, original)
@@ -76,16 +71,12 @@ def route_persisted_execution_outcome_reentry(
 
 
 def _validate_inputs(
-    outcome: object,
     workflow: object,
     state_path: object,
     events_path: object,
 ) -> None:
-    if type(outcome) is not PersistedExecutionOutcome:
-        _raise("outcome_type")
     if type(workflow) is not WorkflowDefinition:
         _raise("workflow_definition")
-    _validate_outcome(outcome, "outcome_contract", workflow)
     if not isinstance(state_path, Path):
         _raise("state_target")
     if not isinstance(events_path, Path):
@@ -159,7 +150,7 @@ def _call_classification(
         result = classify_persisted_execution_outcome_reentry(
             workflow, state_path, events_path
         )
-    except PersistedExecutionOutcomeError:
+    except (PersistedExecutionOutcomeError, WorkflowExecutionLoadError):
         _restore_changed(state_path, events_path, original)
         raise
     except Exception:
@@ -216,12 +207,6 @@ def _reject_changed(
     if changed:
         _restore_changed(state_path, events_path, original)
         _raise("dependency_error")
-
-
-def _same_outcome(
-    left: PersistedExecutionOutcome, right: PersistedExecutionOutcome
-) -> bool:
-    return left == right
 
 
 def _validate_decision(

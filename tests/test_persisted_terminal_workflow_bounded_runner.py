@@ -1,17 +1,18 @@
 """Focused Phase-212 persisted-terminal bounded-resume tests.
 
-The public boundary has four business inputs and uses the canonical Phase 37,
-Phase 38, and Phase 192 owners directly.  Test-only monkeypatching of those
-canonical owner names observes malformed/error behavior without restoring a
-public dependency-injection seam.  Real-route cases use deterministic
-synthetic transports only; no provider, network, or paid API is called.
+The Phase-212 boundary has four inputs; its persisted-target composition uses
+Phase 38's three-business-input canonical classification and routing owner
+before the Phase-192 handoff. Test-only monkeypatching of those canonical
+boundaries observes malformed/error behavior without restoring a public
+dependency-injection seam. Real-route cases use deterministic synthetic
+transports only; no provider, network, or paid API is called.
 
 Requirement-to-test mapping:
 1 public API and removed seams -> test_01_public_api_and_removed_dependency_seams
 2 single execution and prepare handoff -> test_02_prepare_result_advances_once_without_retry_or_duplicate_execution
 3 deferred context validation -> test_03_prepare_context_validation_is_deferred_until_after_routing
-4 strict classified outcome -> test_04_classification_result_is_strict
-5 persisted-failure routing and stop -> test_05_persisted_failure_requires_routing_identity
+4 strict Phase-38 result -> test_04_phase38_result_is_strict
+5 persisted-failure routing and stop -> test_05_persisted_failure_is_value_terminal
 6 strict routed success -> test_06_persisted_success_routing_result_is_strict
 7 persisted-failure terminal stop -> test_07_persisted_failure_terminal_ignores_malformed_contexts
 8 final-success terminal stop -> test_08_final_success_terminal_ignores_malformed_contexts
@@ -534,35 +535,24 @@ def test_03_prepare_context_validation_stops_before_bounded_execution(
         assert (state_path.read_bytes(), events_path.read_bytes()) == before
 
 
-def test_04_classification_result_is_strict(
+def test_04_phase38_result_is_strict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = _workflow(2)
     state_path, events_path = object(), object()
     import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    def routing(value: object, *_: object) -> object:
-        if _get(value, "outcome") == "persisted_failure":
-            return value
-        raise AssertionError("invalid classification must not reach routing")
-
-    monkeypatch.setattr(
-        runner_module, "route_persisted_execution_outcome_reentry", routing
-    )
     for category in get_args(ModelInvocationFailureCategory):
         failure = _failure_outcome(workflow, category=category)
         monkeypatch.setattr(
             runner_module,
-            "classify_persisted_execution_outcome_reentry",
+            "route_persisted_execution_outcome_reentry",
             lambda *_args, value=failure: value,
         )
         result = route_persisted_terminal_workflow_bounded(
             workflow, state_path, events_path, object()
         )
-        assert result is failure
-
-    class OutcomeSubclass(PersistedExecutionOutcome):
-        pass
+        assert result == failure
 
     valid_success = _success_outcome(workflow)
     valid_failure = _failure_outcome(workflow)
@@ -579,39 +569,34 @@ def test_04_classification_result_is_strict(
             valid_failure,
             failure_category=type("CategorySubclass", (str,), {})("api_error"),
         ),
-        OutcomeSubclass(*astuple(valid_success)),
+        replace(valid_failure, current_step_id="other"),
     )
     for invalid in invalid_values:
         monkeypatch.setattr(
             runner_module,
-            "classify_persisted_execution_outcome_reentry",
+            "route_persisted_execution_outcome_reentry",
             lambda *_args, value=invalid: value,
         )
         _assert_runner_error(
             lambda: route_persisted_terminal_workflow_bounded(
-                workflow, state_path, events_path, object()
+                workflow, object(), object(), object()
             ),
-            "classification_contract",
+            "routing_contract",
         )
 
 
-def test_05_persisted_failure_requires_routing_identity(
+def test_05_persisted_failure_is_value_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = _workflow(2)
     failure = _failure_outcome(workflow)
     import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    monkeypatch.setattr(
-        runner_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args: failure,
-    )
     for translated in (
-        replace(failure),
-        _prepare(workflow),
-        _complete(workflow),
-        _failure_outcome(workflow, category="transport_error"),
+        object(),
+        _success_outcome(workflow),
+        replace(failure, current_step_id="other"),
+        replace(failure, failure_category="not-a-category"),
     ):
         monkeypatch.setattr(
             runner_module,
@@ -641,7 +626,7 @@ def test_05_persisted_failure_requires_routing_identity(
         route_persisted_terminal_workflow_bounded(
             workflow, object(), object(), object()
         )
-        is failure
+        == failure
     )
 
 
@@ -649,16 +634,10 @@ def test_06_persisted_success_routing_result_is_strict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = _workflow(3)
-    classified = _success_outcome(workflow)
     valid_prepare = _prepare(workflow)
     valid_complete = _complete(workflow)
     import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    monkeypatch.setattr(
-        runner_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args: classified,
-    )
     monkeypatch.setattr(
         runner_module,
         "route_persisted_execution_outcome_reentry",
@@ -673,17 +652,11 @@ def test_06_persisted_success_routing_result_is_strict(
         route_persisted_terminal_workflow_bounded(
             workflow, object(), object(), (_opaque_context(), _opaque_context())
         )
-        is valid_complete
+        == valid_complete
     )
 
     one_step_workflow = _workflow(1)
-    one_step_classified = _success_outcome(one_step_workflow)
     one_step_complete = _complete(one_step_workflow)
-    monkeypatch.setattr(
-        runner_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args: one_step_classified,
-    )
     monkeypatch.setattr(
         runner_module,
         "route_persisted_execution_outcome_reentry",
@@ -693,7 +666,7 @@ def test_06_persisted_success_routing_result_is_strict(
         route_persisted_terminal_workflow_bounded(
             one_step_workflow, object(), object(), object()
         )
-        is one_step_complete
+        == one_step_complete
     )
 
     class DecisionSubclass(WorkflowProgressionDecision):
@@ -704,7 +677,6 @@ def test_06_persisted_success_routing_result_is_strict(
 
     invalid_values: tuple[object, ...] = (
         object(),
-        _failure_outcome(workflow),
         replace(valid_prepare, next_step_id="other"),
         replace(valid_prepare, next_step_index=3),
         replace(valid_prepare, next_employee_id="other"),
@@ -714,11 +686,6 @@ def test_06_persisted_success_routing_result_is_strict(
         DecisionSubclass(*astuple(valid_prepare)),
     )
     for invalid in invalid_values:
-        monkeypatch.setattr(
-            runner_module,
-            "classify_persisted_execution_outcome_reentry",
-            lambda *_args: classified,
-        )
         monkeypatch.setattr(
             runner_module,
             "route_persisted_execution_outcome_reentry",
@@ -814,18 +781,12 @@ def test_09_bounded_result_family_and_linkage_are_strict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = _workflow(3)
-    classified = _success_outcome(workflow)
     routed = _prepare(workflow, 1)
     contexts = (_opaque_context(),)
     valid_prepare = _prepare(workflow, 2)
     valid_failure = _failure_outcome(workflow, index=2, category="api_error")
     import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    monkeypatch.setattr(
-        runner_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args: classified,
-    )
     monkeypatch.setattr(
         runner_module,
         "route_persisted_execution_outcome_reentry",
@@ -868,7 +829,7 @@ def test_09_bounded_result_family_and_linkage_are_strict(
             route_persisted_terminal_workflow_bounded(
                 workflow, object(), object(), contexts
             )
-            is valid
+            == valid
         )
 
 
@@ -1010,26 +971,10 @@ def test_15_default_lower_safe_errors_and_read_only_targets_are_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workflow = _workflow(3)
-    classified = _success_outcome(workflow)
     import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    monkeypatch.setattr(
-        runner_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args: classified,
-    )
     with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError):
         route_persisted_terminal_workflow_bounded(workflow, object(), object(), ())
-
-    from ai_office.engine.persisted_execution_outcome_reentry import (
-        classify_persisted_execution_outcome_reentry,
-    )
-
-    monkeypatch.setattr(
-        runner_module,
-        "classify_persisted_execution_outcome_reentry",
-        classify_persisted_execution_outcome_reentry,
-    )
     calls: list[str] = []
     state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
     before = (state_path.read_bytes(), events_path.read_bytes())
@@ -1044,13 +989,6 @@ def test_15_default_lower_safe_errors_and_read_only_targets_are_preserved(
     assert calls == ["step-1", "step-2"]
 
 
-def _get(value: object, name: str) -> object:
-    try:
-        return getattr(value, name)
-    except Exception:
-        return None
-
-
 def test_16_phase192_owned_change_is_never_rolled_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1058,16 +996,10 @@ def test_16_phase192_owned_change_is_never_rolled_back(
     state_path, events_path = tmp_path / "state", tmp_path / "events"
     state_path.write_bytes(b"before-state")
     events_path.write_bytes(b"before-events")
-    classified = _success_outcome(workflow)
     routed = _prepare(workflow)
     contexts = (_opaque_context(),)
     import ai_office.engine.persisted_terminal_workflow_bounded_runner as runner_module
 
-    monkeypatch.setattr(
-        runner_module,
-        "classify_persisted_execution_outcome_reentry",
-        lambda *_args: classified,
-    )
     monkeypatch.setattr(
         runner_module,
         "route_persisted_execution_outcome_reentry",
