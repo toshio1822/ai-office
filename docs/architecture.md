@@ -4384,6 +4384,14 @@ three-input boundary directly and does not pre-classify or supply a
 terminal stop and a valid final success remains a read-only terminal result.
 Neither terminal route validates, consumes, or requires continuation contexts.
 
+Phase 212 is a thin orchestration boundary rather than a second semantic
+validator. It does not revalidate persisted-outcome workflow/step/employee/
+failure-category fields, progression next-step/reason/linkage fields, or
+bounded-result position/linkage/exhaustion fields already owned by Phase 38 and
+the bounded continuation owner. Any Phase-212 result guard is limited to the
+minimum result family and route discriminator needed to fail closed; lower safe
+errors remain owned by and propagate from their canonical boundary.
+
 Only a valid `prepare_next_step` result reaches continuation validation. The
 container must then be an exact built-in tuple of exact
 `ApprovedWorkflowContinuationContext` instances. Preparation approval,
@@ -4401,14 +4409,15 @@ state/event changes. Phase 212 never restores the pre-resume snapshot after
 that ownership boundary, even when the lower dependency raises or returns a
 malformed result.
 
-The Phase-212 focused suite contains 16 focused tests and uses only
+The Phase-212 focused suite contains 14 focused tests and uses only
 deterministic synthetic transports. No context or approval generation,
 employee/tool/key/transport lookup, automatic replay, fresh/resume router,
 recursion, unbounded loop, scheduler, finalizer, parallelism, CLI/GUI,
 provider/network, or paid API behavior is added. The focused tests observe
 single execution, conditional handoff, terminal stops, finite-context
 behavior, fail-closed validation, and durable ownership; they do not make
-private owner-call topology or source/AST shape a public contract.
+private owner-call topology, full-field result meaning, historical error
+Literals, or source/AST shape a public contract.
 
 ## Phase 214: 明示承認付き1-step CLI boundary
 

@@ -4413,6 +4413,14 @@ validates the caller-supplied exact tuple of
 `ApprovedWorkflowContinuationContext` values and hands it to the existing
 bounded continuation owner.
 
+Phase 212 is a thin orchestration boundary, not a second semantic validator.
+It does not revalidate persisted-outcome workflow/step/employee/failure
+category fields, progression next-step/reason/linkage fields, or bounded-result
+position/linkage/exhaustion fields already owned by Phase 38 and the bounded
+continuation owner. It may fail closed only for an impossible result family or
+route discriminator, while lower safe errors remain owned by and propagate
+from their canonical boundary.
+
 Continuation-context validation is deferred until it is relevant. Terminal
 failure and final success do not validate or consume contexts. Persisted
 `ready` and `running` states are not automatically replayed: an in-progress
