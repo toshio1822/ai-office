@@ -314,8 +314,10 @@ def route_approved_workflow_fresh_start(
         _restore_or_fail(state_path, events_path, running_snapshot)
         _fail("execution_contract")
 
-    # Phase 172 owns the terminal durable commit.  Once it is invoked, no
-    # outer restoration to the running/ready/nonexistent bytes is permitted.
+    # Phase 161 owns terminal durable persistence.  Phase 172 owns the
+    # post-commit composition and committed-snapshot safety.  Once it is
+    # invoked, no outer restoration to the running/ready/nonexistent bytes is
+    # permitted.
     assert type(runtime_result) in (
         StepRuntimeExecutionSuccess,
         StepRuntimeExecutionFailure,

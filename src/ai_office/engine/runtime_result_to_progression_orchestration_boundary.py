@@ -79,10 +79,12 @@ def route_runtime_result_to_progression_orchestration_boundary(
     """Persist one runtime result and route the committed targets once.
 
     Phase 161 owns runtime/running-history validation, predecessor provenance,
-    terminal transition persistence, and the durable commit point. Once that
-    commit succeeds, the canonical three-input Phase 38 route classifies and
-    progresses the committed targets. Any post-commit failure preserves the
-    committed snapshot and never restores the pre-persistence running state.
+    terminal transition persistence, and the durable commit point. Phase 172
+    owns the post-commit composition and committed-snapshot safety boundary.
+    Once that commit succeeds, the canonical three-input Phase 38 route
+    classifies and progresses the committed targets. Any post-commit failure
+    preserves the committed snapshot and never restores the pre-persistence
+    running state.
     """
     _check_inputs(
         result,
@@ -93,17 +95,10 @@ def route_runtime_result_to_progression_orchestration_boundary(
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
-    if type(result) in (
-        WorkflowProgressionDecision,
-        PersistedExecutionOutcome,
-    ):
-        stop = True
-    else:
-        stop = False
-        assert type(result) in (
-            StepRuntimeExecutionSuccess,
-            StepRuntimeExecutionFailure,
-        )
+    assert type(result) in (
+        StepRuntimeExecutionSuccess,
+        StepRuntimeExecutionFailure,
+    )
 
     try:
         value = route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
@@ -113,11 +108,6 @@ def route_runtime_result_to_progression_orchestration_boundary(
         raise error
     except Exception:
         _fail("dependency_error")
-
-    if stop:
-        if value is not result:
-            _fail("phase161_contract")
-        return value
 
     if not _valid_phase161_result(value):
         _fail("phase161_contract")
@@ -155,8 +145,6 @@ def _check_inputs(
     if type(result) not in (
         StepRuntimeExecutionSuccess,
         StepRuntimeExecutionFailure,
-        WorkflowProgressionDecision,
-        PersistedExecutionOutcome,
     ):
         _fail("result_type")
     if type(workflow) is not WorkflowDefinition:

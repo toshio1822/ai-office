@@ -1,10 +1,10 @@
 """Observable post-commit orchestration behavior.
 
-Phase 172 owns only the transition from the Phase-161 durable commit to the
-canonical three-input persisted routing owner.  Phase 161 owns runtime and
-provenance validation plus transition persistence; Phase 38 owns classification
-and progression.  These tests deliberately avoid historical Phase-143/144
-call topology and private compatibility flags.
+Phase 161 owns runtime/provenance validation plus terminal durable persistence;
+Phase 172 owns the post-commit composition and committed-snapshot safety
+boundary to the canonical three-input persisted routing owner; Phase 38 owns
+classification and progression.  These tests deliberately avoid historical
+Phase-143/144 call topology and private compatibility flags.
 """
 
 # ruff: noqa: E501,E701,E702,F401,I001
@@ -226,23 +226,6 @@ def _history(values: dict[str, object]):
     )
 
 
-def _make_direct_stop_compatible(values: dict[str, object]) -> None:
-    """Use direct-stop provenance rather than active runtime compatibility."""
-    events_path = values["events_path"]
-    assert isinstance(events_path, Path)
-    history = _history(values)
-    events = list(history.events)
-    events[-1] = replace(
-        events[-1],
-        request_id="request-immediate-predecessor",
-        output_text="output-immediate-predecessor",
-    )
-    events_path.write_text(
-        "".join(serialize_runtime_step_event_jsonl(event) for event in events),
-        encoding="utf-8",
-    )
-
-
 def _capture_committed_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     captured: dict[str, bytes],
@@ -376,37 +359,79 @@ def test_invalid_active_provenance_fails_before_durable_commit(tmp_path: Path) -
     assert events_path.read_bytes() == events_before
 
 
-def test_valid_stop_is_identity_preserving_read_only_and_skips_phase38(
+@pytest.mark.parametrize(
+    "stop",
+    [
+        WorkflowProgressionDecision(
+            "workflow_complete",
+            "w",
+            "step-6",
+            6,
+            "e6",
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        ),
+        PersistedExecutionOutcome(
+            "persisted_failure",
+            "w",
+            "step-6",
+            6,
+            "e6",
+            "api_error",
+        ),
+    ],
+    ids=["workflow_complete", "persisted_failure"],
+)
+def test_stop_inputs_fail_closed_before_phase161_or_phase38(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    stop: WorkflowProgressionDecision | PersistedExecutionOutcome,
 ) -> None:
     values = setup(tmp_path, steps=6, current=6)
-    _make_direct_stop_compatible(values)
-    stop = route_runtime_result_to_progression_orchestration_boundary(
-        runtime_success(values["workflow"], 6),
-        values["workflow"],
-        values["state_path"],
-        values["events_path"],
-    )
-    assert type(stop) is WorkflowProgressionDecision
-    state_bytes = values["state_path"].read_bytes()  # type: ignore[union-attr]
-    event_bytes = values["events_path"].read_bytes()  # type: ignore[union-attr]
+    state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
+    events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
+    phase161_calls = 0
+    phase38_calls = 0
 
-    def must_not_run(*args: object, **kwargs: object) -> object:
-        raise AssertionError("a Phase-161 stop must not invoke Phase 38")
+    def phase161_must_not_run(*args: object, **kwargs: object) -> object:
+        nonlocal phase161_calls
+        phase161_calls += 1
+        raise AssertionError("Phase 161 must not run for a rejected stop input")
 
     monkeypatch.setattr(
-        orchestration_module, "route_persisted_execution_outcome_reentry", must_not_run
+        orchestration_module,
+        "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
+        phase161_must_not_run,
     )
-    out = route_runtime_result_to_progression_orchestration_boundary(
-        stop,
-        values["workflow"],
-        values["state_path"],
-        values["events_path"],
+
+    def phase38_must_not_run(*args: object, **kwargs: object) -> object:
+        nonlocal phase38_calls
+        phase38_calls += 1
+        raise AssertionError("Phase 38 must not run for a rejected stop input")
+
+    monkeypatch.setattr(
+        orchestration_module,
+        "route_persisted_execution_outcome_reentry",
+        phase38_must_not_run,
     )
-    assert out is stop
-    assert values["state_path"].read_bytes() == state_bytes  # type: ignore[union-attr]
-    assert values["events_path"].read_bytes() == event_bytes  # type: ignore[union-attr]
+
+    with pytest.raises(
+        RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError
+    ) as caught:
+        route_runtime_result_to_progression_orchestration_boundary(
+            stop,
+            values["workflow"],
+            values["state_path"],
+            values["events_path"],
+        )
+
+    assert caught.value.detail.classification == "result_type"
+    assert phase161_calls == 0
+    assert phase38_calls == 0
+    assert values["state_path"].read_bytes() == state_before  # type: ignore[union-attr]
+    assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
 
 
 def test_phase161_failure_owns_precommit_compensation_and_no_retry(

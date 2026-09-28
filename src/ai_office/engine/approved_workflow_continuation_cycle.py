@@ -336,8 +336,9 @@ def route_approved_workflow_continuation_cycle(
         StepRuntimeExecutionFailure,
     )
 
-    # Phase 172 owns the next durable terminal commit.  In particular, no
-    # outer restoration is permitted from this point onward, even if its
+    # Phase 161 owns terminal durable persistence.  Phase 172 owns the
+    # post-commit composition and committed-snapshot safety.  In particular,
+    # no outer restoration is permitted from this point onward, even if its
     # result is malformed or the dependency raises.
     try:
         progressed = route_runtime_result_to_progression_orchestration_boundary(
