@@ -3434,9 +3434,13 @@ provider/network/paid API, CLI, and GUI behavior remain outside this phase.
 ## Phase 208: Explicit Fresh Workflow Step-1 Bootstrap Boundary
 
 Phase 208 exposes
-`route_approved_workflow_fresh_start(workflow, state_path, events_path, context, *, running_persistence_function=persist_prepared_running_state, execution_function=execute_persisted_start_openai_step, phase172_function=route_runtime_result_to_progression_orchestration_boundary)`.
-It is the explicit fresh-entry boundary for exactly one step-1 execution. Both
-durable targets must be nonexistent, and the caller supplies the exact frozen
+`route_approved_workflow_fresh_start(workflow, state_path, events_path, context)`.
+This is an intentional public-contract narrowing: the former
+`running_persistence_function`, `execution_function`, and `phase172_function`
+owner-substitution keywords are not part of the API and are not accepted by a
+compatibility path. The canonical lower owners are used directly. It is the
+explicit fresh-entry boundary for exactly one step-1 execution. Both durable
+targets must be nonexistent, and the caller supplies the exact frozen
 `ApprovedWorkflowBootstrapContext` containing the distinct
 `InitialStepPreparationApproval`, step-1 employee, resolved tools, API key,
 execution approval, and transport.
@@ -3454,8 +3458,11 @@ persist its runtime result.
 The exact runtime result is handed once to Phase 172, which owns the terminal
 state/event persistence, classification, and progression commit. Phase 208
 returns the exact Phase-172 result and stops; it does not prepare or execute a
-later step. Phase 192 remains a separate caller action for any bounded
-continuation.
+later step. Running-persistence failure restores the ready snapshot, while
+execution failure restores only the running snapshot. Once Phase 172 is
+invoked, Phase 208 performs no outer rollback, including for a safe or
+sanitized Phase-172 error. Phase 192 remains a separate caller action for any
+bounded continuation.
 
 This boundary adds no retry, generated context, hidden approval or lookup,
 scheduler, loop, automatic continuation, parallel execution, or provider/API

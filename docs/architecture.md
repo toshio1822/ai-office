@@ -3371,12 +3371,17 @@ deterministic synthetic transports only.
 ## Phase 208: Explicit Fresh Workflow Step-1 Bootstrap Boundary
 
 Phase 208 adds the public
-`route_approved_workflow_fresh_start` boundary for one explicit fresh workflow
-entry at step 1. It requires two nonexistent durable targets and an exact
-`ApprovedWorkflowBootstrapContext`; the context carries the distinct
-`InitialStepPreparationApproval`, step-1 employee, resolved tools, credential,
-execution approval, and transport. The initial approval is not a fabricated
-predecessor-bound `NextStepPreparationApproval`.
+`route_approved_workflow_fresh_start(workflow, state_path, events_path,
+context)` boundary for one explicit fresh workflow entry at step 1. The
+four-input signature is intentional: the former
+`running_persistence_function`, `execution_function`, and `phase172_function`
+owner-substitution keywords are removed and no compatibility shim, wrapper,
+adapter, alias, registry, or alternate route preserves them. The canonical
+lower owners are used directly. It requires two nonexistent durable targets
+and an exact `ApprovedWorkflowBootstrapContext`; the context carries the
+distinct `InitialStepPreparationApproval`, step-1 employee, resolved tools,
+credential, execution approval, and transport. The initial approval is not a
+fabricated predecessor-bound `NextStepPreparationApproval`.
 
 The boundary creates the canonical ready state together with an empty event
 log using exclusive creation, and strictly loads both targets before accepting
@@ -3389,8 +3394,14 @@ Exactly one `execute_persisted_start_openai_step` call follows. That public
 execution owner verifies the persisted start and performs one explicit
 execution, but does not persist the runtime result. Phase 172 receives that
 exact result once and owns terminal state/event persistence, classification, and
-progression. Phase 208 returns the exact Phase-172 result and stops immediately;
-it never prepares, starts, persists, or executes a later step.
+progression. Fresh-start-owned postconditions only prove the expected stage
+commit and result handoff; lower-owner semantic validation remains with those
+owners. A running-persistence failure restores the ready snapshot. An
+execution failure, malformed output, or execution-stage mutation restores the
+running snapshot. Phase 208 returns the exact Phase-172 result and stops
+immediately; it never prepares, starts, persists, or executes a later step.
+After Phase 172 invocation it never restores a ready/running/nonexistent
+snapshot, including on a recognized safe or sanitized unexpected error.
 
 Phase 192 remains a separate caller action for bounded continuation after a
 `prepare_next_step` result. Phase 208 does not call Phase 190 or Phase 192 and
