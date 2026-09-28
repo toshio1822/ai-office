@@ -19,14 +19,12 @@ from ai_office.execution_target import (
     ModelExecutionTargetError,
     validate_execution_target_for_provider,
 )
-from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
-)
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
 from ai_office.engine.persisted_continuation_runtime_facts import (
     build_persisted_continuation_runtime_facts,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
+    PersistedExecutionOutcomeError,
     PersistedExecutionOutcome,
 )
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
@@ -35,8 +33,11 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
 from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
+from ai_office.engine.persisted_execution_outcome_routing_reentry import (
+    PersistedExecutionOutcomeRoutingError,
+)
+from ai_office.engine.persisted_success_progression import (
+    PersistedSuccessProgressionError,
 )
 from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147BoundaryError,
@@ -87,6 +88,7 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     RunningStatePersistenceResult,
+    WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history_with_source_digests,
     load_workflow_execution_state,
@@ -153,8 +155,10 @@ _SAFE_PHASE172_ERRORS = (
     Phase172BoundaryError,
     Phase172CompatibilityError,
     Phase161ChainError,
-    Phase143Error,
-    Phase144Error,
+    WorkflowExecutionLoadError,
+    PersistedExecutionOutcomeRoutingError,
+    PersistedExecutionOutcomeError,
+    PersistedSuccessProgressionError,
 )
 
 

@@ -49,15 +49,16 @@ from ai_office.execution_target import (
     ModelExecutionTargetError,
     validate_execution_target_for_provider,
 )
-from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
-)
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
 from ai_office.engine.persisted_execution_outcome_reentry import (
+    PersistedExecutionOutcomeError,
     PersistedExecutionOutcome,
 )
-from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
+from ai_office.engine.persisted_execution_outcome_routing_reentry import (
+    PersistedExecutionOutcomeRoutingError,
+)
+from ai_office.engine.persisted_success_progression import (
+    PersistedSuccessProgressionError,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
@@ -92,6 +93,7 @@ from ai_office.storage import (
     RunningStatePersistenceInputError,
     RunningStatePersistenceRollbackError,
     RunningStatePersistenceResult,
+    WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
     load_workflow_execution_state,
@@ -134,8 +136,10 @@ _SAFE_PHASE172_ERRORS = (
     Phase172Error,
     Phase172CompatibilityError,
     Phase161Error,
-    Phase143Error,
-    Phase144Error,
+    WorkflowExecutionLoadError,
+    PersistedExecutionOutcomeRoutingError,
+    PersistedExecutionOutcomeError,
+    PersistedSuccessProgressionError,
 )
 _READY_EMPTY_EVENTS = b""
 
@@ -178,12 +182,8 @@ class FreshWorkflowBootstrapError(ValueError):
 class FreshWorkflowBootstrapCompatibilityError(FreshWorkflowBootstrapError):
     """Raised when a fresh step-1 bootstrap cannot safely complete."""
 
-    def __init__(
-        self, classification: FreshWorkflowBootstrapClassification
-    ) -> None:
-        super().__init__(
-            "approved workflow fresh-start inputs are incompatible"
-        )
+    def __init__(self, classification: FreshWorkflowBootstrapClassification) -> None:
+        super().__init__("approved workflow fresh-start inputs are incompatible")
         self.detail = FreshWorkflowBootstrapFailureDetail(classification)
 
 
@@ -193,7 +193,9 @@ def route_approved_workflow_fresh_start(
     events_path: object,
     context: object,
     *,
-    running_persistence_function: Callable[..., object] = persist_prepared_running_state,
+    running_persistence_function: Callable[
+        ..., object
+    ] = persist_prepared_running_state,
     execution_function: Callable[..., object] = execute_persisted_start_openai_step,
     phase172_function: Callable[..., object] = (
         route_runtime_result_to_progression_orchestration_boundary
@@ -235,9 +237,7 @@ def route_approved_workflow_fresh_start(
         completed_step_ids=(),
         last_failure_category=None,
     )
-    ready_bytes = serialize_workflow_execution_state_json(ready_state).encode(
-        "utf-8"
-    )
+    ready_bytes = serialize_workflow_execution_state_json(ready_state).encode("utf-8")
 
     created_targets = _create_pair(
         state_path, events_path, ready_bytes, _READY_EMPTY_EVENTS
@@ -259,9 +259,7 @@ def route_approved_workflow_fresh_start(
     _validate_approval(context.preparation_approval, workflow)
     _validate_employee(context.employee, workflow, first_step)
     prepared_step = _build_prepared_step(workflow, first_step, context.employee)
-    prepared_start = _build_prepared_start(
-        workflow, prepared_step, context.employee
-    )
+    prepared_start = _build_prepared_start(workflow, prepared_step, context.employee)
 
     target = _validate_context_execution_target(context)
     if type(context.execution_approval) is ModelInvocationExecutionApproval:
@@ -372,9 +370,7 @@ def _check_initial_inputs(
     if type(context) is not ApprovedWorkflowBootstrapContext:
         _fail("context_type")
     if not (
-        callable(running_persistence)
-        and callable(execution)
-        and callable(phase172)
+        callable(running_persistence) and callable(execution) and callable(phase172)
     ):
         _fail("configuration")
     try:
@@ -404,10 +400,7 @@ def _validate_context_execution_target(
             context.execution_target,
             provider=approval.provider,
         )
-        if (
-            context_target != target
-            or approval.execution_target_fingerprint == ""
-        ):
+        if context_target != target or approval.execution_target_fingerprint == "":
             _fail("execution_contract")
         return target
     except (ModelExecutionTargetError, AttributeError):
@@ -529,9 +522,7 @@ def _loadback_accept_ready(
         _fail("initialization_contract")
 
 
-def _valid_ready_history(
-    workflow: WorkflowDefinition, history: object
-) -> bool:
+def _valid_ready_history(workflow: WorkflowDefinition, history: object) -> bool:
     if type(history) is not LoadedWorkflowExecutionHistory:
         return False
     state = history.state
@@ -549,9 +540,7 @@ def _valid_ready_history(
     )
 
 
-def _validate_approval(
-    approval: object, workflow: WorkflowDefinition
-) -> None:
+def _validate_approval(approval: object, workflow: WorkflowDefinition) -> None:
     if type(approval) is not InitialStepPreparationApproval:
         _fail("preparation_approval")
     assert type(approval) is InitialStepPreparationApproval
@@ -725,8 +714,7 @@ def _valid_phase172_result(
             type(value) is PersistedExecutionOutcome
             and _exact(value.outcome, "persisted_failure")
             and type(value.failure_category) is str
-            and value.failure_category
-            == runtime_result.invocation_result.category
+            and value.failure_category == runtime_result.invocation_result.category
         )
     elif type(value) is not WorkflowProgressionDecision:
         return False
@@ -888,9 +876,7 @@ def _restore_or_fail(
         except Exception:
             failed = True
     try:
-        if _changed(state_path, original[0]) or _changed(
-            events_path, original[1]
-        ):
+        if _changed(state_path, original[0]) or _changed(events_path, original[1]):
             failed = True
     except Exception:
         failed = True

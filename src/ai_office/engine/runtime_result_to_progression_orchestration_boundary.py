@@ -1,4 +1,4 @@
-"""Phase 172 post-runtime persistence → classification → progression orchestration boundary."""
+"""Post-runtime durable commit → canonical persisted routing boundary."""
 
 # ruff: noqa: E501,E701,I001
 
@@ -7,16 +7,16 @@ from pathlib import Path
 from typing import Literal
 
 from ai_office.definitions.workflow import WorkflowDefinition
-from ai_office.engine.classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    ClassifiedPersistedOutcomeProgressionCycleHandoffChainBridgeOuterReentryContinuationError as Phase144Error,
-    route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
-)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
+    PersistedExecutionOutcomeError,
 )
-from ai_office.engine.persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary import (
-    PersistedTransitionOutcomeClassificationCycleHandoffChainBridgeOuterReentryContinuationError as Phase143Error,
-    route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary,
+from ai_office.engine.persisted_execution_outcome_routing_reentry import (
+    PersistedExecutionOutcomeRoutingError,
+    route_persisted_execution_outcome_reentry,
+)
+from ai_office.engine.persisted_success_progression import (
+    PersistedSuccessProgressionError,
 )
 from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
     RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161Error,
@@ -27,7 +27,10 @@ from ai_office.runtime import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
 )
-from ai_office.storage import WorkflowExecutionPersistenceResult
+from ai_office.storage import (
+    WorkflowExecutionLoadError,
+    WorkflowExecutionPersistenceResult,
+)
 
 Classification = Literal[
     "result_type",
@@ -36,8 +39,7 @@ Classification = Literal[
     "event_target",
     "target_conflict",
     "phase161_contract",
-    "phase143_contract",
-    "phase144_contract",
+    "phase38_contract",
     "dependency_error",
     "committed_mutation",
     "rollback_failure",
@@ -74,18 +76,13 @@ def route_runtime_result_to_progression_orchestration_boundary(
     state_path: object,
     events_path: object,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Handle one runtime result at the persistence/progression boundary.
+    """Persist one runtime result and route the committed targets once.
 
-    An active runtime result is persisted as a terminal transition. Successful
-    persistence establishes the durable commit point; the persisted outcome is
-    then classified, with successful outcomes yielding a progression decision
-    and persisted failure or workflow completion yielding a stop outcome. Any
-    failure after persistence preserves the committed snapshot and never rolls
-    back to the pre-persistence running state.
-
-    Only the active runtime-failure route permits accumulated aged-None
-    compatibility. Direct/original persisted-failure stop inputs retain their
-    narrow validation contract.
+    Phase 161 owns runtime/running-history validation, predecessor provenance,
+    terminal transition persistence, and the durable commit point. Once that
+    commit succeeds, the canonical three-input Phase 38 route classifies and
+    progresses the committed targets. Any post-commit failure preserves the
+    committed snapshot and never restores the pre-persistence running state.
     """
     _check_inputs(
         result,
@@ -108,75 +105,45 @@ def route_runtime_result_to_progression_orchestration_boundary(
             StepRuntimeExecutionFailure,
         )
 
-    _check_targets(state_path, events_path)
-    original = _capture_targets(state_path, events_path)
-
     try:
         value = route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
             result, workflow, state_path, events_path
         )
     except Phase161Error as error:
-        _restore_if_changed(state_path, events_path, original)
         raise error
     except Exception:
-        _restore_if_changed(state_path, events_path, original)
         _fail("dependency_error")
 
     if stop:
         if value is not result:
-            _restore_if_changed(state_path, events_path, original)
             _fail("phase161_contract")
-        _require_unchanged(state_path, events_path, original, "phase161_contract")
         return value
 
-    if not _valid_phase161_result(value, state_path, events_path):
-        _restore_if_changed(state_path, events_path, original)
+    if not _valid_phase161_result(value):
         _fail("phase161_contract")
 
     committed = _capture_targets(state_path, events_path)
-
     try:
-        classified = route_persisted_transition_outcome_classification_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
-            value, workflow, state_path, events_path
+        routed = route_persisted_execution_outcome_reentry(
+            workflow, state_path, events_path
         )
-    except Phase143Error as error:
+    except (
+        WorkflowExecutionLoadError,
+        PersistedExecutionOutcomeRoutingError,
+        PersistedExecutionOutcomeError,
+        PersistedSuccessProgressionError,
+    ) as error:
         _restore_if_changed(state_path, events_path, committed)
         raise error
     except Exception:
         _restore_if_changed(state_path, events_path, committed)
         _fail("dependency_error")
-    if not _valid_phase143_result(result, classified):
-        _restore_if_changed(state_path, events_path, committed)
-        _fail("phase143_contract")
-    _require_unchanged(state_path, events_path, committed, "committed_mutation")
 
-    phase144_kwargs: dict[str, object] = {}
-    if (
-        type(result) is StepRuntimeExecutionFailure
-        and type(classified) is PersistedExecutionOutcome
-        and classified.outcome == "persisted_failure"
-    ):
-        phase144_kwargs["_allow_accumulated_none_request_id_for_active_failure"] = True
-
-    try:
-        progressed = route_classified_persisted_outcome_progression_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(
-            classified,
-            workflow,
-            state_path,
-            events_path,
-            **phase144_kwargs,
-        )
-    except Phase144Error as error:
+    if not _valid_phase38_result(routed):
         _restore_if_changed(state_path, events_path, committed)
-        raise error
-    except Exception:
-        _restore_if_changed(state_path, events_path, committed)
-        _fail("dependency_error")
-    if not _valid_phase144_result(workflow, result, classified, progressed):
-        _restore_if_changed(state_path, events_path, committed)
-        _fail("phase144_contract")
+        _fail("phase38_contract")
     _require_unchanged(state_path, events_path, committed, "committed_mutation")
-    return progressed
+    return routed
 
 
 def _check_inputs(
@@ -202,118 +169,23 @@ def _check_inputs(
         _fail("target_conflict")
 
 
-def _check_targets(state: Path, events: Path) -> None:
-    try:
-        if not state.is_file():
-            _fail("state_target")
-    except OSError:
-        _fail("state_target")
-    try:
-        if not events.is_file():
-            _fail("event_target")
-    except OSError:
-        _fail("event_target")
+def _valid_phase161_result(value: object) -> bool:
+    """Guard only the Phase-161 persistence-result family.
 
-
-def _valid_phase161_result(
-    value: object,
-    state_path: Path,
-    events_path: Path,
-) -> bool:
-    """Phase 161 must return an exact persistence result for the supplied targets.
-
-    This mirrors the existing Phase 161 output contract (exact type, exact
-    target identity, positive int byte counts) without duplicating the
-    Phase-155 provenance/history validator.
+    Persistence evidence, target identity, byte counts, and terminal-event
+    consistency remain owned by Phase 161; this boundary does not duplicate
+    those semantic checks.
     """
-    if type(value) is not WorkflowExecutionPersistenceResult:
-        return False
-    if value.state_path is not state_path or value.events_path is not events_path:
-        return False
-    if (
-        type(value.state_bytes_written) is not int
-        or value.state_bytes_written <= 0
-        or type(value.event_bytes_appended) is not int
-        or value.event_bytes_appended <= 0
-    ):
-        return False
-    return True
+    return type(value) is WorkflowExecutionPersistenceResult
 
 
-def _valid_phase143_result(
-    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
-    classified: object,
-) -> bool:
-    """Phase 143 outcome must be semantically consistent with the runtime result.
-
-    Success results classify as persisted_success with no failure category;
-    failure results classify as persisted_failure with the exact runtime
-    failure category; identity fields must match the original runtime result.
-    """
-    if type(classified) is not PersistedExecutionOutcome:
-        return False
-    if type(result) is StepRuntimeExecutionSuccess:
-        if classified.outcome != "persisted_success":
-            return False
-        if classified.failure_category is not None:
-            return False
-    else:
-        if classified.outcome != "persisted_failure":
-            return False
-        if classified.failure_category != result.invocation_result.category:
-            return False
-    return (
-        classified.workflow_id == result.workflow_id
-        and classified.current_step_id == result.step_id
-        and classified.current_step_index == result.step_index
-        and classified.current_employee_id == result.employee_id
-    )
-
-
-def _valid_phase144_result(
-    workflow: WorkflowDefinition,
-    result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
-    classified: PersistedExecutionOutcome,
-    progressed: object,
-) -> bool:
-    """Phase 144 return contract branches on the classified outcome.
-
-    persisted_success must yield an exact WorkflowProgressionDecision whose
-    decision, identity linkage, next fields and reason are consistent with the
-    supplied workflow. persisted_failure must yield the exact classified
-    object by identity.
-    """
-    if classified.outcome == "persisted_success":
-        if type(progressed) is not WorkflowProgressionDecision:
-            return False
-        decision = progressed
-        step_index = result.step_index
-        if type(step_index) is not int or not 1 <= step_index <= len(workflow.steps):
-            return False
-        if not (
-            decision.workflow_id == result.workflow_id
-            and decision.current_step_id == result.step_id
-            and decision.current_step_index == step_index
-            and decision.current_employee_id == result.employee_id
-        ):
-            return False
-        if step_index == len(workflow.steps):
-            return (
-                decision.decision == "workflow_complete"
-                and decision.next_step_id is None
-                and decision.next_step_index is None
-                and decision.next_employee_id is None
-                and decision.reason == "last_step_succeeded"
-            )
-        next_step = workflow.steps[step_index]
-        return (
-            decision.decision == "prepare_next_step"
-            and decision.next_step_id == next_step.id
-            and decision.next_step_index == step_index + 1
-            and decision.next_employee_id == next_step.employee
-            and decision.reason == "next_step_available"
-        )
-    return progressed is classified and classified.outcome == "persisted_failure"
+def _valid_phase38_result(value: object) -> bool:
+    """Guard only the canonical Phase 38 result family and route discriminator."""
+    if type(value) is PersistedExecutionOutcome:
+        return value.outcome == "persisted_failure"
+    if type(value) is WorkflowProgressionDecision:
+        return value.decision in {"prepare_next_step", "workflow_complete"}
+    return False
 
 
 def _capture_targets(state: Path, events: Path) -> tuple[bytes, bytes]:
