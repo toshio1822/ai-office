@@ -2277,8 +2277,8 @@ Phase 161は4つのbusiness input（`result`, `workflow`, `state_path`, `events_
 - 供給targetsからexact running `WorkflowExecutionState`をロードし、workflow/current-step/index/employee linkageを検証する
 - running-historyのcurrent-step linkageと、全predecessor eventのordering/linkage/provenanceを検証する
 - predecessor historyは全stepについてexact `RuntimeStepEvent`、exact `step_succeeded` / `running -> succeeded`、linkage、`failure_category is None` / `message is None`を要求する
-- predecessor `output_text`はexact built-in `str`（empty/non-empty許容）、`response_id`はexact non-empty built-in `str`、earlier `request_id`はexact non-empty built-in `str`、immediate `request_id`は`None`またはexact non-empty built-in `str`、immediate providerはexact `"openai"`である
-- runtime resultのnested invocation-resultもexact型・exact built-in型・exact provider `"openai"`・exact success/failure semanticsを再検証する
+- predecessor `output_text`はexact built-in `str`（empty/non-empty許容）、`response_id`はexact non-empty built-in `str`、earlier `request_id`はexact non-empty built-in `str`、immediate `request_id`は`None`またはexact non-empty built-in `str`、immediate providerはexact `"openai"`またはexact `"omniroute"`である
+- runtime resultのnested invocation-resultもexact型・exact built-in型・exact provider `"openai"`またはexact `"omniroute"`・exact success/failure semanticsを再検証する
 - persistence前にoriginal state/event bytesをスナップショットし、4引数をcanonical order・同一identityでexactly once persistence ownerへ渡す
 
 ### Persistence result / postcondition validation

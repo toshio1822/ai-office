@@ -2507,8 +2507,8 @@ Phase 161は4つのbusiness input（`result`, `workflow`, `state_path`, `events_
 - predecessor historyは全stepについてexact `RuntimeStepEvent`、exact `step_succeeded` / `running -> succeeded`、workflow/step/index/employee linkage、`failure_category is None` / `message is None`
 - predecessor `output_text`はexact built-in `str`（empty/non-empty許容）、`response_id`はexact non-empty built-in `str`
 - earlier predecessor `request_id`はexact non-empty built-in `str`、immediate predecessor `request_id`は`None`またはexact non-empty built-in `str`
-- immediate predecessor providerはexact `"openai"`、earlier provider semanticsは継承契約どおり
-- runtime resultのnested invocation-resultもexact型・exact built-in field/container型・exact provider `"openai"`・exact success/failure semanticsを再検証
+- immediate predecessor providerはexact `"openai"`またはexact `"omniroute"`、earlier provider semanticsは継承契約どおり
+- runtime resultのnested invocation-resultもexact型・exact built-in field/container型・exact provider `"openai"`またはexact `"omniroute"`・exact success/failure semanticsを再検証
 - persistence前にoriginal state/event bytesをスナップショットし、**4引数をcanonical order・同一identityでexactly once persistence ownerへ渡す**
 
 ### Persistence result / postcondition validation
