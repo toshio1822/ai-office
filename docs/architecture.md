@@ -2359,19 +2359,19 @@ propagation, or historical delegation contracts.
 
 ## Phase 172: Post-Runtime Durable Commit → Canonical Phase 38 Orchestration Boundary
 
-Issue #657以後のPhase 172は、Phase-155 runtime resultを1つ受け取り、**Phase 161 → durable commit → canonical Phase 38**を接続するthin post-commit orchestration boundaryです。Phase 143 / Phase 144は旧composition bridgeとしてproductionから削除され、Phase 38がPhase 37 classificationとPhase 31 progressionのcanonical composition ownerです。
+Issue #657以後のPhase 172は、Phase-155 runtime resultを1つ受け取り、**Phase 161 → durable commit → canonical Phase 38**を接続するthin post-commit orchestration boundaryです。Issue #661で入力をruntime-result-onlyへ狭めます。Phase 143 / Phase 144は旧composition bridgeとしてproductionから削除され、Phase 38がPhase 37 classificationとPhase 31 progressionのcanonical composition ownerです。
 
 ### アーキテクチャ上の位置づけ
 
 ```text
-Phase 155 result (success / failure / stop decision / persisted outcome)
+Phase 155 result (`StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`)
     ↓ Phase 161  runtime-result transition-persistence outer-chain continuation boundary
     ↓ durable committed state/events snapshot
     ↓ Phase 38  canonical persisted classification → persisted-success progression
     ↓ WorkflowProgressionDecision / PersistedExecutionOutcome
 ```
 
-- 入力は Phase 161 と同じ 4 型（`StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure` / `WorkflowProgressionDecision` / `PersistedExecutionOutcome`）に限定
+- 入力は `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure` の2型のみ。`WorkflowProgressionDecision` / `PersistedExecutionOutcome` を直接渡した場合は `result_type` でfail-closedし、Phase 161 / Phase 38呼び出しおよびstate/events変更を発生させない
 - 出力は `WorkflowProgressionDecision`（`prepare_next_step` / `workflow_complete`）または `PersistedExecutionOutcome(persisted_failure)` の2型のみ
 - Phase 161がexact `WorkflowExecutionPersistenceResult`を返した後のtarget bytesを**durable commit point**とし、Phase 38の失敗・不正戻り値・post-commit mutationではcommitted snapshotを保持または復元する。pre-Phase161 running状態へは戻さない
 - Phase 172はPhase 161のpersistence evidence / provenanceも、Phase 37 / 31のsemantic validationも再実装しない。Phase 38へは`workflow`、`state_path`、`events_path`の3 business inputsだけを渡す
@@ -2381,6 +2381,7 @@ Phase 155 result (success / failure / stop decision / persisted outcome)
 - import / callはPhase 161のpublic runtime-persistence ownerとcanonical Phase 38 routeだけ。Phase 143 / 144のmodule path、route、error/failure-detail type、compatibility alias、replacement wrapperは存在しない
 - Phase 38のpublic contractは3 business inputs（`workflow`、`state_path`、`events_path`）のまま維持し、`WorkflowExecutionPersistenceResult`やpublic loaded historyを追加しない
 - Phase 172はPhase 25を直接呼ばず、provider、network、credential、tool、retry、replay、automatic continuationを実行しない
+- fresh-start / continuationの2 production callerはruntime resultのみを渡し、stop値をPhase 172へ再投入するproduction pathは存在しない。これは未知の外部Python consumerとの互換性を推測して残さない、意図的なbreaking public-contract narrowingである。Phase 172本体、public export、error types、Phase 161自身のstop contract、Phase 38の3-input contractは変更しない
 
 ### エラー分類（10 分類）
 
@@ -2406,7 +2407,7 @@ Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
 
 ### stage ownership（Phase-172 no-destructive-outer-rollback）
 
-- Phase 172 が Phase 161 durable commit point と自身の downstream compensation を所有するため、Phase 173 は **pre-Phase172 rollback を行わない**
+- Phase 161 が terminal durable persistence を所有し、Phase 172 が post-commit composition / committed-snapshot safety を所有するため、Phase 173 は **pre-Phase172 rollback を行わない**
 - Phase 172 stage が safe error を raise した場合は exact object identity で re-raise（Phase 145 呼び出し 0 回、target への write なし）
 - 予期しない例外は `dependency_error` に sanitize、不正戻り値は `phase172_contract`（いずれも Phase 145 呼び出し 0 回・write なし）
 - Phase 172 retry なし
@@ -2808,7 +2809,7 @@ finished current-step Phase-155 runtime result (StepRuntimeExecutionSuccess / Fa
 - **stop ルート**: Phase 177 が exact identity で返した stop object をそのまま返す。target bytes 不変を `_require_unchanged` で確認し、変更されていれば `phase177_contract` で fail（restore はしない）。Phase 172 は zero calls
 - **runtime ルート**: Phase 177 出力 `value` を `_valid_phase177_runtime_output` で thin 検証（exact runtime-result type・post-Phase177 running snapshot との step/index/employee 一致・`is_valid_step_runtime_execution_result` による invocation contract 検証・history が `step_index - 1` 件の workflow-linked succeeded events）。不正なら `phase177_contract`
 - **Phase 172 呼び出しは 4 positional のみ**: `phase172_function(value, workflow, state_path, events_path)`。`value` は Phase 177 の出力（実行済み step の runtime result）であり入力 `result` ではない。keyword-only はデフォルトに委譲
-- **Phase 172 は durable terminal commit point を所有する**: Phase 178 は Phase 172 stage の失敗・不正戻り値に対して restore を行わない（injected / partial durable commit を跨ぐため）
+- **Phase 161 は terminal durable persistence owner、Phase 172 は post-commit composition / committed-snapshot safety owner**: Phase 178 は Phase 172 stage の失敗・不正戻り値に対して pre-Phase172 restore を行わない（committed snapshot を跨ぐため）
 - **thin durable proof**（`_valid_phase172_output`）: post-Phase177 running event bytes が prefix として byte-for-byte 保存され、ちょうど 1 件の terminal event（`serialize_runtime_step_event_jsonl(terminal)` と byte 一致）だけが追加され、final state（success → `succeeded` + completed に current 追加 + `last_failure_category is None` / failure → `failed` + completed 不変 + `last_failure_category == invocation.category`）と terminal event（previous_status `running`・provider `openai`・request_id == invocation.request_id・success/failure details）が Phase 177 出力に正確にリンクしていることを確認。Phase 161 / Phase 38 の full validator は再実装しない
 - **progression proof**: success 非最終 → exact `prepare_next_step`（reason `next_step_available`・next は `workflow.steps[step_index]`）、success 最終 → exact `workflow_complete`（next 3 fields None・reason `last_step_succeeded`）、failure → exact `persisted_failure`（`failure_category == invocation.category`）。exact type チェック（`type(x) is`）でサブクラス・attribute-compatible substitute を reject
 - 各 stage ちょうど 1 回、retry・loop・bypass・自動継続なし。返された decision / outcome を超える finalize はしない。下位 route 関数の直接呼び出しなし（source audit で検証）
@@ -3115,8 +3116,10 @@ called exactly once with four positional arguments: the returned runtime result,
 workflow, state path, and events path. Phase-182 `workflow_complete` and
 `persisted_failure` outputs are exact identity stop routes and make zero Phase
 172 calls. Phase 183 performs no outer rollback or compensating write: Phase 182
-owns its post-Phase-181 running commit, while Phase 172 owns runtime-result
-persistence, classification, progression, and its terminal effects.
+owns its post-Phase-181 running commit. Phase 161 owns terminal runtime-result
+durable persistence; Phase 172 owns post-commit composition and committed-
+snapshot safety; and Phase 38, Phase 37, and Phase 31 retain
+classification/progression ownership.
 
 The thin Phase-182 proof requires the second continuation result to be exactly
 two steps after the original result, linked to the workflow and running state,
@@ -3323,8 +3326,10 @@ Before a valid Phase-147 result, Phase 145/146 errors, malformed output, or
 unauthorized target mutation are compensated to the prior terminal snapshot.
 After Phase 147 establishes the durable running commit, Phase 155 errors or
 malformed/mutating output are compensated only to that running snapshot, never
-to the earlier terminal state. Phase 172 owns the next runtime-result durable
-commit; once it is invoked, Phase 190 performs no destructive outer rollback.
+to the earlier terminal state. Phase 161 owns the next runtime-result terminal
+durable persistence. Phase 172 owns post-commit composition and committed-
+snapshot safety; once it is invoked, Phase 190 performs no destructive outer
+rollback.
 Scheduling, parallelism, finalization, provider/network/paid API, CLI, and GUI
 behavior remain outside the boundary. The focused Phase-190 suite contains
 exactly 20 tests and uses synthetic transports exclusively.
