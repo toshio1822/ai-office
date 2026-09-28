@@ -11,9 +11,11 @@ the removed historical wrapper topology.
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
@@ -220,38 +222,6 @@ def running_case(
     }
 
 
-def stop_case(tmp_path: Path, *, status: str, index: int = 6) -> dict[str, object]:
-    definition = workflow(index)
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    state_path, events_path, state_bytes, event_bytes = write_history(
-        tmp_path, definition, current=index, status=status
-    )
-    step = definition.steps[index - 1]
-    if status == "succeeded":
-        result: object = WorkflowProgressionDecision(
-            "workflow_complete",
-            definition.id,
-            step.id,
-            index,
-            step.employee,
-            None,
-            None,
-            None,
-            "last_step_succeeded",
-        )
-    else:
-        result = PersistedExecutionOutcome(
-            "persisted_failure", definition.id, step.id, index, step.employee, "api_error"
-        )
-    return {
-        "workflow": definition,
-        "result": result,
-        "state": state_path,
-        "events": events_path,
-        "before": (state_bytes, event_bytes),
-    }
-
-
 def assert_classification(callable_object: object, expected: str) -> None:
     with pytest.raises(_ERROR) as caught:
         callable_object()  # type: ignore[operator]
@@ -273,6 +243,17 @@ def committed_history(case: dict[str, object]) -> object:
             case["state"], case["events"]  # type: ignore[arg-type]
         )
     )
+
+
+def test_public_route_has_runtime_only_return_contract() -> None:
+    signature = inspect.signature(public_route)
+    assert tuple(signature.parameters) == (
+        "result",
+        "workflow",
+        "state_path",
+        "events_path",
+    )
+    assert get_type_hints(public_route)["return"] is WorkflowExecutionPersistenceResult
 
 
 def test_valid_success_persists_exact_state_and_single_event(tmp_path: Path) -> None:
@@ -361,56 +342,59 @@ def test_valid_result_at_any_index_persists_once(tmp_path: Path, index: int) -> 
     assert appended.count(b"\n") == 1
 
 
-@pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_stop_routes_are_identity_preserving_and_read_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+@pytest.mark.parametrize("kind", ["completion", "failure"])
+def test_stop_inputs_fail_closed_before_terminal_history_or_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    case = stop_case(tmp_path, status=status)
+    case = running_case(tmp_path)
+    definition = case["workflow"]
+    step = definition.steps[5]  # type: ignore[union-attr]
+    if kind == "completion":
+        result: object = WorkflowProgressionDecision(
+            "workflow_complete",
+            definition.id,  # type: ignore[union-attr]
+            step.id,
+            6,
+            step.employee,
+            None,
+            None,
+            None,
+            "last_step_succeeded",
+        )
+    else:
+        result = PersistedExecutionOutcome(
+            "persisted_failure",
+            definition.id,  # type: ignore[union-attr]
+            step.id,
+            6,
+            step.employee,
+            "api_error",
+        )
+    case["result"] = result
     before = case["before"]
-    calls = 0
+    persistence_calls = 0
+    history_calls = 0
 
     def unexpected_owner(*_: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("stop route must not persist a transition")
+        nonlocal persistence_calls
+        persistence_calls += 1
+        raise AssertionError("stop input must not persist a transition")
 
-    monkeypatch.setattr(phase161_module, "persist_executed_step_transition", unexpected_owner)
-    assert route_case(case) is case["result"]
-    assert calls == 0
-    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
-
-
-@pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_stop_routes_reject_malformed_values_without_writing(
-    tmp_path: Path, status: str
-) -> None:
-    case = stop_case(tmp_path, status=status)
-    before = case["before"]
-    classification = "completion_contract" if status == "succeeded" else "failure_contract"
-    malformed = replace(case["result"], reason="wrong") if status == "succeeded" else replace(
-        case["result"], failure_category="not-a-category"
+    monkeypatch.setattr(
+        phase161_module, "persist_executed_step_transition", unexpected_owner
     )
-    assert_classification(
-        lambda: public_route(
-            malformed, case["workflow"], case["state"], case["events"]
-        ),
-        classification,
+
+    def unexpected_history_load(*_: object) -> object:
+        nonlocal history_calls
+        history_calls += 1
+        raise AssertionError("stop input must not load terminal history")
+
+    monkeypatch.setattr(
+        phase161_module, "load_workflow_execution_history", unexpected_history_load
     )
-    assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
-
-
-def test_stop_route_empty_success_output_is_rejected_without_writing(
-    tmp_path: Path,
-) -> None:
-    case = stop_case(tmp_path, status="succeeded")
-    events_path = case["events"]
-    lines = events_path.read_text(encoding="utf-8").splitlines(keepends=True)  # type: ignore[union-attr]
-    payload = json.loads(lines[-1])
-    payload["output_text"] = ""
-    lines[-1] = json.dumps(payload, separators=(",", ":")) + "\n"
-    events_path.write_text("".join(lines), encoding="utf-8")  # type: ignore[union-attr]
-    before = case["state"].read_bytes(), case["events"].read_bytes()  # type: ignore[union-attr]
-    assert_classification(lambda: route_case(case), "terminal_contract")
+    assert_classification(lambda: route_case(case), "result_type")
+    assert persistence_calls == 0
+    assert history_calls == 0
     assert (case["state"].read_bytes(), case["events"].read_bytes()) == before  # type: ignore[union-attr]
 
 

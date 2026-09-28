@@ -7,10 +7,6 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
-from ai_office.engine.persisted_execution_outcome_reentry import (
-    PersistedExecutionOutcome,
-)
-from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
     ModelInvocationFailure,
     ModelInvocationFailureCategory,
@@ -40,12 +36,9 @@ from ai_office.storage import (
 Classification = Literal[
     "result_type",
     "workflow_definition",
-    "completion_contract",
-    "failure_contract",
     "state_target",
     "event_target",
     "target_conflict",
-    "terminal_contract",
     "runtime_contract",
     "persistence_contract",
     "dependency_error",
@@ -89,34 +82,14 @@ def route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer
     workflow: object,
     state_path: object,
     events_path: object,
-) -> (
-    WorkflowExecutionPersistenceResult
-    | WorkflowProgressionDecision
-    | PersistedExecutionOutcome
-):
+) -> WorkflowExecutionPersistenceResult:
     """Validate one exact runtime result and persist its transition once."""
     _check_inputs(result, workflow, state_path, events_path)
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
 
-    if type(result) is WorkflowProgressionDecision:
-        _check_completion(result, workflow)
-    elif type(result) is PersistedExecutionOutcome:
-        _check_failure(result, workflow)
-
     _check_targets(state_path, events_path)
     original = _capture_targets(state_path, events_path)
-
-    if type(result) is WorkflowProgressionDecision:
-        _check_terminal(result, workflow, state_path, events_path, "succeeded", None)
-        _require_unchanged(state_path, events_path, original, "terminal_contract")
-        return result
-    if type(result) is PersistedExecutionOutcome:
-        _check_terminal(
-            result, workflow, state_path, events_path, "failed", result.failure_category
-        )
-        _require_unchanged(state_path, events_path, original, "terminal_contract")
-        return result
 
     assert type(result) in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
     state, history = _load_running_context(workflow, state_path, events_path)
@@ -158,8 +131,6 @@ def _check_inputs(
     if type(result) not in (
         StepRuntimeExecutionSuccess,
         StepRuntimeExecutionFailure,
-        WorkflowProgressionDecision,
-        PersistedExecutionOutcome,
     ):
         _fail("result_type")
     if type(workflow) is not WorkflowDefinition or not _valid_workflow(workflow):
@@ -192,42 +163,6 @@ def _valid_workflow(workflow: WorkflowDefinition) -> bool:
         return False
     step_ids = tuple(step.id for step in workflow.steps)
     return len(step_ids) == len(set(step_ids))
-
-
-def _check_completion(
-    value: WorkflowProgressionDecision, workflow: WorkflowDefinition
-) -> None:
-    final = workflow.steps[-1]
-    if not (
-        _exact_string(value.decision, "workflow_complete")
-        and _exact_string(value.workflow_id, workflow.id)
-        and _exact_string(value.current_step_id, final.id)
-        and type(value.current_step_index) is int
-        and value.current_step_index == len(workflow.steps)
-        and _exact_string(value.current_employee_id, final.employee)
-        and value.next_step_id is None
-        and value.next_step_index is None
-        and value.next_employee_id is None
-        and _exact_string(value.reason, "last_step_succeeded")
-    ):
-        _fail("completion_contract")
-
-
-def _check_failure(
-    value: PersistedExecutionOutcome, workflow: WorkflowDefinition
-) -> None:
-    index = value.current_step_index
-    if not (
-        _exact_string(value.outcome, "persisted_failure")
-        and _exact_string(value.workflow_id, workflow.id)
-        and type(index) is int
-        and 1 <= index <= len(workflow.steps)
-        and _exact_string(value.current_step_id, workflow.steps[index - 1].id)
-        and _exact_string(value.current_employee_id, workflow.steps[index - 1].employee)
-        and type(value.failure_category) is str
-        and value.failure_category in _FAILURE_CATEGORIES
-    ):
-        _fail("failure_contract")
 
 
 def _check_targets(state: Path, events: Path) -> None:
@@ -425,210 +360,6 @@ def _valid_predecessor_event(
     )
 
 
-def _load_history(
-    workflow: WorkflowDefinition,
-    state: Path,
-    events: Path,
-) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
-    try:
-        loaded = load_workflow_execution_history(
-            WorkflowExecutionPersistenceTargets(state, events)
-        )
-    except Exception:
-        _fail("terminal_contract")
-    if type(loaded.state) is not WorkflowExecutionState or type(loaded.events) is not tuple:
-        _fail("terminal_contract")
-    return loaded.state, loaded.events
-
-
-def _check_terminal(
-    result: WorkflowProgressionDecision | PersistedExecutionOutcome,
-    workflow: WorkflowDefinition,
-    state: Path,
-    events: Path,
-    expected_status: Literal["succeeded", "failed"],
-    expected_failure: object,
-) -> None:
-    persisted, history = _load_history(workflow, state, events)
-    if not _valid_history(
-        workflow,
-        persisted,
-        history,
-        expected_status,
-        result,
-        expected_failure,
-        require_immediate_openai=False,
-        allow_empty_success_output=False,
-        allow_empty_predecessor_output=True,
-    ):
-        _fail("terminal_contract")
-
-
-def _valid_history(
-    workflow: WorkflowDefinition,
-    state: object,
-    history: object,
-    expected_status: Literal["succeeded", "failed"],
-    result: object | None,
-    expected_failure: object,
-    *,
-    require_immediate_openai: bool,
-    allow_empty_success_output: bool,
-    allow_empty_predecessor_output: bool,
-) -> bool:
-    if type(state) is not WorkflowExecutionState or type(history) is not tuple or not history:
-        return False
-    index = state.current_step_index
-    if not (
-        type(index) is int
-        and _valid_state(state, workflow)
-        and state.status == expected_status
-        and state.last_failure_category == expected_failure
-    ):
-        return False
-    if result is not None and not (
-        _exact_string(result.workflow_id, state.workflow_id)
-        and _exact_string(result.current_step_id, state.current_step_id)
-        and type(result.current_step_index) is int
-        and result.current_step_index == index
-        and _exact_string(result.current_employee_id, state.current_employee_id)
-    ):
-        return False
-    expected_completed = (
-        tuple(step.id for step in workflow.steps[:index])
-        if state.status == "succeeded"
-        else tuple(step.id for step in workflow.steps[: index - 1])
-    )
-    if state.completed_step_ids != expected_completed:
-        return False
-    prior_steps = workflow.steps[: index - 1]
-    if len(history) != len(prior_steps) + 1:
-        return False
-    if any(type(event) is not RuntimeStepEvent for event in history):
-        return False
-    for position, (event, step) in enumerate(zip(history[:-1], prior_steps, strict=True), 1):
-        if not _valid_predecessor(
-            event,
-            step,
-            position,
-            state,
-            require_openai=require_immediate_openai and position == len(prior_steps),
-            allow_empty_output=allow_empty_predecessor_output,
-        ):
-            return False
-    return _valid_terminal_event(
-        history[-1],
-        state,
-        expected_failure,
-        require_openai=require_immediate_openai,
-        allow_empty_success_output=allow_empty_success_output,
-    )
-
-
-def _valid_state(state: WorkflowExecutionState, workflow: WorkflowDefinition) -> bool:
-    index = state.current_step_index
-    if type(index) is not int or not 1 <= index <= len(workflow.steps):
-        return False
-    current = workflow.steps[index - 1]
-    expected_completed = (
-        tuple(step.id for step in workflow.steps[:index])
-        if state.status == "succeeded"
-        else tuple(step.id for step in workflow.steps[: index - 1])
-    )
-    return (
-        _exact_string(state.workflow_id, workflow.id)
-        and type(state.status) is str
-        and state.status in {"succeeded", "failed"}
-        and _exact_string(state.current_step_id, current.id)
-        and _exact_string(state.current_employee_id, current.employee)
-        and type(state.completed_step_ids) is tuple
-        and all(_nonempty_string(item) for item in state.completed_step_ids)
-        and state.completed_step_ids == expected_completed
-        and (
-            state.last_failure_category is None
-            or (
-                type(state.last_failure_category) is str
-                and state.last_failure_category in _FAILURE_CATEGORIES
-            )
-        )
-    )
-
-
-def _valid_predecessor(
-    event: RuntimeStepEvent,
-    step: WorkflowStepDefinition,
-    position: int,
-    state: WorkflowExecutionState,
-    *,
-    require_openai: bool,
-    allow_empty_output: bool = False,
-) -> bool:
-    return (
-        type(event) is RuntimeStepEvent
-        and _exact_string(event.event_type, "step_succeeded")
-        and _exact_string(event.workflow_id, state.workflow_id)
-        and _exact_string(event.step_id, step.id)
-        and type(event.step_index) is int
-        and event.step_index == position
-        and _exact_string(event.employee_id, step.employee)
-        and _exact_string(event.previous_status, "running")
-        and _exact_string(event.next_status, "succeeded")
-        and _nonempty_string(event.provider)
-        and (not require_openai or event.provider in {"openai", "omniroute"})
-        and event.failure_category is None
-        and _nonempty_string(event.response_id)
-        and _nonempty_string(event.request_id)
-        and type(event.output_text) is str
-        and (allow_empty_output or bool(event.output_text))
-        and event.message is None
-    )
-
-
-def _valid_terminal_event(
-    event: RuntimeStepEvent,
-    state: WorkflowExecutionState,
-    expected_failure: object,
-    *,
-    require_openai: bool,
-    allow_empty_success_output: bool,
-) -> bool:
-    base = (
-        type(event) is RuntimeStepEvent
-        and _exact_string(event.workflow_id, state.workflow_id)
-        and _exact_string(event.step_id, state.current_step_id)
-        and type(event.step_index) is int
-        and event.step_index == state.current_step_index
-        and _exact_string(event.employee_id, state.current_employee_id)
-        and _exact_string(event.previous_status, "running")
-        and _nonempty_string(event.provider)
-        and (not require_openai or event.provider in {"openai", "omniroute"})
-        and (event.request_id is None or _nonempty_string(event.request_id))
-    )
-    if state.status == "succeeded":
-        return (
-            base
-            and _exact_string(event.event_type, "step_succeeded")
-            and _exact_string(event.next_status, "succeeded")
-            and expected_failure is None
-            and event.failure_category is None
-            and _nonempty_string(event.response_id)
-            and type(event.output_text) is str
-            and (allow_empty_success_output or bool(event.output_text))
-            and event.message is None
-        )
-    return (
-        base
-        and _exact_string(event.event_type, "step_failed")
-        and _exact_string(event.next_status, "failed")
-        and type(expected_failure) is str
-        and expected_failure in _FAILURE_CATEGORIES
-        and event.failure_category == expected_failure
-        and event.response_id is None
-        and event.output_text is None
-        and _nonempty_string(event.message)
-    )
-
-
 def _check_persistence(
     value: object,
     result: StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure,
@@ -727,17 +458,6 @@ def _check_persistence(
         )
     if not base or not details:
         _fail("persistence_contract")
-
-
-def _require_unchanged(
-    state: Path,
-    events: Path,
-    original: tuple[bytes, bytes],
-    classification: Classification,
-) -> None:
-    if _changed(state, original[0]) or _changed(events, original[1]):
-        _restore_if_changed(state, events, original)
-        _fail(classification)
 
 
 def _restore_if_changed(
