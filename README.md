@@ -2484,94 +2484,74 @@ Phase 43 / Phase 36 / Phase 30のproduction codeは変更しません。Phase 30
 - 新しいrequest-ID/provider semantics
 - real network / provider / paid API / tool call
 
-## Phase 161: Phase-155 Runtime-Result Transition-Persistence Outer-Chain Continuation Boundary
+## Phase 161: Phase-155 Runtime-Result Transition-Persistence Boundary
 
-Phase 161は、Phase 155 continuation pathが生成する**exact runtime result**を、既存のpublic Phase 142 boundaryへ**exactly once**渡すcaller boundaryです。Phase 156–160が修復・証明した実persistence chain（Phase 142 → 134 → 127 → 120 → 113 → 106 → 99 → 92 → 85 → 78 → 71 → 64 → 57 → 50 → 43 → 36 → 実Phase 30 persistence）に対して、唯一欠けていた**Phase 155 → Phase 142 runtime-result persistence handoff**を追加します。
+Phase 161は、Phase 155 continuation pathが生成する**exact runtime result**だけを受け取り、terminal durable persistenceを所有するcanonical runtime-persistence boundaryです。受け入れるresultはexact `StepRuntimeExecutionSuccess`またはexact `StepRuntimeExecutionFailure`に限定され、成功時のpublic returnはexact `WorkflowExecutionPersistenceResult`だけです。
 
 ```text
 Phase 155 runtime result
     ↓ Phase 161
-Phase 142 (exactly once, canonical four-argument order)
-    ↓ repaired real chain from Phase 156–160
-actual Phase 30 persistence
+running-history / predecessor-provenance validation
+one terminal durable persistence attempt
+    ↓ exact WorkflowExecutionPersistenceResult
+Phase 172 post-commit orchestration → canonical Phase 38
 ```
 
-Phase 161は新しいcompatibility correctionを行いません。Phase 142以下のproduction boundaryは一切変更せず、public Phase 142関数（`route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary`）をkeyword-only dependency（`phase142_function`）として注入可能にした上で、runtime-result routeでのみ直接exactly once呼び出します。
+Phase 161は4つのbusiness input（`result`, `workflow`, `state_path`, `events_path`）をcanonical orderで受け取ります。Phase 161自身がrunning state/history、workflow/current-step/index/employee linkage、predecessor provenance、runtime invocation、persistence evidenceを検証し、既存のruntime persistence ownerをexactly once呼び出してpostconditionを確認します。旧Phase 142 dependency seamは現在のcontractではなく、`phase142_function`引数や別のwrapper/alias/adapter/deprecated shimは存在しません。
 
 ### Runtime-result route（success / failure）
 
 - exact `StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`、exact `WorkflowDefinition`、exact `WorkflowStepDefinition`要素、exactで互いに異なるregular `Path` targetsを要求
 - 供給targetsからexact running `WorkflowExecutionState`をロードし、workflow/current-step/index/employee linkageを検証
-- **Phase-155 continuation provenance**としてexact built-in `int current_step_index >= 6`を要求し、**index 1–5はPhase 142呼び出し前にreject**
+- running-historyのcurrent-step linkageと、全predecessor eventのordering/linkage/provenanceを検証
 - predecessor historyは全stepについてexact `RuntimeStepEvent`、exact `step_succeeded` / `running -> succeeded`、workflow/step/index/employee linkage、`failure_category is None` / `message is None`
 - predecessor `output_text`はexact built-in `str`（empty/non-empty許容）、`response_id`はexact non-empty built-in `str`
 - earlier predecessor `request_id`はexact non-empty built-in `str`、immediate predecessor `request_id`は`None`またはexact non-empty built-in `str`
-- immediate predecessor providerはexact `"openai"`、earlier provider semanticsは継承契約どおり
-- runtime resultのnested invocation-resultもexact型・exact built-in field/container型・exact provider `"openai"`・exact success/failure semanticsを再検証
-- Phase 142呼び出し前にoriginal state/event bytesをスナップショットし、**4引数すべてをcanonical order・同一identityでexactly once委譲**
+- immediate predecessor providerはexact `"openai"`またはexact `"omniroute"`、earlier provider semanticsは継承契約どおり
+- runtime resultのnested invocation-resultもexact型・exact built-in field/container型・exact provider `"openai"`またはexact `"omniroute"`・exact success/failure semanticsを再検証
+- persistence前にoriginal state/event bytesをスナップショットし、**4引数をcanonical order・同一identityでexactly once persistence ownerへ渡す**
 
-### Phase 142 result / persistence validation
+### Persistence result / postcondition validation
 
-- Phase 142の戻り値はexact `WorkflowExecutionPersistenceResult`のみ受理（subclass・attribute-compatible substituteはreject）
+- persistence ownerの戻り値はexact `WorkflowExecutionPersistenceResult`のみ受理（subclass・attribute-compatible substituteはreject）
 - returned `state_path` / `events_path`は供給targetsと同一identity
 - `state_bytes_written` / `event_bytes_appended`はexact positive built-in `int`（`bool`・int subclassはreject）
 - state targetはsupplied runtime resultに対応するexact terminal `WorkflowExecutionState`、event targetはoriginal predecessor history + current stepのterminal eventをexactly 1件のみ
 - terminal eventのworkflow/step/index/employee/provider linkage、success→succeeded / failure→failed semantics、byte counts（state-file length / canonical appended terminal-event byte length）を再検証
 - 不正な戻り値・部分/不整合なtarget効果は**両targetをbyte-for-byteでpre-dependency snapshotへ復元し、retryなしでreject**
-- safe Phase 142 errorはidentityを保持、unexpected exceptionはsanitize、compensation失敗は`dependency_rollback`に分類、両targetの復元を試行、**Phase 142をretryしない**
+- safe persistence errorはidentityを保持、unexpected exceptionはsanitize、compensation失敗は`dependency_rollback`に分類、両targetの復元を試行し、**persistence ownerをretryしない**
 
-### Stop routes（zero call）
+### Removed stop contract（intentional breaking narrowing）
 
-- exact `WorkflowProgressionDecision(workflow_complete)` / exact `PersistedExecutionOutcome(persisted_failure)`はPhase 155 stop-route domainを継承
-- Phase 142呼び出し回数は**0**、同一supplied objectをそのまま返し、両targetはbyte-for-byte不変
-- 非終端predecessorの空`output_text`、継承されたrequest-ID/provider semanticsを保持
-- `workflow_complete`のsucceeded terminal output非空strictness、persisted-failure terminal semanticsを保持
-- malformed stop values・unsupported progression/outcome・direct persistence/start/running-state値・subclass/substitute・invalid targets・terminal mismatchはzero-call reject
+- `WorkflowProgressionDecision(workflow_complete)`と`PersistedExecutionOutcome(persisted_failure)`はPhase 161の入力ではありません。直接渡された場合は既存の`result_type`で、target validation・history load・terminal-history re-entry validation・persistenceより前にfail-closedします。
+- stop入力のtarget bytesは変更されず、persistence ownerは呼び出されません。stop validationをPhase 37 / Phase 31 / Phase 38 / Phase 145 / terminal-history helperへ移植しません。
+- `completion_contract`、`failure_contract`、`terminal_contract`はPhase 161のactive classification domainから削除されています。
+- これは意図的なbreaking public-contract narrowingです。repositoryから推測できない外部Python consumerのためにcompatibility wrapper、alias、adapter、alternate route、deprecated shimを追加しません。
 
-### Focused regression（180 cases）
+### Focused regression（36 cases）
 
-新規Phase 161 test file（`tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py`、**182 collected total**）のうち、**focused / contract cases 180件**で、public signature/source audit、canonical four-argument identity、index 1–5 pre-reject、predecessor provenance matrix（duplicate/missing/reordered/unrelated/malformed/extra、empty output、request_id None/empty/non-string、provider）、persistence result exact型・identity・byte counts・terminal state/event semantics、compensation（state-only/event-only/both、malformed return、safe error identity、unexpected sanitize、rollback failure）、stop routes（zero call、empty predecessor output、non-openai terminal provider、empty terminal output reject）を注入Phase 142 fakeで検証します（残り2件は下記real-default persistence cases）。
+Phase 161 focused tests（`tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py`、**36 collected total**）で、runtime-only public signature/return annotation、runtime success/failureのterminal persistence、running-history/predecessor provenance、exact persistence evidence、compensation、safe error、no retry、そしてdirect `workflow_complete` / `persisted_failure` inputsの`result_type` reject・zero write・terminal-history loadなしをobservable behaviorとして検証します。
 
-### Real-default persistence regression（2 cases）
+### Real-default persistence regression（2 casesを含む）
 
-新規Phase 161 test fileの**real-default persistence cases 2件**で、**fake Phase 142 注入なし・production関数のmonkeypatchなし・実provider/network/toolなし**で、Phase 161 public entryだけを外側から呼び、**実Phase 142 → 実下位chain（Phase 156–160で修復済み）→ 実Phase 30 persistence**まで到達させます。
+同じfocused test fileのreal-default persistence cases 2件で、production persistence ownerへのfake注入なし・実provider/network/toolなしで、Phase 161 public entryから実terminal persistenceまで到達させます。
 
 - exact `StepRuntimeExecutionSuccess`とexact `StepRuntimeExecutionFailure`の両ケース
 - current running step 6、succeeded steps 1–5、earlier/immediate predecessor `output_text == ""`、immediate predecessor `request_id is None`、earlier request IDs exact non-empty built-in strings、immediate provider exact `"openai"`
 - exact `WorkflowExecutionPersistenceResult`返却、exact terminal succeeded/failed state、current stepのterminal event exactly 1件追加、predecessor provenance不変、byte counts exact、retryなし
 
-### Collect invariant
+### Public surface and ownership retained
 
-```text
-11,334 + 182 = 11,516
-```
-
-- Phase 161 new test file: **182 collected total**
-  - focused / contract cases: **180**
-  - real-default persistence cases: **2**
-
-### 変更範囲（5ファイル）
-
-1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — 新規 Phase 161 module + detail-safe error family
-2. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — 新規 focused + real-default persistence tests
-3. `src/ai_office/engine/__init__.py` — Phase 161 public exportsのみ
-4. `README.md` — Phase 161 documentation
-5. `docs/architecture.md` — Phase 161 architecture documentation
-
-### 変更しないもの
-
-- Phase 155 / 156 / 157 / 158 / 159 / 160 productionまたはそのregression
-- Phase 142 production（呼び出しのみで修正なし）
-- Phase 143以降のclassification/progression boundary（**Phase 143は呼び出さない**）
-- 実Phase 30 persistence、shared storage/runtime/provider code
-- `src/ai_office/engine/terminal_history_contract.py`
+- Phase 161 module、route symbol、error classes、failure-detail type、`ai_office.engine` package exportsは維持します。成功return contractだけは`WorkflowExecutionPersistenceResult`へ狭めます。
+- Phase 172 runtime-result-only input / post-commit committed-snapshot safety、Phase 38の3 business inputs、Phase 37 classification、Phase 31 progression、Phase 145のown public stop contract、Phase 190/upper early-stop behaviorは変更しません。
+- persistence schema、locking、CAS、atomicity、concurrency guarantee、provider/network/tool behaviorは変更しません。
 
 ### Phase 161は以下を行いません
 
-- Phase 142以下のcompatibility correction
-- Phase 143の呼び出し・outcome classification / workflow progression
+- stop入力の互換性維持、stop validationの別layer移植、compatibility correction
+- Phase 37 / Phase 31 / Phase 38のclassification/progressionの再実装
 - 次のstepのprepare/start、provider/tool実行、retry / loop / schedule / parallel / finalize
-- Phase 155の再呼び出し・他dependency経由のrouting・private/underscore validation helperの参照
+- Phase 155の再呼び出し、automatic continuation、replay、duplicate persistence/event append
 - CLI / GUI behavior、real network / provider / paid API / tool call
 
 ## Historical Phase 162–171 provenance repairs (superseded by Issue #657)
