@@ -2397,7 +2397,7 @@ Phase 155 result (`StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`)
 Phase 173は、Phase 172 の公開 result を受け取り、**公開 Phase 172 → 公開 Phase 145 をこの順でちょうど 1 回ずつ合成する**、Phase 172 に続く integration boundary である。compatibility repair ではなく、既存の公開境界の直列接続であり、**まだ workflow runner ではない**。
 
 ```text
-Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
+Phase 155 result
     ↓ Phase 172 runtime result → durable commit → canonical Phase 38
     ↓ WorkflowProgressionDecision(prepare_next_step | workflow_complete)
     ↓   または exact PersistedExecutionOutcome(persisted_failure)
