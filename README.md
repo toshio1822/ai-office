@@ -3445,18 +3445,23 @@ targets must be nonexistent, and the caller supplies the exact frozen
 `InitialStepPreparationApproval`, step-1 employee, resolved tools, API key,
 execution approval, and transport.
 
-The boundary creates the canonical ready state and empty event log as a pair,
-then strictly loads them back. Accepted ready initialization is the first
-durable commit. The explicit step-1 approval is separate from the
-predecessor-bound next-step approval used by Phase 190/192. Phase 208 then
-constructs the existing `PreparedWorkflowStep` and
-`PreparedStepExecutionStart` models directly, persists the running state once
-as the second durable commit, and performs exactly one
-`execute_persisted_start_openai_step` call. That execution owner does not
-persist its runtime result.
+Phase 208 owns fresh-target initialization and the ready commit. The boundary
+strictly loads the ready pair back, keeps the explicit step-1 approval
+separate from the predecessor-bound next-step approval used by Phase 190/192,
+then constructs the existing `PreparedWorkflowStep` and
+`PreparedStepExecutionStart` models directly. It orchestrates exactly one
+canonical `persist_prepared_running_state` stage and accepts the resulting
+running state plus unchanged empty events as the running snapshot boundary.
+It then performs exactly one `execute_persisted_start_openai_step` call; that
+execution owner does not persist its runtime result.
 
-The exact runtime result is handed once to Phase 172, which owns the terminal
-state/event persistence, classification, and progression commit. Phase 208
+The exact runtime result is handed once to Phase 172. Phase 161 owns the
+runtime result's terminal durable persistence, including the terminal
+state/event commit and runtime/provenance validation. Phase 172 owns the
+post-commit composition from the Phase-161 durable commit through Phase 38 and
+the committed-snapshot safety at that boundary. Phase 38 owns canonical
+classification/progression composition, while Phase 37 and Phase 31 remain
+the semantic owners of classification and progression respectively. Phase 208
 returns the exact Phase-172 result and stops; it does not prepare or execute a
 later step. Running-persistence failure restores the ready snapshot, while
 execution failure restores only the running snapshot. Once Phase 172 is
@@ -3495,14 +3500,19 @@ Phase 192 alone owns the finite supplied-context loop and Phase-190 calls. The
 valid Phase-192 result is likewise returned by exact identity, and the boundary
 stops at tuple exhaustion or a lower terminal result.
 
-Phase 208 owns step-1 fresh-target initialization and ready/running/terminal
-durable commits; Phase 192/190 own later durable transitions and recognized
-safe errors. Phase 210 performs no state/event write, rollback, retry,
-recursion, unbounded loop, automatic continuation, scheduler, finalizer,
-parallel work, CLI/GUI behavior, or provider/network/paid API call. No
-compatibility shim, wrapper, adapter, or new Phase preserves the removed owner
-substitution contract. Persisted resume/reentry remains a separate future
-contract.
+Phase 208 owns fresh-target initialization and the ready commit, orchestrates
+the running-persistence stage and running snapshot boundary, and hands the one
+execution result to Phase 172. Phase 161 owns terminal runtime-result durable
+persistence. Phase 172 owns the Phase 161 → durable commit → Phase 38
+post-commit composition and committed-snapshot safety. Phase 38 owns canonical
+classification/progression composition, while Phase 37 and Phase 31 own the
+classification and progression semantics respectively. Phase 192/190 own
+later continuation stages and their durable transitions and recognized safe
+errors. Phase 210 performs no state/event write, rollback, retry, recursion,
+unbounded loop, automatic continuation, scheduler, finalizer, parallel work,
+CLI/GUI behavior, or provider/network/paid API call. No compatibility shim,
+wrapper, adapter, or new Phase preserves the removed owner-substitution
+contract. Persisted resume/reentry remains a separate future contract.
 
 ## Phase 212: Persisted-Terminal Bounded Top-Level Resume
 
