@@ -2,7 +2,9 @@
 
 This module implements the first authoritative public production owner for
 starting a brand-new workflow at step 1 exactly once from nonexistent durable
-targets.  Phase 207 / Issue #439 re-proved on repaired main that every lower
+targets.  Its public contract is limited to the workflow, state target, event
+target, and bootstrap context; the existing canonical lower owners are used
+directly.  Phase 207 / Issue #439 re-proved on repaired main that every lower
 public owner is fresh-step-1 compatible; this boundary composes only those
 existing owners in a fixed stage order and stops after the exact Phase-172
 outer result.
@@ -33,7 +35,6 @@ Phase-192 continuation remains a separate caller action.
 
 import json
 import os
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -112,7 +113,6 @@ FreshWorkflowBootstrapClassification = Literal[
     "target_conflict",
     "target_exists",
     "context_type",
-    "configuration",
     "initialization_contract",
     "preparation_approval",
     "employee_contract",
@@ -192,14 +192,6 @@ def route_approved_workflow_fresh_start(
     state_path: object,
     events_path: object,
     context: object,
-    *,
-    running_persistence_function: Callable[
-        ..., object
-    ] = persist_prepared_running_state,
-    execution_function: Callable[..., object] = execute_persisted_start_openai_step,
-    phase172_function: Callable[..., object] = (
-        route_runtime_result_to_progression_orchestration_boundary
-    ),
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
     """Start one brand-new workflow at step 1 exactly once and then stop.
 
@@ -219,9 +211,6 @@ def route_approved_workflow_fresh_start(
         state_path,
         events_path,
         context,
-        running_persistence_function,
-        execution_function,
-        phase172_function,
     )
     assert type(workflow) is WorkflowDefinition
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
@@ -243,8 +232,8 @@ def route_approved_workflow_fresh_start(
         state_path, events_path, ready_bytes, _READY_EMPTY_EVENTS
     )
     if type(created_targets) is not tuple:
-        # Keep ownership conservative for an injected private pair seam that
-        # does not return the normal marker.
+        # Keep ownership conservative if the pair helper cannot report its
+        # normal creation marker.
         created_targets = (state_path.exists(), events_path.exists())
     _loadback_accept_ready(
         workflow,
@@ -276,7 +265,7 @@ def route_approved_workflow_fresh_start(
 
     ready_snapshot = _capture(state_path, events_path)
     try:
-        persisted = running_persistence_function(prepared_start, state_path)
+        persisted = persist_prepared_running_state(prepared_start, state_path)
     except _SAFE_RUNNING_PERSISTENCE_ERRORS as error:
         _restore_or_fail(state_path, events_path, ready_snapshot)
         raise error
@@ -293,7 +282,7 @@ def route_approved_workflow_fresh_start(
     # point onward it is never rolled back to the ready pair.
     running_snapshot = _capture(state_path, events_path)
     try:
-        runtime_result = execution_function(
+        runtime_result = execute_persisted_start_openai_step(
             prepared_start,
             state_path,
             workflow,
@@ -332,7 +321,7 @@ def route_approved_workflow_fresh_start(
         StepRuntimeExecutionFailure,
     )
     try:
-        progressed = phase172_function(
+        progressed = route_runtime_result_to_progression_orchestration_boundary(
             runtime_result,
             workflow,
             state_path,
@@ -354,9 +343,6 @@ def _check_initial_inputs(
     state_path: object,
     events_path: object,
     context: object,
-    running_persistence: object,
-    execution: object,
-    phase172: object,
 ) -> None:
     """Validate everything before any durable target is created."""
     if type(workflow) is not WorkflowDefinition or not _valid_workflow(workflow):
@@ -369,10 +355,6 @@ def _check_initial_inputs(
         _fail("target_conflict")
     if type(context) is not ApprovedWorkflowBootstrapContext:
         _fail("context_type")
-    if not (
-        callable(running_persistence) and callable(execution) and callable(phase172)
-    ):
-        _fail("configuration")
     try:
         if not state_path.parent.is_dir() or not events_path.parent.is_dir():
             _fail("state_target" if not state_path.parent.is_dir() else "event_target")

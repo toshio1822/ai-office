@@ -3371,26 +3371,45 @@ deterministic synthetic transports only.
 ## Phase 208: Explicit Fresh Workflow Step-1 Bootstrap Boundary
 
 Phase 208 adds the public
-`route_approved_workflow_fresh_start` boundary for one explicit fresh workflow
-entry at step 1. It requires two nonexistent durable targets and an exact
-`ApprovedWorkflowBootstrapContext`; the context carries the distinct
-`InitialStepPreparationApproval`, step-1 employee, resolved tools, credential,
-execution approval, and transport. The initial approval is not a fabricated
-predecessor-bound `NextStepPreparationApproval`.
+`route_approved_workflow_fresh_start(workflow, state_path, events_path,
+context)` boundary for one explicit fresh workflow entry at step 1. The
+four-input signature is intentional: the former
+`running_persistence_function`, `execution_function`, and `phase172_function`
+owner-substitution keywords are removed and no compatibility shim, wrapper,
+adapter, alias, registry, or alternate route preserves them. The canonical
+lower owners are used directly. It requires two nonexistent durable targets
+and an exact `ApprovedWorkflowBootstrapContext`; the context carries the
+distinct `InitialStepPreparationApproval`, step-1 employee, resolved tools,
+credential, execution approval, and transport. The initial approval is not a
+fabricated predecessor-bound `NextStepPreparationApproval`.
 
-The boundary creates the canonical ready state together with an empty event
-log using exclusive creation, and strictly loads both targets before accepting
-them. This ready pair is the first durable commit. It then directly constructs
-the existing `PreparedWorkflowStep` and `PreparedStepExecutionStart` models,
-calls `persist_prepared_running_state` once, and accepts the resulting running
-state plus unchanged empty events as the second durable commit.
+Phase 208 owns fresh-target initialization and the ready commit. The boundary
+creates the canonical ready state together with an empty event log using
+exclusive creation and strictly loads both targets before accepting them. The
+explicit step-1 approval remains separate from the predecessor-bound
+`NextStepPreparationApproval`. Phase 208 then directly constructs the existing
+`PreparedWorkflowStep` and `PreparedStepExecutionStart` models, orchestrates
+exactly one canonical `persist_prepared_running_state` stage, and accepts the
+resulting running state plus unchanged empty events as the running snapshot
+boundary.
 
 Exactly one `execute_persisted_start_openai_step` call follows. That public
 execution owner verifies the persisted start and performs one explicit
 execution, but does not persist the runtime result. Phase 172 receives that
-exact result once and owns terminal state/event persistence, classification, and
-progression. Phase 208 returns the exact Phase-172 result and stops immediately;
-it never prepares, starts, persists, or executes a later step.
+exact result once. Phase 161 owns the runtime result's terminal durable
+persistence, including the terminal state/event commit and runtime/provenance
+validation. Phase 172 owns the post-commit composition from the Phase-161
+durable commit through Phase 38 and the committed-snapshot safety at that
+boundary. Phase 38 owns canonical classification/progression composition,
+while Phase 37 and Phase 31 remain the semantic owners of classification and
+progression respectively. Fresh-start-owned postconditions only prove the
+expected stage commit and result handoff; lower-owner semantic validation
+remains with those owners. A running-persistence failure restores the ready
+snapshot. An execution failure, malformed output, or execution-stage mutation
+restores the running snapshot. Phase 208 returns the exact Phase-172 result
+and stops immediately; it never prepares, starts, persists, or executes a later
+step. After Phase 172 invocation it never restores a ready/running/nonexistent
+snapshot, including on a recognized safe or sanitized unexpected error.
 
 Phase 192 remains a separate caller action for bounded continuation after a
 `prepare_next_step` result. Phase 208 does not call Phase 190 or Phase 192 and
@@ -3427,14 +3446,21 @@ arguments. Phase 192 alone iterates the finite caller-supplied tuple and calls
 Phase 190; Phase 210 returns the valid Phase-192 result by exact identity and
 stops without readvance.
 
-Durable ownership is intentionally not duplicated: Phase 208 owns fresh
-ready/running/terminal commits, while Phase 192/190 own later continuation
-commits and recognized safe errors. Phase 210 does not write or restore state
-or events, and has no top-level rollback, retry, recursion, unbounded loop,
-automatic continuation, scheduler, finalizer, parallel work, CLI/GUI behavior,
-or provider/network/paid API behavior. No compatibility shim, wrapper,
-adapter, or new Phase preserves the removed owner-substitution contract.
-Persisted resume/reentry remains a separate future public contract.
+Durable ownership is intentionally not duplicated. Phase 208 owns fresh-target
+initialization and the ready commit, orchestrates the running-persistence stage
+and running snapshot boundary, and hands the one execution result to Phase
+172. Phase 161 owns terminal runtime-result durable persistence. Phase 172 owns
+the Phase 161 → durable commit → Phase 38 post-commit composition and
+committed-snapshot safety. Phase 38 owns canonical classification/progression
+composition, while Phase 37 and Phase 31 own the classification and
+progression semantics respectively. Phase 192/190 own later continuation
+stages and their durable transitions and recognized safe errors. Phase 210
+does not write or restore state or events, and has no top-level rollback,
+retry, recursion, unbounded loop, automatic continuation, scheduler,
+finalizer, parallel work, CLI/GUI behavior, or provider/network/paid API
+behavior. No compatibility shim, wrapper, adapter, or new Phase preserves the
+removed owner-substitution contract. Persisted resume/reentry remains a
+separate future public contract.
 
 ## Phase 212: Persisted-Terminal Bounded Top-Level Resume
 
