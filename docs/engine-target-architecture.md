@@ -356,23 +356,23 @@ Actual retry requires explicit Recovery Approval.
 
 ## 21. Relationship to the current engine
 
-Current canonical owners should remain the starting point rather than being wrapped in a new deep chain merely to add Run concepts.
+Existing semantic responsibilities should remain the starting point for adding Run concepts. The target architecture preserves these responsibilities as distinct ownership concerns:
 
-Current important ownership includes:
+- approved preparation
+- prepared-step start
+- running-state persistence
+- persisted-running provider execution
+- terminal durable persistence
+- post-commit / committed-snapshot safety
+- classification / progression composition
+- terminal classification
+- successful progression
 
-- Phase 145 — approved preparation boundary
-- Phase 146 — prepared-step start boundary
-- Phase 147 — prepared running-state persistence
-- Phase 155 — persisted-running execution boundary
-- Phase 161 — runtime result terminal durable persistence
-- Phase 172 — post-commit composition / committed snapshot safety
-- Phase 38 — canonical classification/progression composition
-- Phase 37 — persisted terminal classification
-- Phase 31 — persisted-success progression
+Which Phase or module currently owns these responsibilities is a Current Architecture fact maintained in [`docs/architecture.md`](architecture.md), not a normative Phase-number assignment in this target document.
 
-Future Run capabilities should reuse or extend existing ownership where semantically appropriate.
+Future Run capabilities should reuse or extend existing semantic owners where semantically appropriate, and consolidate ownership when doing so preserves the required guarantees.
 
-Do not rebuild a wrapper/bridge ladder around these owners.
+Do not create a new deep wrapper/bridge chain merely to add Run concepts. Do not rebuild a wrapper/bridge ladder around existing semantic owners. Prefer the simpler structure whenever it provides the same guarantees.
 
 ## 22. Run Manifest
 
