@@ -1,10 +1,12 @@
 """Tests for the explicit Phase 30 executed-step persistence boundary."""
 
+import inspect
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import ai_office.runtime.executed_step_transition_persistence as persistence_module
 from ai_office.engine import (
     ExecutedStepTransitionPersistenceCompatibilityError,
     persist_executed_step_transition,
@@ -23,7 +25,7 @@ from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
-    persist_workflow_execution_transition,
+    serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
 
@@ -86,7 +88,7 @@ def write_running_state(path: Path, state: WorkflowExecutionState) -> bytes:
     ("result", "status", "event_type"),
     [(success(), "succeeded", "step_succeeded"), (failure(), "failed", "step_failed")],
 )
-def test_exact_runtime_result_transitions_and_persists_once(
+def test_exact_runtime_result_transitions_and_persists_one_event(
     tmp_path: Path,
     result: StepRuntimeExecutionResult,
     status: str,
@@ -94,66 +96,58 @@ def test_exact_runtime_result_transitions_and_persists_once(
 ) -> None:
     value_targets = targets(tmp_path)
     write_running_state(value_targets.state_path, running_state())
-    transition_calls = 0
-    persistence_calls = 0
-
-    def transition(
-        state: WorkflowExecutionState, runtime_result: StepRuntimeExecutionResult
-    ) -> WorkflowExecutionTransition:
-        nonlocal transition_calls
-        transition_calls += 1
-        return transition_workflow_execution_from_step_result(state, runtime_result)
-
-    def persist(
-        value: WorkflowExecutionTransition,
-        value_targets: WorkflowExecutionPersistenceTargets,
-    ) -> WorkflowExecutionPersistenceResult:
-        nonlocal persistence_calls
-        persistence_calls += 1
-        return persist_workflow_execution_transition(value, value_targets)
-
     actual = persist_executed_step_transition(
-        result,
-        value_targets.state_path,
-        value_targets.events_path,
-        transition_function=transition,
-        persistence_function=persist,
+        result, value_targets.state_path, value_targets.events_path
     )
 
     history = load_workflow_execution_history(value_targets)
     assert isinstance(actual, WorkflowExecutionPersistenceResult)
-    assert transition_calls == 1
-    assert persistence_calls == 1
+    assert actual.state_path == value_targets.state_path
+    assert actual.events_path == value_targets.events_path
+    assert actual.state_bytes_written == len(value_targets.state_path.read_bytes())
+    assert actual.event_bytes_appended == len(
+        serialize_runtime_step_event_jsonl(history.events[0]).encode()
+    )
     assert history.state.status == status
     assert len(history.events) == 1
     assert history.events[0].event_type == event_type
     assert history.events[0].workflow_id == result.workflow_id
 
 
-def test_returns_the_exact_phase_23_result(tmp_path: Path) -> None:
+def test_public_contract_has_only_business_inputs() -> None:
+    signature = inspect.signature(persist_executed_step_transition)
+
+    assert tuple(signature.parameters) == ("result", "state_path", "events_path")
+    assert all(
+        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+@pytest.mark.parametrize(
+    "removed_keyword", ["transition_function", "persistence_function"]
+)
+def test_removed_owner_substitution_keywords_are_not_accepted(
+    removed_keyword: str,
+) -> None:
+    with pytest.raises(TypeError):
+        persist_executed_step_transition(
+            success(), Path("state"), Path("events"), **{removed_keyword: object()}
+        )
+
+
+def test_returns_the_canonical_persistence_result(tmp_path: Path) -> None:
     value_targets = targets(tmp_path)
     write_running_state(value_targets.state_path, running_state())
-    expected = WorkflowExecutionPersistenceResult(
-        value_targets.state_path, value_targets.events_path, 1, 2
-    )
-    received: dict[str, object] = {}
-
-    def persist(
-        transition: WorkflowExecutionTransition,
-        supplied: WorkflowExecutionPersistenceTargets,
-    ) -> WorkflowExecutionPersistenceResult:
-        received.update(transition=transition, targets=supplied)
-        return expected
-
     actual = persist_executed_step_transition(
-        success(),
+        success(), value_targets.state_path, value_targets.events_path
+    )
+    assert actual == WorkflowExecutionPersistenceResult(
         value_targets.state_path,
         value_targets.events_path,
-        persistence_function=persist,
+        len(value_targets.state_path.read_bytes()),
+        actual.event_bytes_appended,
     )
-    assert actual is expected
-    assert isinstance(received["transition"], WorkflowExecutionTransition)
-    assert received["targets"] == value_targets
 
 
 @pytest.mark.parametrize(
@@ -166,28 +160,17 @@ def test_returns_the_exact_phase_23_result(tmp_path: Path) -> None:
     ],
     ids=["workflow", "step", "index", "employee"],
 )
-def test_result_identity_mismatch_rejects_before_delegation(
+def test_result_identity_mismatch_rejects_without_mutation(
     tmp_path: Path, result: StepRuntimeExecutionSuccess
 ) -> None:
     value_targets = targets(tmp_path)
     original = write_running_state(value_targets.state_path, running_state())
-    calls = 0
-
-    def unexpected(*_args: object, **_kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise AssertionError
 
     with pytest.raises(ExecutedStepTransitionPersistenceCompatibilityError) as error:
         persist_executed_step_transition(
-            result,
-            value_targets.state_path,
-            value_targets.events_path,
-            transition_function=unexpected,  # type: ignore[arg-type]
-            persistence_function=unexpected,  # type: ignore[arg-type]
+            result, value_targets.state_path, value_targets.events_path
         )
     assert error.value.detail.classification == "state_identity"
-    assert calls == 0
     assert value_targets.state_path.read_bytes() == original
     assert not value_targets.events_path.exists()
 
@@ -204,28 +187,17 @@ def test_result_identity_mismatch_rejects_before_delegation(
         (running_state(last_failure_category="api_error"), "state_identity"),
     ],
 )
-def test_non_running_persisted_state_rejects_before_delegation(
+def test_non_running_persisted_state_rejects_without_mutation(
     tmp_path: Path, state: WorkflowExecutionState, classification: str
 ) -> None:
     value_targets = targets(tmp_path)
     original = write_running_state(value_targets.state_path, state)
-    calls = 0
-
-    def unexpected(*_args: object, **_kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise AssertionError
 
     with pytest.raises(ExecutedStepTransitionPersistenceCompatibilityError) as error:
         persist_executed_step_transition(
-            success(),
-            value_targets.state_path,
-            value_targets.events_path,
-            transition_function=unexpected,  # type: ignore[arg-type]
-            persistence_function=unexpected,  # type: ignore[arg-type]
+            success(), value_targets.state_path, value_targets.events_path
         )
     assert error.value.detail.classification == classification
-    assert calls == 0
     assert value_targets.state_path.read_bytes() == original
     assert not value_targets.events_path.exists()
 
@@ -267,37 +239,29 @@ def test_invalid_explicit_inputs_reject_before_state_load(
     assert "state" not in str(error.value)
 
 
-def test_incompatible_transition_rejects_before_persistence(tmp_path: Path) -> None:
+def test_canonical_transition_contract_rejects_malformed_transition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     value_targets = targets(tmp_path)
     original = write_running_state(value_targets.state_path, running_state())
-    calls = 0
 
-    def transition(
+    def malformed_transition(
         state: WorkflowExecutionState, result: StepRuntimeExecutionResult
     ) -> WorkflowExecutionTransition:
-        return replace(
-            transition_workflow_execution_from_step_result(state, result),
-            event=replace(
-                transition_workflow_execution_from_step_result(state, result).event,
-                step_id="other",
-            ),
-        )
+        value = transition_workflow_execution_from_step_result(state, result)
+        return replace(value, event=replace(value.event, step_id="other"))
 
-    def unexpected(*_args: object, **_kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise AssertionError
+    monkeypatch.setattr(
+        persistence_module,
+        "transition_workflow_execution_from_step_result",
+        malformed_transition,
+    )
 
     with pytest.raises(ExecutedStepTransitionPersistenceCompatibilityError) as error:
         persist_executed_step_transition(
-            success(),
-            value_targets.state_path,
-            value_targets.events_path,
-            transition_function=transition,
-            persistence_function=unexpected,  # type: ignore[arg-type]
+            success(), value_targets.state_path, value_targets.events_path
         )
     assert error.value.detail.classification == "transition_contract"
-    assert calls == 0
     assert value_targets.state_path.read_bytes() == original
     assert not value_targets.events_path.exists()
 
@@ -327,55 +291,56 @@ def test_runtime_event_payload_mismatch_rejects_before_persistence(
     tmp_path: Path,
     result: StepRuntimeExecutionResult,
     event_changes: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     value_targets = targets(tmp_path)
     original_state = write_running_state(value_targets.state_path, running_state())
     original_events = b'{"old":true}\n'
     value_targets.events_path.write_bytes(original_events)
-    transition_calls = 0
-    persistence_calls = 0
 
-    def transition(
+    def malformed_transition(
         state: WorkflowExecutionState, runtime_result: StepRuntimeExecutionResult
     ) -> WorkflowExecutionTransition:
-        nonlocal transition_calls
-        transition_calls += 1
         value = transition_workflow_execution_from_step_result(state, runtime_result)
         return replace(value, event=replace(value.event, **event_changes))
 
-    def unexpected(*_args: object, **_kwargs: object) -> object:
-        nonlocal persistence_calls
-        persistence_calls += 1
-        raise AssertionError
+    monkeypatch.setattr(
+        persistence_module,
+        "transition_workflow_execution_from_step_result",
+        malformed_transition,
+    )
 
     with pytest.raises(ExecutedStepTransitionPersistenceCompatibilityError) as error:
         persist_executed_step_transition(
-            result,
-            value_targets.state_path,
-            value_targets.events_path,
-            transition_function=transition,
-            persistence_function=unexpected,  # type: ignore[arg-type]
+            result, value_targets.state_path, value_targets.events_path
         )
     assert error.value.detail.classification == "transition_contract"
-    assert transition_calls == 1
-    assert persistence_calls == 0
     assert value_targets.state_path.read_bytes() == original_state
     assert value_targets.events_path.read_bytes() == original_events
 
 
-def test_phase_23_errors_are_preserved(tmp_path: Path) -> None:
+def test_canonical_persistence_errors_are_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     value_targets = targets(tmp_path)
-    write_running_state(value_targets.state_path, running_state())
+    original = write_running_state(value_targets.state_path, running_state())
     expected = WorkflowExecutionPersistenceError("safe")
+    calls = 0
 
     def fail(*_args: object, **_kwargs: object) -> WorkflowExecutionPersistenceResult:
+        nonlocal calls
+        calls += 1
         raise expected
+
+    monkeypatch.setattr(
+        persistence_module, "persist_workflow_execution_transition", fail
+    )
 
     with pytest.raises(WorkflowExecutionPersistenceError) as error:
         persist_executed_step_transition(
-            success(),
-            value_targets.state_path,
-            value_targets.events_path,
-            persistence_function=fail,  # type: ignore[arg-type]
+            success(), value_targets.state_path, value_targets.events_path
         )
     assert error.value is expected
+    assert calls == 1
+    assert value_targets.state_path.read_bytes() == original
+    assert not value_targets.events_path.exists()
