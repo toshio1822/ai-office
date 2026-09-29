@@ -1,6 +1,5 @@
 """Persist one completed runtime step through the existing transition contracts."""
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -38,14 +37,6 @@ ExecutedStepTransitionPersistenceClassification = Literal[
 ]
 _ERROR_MESSAGE = "executed-step transition persistence inputs are incompatible"
 
-TransitionFunction = Callable[
-    [WorkflowExecutionState, StepRuntimeExecutionResult], WorkflowExecutionTransition
-]
-PersistenceFunction = Callable[
-    [WorkflowExecutionTransition, WorkflowExecutionPersistenceTargets],
-    WorkflowExecutionPersistenceResult,
-]
-
 
 @dataclass(frozen=True)
 class ExecutedStepTransitionPersistenceFailureDetail:
@@ -74,19 +65,12 @@ def persist_executed_step_transition(
     result: object,
     state_path: object,
     events_path: object,
-    *,
-    transition_function: TransitionFunction = (
-        transition_workflow_execution_from_step_result
-    ),
-    persistence_function: PersistenceFunction = persist_workflow_execution_transition,
 ) -> WorkflowExecutionPersistenceResult:
     """Transition and persist one exact completed result without executing a provider.
 
     The supplied event target is passed only to Phase 23 and is never read here.
     """
-    _validate_explicit_inputs(
-        result, state_path, events_path, transition_function, persistence_function
-    )
+    _validate_explicit_inputs(result, state_path, events_path)
     assert isinstance(
         result, (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure)
     )
@@ -95,9 +79,9 @@ def persist_executed_step_transition(
 
     current_state = _load_running_state(state_path)
     _validate_result_identity(current_state, result)
-    transition = transition_function(current_state, result)
+    transition = transition_workflow_execution_from_step_result(current_state, result)
     _validate_transition_contract(transition, current_state, result)
-    return persistence_function(
+    return persist_workflow_execution_transition(
         transition,
         WorkflowExecutionPersistenceTargets(state_path, events_path),
     )
@@ -107,8 +91,6 @@ def _validate_explicit_inputs(
     result: object,
     state_path: object,
     events_path: object,
-    transition_function: object,
-    persistence_function: object,
 ) -> None:
     if type(result) not in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure):
         _raise("result_type")
@@ -118,8 +100,6 @@ def _validate_explicit_inputs(
         _raise("event_target")
     if state_path == events_path:
         _raise("target_conflict")
-    if not callable(transition_function) or not callable(persistence_function):
-        _raise("transition_contract")
 
 
 def _load_running_state(state_path: Path) -> WorkflowExecutionState:
