@@ -1460,7 +1460,9 @@ Phase 149は以下を行わない:
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
 
-## Phase 150: Phase 126 → 119 → 112 Execution Segment Empty-Success Compatibility Repair
+> **Historical-path notice.** The lower-chain compatibility records in Phases 150–154 and 156–160 are retained as development history. Production module filenames in those records are historical evidence from removed chains, not current files, APIs, or ownership claims; retained test-file names and other evidence remain historical records. Phase 155 remains an active ownership boundary. Current runtime ownership is defined by Phase 161, Phase 172, Phase 38, Phase 37, and Phase 31.
+
+## Historical Phase 150: Phase 126 → 119 → 112 Execution Segment Empty-Success Compatibility Repair (removed lower-chain modules)
 
 Phase 150は新しいorchestration boundaryではなく、Phase 149レビュー後に明示的な作業として残されたpersisted-running execution-chainの互換性ギャップの最初の境界セグメントを修復するstaged compatibility/correctness repairである。Phase 140は非final succeeded continuation history eventの`output_text`がexact built-in `str`である限りemptyでもnon-emptyでも有効と定め、Phase 147/148はその有効なhistoryを保存し、Phase 141/133はexecution routeでempty exact-string predecessor outputを受理済みである。しかし実default lower execution chainでは、succeeded predecessor eventを非empty `output_text`要求で再検証していた。
 
@@ -1468,9 +1470,9 @@ Phase 150は実lower execution chainのうちPhase 126 → Phase 119 → Phase 1
 
 修正対象は次の3 productionファイルのみ:
 
-1. `persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary.py` — Phase 126 empty-success output互換のみ
-2. `persisted_running_execution_cycle_handoff_reentry_continuation_boundary.py` — Phase 119 empty-success output互換のみ
-3. `persisted_running_execution_cycle_reentry_continuation_boundary.py` — Phase 112 empty-success output互換のみ
+1. `persisted_running_execution_cycle_handoff_chain_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 126 empty-success output互換のみ
+2. `persisted_running_execution_cycle_handoff_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 119 empty-success output互換のみ
+3. `persisted_running_execution_cycle_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 112 empty-success output互換のみ
 
 Phase 105はempty succeeded predecessor outputに対してstrictのまま残し、明示的な次のシームとして対象外とする。`Phase 105 → Phase 98 → Phase 91 → Phase 84 → Phase 77 → Phase 70 → Phase 63 → Phase 56 → Phase 49 → Phase 42 / Phase 36`のlower chain修復は将来の明示的Phaseに委ねる。`src/ai_office/engine/__init__.py`は変更せず、新しいpublic APIは追加しない。
 
@@ -1492,7 +1494,7 @@ Phase 150は以下を行わない:
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
 
-## Phase 151: Phase 105 → 98 → 91 Execution Segment Empty-Success Compatibility Repair
+## Historical Phase 151: Phase 105 → 98 → 91 Execution Segment Empty-Success Compatibility Repair (removed lower-chain modules)
 
 Phase 151は新しいorchestration boundaryではなく、Phase 150レビュー後に明示的な作業として残されたpersisted-running execution-chainの互換性ギャップの次の境界セグメントを修復するstaged compatibility/correctness repairである。Phase 140は非final succeeded continuation history eventの`output_text`がexact built-in `str`である限りemptyでもnon-emptyでも有効と定め、Phase 150はPhase 126 → Phase 119 → Phase 112の3境界でempty exact-string predecessor outputを受理済みである。しかし実default lower execution chainでは、Phase 105より下流のsucceeded predecessor eventを非empty `output_text`要求で再検証していた。
 
@@ -1500,9 +1502,9 @@ Phase 151は実lower execution chainのうちPhase 105 → Phase 98 → Phase 91
 
 修正対象は次の3 productionファイルのみ:
 
-1. `persisted_running_execution_cycle_continuation_boundary.py` — Phase 105 empty-success output互換のみ
-2. `persisted_running_execution_dispatch_continuation_boundary.py` — Phase 98 empty-success output互換のみ
-3. `persisted_running_execution_dispatch_phase_bridge_cycle_reentry_continuation.py` — Phase 91 empty-success output互換のみ
+1. `persisted_running_execution_cycle_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 105 empty-success output互換のみ
+2. `persisted_running_execution_dispatch_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 98 empty-success output互換のみ
+3. `persisted_running_execution_dispatch_phase_bridge_cycle_reentry_continuation.py` *(removed historical module; not a current file or API)* — Phase 91 empty-success output互換のみ
 
 Phase 84はempty succeeded predecessor outputに対してstrictのまま残し、明示的な次のシームとして対象外とする。`Phase 84 → Phase 77 → Phase 70 → Phase 63 → Phase 56 → Phase 49 → Phase 42 / Phase 36`のlower chain修復は将来の明示的Phaseに委ねる。`src/ai_office/engine/__init__.py`は変更せず、新しいpublic APIは追加しない。
 
@@ -1523,7 +1525,7 @@ Phase 151は以下を行わない:
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
 
-## Phase 152: Phase 84 → 77 → 70 Execution Segment Empty-Success Compatibility Repair
+## Historical Phase 152: Phase 84 → 77 → 70 Execution Segment Empty-Success Compatibility Repair (removed lower-chain modules)
 
 Phase 152は新しいorchestration boundaryではなく、Phase 151レビュー後に明示的な作業として残されたpersisted-running execution-chainの互換性ギャップの次の境界セグメントを修復するstaged compatibility/correctness repairである。Phase 140は非final succeeded continuation history eventの`output_text`がexact built-in `str`である限りemptyでもnon-emptyでも有効と定め、Phase 150はPhase 126 → Phase 119 → Phase 112、Phase 151はPhase 105 → Phase 98 → Phase 91の3境界でempty exact-string predecessor outputを受理済みである。しかし実default lower execution chainでは、Phase 84より下流のsucceeded predecessor eventを非empty `output_text`要求で再検証していた。
 
@@ -1531,9 +1533,9 @@ Phase 152はその下流セグメントのうちPhase 84 → Phase 77 → Phase 
 
 ### 修正範囲
 
-- `persisted_running_execution_routing_phase_bridge_cycle_reentry_continuation.py` — Phase 84 empty-success output互換のみ
-- `persisted_running_execution_routing_phase_bridge_cycle_continuation.py` — Phase 77 empty-success output互換のみ
-- `persisted_running_execution_routing_phase_bridge_continuation.py` — Phase 70 empty-success output互換のみ
+- `persisted_running_execution_routing_phase_bridge_cycle_reentry_continuation.py` *(removed historical module; not a current file or API)* — Phase 84 empty-success output互換のみ
+- `persisted_running_execution_routing_phase_bridge_cycle_continuation.py` *(removed historical module; not a current file or API)* — Phase 77 empty-success output互換のみ
+- `persisted_running_execution_routing_phase_bridge_continuation.py` *(removed historical module; not a current file or API)* — Phase 70 empty-success output互換のみ
 
 `src/ai_office/engine/__init__.py`は変更せず、新しいpublic APIは追加しない。Phase 63以下は変更せず、`Phase 63 → Phase 56 → Phase 49 → Phase 42 / Phase 36`のlower chain修復は将来の明示的Phaseに委ねる。Phase 42はpersisted running executionをPhase 36へrouteし、predecessor eventの`output_text`を自身では再検証しないため、Phase 152ではPhase 42/36も変更しない。
 
@@ -1554,7 +1556,7 @@ Phase 152は以下を行わない:
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
 
-## Phase 153: Phase 63 → 56 → 49 Execution Segment Empty-Success Compatibility Repair
+## Historical Phase 153: Phase 63 → 56 → 49 Execution Segment Empty-Success Compatibility Repair (removed lower-chain modules)
 
 Phase 153は新しいorchestration boundaryではなく、persisted-running execution-chainの最後に残っていたlocally-strict predecessor-history segmentを修復するstaged compatibility/correctness repairである。Phase 140は非final succeeded continuation history eventの`output_text`がexact built-in `str`である限りemptyでもnon-emptyでも有効と定め、Phase 150はPhase 126 → Phase 119 → Phase 112、Phase 151はPhase 105 → Phase 98 → Phase 91、Phase 152はPhase 84 → Phase 77 → Phase 70の3境界でempty exact-string predecessor outputを受理済みである。しかし実default lower execution chainでは、Phase 63より下流のsucceeded predecessor eventを非empty `output_text`要求で再検証していた。
 
@@ -1562,9 +1564,9 @@ Phase 153はその最後の下流セグメントPhase 63 → Phase 56 → Phase 
 
 ### 修正範囲
 
-- `persisted_running_execution_routing_phase_bridge_reentry.py` — Phase 63 empty-success output互換のみ（exact `type(...) is str`維持・truthiness要求のみ除去）
-- `persisted_running_execution_phase_bridge_reentry.py` — Phase 56 `_prior_success_contract()`のみ（`isinstance`維持・`bool(event.output_text)`のみ除去）
-- `persisted_running_execution_bridge_reentry.py` — Phase 49 running-route predecessor validationのみ（`isinstance`維持・`bool(event.output_text)`のみ除去）
+- `persisted_running_execution_routing_phase_bridge_reentry.py` *(removed historical module; not a current file or API)* — Phase 63 empty-success output互換のみ（exact `type(...) is str`維持・truthiness要求のみ除去）
+- `persisted_running_execution_phase_bridge_reentry.py` *(removed historical module; not a current file or API)* — Phase 56 `_prior_success_contract()`のみ（`isinstance`維持・`bool(event.output_text)`のみ除去）
+- `persisted_running_execution_bridge_reentry.py` *(removed historical module; not a current file or API)* — Phase 49 running-route predecessor validationのみ（`isinstance`維持・`bool(event.output_text)`のみ除去）
 
 `src/ai_office/engine/__init__.py`は変更せず、新しいpublic APIは追加しない。Phase 42/36はpredecessor eventの`output_text`を再検証しないため変更しない。`Phase 42 → Phase 36`の実default chain全体（Phase 141からexecution pathまで）のreal-default regressionは将来の明示的Phaseに委ねる。
 
@@ -1586,7 +1588,7 @@ Phase 153は以下を行わない:
 - finalize/schedule/loop/parallel behaviorの追加
 - CLI/GUI behaviorの追加
 
-## Phase 154: Phase 141 → Execution Whole-Chain Real-Default Empty-Success Regression
+## Historical Phase 154: Phase 141 → Execution Whole-Chain Real-Default Empty-Success Regression (historical coverage)
 
 Phase 154はPhase 140–153のempty-success compatibility lineの**final integration/closure proof**であり、production behaviorを一切変更しないcoverage-only Phaseである。公開Phase 141 `route_persisted_running_execution_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary(...)`の実default dependency chainだけを呼び、persisted-running execution boundaryから実際のexecution pathまでを1つの単位として通す。
 
@@ -1698,7 +1700,7 @@ Phase 155 / Phase 141 / Phase 133のexecution routeだけに、predecessor検証
 
 このIssueはPhase 177を追加せず、Phase 176後に自動実行せず、新しいruntime resultをpersistせず、再度progressせず、retry/loop/schedule/finalize/parallel/CLI/GUI behaviorを変更しない。
 
-## Phase 156: Phase 142 → 134 → 127 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair
+## Historical Phase 156: Phase 142 → 134 → 127 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair (removed modules)
 
 Phase 156は、Phase 155以降で有効になったrunning continuation provenanceを、最初のtransition-persistence互換セグメント（Phase 142 → Phase 134 → Phase 127）が正しく受け渡せるようにする**staged compatibility/correctness repair**である。新しいorchestration boundaryは追加しない。
 
@@ -1769,11 +1771,11 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 
 ### 変更範囲（9ファイル）
 
-1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 142 narrow request-ID compatibility
+1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 142 narrow request-ID compatibility
 2. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — +6 focused collected
-3. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 134 narrow request-ID compatibility
+3. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 134 narrow request-ID compatibility
 4. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — +6 focused collected
-5. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary.py` — Phase 127 narrow empty-output compatibility
+5. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 127 narrow empty-output compatibility
 6. `tests/test_runtime_result_transition_persistence_cycle_handoff_chain_reentry_continuation_boundary.py` — +6 focused collected
 7. `tests/test_runtime_result_transition_persistence_phase142_127_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
 8. `README.md` — Phase 156 section
@@ -1797,7 +1799,7 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 - CLI / GUI behavior
 - real network / provider / paid API / tool call
 
-## Phase 157: Phase 120 → 113 → 106 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair
+## Historical Phase 157: Phase 120 → 113 → 106 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair (removed modules)
 
 Phase 157は、Phase 156で修復した最初のtransition-persistenceセグメント（Phase 142 → 134 → 127）の次にあるセグメント（Phase 120 → Phase 113 → Phase 106）が、Phase-155 provenance runtime resultを正しく受け渡せるようにする**staged compatibility/correctness repair**である。新しいorchestration boundaryは追加しない。
 
@@ -1886,11 +1888,11 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 
 ### 変更範囲（9ファイル）
 
-1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary.py` — Phase 120 narrow empty-output compatibility
+1. `src/ai_office/engine/runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 120 narrow empty-output compatibility
 2. `tests/test_runtime_result_transition_persistence_cycle_handoff_reentry_continuation_boundary.py` — +6 focused collected
-3. `src/ai_office/engine/runtime_result_transition_persistence_cycle_reentry_continuation_boundary.py` — Phase 113 narrow empty-output compatibility
+3. `src/ai_office/engine/runtime_result_transition_persistence_cycle_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 113 narrow empty-output compatibility
 4. `tests/test_runtime_result_transition_persistence_cycle_reentry_continuation_boundary.py` — +6 focused collected
-5. `src/ai_office/engine/runtime_result_transition_persistence_cycle_continuation_boundary.py` — Phase 106 narrow empty-output compatibility
+5. `src/ai_office/engine/runtime_result_transition_persistence_cycle_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 106 narrow empty-output compatibility
 6. `tests/test_runtime_result_transition_persistence_cycle_continuation_boundary.py` — +6 focused collected
 7. `tests/test_runtime_result_transition_persistence_phase120_106_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
 8. `README.md` — Phase 157 section
@@ -1916,7 +1918,7 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 - 新しいrequest-ID/provider semantics
 - real network / provider / paid API / tool call
 
-## Phase 158: Phase 99 → 92 → 85 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair
+## Historical Phase 158: Phase 99 → 92 → 85 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair (removed modules)
 
 Phase 158は、Phase 157で修復したセグメント（Phase 120 → 113 → 106）の次にあるセグメント（Phase 99 → Phase 92 → Phase 85）が、Phase-155 provenance runtime resultを正しく受け渡せるようにする**staged compatibility/correctness repair**である。新しいorchestration boundaryは追加しない。
 
@@ -1946,7 +1948,7 @@ Phase 158は、この全ドメインを次のtransition-persistenceセグメン�
 
 ### Production correction A — Phase 99 runtime route
 
-`src/ai_office/engine/executed_result_transition_persistence_dispatch_continuation_boundary.py`
+`src/ai_office/engine/executed_result_transition_persistence_dispatch_continuation_boundary.py` *(removed historical module; not a current file or API)*
 
 `_validate_running_history`内のsucceeded predecessor `output_text`に対するtruthiness/non-empty要件だけを除去する。
 
@@ -1958,7 +1960,7 @@ Phase 158は、この全ドメインを次のtransition-persistenceセグメン�
 
 ### Production correction B — Phase 92 runtime route
 
-`src/ai_office/engine/executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation.py`
+`src/ai_office/engine/executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation.py` *(removed historical module; not a current file or API)*
 
 `_validate_running_history`内に同じ狭いempty-output修正を適用する。
 
@@ -1969,7 +1971,7 @@ Phase 158は、この全ドメインを次のtransition-persistenceセグメン�
 
 ### Production correction C — Phase 85 runtime route
 
-`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_reentry_continuation.py`
+`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_reentry_continuation.py` *(removed historical module; not a current file or API)*
 
 `_validate_running_history`内に同じ狭いempty-output修正を適用する。
 
@@ -2013,11 +2015,11 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 
 ### 変更範囲（9ファイル）
 
-1. `src/ai_office/engine/executed_result_transition_persistence_dispatch_continuation_boundary.py` — Phase 99 narrow empty-output compatibility
+1. `src/ai_office/engine/executed_result_transition_persistence_dispatch_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 99 narrow empty-output compatibility
 2. `tests/test_executed_result_transition_persistence_dispatch_continuation_boundary.py` — +6 focused collected
-3. `src/ai_office/engine/executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation.py` — Phase 92 narrow empty-output compatibility
+3. `src/ai_office/engine/executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation.py` *(removed historical module; not a current file or API)* — Phase 92 narrow empty-output compatibility
 4. `tests/test_executed_result_transition_persistence_dispatch_phase_bridge_cycle_reentry_continuation.py` — +6 focused collected
-5. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_reentry_continuation.py` — Phase 85 narrow empty-output compatibility
+5. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_reentry_continuation.py` *(removed historical module; not a current file or API)* — Phase 85 narrow empty-output compatibility
 6. `tests/test_executed_result_transition_persistence_routing_phase_bridge_cycle_reentry_continuation.py` — +6 focused collected
 7. `tests/test_executed_result_transition_persistence_phase99_85_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
 8. `README.md` — Phase 158 section
@@ -2043,7 +2045,7 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 - 新しいrequest-ID/provider semantics
 - real network / provider / paid API / tool call
 
-## Phase 159: Phase 78 → 71 → 64 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair
+## Historical Phase 159: Phase 78 → 71 → 64 Transition-Persistence Segment Phase-155 Provenance Compatibility Repair (removed modules)
 
 Phase 159は、Phase 158で修復したセグメント（Phase 99 → 92 → 85）の次にあるセグメント（Phase 78 → Phase 71 → Phase 64）が、Phase-155 provenance runtime resultを正しく受け渡せるようにする**staged compatibility/correctness repair**である。新しいorchestration boundaryは追加しない。
 
@@ -2075,7 +2077,7 @@ Phase 159は、この全ドメインを次のtransition-persistenceセグメン�
 
 ### Production correction A — Phase 78 runtime route
 
-`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_continuation.py`
+`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_continuation.py` *(removed historical module; not a current file or API)*
 
 `_validate_running_history`内のsucceeded predecessor `output_text`に対するtruthiness/non-empty要件だけを除去する。
 
@@ -2087,7 +2089,7 @@ Phase 159は、この全ドメインを次のtransition-persistenceセグメン�
 
 ### Production correction B — Phase 71 runtime route
 
-`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_continuation.py`
+`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_continuation.py` *(removed historical module; not a current file or API)*
 
 `_validate_running_history`内に同じ狭いempty-output修正を適用する。
 
@@ -2098,7 +2100,7 @@ Phase 159は、この全ドメインを次のtransition-persistenceセグメン�
 
 ### Production correction C — Phase 64 runtime route
 
-`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_reentry.py`
+`src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_reentry.py` *(removed historical module; not a current file or API)*
 
 `_validate_running_history`内に同じ狭いempty-output修正を適用する。
 
@@ -2142,11 +2144,11 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 
 ### 変更範囲（9ファイル）
 
-1. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_continuation.py` — Phase 78 narrow empty-output compatibility
+1. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_cycle_continuation.py` *(removed historical module; not a current file or API)* — Phase 78 narrow empty-output compatibility
 2. `tests/test_executed_result_transition_persistence_routing_phase_bridge_cycle_continuation.py` — +6 focused collected
-3. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_continuation.py` — Phase 71 narrow empty-output compatibility
+3. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_continuation.py` *(removed historical module; not a current file or API)* — Phase 71 narrow empty-output compatibility
 4. `tests/test_executed_result_transition_persistence_routing_phase_bridge_continuation.py` — +6 focused collected
-5. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_reentry.py` — Phase 64 narrow empty-output compatibility
+5. `src/ai_office/engine/executed_result_transition_persistence_routing_phase_bridge_reentry.py` *(removed historical module; not a current file or API)* — Phase 64 narrow empty-output compatibility
 6. `tests/test_executed_result_transition_persistence_routing_phase_bridge_reentry.py` — +6 focused collected
 7. `tests/test_executed_result_transition_persistence_phase78_64_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
 8. `README.md` — Phase 159 section
@@ -2172,13 +2174,13 @@ synthetic seamは実境界のpersistence再検証を満たすため、最小のd
 - 新しいrequest-ID/provider semantics
 - real network / provider / paid API / tool call
 
-## Phase 160: Complete Phase-155 Provenance Compatibility across Phase 57 → 50 → 43 → 36 → persistence
+## Historical Phase 160: Complete Phase-155 Provenance Compatibility across Phase 57 → 50 → 43 → 36 → persistence (removed modules)
 
 Phase 160は、Phase 159で修復したセグメント（Phase 78 → 71 → 64）の次にある最後の遷移区間（実Phase 57 → 実Phase 50 → 実Phase 43 → 実Phase 36 → 実Phase 30 persistence）が、Phase-155 provenance runtime resultを正しく受け渡せるようにするstaged compatibility/correctness repairです。新しいorchestration boundaryは追加しません。
 
 ### 修復対象のproduction boundary（2つだけ）
 
-**A — Phase 57** `src/ai_office/engine/executed_result_transition_persistence_phase_bridge_reentry.py`
+**A — Phase 57** `src/ai_office/engine/executed_result_transition_persistence_phase_bridge_reentry.py` *(removed historical module; not a current file or API)*
 
 `_validate_running_history`のsucceeded predecessor `output_text`に対するtruthiness/non-empty要件のみ除去。
 
@@ -2188,7 +2190,7 @@ Phase 160は、Phase 159で修復したセグメント（Phase 78 → 71 → 64�
 - Phase 57の現在のrequest-ID/provider挙動を正確に維持
 - running-state/workflow/linkage validation・stop routes・Phase 50呼び出し方・persistence/compensation/safe-error挙動は変更なし
 
-**B — Phase 50** `src/ai_office/engine/executed_result_transition_persistence_bridge_reentry.py`
+**B — Phase 50** `src/ai_office/engine/executed_result_transition_persistence_bridge_reentry.py` *(removed historical module; not a current file or API)*
 
 同じ狭いempty-output修正を適用。
 
@@ -2228,8 +2230,8 @@ Phase 43 / Phase 36 / Phase 30のproduction codeは変更しない。Phase 30は
 
 ### 変更範囲（7ファイル）
 
-1. `src/ai_office/engine/executed_result_transition_persistence_phase_bridge_reentry.py` — Phase 57 narrow empty-output compatibility
-2. `src/ai_office/engine/executed_result_transition_persistence_bridge_reentry.py` — Phase 50 narrow empty-output compatibility
+1. `src/ai_office/engine/executed_result_transition_persistence_phase_bridge_reentry.py` *(removed historical module; not a current file or API)* — Phase 57 narrow empty-output compatibility
+2. `src/ai_office/engine/executed_result_transition_persistence_bridge_reentry.py` *(removed historical module; not a current file or API)* — Phase 50 narrow empty-output compatibility
 3. `tests/test_executed_result_transition_persistence_phase_bridge_reentry.py` — +6 focused collected（helperはsentinelで`None`注入を修正）
 4. `tests/test_executed_result_transition_persistence_bridge_reentry.py` — +6 focused collected
 5. `tests/test_executed_result_transition_persistence_phase57_30_phase155_provenance_compatibility.py` — 新規、exactly 6 collected
@@ -2370,7 +2372,9 @@ Phase 155 result (`StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure`)
 - `_restore_if_changed` は両targetを1回ずつwrite試行し、失敗またはbytes不一致残存なら `rollback_failure`
 - retry・loopなし。filesystemのcross-file atomicity、locking、CAS、external-writer exclusionは保証しない
 
-## Phase 173: Post-Runtime → Approved-Preparation Orchestration Boundary
+> **Historical-path notice.** Phases 173–180 record former orchestration and compatibility work. They are not the current architecture; removed paths are retained only as historical evidence and are explicitly labeled. Current continuation ownership remains with the active Phase 145, Phase 146, Phase 147, and Phase 155 boundaries, together with the Phase 161/172/38/37/31 owners.
+
+## Historical Phase 173: Post-Runtime → Approved-Preparation Orchestration Boundary (removed module)
 
 Phase 173は、Phase 172 の公開 result を受け取り、**公開 Phase 172 → 公開 Phase 145 をこの順でちょうど 1 回ずつ合成する**、Phase 172 に続く integration boundary である。compatibility repair ではなく、既存の公開境界の直列接続であり、**まだ workflow runner ではない**。
 
@@ -2433,7 +2437,7 @@ Phase 155 result
 
 ### 変更ファイル（正確に5ファイル）
 
-1. `src/ai_office/engine/runtime_result_to_approved_preparation_orchestration_boundary.py` — Phase 173 production（新規）
+1. `src/ai_office/engine/runtime_result_to_approved_preparation_orchestration_boundary.py` *(removed historical module; not a current file or API)* — Phase 173 production（新規）
 2. `src/ai_office/engine/__init__.py` — Phase 173 public export（+4 symbols、アルファベット順）
 3. `tests/test_runtime_result_to_approved_preparation_orchestration_boundary.py` — Phase 173 focused test（focused 16 + real-default A/B/C/D = 20 cases）
 4. `README.md` — Phase 173 documentation
@@ -2445,7 +2449,7 @@ Phase 155 result
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - shared storage/runtime/provider code、CLI / GUI behavior、自動 next-step start・provider / tool 実行・schedule・parallel・finalize
 
-## Phase 174: Repair Phase-155 Prepared-step-start Compatibility across Phase 146 → 138 → 131
+## Historical Phase 174: Repair Phase-155 Prepared-step-start Compatibility across Phase 146 → 138 → 131 (removed entry-layer modules)
 
 Phase 174は、Phase 173 `PreparedWorkflowStep(step 7)` を**実 Phase 146 → 実 Phase 138 → 実 Phase 131 → 無変更の Phase 124 → 117 → 110 → 103 → 96 → 89 → 82 → 75 → 68 → 無変更の Phase 61 → 54 → 47 → 40 → 33** へ通し、exact `PreparedStepExecutionStart(step 7)` を得る最小 compatibility repair である。新しい orchestration boundary は追加せず、将来の Phase173→146 boundary も追加しない。
 
@@ -2502,8 +2506,8 @@ Phase 131 の event shape は既に `request_id=None` を許可するため requ
 ### 変更ファイル（正確に6ファイル）
 
 1. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 146 production
-2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 138 production
-3. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` — Phase 131 production
+2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 138 production
+3. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 131 production
 4. `tests/test_prepared_step_start_phase146_138_131_phase155_provenance_compatibility.py` — 新規 +8 compatibility test
 5. `README.md` — Phase 174 documentation
 6. `docs/architecture.md` — Phase 174 architecture documentation
@@ -2514,7 +2518,7 @@ Phase 131 の event shape は既に `request_id=None` を許可するため requ
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - 自動 next-step start・start-state persistence・provider / model 呼び出し・tool 実行・retry・workflow loop・schedule・parallel・finalize・CLI / GUI behavior・credentials・provider / network / paid API 呼び出し・将来の Phase173→146 orchestration boundary（※ Phase 175 で追加されたため、本条は Phase 175 により superseded）
 
-## Phase 175: Post-Runtime → Prepared-Step-Start Orchestration Boundary
+## Historical Phase 175: Post-Runtime → Prepared-Step-Start Orchestration Boundary (removed module)
 
 Phase 175は、Phase 173 の公開 result を受け取り、**公開 Phase 173 → 公開 Phase 146 をこの順でちょうど 1 回ずつ合成する**、Phase 173 に続く integration boundary である。compatibility repair ではなく、既存の公開境界の直列接続であり、**まだ workflow runner ではない**。
 
@@ -2576,7 +2580,7 @@ Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
 
 ### 変更ファイル（正確に5ファイル）
 
-1. `src/ai_office/engine/runtime_result_to_prepared_step_start_orchestration_boundary.py` — Phase 175 production（新規）
+1. `src/ai_office/engine/runtime_result_to_prepared_step_start_orchestration_boundary.py` *(removed historical module; not a current file or API)* — Phase 175 production（新規）
 2. `src/ai_office/engine/__init__.py` — Phase 175 public export（+4 symbols、アルファベット順）
 3. `tests/test_runtime_result_to_prepared_step_start_orchestration_boundary.py` — Phase 175 focused test（focused 16 + real-default A/B/C/D = 20 cases）
 4. `README.md` — Phase 175 documentation
@@ -2592,7 +2596,7 @@ B/C（6-step success → `workflow_complete` / 6-step failure → `persisted_fai
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - shared storage/runtime/provider code、CLI / GUI behavior、自動 next-step start・provider / tool 実行・schedule・parallel・finalize
 
-## Phase 176: Post-Runtime → Prepared Running-State Persistence Orchestration Boundary
+## Historical Phase 176: Post-Runtime → Prepared Running-State Persistence Orchestration Boundary (removed module)
 
 Phase 176は、Phase 175 の公開 result を受け取り、**公開 Phase 175 → 公開 Phase 147 をこの順でちょうど 1 回ずつ合成する**、Phase 175 に続く integration boundary である。compatibility repair ではなく、既存の公開境界の直列接続であり、**まだ workflow runner ではない**。
 
@@ -2656,7 +2660,7 @@ Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
 
 ### 変更ファイル（正確に5ファイル）
 
-1. `src/ai_office/engine/runtime_result_to_prepared_start_persistence_orchestration_boundary.py` — Phase 176 production（新規）
+1. `src/ai_office/engine/runtime_result_to_prepared_start_persistence_orchestration_boundary.py` *(removed historical module; not a current file or API)* — Phase 176 production（新規）
 2. `tests/test_runtime_result_to_prepared_start_persistence_orchestration_boundary.py` — Phase 176 focused test（focused 16 + real-default A/B/C/D = 20 cases）
 3. `src/ai_office/engine/__init__.py` — Phase 176 public export（+4 symbols、アルファベット順）
 4. `README.md` — Phase 176 documentation
@@ -2672,7 +2676,7 @@ Phase 155 result (StepRuntimeExecutionSuccess / Failure, または stop)
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - shared storage/runtime/invocation/provider code、CLI / GUI behavior、自動 next-step execution・provider / tool 実行・schedule・parallel・finalize・artifact persistence
 
-## Phase 177: Post-Runtime → Persisted Running Execution Orchestration Boundary
+## Historical Phase 177: Post-Runtime → Persisted Running Execution Orchestration Boundary (removed module)
 
 Phase 177は、Phase 176 の公開 result（durable running-state persistence）を受け取り、**公開 Phase 176 → 公開 Phase 155 をこの順でちょうど 1 回ずつ合成する**、Phase 176 に続く integration boundary である。compatibility repair ではなく、既存の公開境界の直列接続であり、**workflow runner ではない**。入力は Phase 176 と同じ Phase-155 runtime/stop 入力ファミリー（`StepRuntimeExecutionSuccess` / `StepRuntimeExecutionFailure` / `WorkflowProgressionDecision` / `PersistedExecutionOutcome`）を受け付ける。
 
@@ -2737,7 +2741,7 @@ finished current-step Phase-155 result
 
 ### 変更ファイル（正確に5ファイル）
 
-1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_orchestration_boundary.py` — Phase 177 production（新規）
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_orchestration_boundary.py` *(removed historical module; not a current file or API)* — Phase 177 production（新規）
 2. `tests/test_runtime_result_to_persisted_running_execution_orchestration_boundary.py` — Phase 177 focused test（focused 16 + real-default A/B/C/D = 20 cases）
 3. `src/ai_office/engine/__init__.py` — Phase 177 public export（アルファベット順）
 4. `README.md` — Phase 177 documentation
@@ -2753,7 +2757,7 @@ finished current-step Phase-155 result
 - 既存テストの削除・rename・skip・xfail・parameter-collapse・弱体化
 - shared storage/runtime/invocation/provider code、CLI / GUI behavior、runtime result の再永続化・再進行・別ステップ準備・retry・自動継続・schedule・parallel・finalize・artifact persistence
 
-## Phase 178 provenance prerequisite history (Issues #380 / #383)
+## Historical Phase 178 provenance prerequisite history (Issues #380 / #383; removed modules)
 
 Issues #380 and #383 documented compatibility repairs for the former Phase
 143/144 bridge chain. Issue #657 supersedes that active composition: the Phase
@@ -2768,7 +2772,7 @@ commit preservation, and direct persisted-failure stop semantics through the
 canonical Phase 38 route. Historical issue records remain design history, not
 active public APIs or production owners.
 
-## Phase 178: Post-Runtime → Persisted Running Execution → Progression Orchestration Boundary
+## Historical Phase 178: Post-Runtime → Persisted Running Execution → Progression Orchestration Boundary (removed module)
 
 Phase 178 は、公開 Phase 177（post-runtime persisted running execution）と公開 Phase 172（post-runtime persistence → classification → progression）をこの順で**ちょうど 1 回ずつ**合成する最初の明示的な orchestration boundary です。compatibility repair ではなく、既存の公開境界を直列接続します。**workflow runner ではありません**。
 
@@ -2825,7 +2829,7 @@ base **11,936**（Issue #383 完了時）→ Phase 178 focused 16 + real-default
 
 ### 変更ファイル（正確に5ファイル）
 
-1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_orchestration_boundary.py` — Phase 178 production（新規）
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_orchestration_boundary.py` *(removed historical module; not a current file or API)* — Phase 178 production（新規）
 2. `tests/test_runtime_result_to_persisted_running_execution_progression_orchestration_boundary.py` — 新規 +20 tests
 3. `src/ai_office/engine/__init__.py` — Phase 178 public exports
 4. `README.md` — Phase 178 documentation
@@ -2833,7 +2837,7 @@ base **11,936**（Issue #383 完了時）→ Phase 178 focused 16 + real-default
 
 5ファイルを超える変更が必要になった場合は STOP して報告する。
 
-## Phase 179 prerequisite（Issue #386）: Preserve Accumulated Aged None Request-ID through Approved-Preparation Entry Layers
+## Historical Phase 179 prerequisite（Issue #386）: Preserve Accumulated Aged None Request-ID through Approved-Preparation Entry Layers (removed entry-layer modules)
 
 Issue #386 は、Issue #380 / #383 の accumulated aged-None request-ID 保存を **approved-preparation エントリ層**（Phase 145 outer-chain / Phase 137 outer）まで延長する。実 Phase 177 → 実 Phase 172 が生成する step-8 の `prepare_next_step` decision は step-5 / step-6 の `request_id=None`（provider=`"openai"`）証明を伴い、これを Phase 145 → Phase 137 → Phase 130/lower が破壊せずに次へ渡す。
 
@@ -2851,7 +2855,7 @@ Issue #386 は、Issue #380 / #383 の accumulated aged-None request-ID 保存�
 ### 対象2境界（production 修正）
 
 1. `progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 145
-2. `progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137
+2. `progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 137
 
 ### テスト
 
@@ -2865,7 +2869,7 @@ base **11,956** → focused +4 + 実回帰 +4 → **11,964**
 ### 変更ファイル（正確に7ファイル）
 
 1. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 145 production
-2. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 137 production
+2. `src/ai_office/engine/progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 137 production
 3. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — focused +2
 4. `tests/test_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — focused +2
 5. `tests/test_phase178_phase145_accumulated_request_id_none_approved_preparation_compatibility.py` — 新規実回帰 +4
@@ -2874,7 +2878,7 @@ base **11,956** → focused +4 + 実回帰 +4 → **11,964**
 
 7ファイルを超える変更が必要になった場合は STOP して報告する。
 
-## Phase 179: Post-Runtime → Persisted Running Execution → Approved-Preparation Orchestration Boundary
+## Historical Phase 179: Post-Runtime → Persisted Running Execution → Approved-Preparation Orchestration Boundary (removed module)
 
 Phase 179 は、**Phase 178 の結果（persisted running execution → progression）を、そのまま公開 Phase 145 の approved-preparation 境界（prepare-next-step 経路のみ）に合成する、Phase 178 に続く integration boundary** です。compatibility repair ではなく、既存の公開境界（Phase 178 と Phase 145）を直列接続します。**workflow runner ではありません**。
 
@@ -2923,7 +2927,7 @@ base **11,964**（Issue #386 完了時）→ focused +20 → **11,984**
 
 ### 変更ファイル（正確に5ファイル）
 
-1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary.py` — Phase 179 production（新規）
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary.py` *(removed historical module; not a current file or API)* — Phase 179 production（新規）
 2. `tests/test_runtime_result_to_persisted_running_execution_progression_approved_preparation_orchestration_boundary.py` — 新規 +20 focused tests
 3. `src/ai_office/engine/__init__.py` — Phase 179 public exports
 4. `README.md` — Phase 179 documentation
@@ -2931,7 +2935,7 @@ base **11,964**（Issue #386 完了時）→ focused +20 → **11,984**
 
 5ファイルを超える変更・既存 production 修正が必要になった場合は STOP して報告する。
 
-## Phase 180 prerequisite（Issue #390）: Preserve Accumulated Aged None Request-ID through Prepared-Step-Start Entry Layers
+## Historical Phase 180 prerequisite（Issue #390）: Preserve Accumulated Aged None Request-ID through Prepared-Step-Start Entry Layers (removed entry-layer modules)
 
 Phase 180 前提修復。Issue #386 で approved-preparation エントリ層まで保存した accumulated aged-None request-ID の証明（step-5 / step-6 の `request_id=None`・provider=`"openai"`）を、**prepared-step-start エントリ層**（Phase 146 outer-chain / Phase 138 outer）まで延長します。実 Phase 179 が生成する `PreparedWorkflowStep` を prepared-step start へ roll する際、従来この層が非 immediate predecessor の None request-ID を `terminal_contract` で reject していました。
 
@@ -2955,7 +2959,7 @@ Phase 179 PreparedWorkflowStep（straight snapshot に step-5/step-6 request_id=
 ### 変更ファイル（正確に5ファイル）
 
 1. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary.py` — Phase 146 production
-2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` — Phase 138 production
+2. `src/ai_office/engine/prepared_step_start_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary.py` *(removed historical module; not a current file or API)* — Phase 138 production
 3. `tests/test_phase179_prepared_step_start_accumulated_request_id_none_compatibility.py` — 新規実回帰 +8
 4. `README.md` — Phase 180 prerequisite documentation
 5. `docs/architecture.md` — 本節
@@ -2964,7 +2968,7 @@ Phase 179 PreparedWorkflowStep（straight snapshot に step-5/step-6 request_id=
 
 base **11,984**（Phase 179 完了時）→ 実回帰 +8 → **11,992**
 
-## Phase 180: Post-Runtime → Persisted Running Execution → Prepared-Step-Start Orchestration Boundary
+## Historical Phase 180: Post-Runtime → Persisted Running Execution → Prepared-Step-Start Orchestration Boundary (removed module)
 
 Phase 180 は、公開 Phase 179（post-runtime → persisted running execution → progression → approved-preparation）と公開 Phase 146（prepared-step-start outer-chain）を直列接続する integration boundary である。Phase 179 が返した exact `PreparedWorkflowStep`（次の step の準備済み）を、公開 Phase 146 に渡して exact `PreparedStepExecutionStart` を 1 つ得る。**ワークフロー runner ではなく**、proposed immutable value のみを返し、その running state を永続化しない。
 
@@ -2999,7 +3003,7 @@ Phase 180 は、公開 Phase 179（post-runtime → persisted running execution 
 
 ### 変更ファイル（正確に5ファイル）
 
-1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py` — Phase 180 production（新規）
+1. `src/ai_office/engine/runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py` *(removed historical module; not a current file or API)* — Phase 180 production（新規）
 2. `tests/test_runtime_result_to_persisted_running_execution_progression_prepared_step_start_orchestration_boundary.py` — 新規 +20 focused tests
 3. `src/ai_office/engine/__init__.py` — Phase 180 public exports
 4. `README.md` — Phase 180 documentation
