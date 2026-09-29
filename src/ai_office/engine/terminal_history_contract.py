@@ -1,16 +1,10 @@
 """Shared terminal-history invariants for read-only routing boundaries."""
 
-from pathlib import Path
 from typing import Literal, get_args
 
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.invocation import ModelInvocationFailureCategory
 from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
-from ai_office.storage import (
-    WorkflowExecutionPersistenceTargets,
-    load_workflow_execution_history,
-)
-from ai_office.storage.workflow_execution_history import WorkflowExecutionLoadError
 
 _FAILURE_CATEGORIES = frozenset(get_args(ModelInvocationFailureCategory))
 _PROVENANCE_PROVIDERS = frozenset({"openai", "omniroute"})
@@ -19,52 +13,6 @@ _UNSET = object()
 
 class TerminalHistoryContractError(ValueError):
     """Raised when terminal persisted history violates the shared contract."""
-
-
-def _load_terminal_history(
-    state_path: Path,
-    events_path: Path,
-) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
-    """Load one exact persisted state/event snapshot without route policy."""
-    try:
-        history = load_workflow_execution_history(
-            WorkflowExecutionPersistenceTargets(state_path, events_path)
-        )
-    except (OSError, WorkflowExecutionLoadError) as error:
-        raise TerminalHistoryContractError from error
-    if (
-        type(history.state) is not WorkflowExecutionState
-        or type(history.events) is not tuple
-    ):
-        raise TerminalHistoryContractError from None
-    return history.state, history.events
-
-
-def load_strict_terminal_history(
-    workflow: WorkflowDefinition,
-    state_path: Path,
-    events_path: Path,
-) -> tuple[WorkflowExecutionState, tuple[RuntimeStepEvent, ...]]:
-    """Load and validate one terminal workflow state and event history."""
-    state, events = _load_terminal_history(state_path, events_path)
-    allow_empty_success_output = (
-        type(state) is WorkflowExecutionState
-        and state.status == "succeeded"
-        and type(state.current_step_index) is int
-        and state.current_step_index < len(workflow.steps)
-    )
-    _validate_terminal_history(
-        workflow,
-        state,
-        events,
-        allow_empty_success_output=allow_empty_success_output,
-        allow_empty_predecessor_output=allow_empty_success_output,
-        provider_policy="ignore",
-        predecessor_request_id_policy="ignore",
-        terminal_request_id_policy="ignore",
-        failure_message_policy="string",
-    )
-    return state, events
 
 
 def validate_strict_terminal_history(
