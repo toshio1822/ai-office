@@ -1,5 +1,9 @@
 # アーキテクチャ
 
+将来の設計判断と不変条件の正は [Engine Target Architecture](engine-target-architecture.md) にあります。
+この文書は、現在実装されているアーキテクチャと過去の設計経緯を記録する Current Architecture です。
+Target Architecture に記載された未実装の機能を、現在実装済みとは扱いません。
+
 ## この文書の位置付け
 
 この文書には、現在のアーキテクチャ説明に加えて、過去の Phase で導入・検証された設計経緯が多数含まれている。

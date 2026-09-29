@@ -2,7 +2,7 @@
 
 人間が定義した業務ワークフローを、明示的な状態遷移と検証のもとで AI が処理するための基盤です。
 
-開発方針は [プロダクトビジョン](docs/product-vision.md) と [アーキテクチャ](docs/architecture.md) を参照してください。
+開発方針は [Product Vision](docs/product-vision.md)、[Engine Target Architecture](docs/engine-target-architecture.md)、[Current Architecture](docs/architecture.md) を参照してください。
 
 ## 開発
 
