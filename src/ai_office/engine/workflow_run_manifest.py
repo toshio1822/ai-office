@@ -197,6 +197,21 @@ class WorkflowRunManifest:
         return workflow_run_manifest_digest(self)
 
 
+@dataclass(frozen=True)
+class WorkflowRunManifestStore:
+    """Authoritative durable namespace for Workflow Run Manifests.
+
+    The root is the store namespace, not a per-Run target.  A Run target is
+    always derived from its ``run_id`` inside this store, so callers cannot
+    select a second filename or path for the same Run identity.
+    """
+
+    root: Path
+
+    def __post_init__(self) -> None:
+        _validate_storage_root(self.root)
+
+
 def build_workflow_run_manifest(
     run_id: str,
     run_input: str,
@@ -278,7 +293,7 @@ def build_workflow_run_manifest(
 
 
 def create_workflow_run_manifest(
-    path: Path,
+    store: WorkflowRunManifestStore,
     run_id: str,
     run_input: str,
     workflow: LoadedWorkflow,
@@ -292,6 +307,7 @@ def create_workflow_run_manifest(
     is opened.  The returned manifest is the exact value whose canonical bytes
     were committed; no provider, tool, network, or paid operation is involved.
     """
+    _validate_store(store)
     manifest = build_workflow_run_manifest(
         run_id,
         run_input,
@@ -299,7 +315,7 @@ def create_workflow_run_manifest(
         employees,
         tool_catalog=tool_catalog,
     )
-    persist_workflow_run_manifest(path, manifest)
+    _persist_workflow_run_manifest(_manifest_path(store, run_id), manifest)
     return manifest
 
 
@@ -341,9 +357,17 @@ def workflow_run_manifest_digest(manifest: WorkflowRunManifest) -> str:
 
 
 def persist_workflow_run_manifest(
-    path: Path,
+    store: WorkflowRunManifestStore,
     manifest: WorkflowRunManifest,
 ) -> None:
+    """Persist one manifest through the store's identity-derived target."""
+    _validate_store(store)
+    if type(manifest) is not WorkflowRunManifest:
+        _raise_persistence("manifest")
+    _persist_workflow_run_manifest(_manifest_path(store, manifest.run_id), manifest)
+
+
+def _persist_workflow_run_manifest(path: Path, manifest: WorkflowRunManifest) -> None:
     """Create or idempotently persist one exact immutable manifest.
 
     Creation uses exclusive file creation and never replaces an existing
@@ -370,7 +394,23 @@ def persist_workflow_run_manifest(
     _persist_new_manifest(handle, path.parent, contents)
 
 
-def load_workflow_run_manifest(path: Path) -> WorkflowRunManifest:
+def load_workflow_run_manifest(
+    store: WorkflowRunManifestStore,
+    run_id: str,
+) -> WorkflowRunManifest:
+    """Load one immutable Run Manifest through its authoritative store."""
+    _validate_store(store)
+    _validate_run_identity(run_id)
+    return _load_workflow_run_manifest_at_path(
+        _manifest_path(store, run_id), expected_run_id=run_id
+    )
+
+
+def _load_workflow_run_manifest_at_path(
+    path: Path,
+    *,
+    expected_run_id: str,
+) -> WorkflowRunManifest:
     """Load and strictly validate one exact canonical immutable manifest."""
     _validate_load_path(path)
     try:
@@ -405,6 +445,8 @@ def load_workflow_run_manifest(path: Path) -> WorkflowRunManifest:
         _raise_load("manifest")
     if canonical != contents:
         _raise_load("noncanonical")
+    if manifest.run_id != expected_run_id:
+        _raise_load("identity")
     return manifest
 
 
@@ -686,6 +728,32 @@ def _validate_persistence_path(path: object) -> None:
         _raise_persistence("target")
 
 
+def _validate_storage_root(root: object) -> None:
+    if type(root) is not _PATH_TYPE:
+        _raise_manifest("storage_root")
+    assert isinstance(root, Path)
+    try:
+        if root.is_symlink() or not root.exists() or not root.is_dir():
+            _raise_manifest("storage_root")
+    except WorkflowRunManifestError:
+        raise
+    except Exception:
+        _raise_manifest("storage_root")
+
+
+def _validate_store(store: object) -> None:
+    if type(store) is not WorkflowRunManifestStore:
+        _raise_manifest("store")
+    assert isinstance(store, WorkflowRunManifestStore)
+    _validate_storage_root(store.root)
+
+
+def _manifest_path(store: WorkflowRunManifestStore, run_id: str) -> Path:
+    _validate_store(store)
+    _validate_run_identity(run_id)
+    return store.root / f"{run_id}.manifest.json"
+
+
 def _validate_load_path(path: object) -> None:
     if type(path) is not _PATH_TYPE:
         _raise_load("path_type")
@@ -948,6 +1016,7 @@ __all__ = [
     "WorkflowRunManifestFailureDetail",
     "WorkflowRunManifestLoadError",
     "WorkflowRunManifestPersistenceError",
+    "WorkflowRunManifestStore",
     "WorkflowStepSnapshot",
     "build_workflow_run_manifest",
     "create_workflow_run_manifest",

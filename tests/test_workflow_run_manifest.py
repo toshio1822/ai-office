@@ -26,6 +26,7 @@ from ai_office.engine.workflow_run_manifest import (
     WorkflowRunManifestConflictError,
     WorkflowRunManifestError,
     WorkflowRunManifestLoadError,
+    WorkflowRunManifestStore,
     build_workflow_run_manifest,
     create_workflow_run_manifest,
     load_workflow_run_manifest,
@@ -129,17 +130,17 @@ def manifest(
 def test_create_load_round_trip_preserves_exact_run_meaning_and_digest(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "run.manifest.json"
+    store = WorkflowRunManifestStore(tmp_path)
     value = create_workflow_run_manifest(
-        path,
+        store,
         "run-1",
         "  preserve this input exactly\n",
         workflow(),
         [employee()],
     )
 
-    loaded = load_workflow_run_manifest(path)
-    contents = path.read_bytes()
+    loaded = load_workflow_run_manifest(store, "run-1")
+    contents = (tmp_path / "run-1.manifest.json").read_bytes()
 
     assert loaded == value
     assert loaded.run_input == "  preserve this input exactly\n"
@@ -286,9 +287,9 @@ def test_source_yaml_changes_after_creation_do_not_reinterpret_loaded_manifest(
         encoding="utf-8",
     )
 
-    run_path = tmp_path / "run.manifest.json"
+    store = WorkflowRunManifestStore(tmp_path)
     original = create_workflow_run_manifest(
-        run_path,
+        store,
         "run-1",
         "same request",
         load_workflows(workflows_path)[0],
@@ -308,71 +309,162 @@ def test_source_yaml_changes_after_creation_do_not_reinterpret_loaded_manifest(
         encoding="utf-8",
     )
 
-    assert load_workflow_run_manifest(run_path) == original
+    assert load_workflow_run_manifest(store, "run-1") == original
 
 
 def test_invalid_employee_reference_fails_before_manifest_persistence(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "run.manifest.json"
+    store = WorkflowRunManifestStore(tmp_path)
 
     with pytest.raises(WorkflowLoadError):
         create_workflow_run_manifest(
-            path,
+            store,
             "run-1",
             "request",
             workflow(employee_id="missing-employee"),
             [employee()],
         )
 
-    assert not path.exists()
+    assert not (tmp_path / "run-1.manifest.json").exists()
 
 
 def test_invalid_tool_reference_fails_before_manifest_persistence(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "run.manifest.json"
+    store = WorkflowRunManifestStore(tmp_path)
 
     with pytest.raises(ToolNotFoundError):
         create_workflow_run_manifest(
-            path,
+            store,
             "run-1",
             "request",
             workflow(),
             [employee(allowed_tools=("missing-tool",))],
         )
 
-    assert not path.exists()
+    assert not (tmp_path / "run-1.manifest.json").exists()
 
 
 def test_exact_re_persistence_is_idempotent_and_does_not_rewrite_content(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "run.manifest.json"
+    store = WorkflowRunManifestStore(tmp_path)
     value = manifest()
-    persist_workflow_run_manifest(path, value)
-    original_bytes = path.read_bytes()
+    persist_workflow_run_manifest(store, value)
+    original_bytes = (tmp_path / "run-1.manifest.json").read_bytes()
 
-    persist_workflow_run_manifest(path, value)
+    persist_workflow_run_manifest(store, value)
 
-    assert path.read_bytes() == original_bytes
-    assert load_workflow_run_manifest(path) == value
+    assert (tmp_path / "run-1.manifest.json").read_bytes() == original_bytes
+    assert load_workflow_run_manifest(store, "run-1") == value
+
+
+def test_same_run_identity_and_meaning_is_one_safe_idempotent_run(
+    tmp_path: Path,
+) -> None:
+    store = WorkflowRunManifestStore(tmp_path)
+
+    first = create_workflow_run_manifest(
+        store, "run-1", "same request", workflow(), [employee()]
+    )
+    second = create_workflow_run_manifest(
+        store, "run-1", "same request", workflow(), [employee()]
+    )
+
+    assert second == first
+    assert load_workflow_run_manifest(store, "run-1") == first
+    assert sorted(tmp_path.glob("*.manifest.json")) == [
+        tmp_path / "run-1.manifest.json"
+    ]
+
+
+def test_alternate_caller_filename_cannot_create_a_second_authoritative_run(
+    tmp_path: Path,
+) -> None:
+    store = WorkflowRunManifestStore(tmp_path)
+    original = create_workflow_run_manifest(
+        store, "run-1", "original request", workflow(), [employee()]
+    )
+    alternate_path = tmp_path / "caller-selected-alternate.json"
+    alternate_path.write_bytes(
+        workflow_run_manifest_canonical_bytes(
+            manifest(run_id="run-1", run_input="different request")
+        )
+    )
+
+    assert load_workflow_run_manifest(store, "run-1") == original
+    assert load_workflow_run_manifest(store, "run-1").run_input == "original request"
+    with pytest.raises(WorkflowRunManifestConflictError):
+        create_workflow_run_manifest(
+            store, "run-1", "different request", workflow(), [employee()]
+        )
+
+
+@pytest.mark.parametrize(
+    ("run_input", "changed_workflow"),
+    [
+        ("different request", None),
+        ("same request", workflow(step_instructions="Changed.")),
+    ],
+)
+def test_same_run_identity_with_different_meaning_conflicts_without_overwrite(
+    tmp_path: Path,
+    run_input: str,
+    changed_workflow: LoadedWorkflow | None,
+) -> None:
+    store = WorkflowRunManifestStore(tmp_path)
+    original = create_workflow_run_manifest(
+        store, "run-1", "same request", workflow(), [employee()]
+    )
+    original_bytes = (tmp_path / "run-1.manifest.json").read_bytes()
+
+    with pytest.raises(WorkflowRunManifestConflictError):
+        create_workflow_run_manifest(
+            store,
+            "run-1",
+            run_input,
+            changed_workflow or workflow(),
+            [employee()],
+        )
+
+    assert (tmp_path / "run-1.manifest.json").read_bytes() == original_bytes
+    assert load_workflow_run_manifest(store, "run-1") == original
+
+
+def test_different_run_id_with_same_workflow_is_independent(
+    tmp_path: Path,
+) -> None:
+    store = WorkflowRunManifestStore(tmp_path)
+
+    first = create_workflow_run_manifest(
+        store, "run-1", "first request", workflow(), [employee()]
+    )
+    second = create_workflow_run_manifest(
+        store, "run-2", "second request", workflow(), [employee()]
+    )
+
+    assert first.workflow_snapshot == second.workflow_snapshot
+    assert first.run_id != second.run_id
+    assert first.run_input != second.run_input
+    assert load_workflow_run_manifest(store, "run-1") == first
+    assert load_workflow_run_manifest(store, "run-2") == second
 
 
 def test_conflicting_existing_content_fails_closed_without_overwrite(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "run.manifest.json"
+    store = WorkflowRunManifestStore(tmp_path)
     original = manifest(run_input="original")
     conflicting = manifest(run_input="different")
-    persist_workflow_run_manifest(path, original)
-    original_bytes = path.read_bytes()
+    persist_workflow_run_manifest(store, original)
+    original_bytes = (tmp_path / "run-1.manifest.json").read_bytes()
 
     with pytest.raises(WorkflowRunManifestConflictError):
-        persist_workflow_run_manifest(path, conflicting)
+        persist_workflow_run_manifest(store, conflicting)
 
-    assert path.read_bytes() == original_bytes
-    assert load_workflow_run_manifest(path) == original
+    assert (tmp_path / "run-1.manifest.json").read_bytes() == original_bytes
+    assert load_workflow_run_manifest(store, "run-1") == original
 
 
 @pytest.mark.parametrize(
@@ -383,11 +475,12 @@ def test_conflicting_existing_content_fails_closed_without_overwrite(
     ],
 )
 def test_malformed_persisted_data_fails_closed(tmp_path: Path, contents: bytes) -> None:
-    path = tmp_path / "run.manifest.json"
+    store = WorkflowRunManifestStore(tmp_path)
+    path = tmp_path / "run-1.manifest.json"
     path.write_bytes(contents)
 
     with pytest.raises(WorkflowRunManifestLoadError):
-        load_workflow_run_manifest(path)
+        load_workflow_run_manifest(store, "run-1")
 
 
 def test_duplicate_and_noncanonical_persisted_structure_fails_closed(
@@ -395,20 +488,21 @@ def test_duplicate_and_noncanonical_persisted_structure_fails_closed(
 ) -> None:
     value = manifest()
     canonical = workflow_run_manifest_canonical_bytes(value)
-    duplicate_path = tmp_path / "duplicate.json"
+    store = WorkflowRunManifestStore(tmp_path)
+    duplicate_path = tmp_path / "run-1.manifest.json"
     duplicate_path.write_bytes(
         canonical.replace(
             b'"run_id":"run-1"',
             b'"run_id":"run-1","run_id":"run-1"',
         )
     )
-    noncanonical_path = tmp_path / "noncanonical.json"
+    noncanonical_path = tmp_path / "run-2.manifest.json"
     noncanonical_path.write_bytes(canonical + b"\n")
 
     with pytest.raises(WorkflowRunManifestLoadError):
-        load_workflow_run_manifest(duplicate_path)
+        load_workflow_run_manifest(store, "run-1")
     with pytest.raises(WorkflowRunManifestLoadError):
-        load_workflow_run_manifest(noncanonical_path)
+        load_workflow_run_manifest(store, "run-2")
 
 
 def test_manifest_constructor_rejects_unbound_or_invalid_values() -> None:
