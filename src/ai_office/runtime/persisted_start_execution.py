@@ -16,6 +16,7 @@ from ai_office.providers.openai import (
     OpenAIResponsesTransport,
     send_openai_responses_http_request,
 )
+from ai_office.runtime.run_binding import binding_of
 from ai_office.runtime.step_runtime_execution import (
     StepRuntimeExecutionInput,
     StepRuntimeExecutionResult,
@@ -187,6 +188,7 @@ def _build_step_request(
         employee.instructions != request.system_instructions
         or employee.model != request.model
         or tuple(employee.allowed_tools) != request.allowed_tools
+        or binding_of(state) != binding_of(request)
     ):
         _raise("employee_contract")
     return StepExecutionRequest(
@@ -202,6 +204,9 @@ def _build_step_request(
         allowed_tools=request.allowed_tools,
         employee_instructions=request.system_instructions,
         step_instructions=request.task_instructions,
+        run_id=request.run_id,
+        manifest_digest=request.manifest_digest,
+        run_input=request.run_input,
     )
 
 

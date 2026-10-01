@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ai_office.invocation import ModelInvocationRequest
-from ai_office.runtime import WorkflowExecutionState
+from ai_office.runtime import WorkflowExecutionState, binding_of
 from ai_office.storage.workflow_execution_persistence import (
     _capture_original_target,
     _replace_state_bytes,
@@ -76,6 +76,11 @@ def persist_prepared_running_state(
     except OSError:
         raise RunningStatePersistenceError("target") from None
     if invalid:
+        raise RunningStatePersistenceInputError(_INPUT_ERROR) from None
+    binding = binding_of(state)
+    if binding is not None and state_path != state_path.parent / (
+        f"{binding.run_id}.state.json"
+    ):
         raise RunningStatePersistenceInputError(_INPUT_ERROR) from None
     contents = serialize_workflow_execution_state_json(state).encode("utf-8")
     try:

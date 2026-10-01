@@ -15,7 +15,9 @@ from ai_office.runtime import (
     RuntimeStepEventType,
     WorkflowExecutionState,
     WorkflowExecutionStatus,
+    binding_of,
 )
+from ai_office.runtime.run_binding import WorkflowRunBinding
 from ai_office.storage.workflow_execution_persistence import (
     WorkflowExecutionPersistenceTargets,
 )
@@ -51,6 +53,8 @@ _EVENT_KEYS = frozenset(
         "message",
     }
 )
+_RUN_BINDING_KEYS = frozenset({"run_id", "manifest_digest"})
+_RUN_INPUT_KEY = "run_input"
 _RESPONSE_DIAGNOSTICS_KEYS = frozenset(
     {"status_code", "content_type", "body_length", "body_kind"}
 )
@@ -126,8 +130,14 @@ def load_workflow_execution_history_with_source_digests(
     _validate_targets(targets)
     state_bytes = _read_bytes(targets.state_path, "state_read")
     event_bytes = _read_bytes(targets.events_path, "events_read")
-    state = parse_workflow_execution_state(_decode_state_json(state_bytes))
-    events = _parse_runtime_step_events(event_bytes)
+    state = parse_workflow_execution_state(
+        _decode_state_json(state_bytes), binding=targets.binding
+    )
+    _validate_bound_target_paths(
+        targets.state_path, targets.events_path, binding_of(state)
+    )
+    events = _parse_runtime_step_events(event_bytes, binding=targets.binding)
+    _validate_run_binding_consistency(state, events, targets.binding)
     _validate_history_consistency(state, events)
     return (
         LoadedWorkflowExecutionHistory(state=state, events=events),
@@ -136,7 +146,11 @@ def load_workflow_execution_history_with_source_digests(
     )
 
 
-def load_workflow_execution_state(state_path: Path) -> WorkflowExecutionState:
+def load_workflow_execution_state(
+    state_path: Path,
+    *,
+    binding: WorkflowRunBinding | None = None,
+) -> WorkflowExecutionState:
     """Strictly read one explicit state target without requiring an event file."""
     try:
         invalid = not state_path.is_file()
@@ -145,12 +159,29 @@ def load_workflow_execution_state(state_path: Path) -> WorkflowExecutionState:
     if invalid:
         raise WorkflowExecutionLoadError(_LOAD_ERROR_MESSAGE)
     contents = _read_bytes(state_path, "state_read")
-    return parse_workflow_execution_state(_decode_state_json(contents))
+    state = parse_workflow_execution_state(
+        _decode_state_json(contents), binding=binding
+    )
+    _validate_bound_state_path(state_path, binding_of(state))
+    return state
 
 
-def parse_workflow_execution_state(value: object) -> WorkflowExecutionState:
+def parse_workflow_execution_state(
+    value: object,
+    *,
+    binding: WorkflowRunBinding | None = None,
+) -> WorkflowExecutionState:
     """Strictly reconstruct an immutable state from decoded JSON data."""
-    data = _require_exact_object(value, _STATE_KEYS, "state_parse")
+    data = _require_exact_object(
+        value,
+        _STATE_KEYS,
+        "state_parse",
+        allowed=(
+            _STATE_KEYS,
+            _STATE_KEYS | _RUN_BINDING_KEYS,
+            _STATE_KEYS | _RUN_BINDING_KEYS | {_RUN_INPUT_KEY},
+        ),
+    )
     workflow_id = _require_non_empty_string(data["workflow_id"], "state_parse")
     current_step_id = _require_non_empty_string(data["current_step_id"], "state_parse")
     current_employee_id = _require_non_empty_string(
@@ -164,57 +195,85 @@ def parse_workflow_execution_state(value: object) -> WorkflowExecutionState:
     failure_category = _require_optional_member(
         data["last_failure_category"], _FAILURE_CATEGORIES, "state_parse"
     )
-    return WorkflowExecutionState(
-        workflow_id=workflow_id,
-        status=cast(WorkflowExecutionStatus, status),
-        current_step_id=current_step_id,
-        current_step_index=step_index,
-        current_employee_id=current_employee_id,
-        completed_step_ids=completed_step_ids,
-        last_failure_category=cast(
-            ModelInvocationFailureCategory | None, failure_category
-        ),
+    persisted_binding = _parse_run_binding(data, "state_parse")
+    effective_binding = _require_expected_binding(
+        persisted_binding, binding, "state_parse"
     )
+    try:
+        return WorkflowExecutionState(
+            workflow_id=workflow_id,
+            status=cast(WorkflowExecutionStatus, status),
+            current_step_id=current_step_id,
+            current_step_index=step_index,
+            current_employee_id=current_employee_id,
+            completed_step_ids=completed_step_ids,
+            last_failure_category=cast(
+                ModelInvocationFailureCategory | None, failure_category
+            ),
+            binding=effective_binding,
+        )
+    except (TypeError, ValueError):
+        raise WorkflowExecutionDataError("state_parse") from None
 
 
-def parse_runtime_step_event(value: object) -> RuntimeStepEvent:
+def parse_runtime_step_event(
+    value: object,
+    *,
+    binding: WorkflowRunBinding | None = None,
+) -> RuntimeStepEvent:
     """Strictly reconstruct one immutable runtime event from decoded JSON data."""
-    if not isinstance(value, dict) or set(value) not in (
+    if not isinstance(value, dict):
+        raise WorkflowExecutionDataError("events_parse")
+    binding_keys = _EVENT_KEYS | _RUN_BINDING_KEYS
+    event_keys = set(value)
+    if event_keys not in {
         _EVENT_KEYS,
         _EVENT_KEYS | {"response_diagnostics"},
-    ):
+        binding_keys,
+        binding_keys | {"response_diagnostics"},
+        binding_keys | {_RUN_INPUT_KEY},
+        binding_keys | {_RUN_INPUT_KEY, "response_diagnostics"},
+    }:
         raise WorkflowExecutionDataError("events_parse")
     data = value
-    event_type = _require_member(data["event_type"], _EVENT_TYPES, "events_parse")
-    event = RuntimeStepEvent(
-        event_type=cast(RuntimeStepEventType, event_type),
-        workflow_id=_require_non_empty_string(data["workflow_id"], "events_parse"),
-        step_id=_require_non_empty_string(data["step_id"], "events_parse"),
-        step_index=_require_positive_int(data["step_index"], "events_parse"),
-        employee_id=_require_non_empty_string(data["employee_id"], "events_parse"),
-        previous_status=cast(
-            WorkflowExecutionStatus,
-            _require_member(data["previous_status"], _STATUSES, "events_parse"),
-        ),
-        next_status=cast(
-            WorkflowExecutionStatus,
-            _require_member(data["next_status"], _STATUSES, "events_parse"),
-        ),
-        provider=_require_non_empty_string(data["provider"], "events_parse"),
-        failure_category=cast(
-            ModelInvocationFailureCategory | None,
-            _require_optional_member(
-                data["failure_category"], _FAILURE_CATEGORIES, "events_parse"
-            ),
-        ),
-        response_id=_require_optional_string(data["response_id"], "events_parse"),
-        request_id=_require_optional_string(data["request_id"], "events_parse"),
-        output_text=_require_optional_string(data["output_text"], "events_parse"),
-        message=_require_optional_string(data["message"], "events_parse"),
-        response_diagnostics=_parse_response_diagnostics(
-            data.get("response_diagnostics")
-        ),
+    persisted_binding = _parse_run_binding(data, "events_parse")
+    effective_binding = _require_expected_binding(
+        persisted_binding, binding, "events_parse"
     )
+    event_type = _require_member(data["event_type"], _EVENT_TYPES, "events_parse")
+    try:
+        event = RuntimeStepEvent(
+            event_type=cast(RuntimeStepEventType, event_type),
+            workflow_id=_require_non_empty_string(data["workflow_id"], "events_parse"),
+            step_id=_require_non_empty_string(data["step_id"], "events_parse"),
+            step_index=_require_positive_int(data["step_index"], "events_parse"),
+            employee_id=_require_non_empty_string(data["employee_id"], "events_parse"),
+            previous_status=cast(
+                WorkflowExecutionStatus,
+                _require_member(data["previous_status"], _STATUSES, "events_parse"),
+            ),
+            next_status=cast(
+                WorkflowExecutionStatus,
+                _require_member(data["next_status"], _STATUSES, "events_parse"),
+            ),
+            provider=_require_non_empty_string(data["provider"], "events_parse"),
+            failure_category=cast(
+                ModelInvocationFailureCategory | None,
+                _require_optional_member(
+                    data["failure_category"], _FAILURE_CATEGORIES, "events_parse"
+                ),
+            ),
+            response_id=_require_optional_string(data["response_id"], "events_parse"),
+            request_id=_require_optional_string(data["request_id"], "events_parse"),
+            output_text=_require_optional_string(data["output_text"], "events_parse"),
+            message=_require_optional_string(data["message"], "events_parse"),
+            response_diagnostics=_parse_response_diagnostics(
+                data.get("response_diagnostics")
+            ),
+            binding=effective_binding,
+        )
+    except (TypeError, ValueError):
+        raise WorkflowExecutionDataError("events_parse") from None
     _validate_event_semantics(event)
     return event
 
@@ -230,6 +289,29 @@ def _validate_targets(targets: WorkflowExecutionPersistenceTargets) -> None:
         raise WorkflowExecutionLoadError(_LOAD_ERROR_MESSAGE) from None
     if invalid:
         raise WorkflowExecutionLoadError(_LOAD_ERROR_MESSAGE)
+
+
+def _validate_bound_state_path(
+    state_path: Path, binding: WorkflowRunBinding | None
+) -> None:
+    if binding is None:
+        return
+    expected = state_path.parent / f"{binding.run_id}.state.json"
+    if state_path != expected:
+        raise WorkflowExecutionDataError("state_namespace")
+
+
+def _validate_bound_target_paths(
+    state_path: Path,
+    events_path: Path,
+    binding: WorkflowRunBinding | None,
+) -> None:
+    if binding is None:
+        return
+    expected_state = state_path.parent / f"{binding.run_id}.state.json"
+    expected_events = state_path.parent / f"{binding.run_id}.events.jsonl"
+    if state_path != expected_state or events_path != expected_events:
+        raise WorkflowExecutionDataError("execution_namespace")
 
 
 def _read_bytes(path: Path, operation: str) -> bytes:
@@ -251,7 +333,11 @@ def _decode_state_json(contents: bytes) -> object:
         raise WorkflowExecutionDataError("state_parse") from None
 
 
-def _parse_runtime_step_events(contents: bytes) -> tuple[RuntimeStepEvent, ...]:
+def _parse_runtime_step_events(
+    contents: bytes,
+    *,
+    binding: WorkflowRunBinding | None = None,
+) -> tuple[RuntimeStepEvent, ...]:
     try:
         text = contents.decode("utf-8")
     except UnicodeDecodeError:
@@ -269,7 +355,8 @@ def _parse_runtime_step_events(contents: bytes) -> tuple[RuntimeStepEvent, ...]:
     try:
         return tuple(
             parse_runtime_step_event(
-                json.loads(record, object_pairs_hook=_reject_duplicate_keys)
+                json.loads(record, object_pairs_hook=_reject_duplicate_keys),
+                binding=binding,
             )
             for record in records
         )
@@ -389,11 +476,67 @@ def _validate_history_consistency(
 
 
 def _require_exact_object(
-    value: object, keys: frozenset[str], operation: str
+    value: object,
+    keys: frozenset[str],
+    operation: str,
+    *,
+    optional: frozenset[str] = frozenset(),
+    allowed: tuple[frozenset[str], ...] | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != keys:
+    allowed_sets = allowed or (keys, keys - optional)
+    if not isinstance(value, dict) or set(value) not in allowed_sets:
         raise WorkflowExecutionDataError(operation)
     return value
+
+
+def _parse_run_binding(
+    data: dict[str, Any], operation: str
+) -> WorkflowRunBinding | None:
+    present = {key for key in _RUN_BINDING_KEYS if key in data}
+    if not present:
+        if _RUN_INPUT_KEY in data:
+            raise WorkflowExecutionDataError(operation)
+        return None
+    if present != _RUN_BINDING_KEYS:
+        raise WorkflowExecutionDataError(operation)
+    try:
+        return WorkflowRunBinding(
+            data["run_id"], data["manifest_digest"], data.get(_RUN_INPUT_KEY)
+        )
+    except (TypeError, ValueError):
+        raise WorkflowExecutionDataError(operation) from None
+
+
+def _require_expected_binding(
+    actual: WorkflowRunBinding | None,
+    expected: WorkflowRunBinding | None,
+    operation: str,
+) -> WorkflowRunBinding | None:
+    if expected is not None and actual != expected:
+        raise WorkflowExecutionDataError(operation)
+    return expected if expected is not None else actual
+
+
+def _validate_run_binding_consistency(
+    state: WorkflowExecutionState,
+    events: tuple[RuntimeStepEvent, ...],
+    expected: WorkflowRunBinding | None,
+) -> None:
+    state_binding = binding_of(state)
+    if expected is not None and (
+        state_binding is None or state_binding != expected
+    ):
+        raise WorkflowExecutionHistoryInconsistencyError() from None
+    for event in events:
+        event_binding = binding_of(event)
+        if state_binding is None:
+            valid = event_binding is None
+        else:
+            valid = (
+                event_binding is not None and event_binding == state_binding
+            )
+        if not valid:
+            raise WorkflowExecutionHistoryInconsistencyError() from None
 
 
 def _require_non_empty_string(value: object, operation: str) -> str:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from ai_office.runtime.run_binding import binding_of
 from ai_office.runtime.step_runtime_execution import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionResult,
@@ -83,7 +84,11 @@ def persist_executed_step_transition(
     _validate_transition_contract(transition, current_state, result)
     return persist_workflow_execution_transition(
         transition,
-        WorkflowExecutionPersistenceTargets(state_path, events_path),
+        WorkflowExecutionPersistenceTargets(
+            state_path,
+            events_path,
+            binding=binding_of(current_state),
+        ),
     )
 
 
@@ -124,6 +129,7 @@ def _validate_result_identity(
         or state.current_step_id != result.step_id
         or state.current_step_index != result.step_index
         or state.current_employee_id != result.employee_id
+        or binding_of(state) != binding_of(result)
     ):
         _raise("state_identity")
 

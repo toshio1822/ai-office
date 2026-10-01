@@ -71,6 +71,10 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
     route_runtime_result_to_progression_orchestration_boundary,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.engine.workflow_run_manifest import (
+    WorkflowRunManifestStore,
+    load_workflow_run_manifest,
+)
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationRequest,
@@ -82,6 +86,8 @@ from ai_office.runtime import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
+    WorkflowRunBinding,
+    binding_of,
     is_valid_step_runtime_execution_result,
 )
 from ai_office.runtime.persisted_start_execution import (
@@ -121,6 +127,7 @@ FreshWorkflowBootstrapClassification = Literal[
     "phase172_contract",
     "dependency_error",
     "rollback_failure",
+    "run_binding",
 ]
 _PATH_TYPE = type(Path())
 _SAFE_EXECUTION_ERRORS = (
@@ -166,6 +173,8 @@ class ApprovedWorkflowBootstrapContext:
     execution_approval: ModelInvocationExecutionApproval
     transport: object
     execution_target: ModelExecutionTarget = DIRECT_OPENAI_EXECUTION_TARGET
+    binding: WorkflowRunBinding | None = None
+    manifest_store: WorkflowRunManifestStore | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +234,7 @@ def route_approved_workflow_fresh_start(
         current_employee_id=first_step.employee,
         completed_step_ids=(),
         last_failure_category=None,
+        binding=context.binding,
     )
     ready_bytes = serialize_workflow_execution_state_json(ready_state).encode("utf-8")
 
@@ -241,13 +251,19 @@ def route_approved_workflow_fresh_start(
         state_path,
         events_path,
         created_targets,
+        binding=context.binding,
+        namespace_root=(
+            None if context.manifest_store is None else context.manifest_store.root
+        ),
     )
 
     # From this point onward the ready pair is the first durable commit and is
     # never removed by later approval/employee/preparation errors.
     _validate_approval(context.preparation_approval, workflow)
     _validate_employee(context.employee, workflow, first_step)
-    prepared_step = _build_prepared_step(workflow, first_step, context.employee)
+    prepared_step = _build_prepared_step(
+        workflow, first_step, context.employee, context.binding
+    )
     prepared_start = _build_prepared_start(workflow, prepared_step, context.employee)
 
     target = _validate_context_execution_target(context)
@@ -357,6 +373,28 @@ def _check_initial_inputs(
         _fail("target_conflict")
     if type(context) is not ApprovedWorkflowBootstrapContext:
         _fail("context_type")
+    if context.binding is not None:
+        if type(context.binding) is not WorkflowRunBinding:
+            _fail("run_binding")
+        if type(context.manifest_store) is not WorkflowRunManifestStore:
+            _fail("run_binding")
+        try:
+            manifest = load_workflow_run_manifest(
+                context.manifest_store, context.binding.run_id
+            )
+            expected_state, expected_events = context.manifest_store.execution_paths(
+                context.binding.run_id
+            )
+        except Exception:
+            _fail("run_binding")
+        if (
+            manifest.digest != context.binding.manifest_digest
+            or manifest.workflow_id != workflow.id
+            or manifest.run_input != context.binding.run_input
+            or state_path != expected_state
+            or events_path != expected_events
+        ):
+            _fail("run_binding")
     try:
         if not state_path.parent.is_dir() or not events_path.parent.is_dir():
             _fail("state_target" if not state_path.parent.is_dir() else "event_target")
@@ -486,13 +524,21 @@ def _loadback_accept_ready(
     state_path: Path,
     events_path: Path,
     created_targets: tuple[bool, bool],
+    *,
+    binding: WorkflowRunBinding | None = None,
+    namespace_root: Path | None = None,
 ) -> None:
     """Strictly load and accept the durable ready commit."""
     try:
         state_bytes = state_path.read_bytes()
         event_bytes = events_path.read_bytes()
         history = load_workflow_execution_history(
-            WorkflowExecutionPersistenceTargets(state_path, events_path)
+            WorkflowExecutionPersistenceTargets(
+                state_path,
+                events_path,
+                binding=binding,
+                namespace_root=namespace_root,
+            )
         )
     except Exception:
         _compensate_created(state_path, events_path, created_targets)
@@ -500,13 +546,17 @@ def _loadback_accept_ready(
     if (
         state_bytes != ready_bytes
         or event_bytes != _READY_EMPTY_EVENTS
-        or not _valid_ready_history(workflow, history)
+        or not _valid_ready_history(workflow, history, binding)
     ):
         _compensate_created(state_path, events_path, created_targets)
         _fail("initialization_contract")
 
 
-def _valid_ready_history(workflow: WorkflowDefinition, history: object) -> bool:
+def _valid_ready_history(
+    workflow: WorkflowDefinition,
+    history: object,
+    binding: WorkflowRunBinding | None = None,
+) -> bool:
     if type(history) is not LoadedWorkflowExecutionHistory:
         return False
     state = history.state
@@ -520,6 +570,7 @@ def _valid_ready_history(workflow: WorkflowDefinition, history: object) -> bool:
         and state.current_employee_id == first_step.employee
         and state.completed_step_ids == ()
         and state.last_failure_category is None
+        and binding_of(state) == binding
         and history.events == ()
     )
 
@@ -573,6 +624,7 @@ def _build_prepared_step(
     workflow: WorkflowDefinition,
     first_step: WorkflowStepDefinition,
     employee: EmployeeDefinition,
+    binding: WorkflowRunBinding | None = None,
 ) -> PreparedWorkflowStep:
     return PreparedWorkflowStep(
         workflow_id=workflow.id,
@@ -583,6 +635,7 @@ def _build_prepared_step(
         step_instructions=first_step.instructions,
         model=employee.model,
         allowed_tool_names=tuple(employee.allowed_tools),
+        binding=binding,
     )
 
 
@@ -597,6 +650,21 @@ def _build_prepared_start(
         system_instructions=prepared_step.employee_instructions,
         task_instructions=prepared_step.step_instructions,
         allowed_tools=tuple(prepared_step.allowed_tool_names),
+        run_id=(
+            None
+            if prepared_step.binding is None
+            else prepared_step.binding.run_id
+        ),
+        manifest_digest=(
+            None
+            if prepared_step.binding is None
+            else prepared_step.binding.manifest_digest
+        ),
+        run_input=(
+            None
+            if prepared_step.binding is None
+            else prepared_step.binding.run_input
+        ),
     )
     running_state = WorkflowExecutionState(
         workflow_id=prepared_step.workflow_id,
@@ -606,6 +674,7 @@ def _build_prepared_start(
         current_employee_id=employee.id,
         completed_step_ids=(),
         last_failure_category=None,
+        binding=prepared_step.binding,
     )
     return PreparedStepExecutionStart(request, running_state)
 
@@ -624,7 +693,9 @@ def _valid_running_commit(
     try:
         state_bytes = state_path.read_bytes()
         event_bytes = events_path.read_bytes()
-        loaded = load_workflow_execution_state(state_path)
+        loaded = load_workflow_execution_state(
+            state_path, binding=binding_of(prepared_start.running_state)
+        )
     except Exception:
         return False
     if (
@@ -660,6 +731,8 @@ def _valid_runtime_result(
             step_id=running.current_step_id,
             step_index=running.current_step_index,
             employee_id=running.current_employee_id,
+            run_id=running.run_id,
+            manifest_digest=running.manifest_digest,
         )
     except Exception:
         valid = False
@@ -680,6 +753,12 @@ def _valid_phase172_result(
     if type(index) is not int or not 1 <= index <= len(workflow.steps):
         return False
     step = workflow.steps[index - 1]
+    try:
+        result_binding = binding_of(runtime_result)
+        if binding_of(value) != result_binding:
+            return False
+    except (TypeError, ValueError):
+        return False
     if not (
         _nonempty(value.workflow_id)
         and value.workflow_id == workflow.id
@@ -745,12 +824,15 @@ def _valid_phase172_persistence(
             return False
         if event_bytes.count(b"\n") != 1:
             return False
-        event = parse_runtime_step_event(json.loads(event_bytes.decode("utf-8")))
+        binding = binding_of(runtime_result)
+        event = parse_runtime_step_event(
+            json.loads(event_bytes.decode("utf-8")), binding=binding
+        )
         if type(event) is not RuntimeStepEvent:
             return False
         if serialize_runtime_step_event_jsonl(event).encode("utf-8") != event_bytes:
             return False
-        state = load_workflow_execution_state(state_path)
+        state = load_workflow_execution_state(state_path, binding=binding)
         if state_bytes != serialize_workflow_execution_state_json(state).encode(
             "utf-8"
         ):
@@ -774,6 +856,8 @@ def _valid_phase172_persistence(
         and type(event.step_index) is int
         and event.step_index == runtime_result.step_index
         and event.employee_id == step.employee
+        and binding_of(state) == binding
+        and binding_of(event) == binding
         and event.previous_status == "running"
         and event.provider == invocation.provider
         and event.request_id == invocation.request_id

@@ -9,7 +9,9 @@ from ai_office.runtime import (
     RuntimeStepEvent,
     WorkflowExecutionState,
     WorkflowExecutionTransition,
+    binding_of,
 )
+from ai_office.runtime.run_binding import WorkflowRunBinding
 
 _INPUT_ERROR_MESSAGE = "workflow execution persistence inputs are inconsistent"
 _PERSISTENCE_ERROR_MESSAGE = "workflow execution persistence failed"
@@ -18,10 +20,83 @@ _ROLLBACK_ERROR_MESSAGE = "workflow execution persistence rollback failed"
 
 @dataclass(frozen=True)
 class WorkflowExecutionPersistenceTargets:
-    """Explicit filesystem targets for a state snapshot and event log."""
+    """Explicit targets for one state/event pair.
+
+    ``binding`` is optional for the provider-free historical persistence
+    primitive.  Run-owned callers must supply it; when present it is an
+    expected value, not metadata inferred from the two paths.  This keeps the
+    durable Run contract direct while allowing the lower owner to retain its
+    existing generic transition tests.
+    """
 
     state_path: Path
     events_path: Path
+    binding: WorkflowRunBinding | None = None
+    namespace_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.state_path) is not type(Path()):
+            raise TypeError("state_path must be a Path")
+        if type(self.events_path) is not type(Path()):
+            raise TypeError("events_path must be a Path")
+        if self.binding is not None and type(self.binding) is not WorkflowRunBinding:
+            raise TypeError("execution target binding is invalid")
+        if self.namespace_root is not None and type(self.namespace_root) is not type(
+            Path()
+        ):
+            raise TypeError("namespace_root must be a Path")
+        # Run-owned filenames are an authoritative namespace even when a
+        # lower path-based owner is called without an explicit target object.
+        # Resolve the manifest from that namespace rather than allowing a
+        # caller to pair an identity-derived history with another manifest.
+        if self.binding is None and self.namespace_root is None:
+            state_suffix = ".state.json"
+            events_suffix = ".events.jsonl"
+            state_name = self.state_path.name
+            events_name = self.events_path.name
+            if state_name.endswith(state_suffix) and events_name.endswith(
+                events_suffix
+            ):
+                state_run_id = state_name[: -len(state_suffix)]
+                events_run_id = events_name[: -len(events_suffix)]
+                if not state_run_id or state_run_id != events_run_id:
+                    raise ValueError("execution targets are not Run identity-derived")
+                try:
+                    from ai_office.engine.workflow_run_manifest import (
+                        WorkflowRunManifestStore,
+                        load_workflow_run_manifest,
+                    )
+
+                    manifest = load_workflow_run_manifest(
+                        WorkflowRunManifestStore(self.state_path.parent), state_run_id
+                    )
+                    object.__setattr__(
+                        self,
+                        "binding",
+                        WorkflowRunBinding(
+                            manifest.run_id,
+                            manifest.digest,
+                            manifest.run_input,
+                        ),
+                    )
+                    object.__setattr__(
+                        self, "namespace_root", self.state_path.parent
+                    )
+                except Exception as error:
+                    raise ValueError(
+                        "identity-derived execution namespace is invalid"
+                    ) from error
+        if self.namespace_root is not None and self.binding is not None:
+            namespace_root = self.namespace_root
+        elif self.binding is not None:
+            namespace_root = self.state_path.parent
+        else:
+            namespace_root = None
+        if namespace_root is not None and self.binding is not None:
+            expected_state = namespace_root / f"{self.binding.run_id}.state.json"
+            expected_events = namespace_root / f"{self.binding.run_id}.events.jsonl"
+            if self.state_path != expected_state or self.events_path != expected_events:
+                raise ValueError("execution targets are not Run identity-derived")
 
 
 @dataclass(frozen=True)
@@ -72,7 +147,7 @@ def build_workflow_execution_state_dict(
     state: WorkflowExecutionState,
 ) -> dict[str, object]:
     """Build a JSON-compatible state dictionary in deterministic key order."""
-    return {
+    value: dict[str, object] = {
         "workflow_id": state.workflow_id,
         "status": state.status,
         "current_step_id": state.current_step_id,
@@ -81,6 +156,12 @@ def build_workflow_execution_state_dict(
         "completed_step_ids": list(state.completed_step_ids),
         "last_failure_category": state.last_failure_category,
     }
+    binding = binding_of(state)
+    if binding is not None:
+        value["run_id"] = binding.run_id
+        value["manifest_digest"] = binding.manifest_digest
+        value["run_input"] = binding.run_input
+    return value
 
 
 def serialize_workflow_execution_state_json(state: WorkflowExecutionState) -> str:
@@ -105,6 +186,11 @@ def build_runtime_step_event_dict(event: RuntimeStepEvent) -> dict[str, object]:
         "output_text": event.output_text,
         "message": event.message,
     }
+    binding = binding_of(event)
+    if binding is not None:
+        value["run_id"] = binding.run_id
+        value["manifest_digest"] = binding.manifest_digest
+        value["run_input"] = binding.run_input
     if event.response_diagnostics is not None:
         value["response_diagnostics"] = {
             "status_code": event.response_diagnostics.status_code,
@@ -200,7 +286,37 @@ def _validate_persistence_input(
         or (next_state.status == "succeeded" and event.event_type != "step_succeeded")
         or (next_state.status == "failed" and event.event_type != "step_failed")
     )
-    if paths_are_invalid or transition_is_invalid:
+    previous_binding = binding_of(previous_state)
+    next_binding = binding_of(next_state)
+    event_binding = binding_of(event)
+    binding_is_invalid = not (
+        (previous_binding is None and next_binding is None and event_binding is None)
+        or (
+            previous_binding is not None
+            and next_binding is not None
+            and event_binding is not None
+            and previous_binding.identity
+            == next_binding.identity
+            == event_binding.identity
+        )
+    )
+    if targets.binding is not None and (
+        next_binding is None or next_binding.identity != targets.binding.identity
+    ):
+        binding_is_invalid = True
+    if next_binding is not None:
+        expected_state = targets.state_path.parent / (
+            f"{next_binding.run_id}.state.json"
+        )
+        expected_events = targets.events_path.parent / (
+            f"{next_binding.run_id}.events.jsonl"
+        )
+        if (
+            targets.state_path != expected_state
+            or targets.events_path != expected_events
+        ):
+            binding_is_invalid = True
+    if paths_are_invalid or transition_is_invalid or binding_is_invalid:
         raise WorkflowExecutionPersistenceInputError(_INPUT_ERROR_MESSAGE) from None
 
 

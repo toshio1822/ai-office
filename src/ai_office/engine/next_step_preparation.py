@@ -8,6 +8,7 @@ from typing import Literal
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.runtime import WorkflowRunBinding, binding_of
 from ai_office.storage.workflow_execution_history import LoadedWorkflowExecutionHistory
 
 NextStepPreparationClassification = Literal[
@@ -49,6 +50,7 @@ class PreparedWorkflowStep:
     step_instructions: str
     model: str
     allowed_tool_names: tuple[str, ...]
+    binding: WorkflowRunBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,7 @@ def prepare_approved_next_workflow_step(
         step_instructions=next_step.instructions,
         model=employee.model,
         allowed_tool_names=tuple(employee.allowed_tools),
+        binding=binding_of(history.state),
     )
 
 

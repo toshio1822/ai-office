@@ -14,14 +14,26 @@ from typer.testing import CliRunner
 
 import ai_office.cli as cli_module
 from ai_office.cli import app
+from ai_office.definitions.employee import load_employees
+from ai_office.definitions.workflow import load_workflows
+from ai_office.engine import (
+    WorkflowRunManifestStore,
+    create_workflow_run_manifest,
+    load_workflow_run_manifest,
+)
 from ai_office.invocation import ModelInvocationRequest
 from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesRawHttpResponse,
 )
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    WorkflowExecutionState,
+    WorkflowRunBinding,
+)
 from ai_office.storage import (
     load_workflow_execution_state,
+    parse_runtime_step_event,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -130,36 +142,77 @@ def write_single_step_workflow(directory: Path) -> None:
 
 
 def workflow_command_paths(tmp_path: Path) -> dict[str, Path]:
-    """Create explicit definition and persistence paths for CLI tests."""
+    """Create one authoritative Run namespace for CLI tests."""
     workflows_directory = tmp_path / "workflows"
     employees_directory = tmp_path / "employees"
+    run_store = tmp_path / "runs"
     workflows_directory.mkdir()
     employees_directory.mkdir()
+    run_store.mkdir()
+    run_id = "run-1"
     return {
         "workflows": workflows_directory,
         "employees": employees_directory,
-        "state": tmp_path / "state.json",
-        "events": tmp_path / "events.jsonl",
+        "run_store": run_store,
+        "run_id": run_id,
+        "run_input": "Research the requested topic exactly as supplied.",
+        "state": run_store / f"{run_id}.state.json",
+        "events": run_store / f"{run_id}.events.jsonl",
     }
 
 
 def workflow_command_args(
     operation: str, workflow_id: str, paths: dict[str, Path]
 ) -> list[str]:
-    """Return the common explicit path arguments for a new workflow command."""
+    """Return Run-oriented arguments for one public workflow operation."""
+    if operation == "start":
+        return [
+            "workflows",
+            "start",
+            workflow_id,
+            "--run-id",
+            str(paths["run_id"]),
+            "--run-input",
+            str(paths["run_input"]),
+            "--run-store",
+            str(paths["run_store"]),
+            "--directory",
+            str(paths["workflows"]),
+            "--employees-directory",
+            str(paths["employees"]),
+        ]
     return [
         "workflows",
         operation,
-        workflow_id,
-        "--state-path",
-        str(paths["state"]),
-        "--events-path",
-        str(paths["events"]),
-        "--directory",
-        str(paths["workflows"]),
-        "--employees-directory",
-        str(paths["employees"]),
+        str(paths["run_id"]),
+        "--run-store",
+        str(paths["run_store"]),
     ]
+
+
+def ensure_run_manifest(
+    paths: dict[str, Path], workflow_id: str | None = None
+) -> WorkflowRunBinding:
+    """Create the fixture's immutable Manifest once and return its binding."""
+    store = WorkflowRunManifestStore(paths["run_store"])
+    manifest_path = store.manifest_path(str(paths["run_id"]))
+    if manifest_path.exists():
+        manifest = load_workflow_run_manifest(store, str(paths["run_id"]))
+    else:
+        workflows = load_workflows(paths["workflows"])
+        employees = load_employees(paths["employees"])
+        selected_id = workflow_id or workflows[0].definition.id
+        workflow = next(
+            item for item in workflows if item.definition.id == selected_id
+        )
+        manifest = create_workflow_run_manifest(
+            store,
+            str(paths["run_id"]),
+            str(paths["run_input"]),
+            workflow,
+            employees,
+        )
+    return WorkflowRunBinding(manifest.run_id, manifest.digest, manifest.run_input)
 
 
 def synthetic_transport(
@@ -275,6 +328,7 @@ def invoke_execution(
 
 def write_succeeded_prefix(paths: dict[str, Path], current: int) -> None:
     """Write a strict synthetic succeeded history through the requested step."""
+    binding = ensure_run_manifest(paths)
     step_ids = ("research", "summarize", "review")
     completed = step_ids[:current]
     state = WorkflowExecutionState(
@@ -285,6 +339,7 @@ def write_succeeded_prefix(paths: dict[str, Path], current: int) -> None:
         current_employee_id="general-researcher",
         completed_step_ids=completed,
         last_failure_category=None,
+        binding=binding,
     )
     events = "".join(
         serialize_runtime_step_event_jsonl(
@@ -302,6 +357,7 @@ def write_succeeded_prefix(paths: dict[str, Path], current: int) -> None:
                 request_id=f"synthetic-request-{index}",
                 output_text="synthetic output",
                 message=None,
+                binding=binding,
             )
         )
         for index in range(1, current + 1)
@@ -324,7 +380,7 @@ def replace_last_output(paths: dict[str, Path], output_text: str) -> None:
     paths["events"].write_text(
         "".join(
             serialize_runtime_step_event_jsonl(
-                RuntimeStepEvent(**record)  # type: ignore[arg-type]
+                parse_runtime_step_event(record)
             )
             for record in records
         ),
@@ -334,6 +390,7 @@ def replace_last_output(paths: dict[str, Path], output_text: str) -> None:
 
 def write_nonterminal_history(paths: dict[str, Path], status: str) -> None:
     """Write a ready/running history that Phase 37 must reject without replay."""
+    binding = ensure_run_manifest(paths)
     state = WorkflowExecutionState(
         workflow_id="research-and-summarize",
         status=status,  # type: ignore[arg-type]
@@ -342,6 +399,7 @@ def write_nonterminal_history(paths: dict[str, Path], status: str) -> None:
         current_employee_id="general-researcher",
         completed_step_ids=(),
         last_failure_category=None,
+        binding=binding,
     )
     paths["state"].write_text(
         serialize_workflow_execution_state_json(state),
@@ -352,6 +410,7 @@ def write_nonterminal_history(paths: dict[str, Path], status: str) -> None:
 
 def write_failed_history(paths: dict[str, Path]) -> None:
     """Write a strict synthetic failed terminal history for step one."""
+    binding = ensure_run_manifest(paths)
     state = WorkflowExecutionState(
         workflow_id="research-and-summarize",
         status="failed",
@@ -360,6 +419,7 @@ def write_failed_history(paths: dict[str, Path]) -> None:
         current_employee_id="general-researcher",
         completed_step_ids=(),
         last_failure_category="api_error",
+        binding=binding,
     )
     event = RuntimeStepEvent(
         event_type="step_failed",
@@ -375,6 +435,7 @@ def write_failed_history(paths: dict[str, Path]) -> None:
         request_id="synthetic-request",
         output_text=None,
         message="synthetic failure",
+        binding=binding,
     )
     paths["state"].write_text(
         serialize_workflow_execution_state_json(state),
@@ -403,6 +464,7 @@ def write_success_history(
         current = len(step_ids)
     assert 1 <= current <= len(step_ids)
     assert len(outputs) == current
+    binding = ensure_run_manifest(paths, workflow_id)
     state = WorkflowExecutionState(
         workflow_id=workflow_id,
         status="succeeded",
@@ -411,6 +473,7 @@ def write_success_history(
         current_employee_id=employee_id,
         completed_step_ids=step_ids[:current],
         last_failure_category=None,
+        binding=binding,
     )
     events = "".join(
         serialize_runtime_step_event_jsonl(
@@ -428,6 +491,7 @@ def write_success_history(
                 request_id=f"{request_prefix}-{index}",
                 output_text=outputs[index - 1],
                 message=None,
+                binding=binding,
             )
         )
         for index in range(1, current + 1)
@@ -441,6 +505,7 @@ def write_success_history(
 
 def write_running_history_with_previous_success(paths: dict[str, Path]) -> None:
     """Write running state with an older success event that must not be inferred."""
+    binding = ensure_run_manifest(paths)
     state = WorkflowExecutionState(
         workflow_id="research-and-summarize",
         status="running",
@@ -449,6 +514,7 @@ def write_running_history_with_previous_success(paths: dict[str, Path]) -> None:
         current_employee_id="general-researcher",
         completed_step_ids=(),
         last_failure_category=None,
+        binding=binding,
     )
     event = RuntimeStepEvent(
         event_type="step_succeeded",
@@ -464,6 +530,7 @@ def write_running_history_with_previous_success(paths: dict[str, Path]) -> None:
         request_id="synthetic-request-previous",
         output_text="OLD OUTPUT MUST NOT BE INFERRED",
         message=None,
+        binding=binding,
     )
     paths["state"].write_text(
         serialize_workflow_execution_state_json(state),
@@ -483,6 +550,7 @@ def write_failed_result_history(
     message: str = "synthetic failure",
 ) -> None:
     """Write a strict failure with configurable transport-only secret fields."""
+    binding = ensure_run_manifest(paths)
     state = WorkflowExecutionState(
         workflow_id="research-and-summarize",
         status="failed",
@@ -491,6 +559,7 @@ def write_failed_result_history(
         current_employee_id="general-researcher",
         completed_step_ids=(),
         last_failure_category="api_error",
+        binding=binding,
     )
     event = RuntimeStepEvent(
         event_type="step_failed",
@@ -506,6 +575,7 @@ def write_failed_result_history(
         request_id=request_id,
         output_text=None,
         message=message,
+        binding=binding,
     )
     paths["state"].write_text(
         serialize_workflow_execution_state_json(state),
@@ -2916,9 +2986,12 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
         "mode": "preview",
         "model": "codex",
         "operation": "start",
+        "run_id": "run-1",
+        "run_input": "Research the requested topic exactly as supplied.",
         "request_fingerprint": (
-            "20b0998ee0f703ad9e9986ad34ac3197bfd0114ef6e70fcfbd20a9dbf7395b80"
+            "672ae377d711984047f3201668467816ffed24d0e3b7550ec1079fb2ba81b271"
         ),
+        "manifest_digest": str(ensure_run_manifest(paths).manifest_digest),
         "resolved_tools": [],
         "status": "step_ready",
         "step_id": "research",
@@ -3072,7 +3145,7 @@ def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step_fa
     assert preview["step_index"] == 2
     assert preview["employee_id"] == "general-researcher"
     assert preview["request_fingerprint"] == (
-        "10b8d3b5465fcff2c83a5539dd7784f882a4b611a53d6bc834476eb01b7a91c4"
+        "2e682e66cd0d34e1cbac81e058f5cbb9dac15f53e36dae59fca8447109d3f7e2"
     )
     assert [fact["key"] for fact in preview["runtime_facts"]["facts"]] == [
         "predecessor.employee_id",
@@ -3134,7 +3207,7 @@ def test_workflows_continue_preview_event_source_change_changes_fingerprint(
     paths["events"].write_text(
         "".join(
             serialize_runtime_step_event_jsonl(
-                RuntimeStepEvent(**record)  # type: ignore[arg-type]
+                parse_runtime_step_event(record)
             )
             for record in records
         ),
@@ -3400,6 +3473,7 @@ def test_workflows_continue_preview_displays_exact_upstream_provenance_text_dige
     )
     task_input = json.dumps(
         {
+            "run_input": str(paths["run_input"]),
             "runtime_facts": preview["runtime_facts"],
             "task_instructions": "Summarize the information.",
             "upstream_inputs": [provenance],
@@ -3814,7 +3888,7 @@ def test_workflows_result_rejects_malformed_history_without_mutation(
     assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
 
 
-def test_workflows_result_rejects_mismatched_history_without_mutation(
+def test_workflows_result_prefers_pinned_manifest_meaning_over_live_definitions(
     tmp_path: Path,
 ) -> None:
     paths = workflow_command_paths(tmp_path)
@@ -3830,6 +3904,49 @@ def test_workflows_result_rejects_mismatched_history_without_mutation(
     before = paths["state"].read_bytes(), paths["events"].read_bytes()
 
     result = invoke_result("other-workflow", paths)
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout)["workflow_id"] == "research-and-summarize"
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
+
+
+def test_workflows_result_rejects_foreign_run_binding_without_mutation(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_success_history(
+        paths,
+        workflow_id="research-and-summarize",
+        step_ids=("research", "summarize"),
+        outputs=("FIRST", "SECOND"),
+    )
+    foreign_digest = "0" * 64
+    state_record = json.loads(paths["state"].read_text(encoding="utf-8"))
+    state_record["manifest_digest"] = foreign_digest
+    paths["state"].write_text(
+        json.dumps(state_record, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    event_records = [
+        json.loads(line)
+        for line in paths["events"].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    for record in event_records:
+        record["manifest_digest"] = foreign_digest
+    paths["events"].write_text(
+        "".join(
+            json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            for record in event_records
+        ),
+        encoding="utf-8",
+    )
+    before = paths["state"].read_bytes(), paths["events"].read_bytes()
+
+    result = invoke_result("research-and-summarize", paths)
 
     assert result.exit_code == 2
     assert result.stdout == ""
@@ -3916,11 +4033,14 @@ def test_workflows_result_never_exposes_provider_secrets_or_raw_payload(
         "current_step_id",
         "current_step_index",
         "failure_category",
+        "manifest_digest",
         "next_employee_id",
         "next_step_id",
         "next_step_index",
         "output",
         "reason",
+        "run_id",
+        "run_input",
         "status",
         "workflow_id",
     }

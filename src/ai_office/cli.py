@@ -25,15 +25,24 @@ from ai_office.engine import (
     PublicationRegenerationExportError,
     PublicationRegenerationExportReceipt,
     PublicationRegenerationExportReconciliation,
+    WorkflowRunManifestError,
+    WorkflowRunManifestPersistenceError,
+    WorkflowRunManifestStore,
     build_immediate_predecessor_upstream_inputs,
     build_persisted_continuation_runtime_facts,
+    build_workflow_run_manifest,
     export_publication_regeneration_output,
     load_publication_regeneration_export_reconciliation,
+    load_workflow_run_manifest,
+    loaded_employees_from_run_manifest,
+    loaded_workflow_from_run_manifest,
+    persist_workflow_run_manifest,
     project_publication_regeneration_output,
     publication_regeneration_export_reconciliation_digest,
     route_approved_fresh_workflow_bounded,
     route_persisted_execution_outcome_reentry,
     route_persisted_terminal_workflow_bounded,
+    tool_catalog_from_run_manifest,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
@@ -84,6 +93,7 @@ from ai_office.providers.openai import (
     serialize_openai_responses_payload_dict_pretty,
 )
 from ai_office.providers.openai.responses_dict_payload import JsonValue
+from ai_office.runtime import WorkflowRunBinding, binding_of
 from ai_office.storage import (
     WorkflowExecutionPersistenceTargets,
     load_workflow_execution_history,
@@ -91,6 +101,7 @@ from ai_office.storage import (
 )
 from ai_office.tools import (
     DEFAULT_TOOL_CATALOG,
+    ToolCatalog,
     ToolCatalogError,
     ToolDefinition,
     resolve_tool_names,
@@ -446,6 +457,8 @@ class _WorkflowStepPreview:
     resolved_tools: tuple[ToolDefinition, ...]
     request_fingerprint: str
     execution_target: ModelExecutionTarget
+    run_binding: WorkflowRunBinding | None = None
+    manifest_store: WorkflowRunManifestStore | None = None
 
 
 def _workflow_cli_error(message: str, *, code: int = 2) -> NoReturn:
@@ -469,6 +482,94 @@ def _load_workflow_command_inputs(
     return workflows, employees
 
 
+def _prepare_run_store(root: Path) -> WorkflowRunManifestStore:
+    """Create the one authoritative Run namespace before Run creation."""
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        return WorkflowRunManifestStore(root)
+    except (OSError, WorkflowRunManifestError):
+        _workflow_cli_error("Run storage namespace is invalid")
+
+
+def _load_run_store_or_exit(root: Path) -> WorkflowRunManifestStore:
+    """Open an existing authoritative Run namespace without creating it."""
+    try:
+        return WorkflowRunManifestStore(root)
+    except (OSError, WorkflowRunManifestError):
+        _workflow_cli_error("Run storage namespace is invalid or unavailable")
+
+
+def _load_run_manifest_or_exit(
+    store: WorkflowRunManifestStore, run_id: str
+) -> object:
+    """Load one exact immutable Manifest without consulting live definitions."""
+    try:
+        return load_workflow_run_manifest(store, run_id)
+    except (WorkflowRunManifestError, OSError):
+        _workflow_cli_error("Run Manifest is invalid or unavailable")
+
+
+def _run_binding_for_manifest(manifest: object) -> WorkflowRunBinding:
+    """Build the direct binding carried by every Run-owned execution value."""
+    try:
+        return WorkflowRunBinding(
+            manifest.run_id,
+            manifest.digest,
+            manifest.run_input,
+        )
+    except (AttributeError, TypeError, ValueError):
+        _workflow_cli_error("Run Manifest binding is invalid")
+
+
+def _pinned_run_inputs(
+    manifest: object,
+) -> tuple[list[object], list[object], object]:
+    """Reconstruct only the validated semantic models frozen by a Manifest."""
+    try:
+        workflow = loaded_workflow_from_run_manifest(manifest)
+        employees = loaded_employees_from_run_manifest(manifest)
+        catalog = tool_catalog_from_run_manifest(manifest)
+    except Exception:
+        _workflow_cli_error("Run Manifest semantic snapshot is invalid")
+    return [workflow], list(employees), catalog
+
+
+def _build_start_manifest_preview(
+    workflow_id: str,
+    run_id: str | None,
+    run_input: str | None,
+    workflows: list[object],
+    employees: list[object],
+) -> tuple[object, WorkflowRunBinding, object, list[object], object]:
+    """Freeze fresh Run meaning in memory before preview or durable creation."""
+    if run_id is None or run_input is None:
+        _workflow_cli_error("--run-id and --run-input are required")
+    try:
+        workflow = find_workflow_by_id(workflows, workflow_id)
+        manifest = build_workflow_run_manifest(
+            run_id,
+            run_input,
+            workflow,
+            employees,
+            tool_catalog=DEFAULT_TOOL_CATALOG,
+        )
+        binding = _run_binding_for_manifest(manifest)
+        pinned_workflows, pinned_employees, catalog = _pinned_run_inputs(manifest)
+        return manifest, binding, pinned_workflows, pinned_employees, catalog
+    except (WorkflowSelectionError, WorkflowRunManifestError):
+        _workflow_cli_error("fresh Run definition or input is invalid")
+
+
+def _persist_start_manifest_or_exit(
+    store: WorkflowRunManifestStore, manifest: object
+) -> None:
+    """Durably commit the exact preview meaning before credentials/provider work."""
+    try:
+        persist_workflow_run_manifest(store, manifest)
+    except (WorkflowRunManifestError, WorkflowRunManifestPersistenceError):
+        _workflow_cli_error("Run Manifest could not be committed")
+
+
 def _build_workflow_step_preview(
     workflows: list[object],
     employees: list[object],
@@ -477,12 +578,24 @@ def _build_workflow_step_preview(
     upstream_inputs: tuple[object, ...] = (),
     execution_target: ModelExecutionTarget | None = None,
     runtime_facts: RuntimeFactsSnapshot = EMPTY_RUNTIME_FACTS,
+    *,
+    run_binding: WorkflowRunBinding | None = None,
+    tool_catalog: ToolCatalog = DEFAULT_TOOL_CATALOG,
 ) -> tuple[object, _WorkflowStepPreview]:
     """Construct one exact step request through the existing public seams."""
     try:
         workflow = find_workflow_by_id(workflows, workflow_id)
         plan = build_execution_plan(workflow, employees)
-        step_request = build_step_execution_request(plan, step_index, employees)
+        step_request = build_step_execution_request(
+            plan,
+            step_index,
+            employees,
+            run_id=None if run_binding is None else run_binding.run_id,
+            manifest_digest=(
+                None if run_binding is None else run_binding.manifest_digest
+            ),
+            run_input=None if run_binding is None else run_binding.run_input,
+        )
         selected_employee = find_employee_by_id(employees, step_request.employee_id)
         invocation_request = build_model_invocation_request(
             step_request,
@@ -490,7 +603,7 @@ def _build_workflow_step_preview(
             runtime_facts=runtime_facts,
         )
         resolved_tools = resolve_tool_names(
-            DEFAULT_TOOL_CATALOG, invocation_request.allowed_tools
+            tool_catalog, invocation_request.allowed_tools
         )
         target = (
             execution_target
@@ -517,6 +630,7 @@ def _build_workflow_step_preview(
         resolved_tools=resolved_tools,
         request_fingerprint=fingerprint,
         execution_target=target,
+        run_binding=run_binding,
     )
 
 
@@ -614,6 +728,10 @@ def _step_preview_json(
             invocation.runtime_facts
         )
         value["runtime_facts"] = runtime_facts
+    if invocation.run_id is not None:
+        value["run_id"] = invocation.run_id
+        value["manifest_digest"] = invocation.manifest_digest
+        value["run_input"] = invocation.run_input
     return value
 
 
@@ -643,6 +761,16 @@ def _result_json(
     result: WorkflowProgressionDecision | PersistedExecutionOutcome,
 ) -> dict[str, object]:
     """Build safe result metadata without copying provider result contents."""
+    binding = binding_of(result)
+    binding_value = (
+        {}
+        if binding is None
+        else {
+            "manifest_digest": binding.manifest_digest,
+            "run_id": binding.run_id,
+            "run_input": binding.run_input,
+        }
+    )
     if type(result) is WorkflowProgressionDecision:
         return {
             "current_employee_id": result.current_employee_id,
@@ -657,6 +785,7 @@ def _result_json(
             "reason": result.reason,
             "status": result.decision,
             "workflow_id": result.workflow_id,
+            **binding_value,
         }
     if type(result) is PersistedExecutionOutcome:
         return {
@@ -672,6 +801,7 @@ def _result_json(
             "reason": None,
             "status": result.outcome,
             "workflow_id": result.workflow_id,
+            **binding_value,
         }
     _workflow_cli_error("workflow result is incompatible")
 
@@ -753,6 +883,8 @@ def _build_start_context(
     preview: _WorkflowStepPreview,
     approved_by: str,
     approval_id: str,
+    *,
+    manifest_store: WorkflowRunManifestStore,
 ) -> ApprovedWorkflowBootstrapContext:
     """Create the exact fresh-start context only after preview binding passes."""
     try:
@@ -782,6 +914,8 @@ def _build_start_context(
         execution_approval=execution_approval,
         transport=send_openai_responses_http_request,
         execution_target=preview.execution_target,
+        binding=preview.run_binding,
+        manifest_store=manifest_store,
     )
 
 
@@ -847,6 +981,8 @@ def _read_persisted_continue_route(
     workflow: object,
     state_path: Path,
     events_path: Path,
+    *,
+    expected_binding: WorkflowRunBinding | None = None,
 ) -> PersistedExecutionOutcome | WorkflowProgressionDecision:
     """Run the canonical read-only persisted-target classification and route."""
     try:
@@ -861,6 +997,11 @@ def _read_persisted_continue_route(
         )
     if type(routed) not in (PersistedExecutionOutcome, WorkflowProgressionDecision):
         _workflow_cli_error("persisted workflow route is incompatible")
+    try:
+        if expected_binding is not None and binding_of(routed) != expected_binding:
+            _workflow_cli_error("persisted workflow Run binding is inconsistent")
+    except (TypeError, ValueError):
+        _workflow_cli_error("persisted workflow Run binding is invalid")
     return routed
 
 
@@ -876,12 +1017,29 @@ def _persisted_result_json(
     except (AttributeError, IndexError, TypeError):
         _workflow_cli_error("persisted workflow result is inconsistent")
 
+    try:
+        state_binding = binding_of(state)
+        event_binding = binding_of(latest)
+        routed_binding = binding_of(routed)
+    except (TypeError, ValueError):
+        _workflow_cli_error("persisted workflow result binding is invalid")
+    if not (
+        state_binding is not None
+        and state_binding == event_binding == routed_binding
+    ):
+        _workflow_cli_error("persisted workflow result binding is inconsistent")
+
     state_identity = (
         state.workflow_id,
         state.current_step_id,
         state.current_step_index,
         state.current_employee_id,
     )
+    binding_value = {
+        "manifest_digest": state_binding.manifest_digest,
+        "run_id": state_binding.run_id,
+        "run_input": state_binding.run_input,
+    }
     routed_identity = (
         routed.workflow_id,
         routed.current_step_id,
@@ -944,6 +1102,7 @@ def _persisted_result_json(
             "reason": routed.reason,
             "status": routed.decision,
             "workflow_id": routed.workflow_id,
+            **binding_value,
         }
 
     if type(routed) is not PersistedExecutionOutcome:
@@ -967,6 +1126,7 @@ def _persisted_result_json(
         "reason": None,
         "status": routed.outcome,
         "workflow_id": routed.workflow_id,
+        **binding_value,
     }
 
 
@@ -991,8 +1151,9 @@ def _run_persisted_workflow(
 @workflows_app.command("start")
 def start_workflow(
     workflow_id: str,
-    state_path: Path = typer.Option(..., "--state-path"),
-    events_path: Path = typer.Option(..., "--events-path"),
+    run_id: str = typer.Option(..., "--run-id"),
+    run_input: str = typer.Option(..., "--run-input"),
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
     directory: Path = typer.Option(Path("workflows"), "--directory"),
     employees_directory: Path = typer.Option(
         Path("employees"), "--employees-directory"
@@ -1038,8 +1199,23 @@ def start_workflow(
     workflows, employees = _load_workflow_command_inputs(
         directory, employees_directory
     )
+    manifest, binding, pinned_workflows, pinned_employees, tool_catalog = (
+        _build_start_manifest_preview(
+            workflow_id,
+            run_id,
+            run_input,
+            workflows,
+            employees,
+        )
+    )
     workflow, preview = _build_workflow_step_preview(
-        workflows, employees, workflow_id, 1, execution_target=target
+        pinned_workflows,
+        pinned_employees,
+        workflow_id,
+        1,
+        execution_target=target,
+        run_binding=binding,
+        tool_catalog=tool_catalog,
     )
     if preview_only:
         _emit_json(_step_preview_json("start", preview))
@@ -1053,8 +1229,21 @@ def start_workflow(
         expected_request_fingerprint,
     ):
         _workflow_cli_error("expected preview does not match current step")
-    context = _build_start_context(preview, approved_by, approval_id)
-    result = _run_fresh_workflow(workflow.definition, state_path, events_path, context)
+    store = _prepare_run_store(run_store)
+    _persist_start_manifest_or_exit(store, manifest)
+    state_path, events_path = store.execution_paths(binding.run_id)
+    context = _build_start_context(
+        preview,
+        approved_by,
+        approval_id,
+        manifest_store=store,
+    )
+    result = _run_fresh_workflow(
+        workflow.definition,
+        state_path,
+        events_path,
+        context,
+    )
     _emit_json(_result_json("start", "execute", result))
     if type(result) is PersistedExecutionOutcome:
         raise typer.Exit(code=1)
@@ -1062,13 +1251,8 @@ def start_workflow(
 
 @workflows_app.command("continue")
 def continue_workflow(
-    workflow_id: str,
-    state_path: Path = typer.Option(..., "--state-path"),
-    events_path: Path = typer.Option(..., "--events-path"),
-    directory: Path = typer.Option(Path("workflows"), "--directory"),
-    employees_directory: Path = typer.Option(
-        Path("employees"), "--employees-directory"
-    ),
+    run_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
     preview_only: bool = typer.Option(False, "--preview-only"),
     execution_target: str = typer.Option("openai", "--execution-target"),
     approve_preparation: bool = typer.Option(False, "--approve-preparation"),
@@ -1096,12 +1280,17 @@ def continue_workflow(
     ):
         _workflow_cli_error("preview-only cannot include execution options")
 
-    workflows, employees = _load_workflow_command_inputs(
-        directory, employees_directory
-    )
-    workflow = _select_workflow_or_exit(workflows, workflow_id)
+    store = _load_run_store_or_exit(run_store)
+    manifest = _load_run_manifest_or_exit(store, run_id)
+    binding = _run_binding_for_manifest(manifest)
+    pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
+    workflow = _select_workflow_or_exit(pinned_workflows, manifest.workflow_id)
+    state_path, events_path = store.execution_paths(binding.run_id)
     routed = _read_persisted_continue_route(
-        workflow.definition, state_path, events_path
+        workflow.definition,
+        state_path,
+        events_path,
+        expected_binding=binding,
     )
 
     if type(routed) is PersistedExecutionOutcome:
@@ -1127,16 +1316,21 @@ def continue_workflow(
     try:
         history, state_source_sha256, _events_source_sha256 = (
             load_workflow_execution_history_with_source_digests(
-                WorkflowExecutionPersistenceTargets(state_path, events_path)
+                WorkflowExecutionPersistenceTargets(
+                    state_path,
+                    events_path,
+                    binding=binding,
+                    namespace_root=store.root,
+                )
             )
         )
         upstream_inputs = build_immediate_predecessor_upstream_inputs(
-            workflow_id,
+            manifest.workflow_id,
             routed.next_step_index,
             history,
         )
         runtime_facts = build_persisted_continuation_runtime_facts(
-            workflow_id,
+            manifest.workflow_id,
             routed.next_step_index,
             history,
             state_source_sha256=state_source_sha256,
@@ -1144,13 +1338,15 @@ def continue_workflow(
     except Exception:
         _workflow_cli_error("persisted workflow handoff is invalid")
     workflow, preview = _build_workflow_step_preview(
-        workflows,
-        employees,
-        workflow_id,
+        pinned_workflows,
+        pinned_employees,
+        manifest.workflow_id,
         routed.next_step_index,
         upstream_inputs,
         execution_target=target,
         runtime_facts=runtime_facts,
+        run_binding=binding,
+        tool_catalog=tool_catalog,
     )
     if preview_only:
         _emit_json(_step_preview_json("continue", preview))
@@ -1188,27 +1384,29 @@ def continue_workflow(
 
 @workflows_app.command("result")
 def result_workflow(
-    workflow_id: str,
-    state_path: Path = typer.Option(..., "--state-path"),
-    events_path: Path = typer.Option(..., "--events-path"),
-    directory: Path = typer.Option(Path("workflows"), "--directory"),
-    employees_directory: Path = typer.Option(
-        Path("employees"), "--employees-directory"
-    ),
+    run_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
 ) -> None:
     """Read one exact persisted workflow business result without executing."""
-    workflows, _employees = _load_workflow_command_inputs(
-        directory, employees_directory
-    )
-    workflow = _select_workflow_or_exit(workflows, workflow_id)
+    store = _load_run_store_or_exit(run_store)
+    manifest = _load_run_manifest_or_exit(store, run_id)
+    binding = _run_binding_for_manifest(manifest)
+    pinned_workflows, _pinned_employees, _tool_catalog = _pinned_run_inputs(manifest)
+    workflow = _select_workflow_or_exit(pinned_workflows, manifest.workflow_id)
+    state_path, events_path = store.execution_paths(binding.run_id)
     routed = _read_persisted_continue_route(
-        workflow.definition, state_path, events_path
+        workflow.definition,
+        state_path,
+        events_path,
+        expected_binding=binding,
     )
     try:
         history = load_workflow_execution_history(
             WorkflowExecutionPersistenceTargets(
                 state_path=state_path,
                 events_path=events_path,
+                binding=binding,
+                namespace_root=store.root,
             )
         )
     except Exception:

@@ -444,24 +444,37 @@ allowed_tools: []
     return {
         "workflows": workflows,
         "employees": employees,
-        "state": tmp_path / "state.json",
-        "events": tmp_path / "events.jsonl",
+        "run_store": tmp_path / "runs",
+        "run_id": "run-1",
+        "run_input": "Execute the target workflow exactly as supplied.",
+        "state": tmp_path / "runs" / "run-1.state.json",
+        "events": tmp_path / "runs" / "run-1.events.jsonl",
     }
 
 
 def _cli_args(operation: str, paths: dict[str, Path]) -> list[str]:
+    if operation == "start":
+        return [
+            "workflows",
+            "start",
+            "target-workflow",
+            "--run-id",
+            str(paths["run_id"]),
+            "--run-input",
+            str(paths["run_input"]),
+            "--run-store",
+            str(paths["run_store"]),
+            "--directory",
+            str(paths["workflows"]),
+            "--employees-directory",
+            str(paths["employees"]),
+        ]
     return [
         "workflows",
         operation,
-        "target-workflow",
-        "--state-path",
-        str(paths["state"]),
-        "--events-path",
-        str(paths["events"]),
-        "--directory",
-        str(paths["workflows"]),
-        "--employees-directory",
-        str(paths["employees"]),
+        str(paths["run_id"]),
+        "--run-store",
+        str(paths["run_store"]),
     ]
 
 

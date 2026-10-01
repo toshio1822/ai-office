@@ -89,8 +89,12 @@ def build_model_invocation_execution_fingerprint(
         ],
     }
     has_runtime_facts = request.runtime_facts != EMPTY_RUNTIME_FACTS
-    if request.upstream_inputs != () or has_runtime_facts:
+    has_run_input = request.run_input is not None
+    if request.upstream_inputs != () or has_runtime_facts or has_run_input:
         value["task_input"] = build_model_invocation_task_input(request)
+    if request.run_id is not None:
+        value["run_id"] = request.run_id
+        value["manifest_digest"] = request.manifest_digest
     if request.upstream_inputs != ():
         value["upstream_inputs"] = [
             {

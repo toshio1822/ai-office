@@ -211,6 +211,44 @@ class WorkflowRunManifestStore:
     def __post_init__(self) -> None:
         _validate_storage_root(self.root)
 
+    def manifest_path(self, run_id: str) -> Path:
+        """Return the identity-derived Manifest target for one Run."""
+        return _manifest_path(self, run_id)
+
+    def state_path(self, run_id: str) -> Path:
+        """Return the identity-derived execution-state target for one Run."""
+        _validate_run_identity(run_id)
+        return self.root / f"{run_id}.state.json"
+
+    def events_path(self, run_id: str) -> Path:
+        """Return the identity-derived runtime-event target for one Run."""
+        _validate_run_identity(run_id)
+        return self.root / f"{run_id}.events.jsonl"
+
+    def execution_paths(self, run_id: str) -> tuple[Path, Path]:
+        """Return the only state/event pair belonging to one Run identity."""
+        return self.state_path(run_id), self.events_path(run_id)
+
+    def execution_targets(self, run_id: str):
+        """Return persistence targets derived from the authoritative Run root."""
+        from ai_office.runtime.run_binding import WorkflowRunBinding
+        from ai_office.storage.workflow_execution_persistence import (
+            WorkflowExecutionPersistenceTargets,
+        )
+
+        manifest = load_workflow_run_manifest(self, run_id)
+        state_path, events_path = self.execution_paths(run_id)
+        return WorkflowExecutionPersistenceTargets(
+            state_path,
+            events_path,
+            binding=WorkflowRunBinding(
+                run_id=manifest.run_id,
+                manifest_digest=manifest.digest,
+                run_input=manifest.run_input,
+            ),
+            namespace_root=self.root,
+        )
+
 
 def build_workflow_run_manifest(
     run_id: str,
@@ -403,6 +441,94 @@ def load_workflow_run_manifest(
     _validate_run_identity(run_id)
     return _load_workflow_run_manifest_at_path(
         _manifest_path(store, run_id), expected_run_id=run_id
+    )
+
+
+def workflow_definition_from_run_manifest(
+    manifest: WorkflowRunManifest,
+) -> WorkflowDefinition:
+    """Reconstruct the pinned workflow meaning without reading live YAML."""
+    _validate_manifest(manifest)
+    snapshot = manifest.workflow_snapshot
+    return WorkflowDefinition.model_validate(
+        {
+            "id": snapshot.id,
+            "name": snapshot.name,
+            "description": snapshot.description,
+            "steps": [
+                {
+                    "id": step.id,
+                    "name": step.name,
+                    "employee": step.employee,
+                    "instructions": step.instructions,
+                }
+                for step in snapshot.steps
+            ],
+        }
+    )
+
+
+def employee_definitions_from_run_manifest(
+    manifest: WorkflowRunManifest,
+) -> tuple[EmployeeDefinition, ...]:
+    """Reconstruct exactly the employee meanings pinned by one Manifest."""
+    _validate_manifest(manifest)
+    return tuple(
+        EmployeeDefinition.model_validate(
+            {
+                "id": employee.id,
+                "name": employee.name,
+                "role": employee.role,
+                "instructions": employee.instructions,
+                "model": employee.model,
+                "allowed_tools": list(employee.allowed_tools),
+            }
+        )
+        for employee in manifest.employee_snapshots
+    )
+
+
+def loaded_employees_from_run_manifest(
+    manifest: WorkflowRunManifest,
+) -> tuple[LoadedEmployee, ...]:
+    """Provide detached employee wrappers for existing planning seams."""
+    definitions = employee_definitions_from_run_manifest(manifest)
+    source = Path(f"<workflow-run:{manifest.run_id}>")
+    return tuple(
+        LoadedEmployee(source_path=source, definition=item) for item in definitions
+    )
+
+
+def loaded_workflow_from_run_manifest(
+    manifest: WorkflowRunManifest,
+) -> LoadedWorkflow:
+    """Provide a detached workflow wrapper for existing planning seams."""
+    return LoadedWorkflow(
+        source_path=Path(f"<workflow-run:{manifest.run_id}>"),
+        definition=workflow_definition_from_run_manifest(manifest),
+    )
+
+
+def tool_catalog_from_run_manifest(manifest: WorkflowRunManifest) -> ToolCatalog:
+    """Reconstruct the provider-independent tool contracts pinned by a Run."""
+    _validate_manifest(manifest)
+    return ToolCatalog(
+        tools=tuple(
+            ToolDefinition(
+                name=tool.name,
+                description=tool.description,
+                parameters=tuple(
+                    ToolParameterDefinition(
+                        name=parameter.name,
+                        description=parameter.description,
+                        type=parameter.type,
+                        required=parameter.required,
+                    )
+                    for parameter in tool.parameters
+                ),
+            )
+            for tool in manifest.tool_contracts
+        )
     )
 
 
@@ -1020,9 +1146,14 @@ __all__ = [
     "WorkflowStepSnapshot",
     "build_workflow_run_manifest",
     "create_workflow_run_manifest",
+    "employee_definitions_from_run_manifest",
+    "loaded_employees_from_run_manifest",
+    "loaded_workflow_from_run_manifest",
     "load_workflow_run_manifest",
     "persist_workflow_run_manifest",
     "serialize_workflow_run_manifest_canonical",
+    "tool_catalog_from_run_manifest",
+    "workflow_definition_from_run_manifest",
     "workflow_run_manifest_canonical_bytes",
     "workflow_run_manifest_digest",
 ]

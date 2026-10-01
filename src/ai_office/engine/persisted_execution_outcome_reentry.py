@@ -6,7 +6,12 @@ from typing import Literal
 
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.invocation import ModelInvocationFailureCategory
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    WorkflowExecutionState,
+    bind_run_value,
+    binding_of,
+)
 from ai_office.storage.workflow_execution_history import (
     LoadedWorkflowExecutionHistory,
     WorkflowExecutionLoadError,
@@ -43,6 +48,57 @@ class PersistedExecutionOutcome:
     current_step_index: int
     current_employee_id: str
     failure_category: ModelInvocationFailureCategory | None
+
+    def __eq__(self, other: object) -> bool:
+        """Compare the outcome together with its direct Run binding."""
+        if type(other) is not PersistedExecutionOutcome:
+            return NotImplemented
+        assert isinstance(other, PersistedExecutionOutcome)
+        return (
+            self.outcome,
+            self.workflow_id,
+            self.current_step_id,
+            self.current_step_index,
+            self.current_employee_id,
+            self.failure_category,
+            binding_of(self),
+        ) == (
+            other.outcome,
+            other.workflow_id,
+            other.current_step_id,
+            other.current_step_index,
+            other.current_employee_id,
+            other.failure_category,
+            binding_of(other),
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.outcome,
+                self.workflow_id,
+                self.current_step_id,
+                self.current_step_index,
+                self.current_employee_id,
+                self.failure_category,
+                binding_of(self),
+            )
+        )
+
+    @property
+    def run_id(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.run_id
+
+    @property
+    def manifest_digest(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.manifest_digest
+
+    @property
+    def run_input(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.run_input
 
 
 @dataclass(frozen=True)
@@ -297,7 +353,7 @@ def _validate_event_history(
 
 
 def _build_result(state: WorkflowExecutionState) -> PersistedExecutionOutcome:
-    return PersistedExecutionOutcome(
+    result = PersistedExecutionOutcome(
         outcome=(
             "persisted_success" if state.status == "succeeded" else "persisted_failure"
         ),
@@ -307,6 +363,10 @@ def _build_result(state: WorkflowExecutionState) -> PersistedExecutionOutcome:
         current_employee_id=state.current_employee_id,
         failure_category=state.last_failure_category,
     )
+    binding = binding_of(state)
+    if binding is not None:
+        bind_run_value(result, binding)
+    return result
 
 
 def _validate_result_contract(result: object, state: WorkflowExecutionState) -> None:
@@ -324,6 +384,7 @@ def _validate_result_contract(result: object, state: WorkflowExecutionState) -> 
         and (
             (result.outcome == "persisted_success") == (result.failure_category is None)
         )
+        and binding_of(result) == binding_of(state)
     )
     if not valid:
         _raise("classification_contract")
