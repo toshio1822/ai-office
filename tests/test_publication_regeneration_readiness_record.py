@@ -161,28 +161,28 @@ def test_record_canonical_fixture_is_exact_and_digest_pinned(tmp_path: Path) -> 
         '"claim_contract_sha256":null,"evaluated_claim_contract":null,"outcome":"success",'
         '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
         '"regeneration_id":"regen-20260912-01",'
-        '"result_record_sha256":"ded25e22fb8c1fac42db443c4e5a60682b10b9697ddb749bebacecd708624eda",'
+        '"result_record_sha256":"6d2f19676b7b574d9630af949fe5384a5d3386ee9f5935247c071c10679926e3",'
         '"schema_version":"publication-regeneration-readiness.v1",'
-        '"source_audit_sha256":"34d656c42f0b15d74b8d92babe0d361fa0a1c0a69a221b68e985ba87cfe68926",'
+        '"source_audit_sha256":"8f8409ef4715d67fb3dab6e5988ae375948533ced378a721a02d8e22c2eb1491",'
         '"source_post_terminal_facts":{"completed_step_ids":["research","publish"],'
-        '"events_sha256":"1232505d7388720951336b434fe00df5474cefd0d659a99283c52a72d29ad6c8",'
+        '"events_sha256":"a9f9d7b2078baccd1726f9230d150c32501d8321c87dd60535470eedd9a99eb7",'
         '"final_output_sha256":"f5a064be281eea4db190ed7268f4a1e005ca05227654bbfa260a6c5684da743e",'
         '"schema_version":"post-terminal-facts.v1",'
-        '"state_sha256":"6e4acd32f41a8dc7c8d1e1a49b1ee6dde461786ac454cecf10f14f9af650c022",'
+        '"state_sha256":"328ffc7442f48340241cf40f0b5b4e2ad2fcd18fb819461f6ea7b6cea2b301af",'
         '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
         '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
         '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase268-workflow"},'
-        '"source_post_terminal_facts_sha256":"c3e68c8c60eee1b1e7a41a7df2dc338a3e0d7eca6838916a68396ff511aec6dd"},'
-        '"assessment_sha256":"b2cbe77da22a1d2dda2555b5262ab76b9bc5548ee8786c2e620c7073e0372798",'
+        '"source_post_terminal_facts_sha256":"20ebdefae796866e982688f98706115f58414c9307b445c4ffad9b616b3fd561"},'
+        '"assessment_sha256":"ecf250fa7bbd5d943967ecb3f80b819e3790caad7350a33378db3eb5559d06e7",'
         '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
         '"regeneration_id":"regen-20260912-01",'
-        '"result_record_sha256":"ded25e22fb8c1fac42db443c4e5a60682b10b9697ddb749bebacecd708624eda",'
+        '"result_record_sha256":"6d2f19676b7b574d9630af949fe5384a5d3386ee9f5935247c071c10679926e3",'
         '"schema_version":"publication-regeneration-readiness-record.v1",'
-        '"source_audit_sha256":"34d656c42f0b15d74b8d92babe0d361fa0a1c0a69a221b68e985ba87cfe68926"}'
+        '"source_audit_sha256":"8f8409ef4715d67fb3dab6e5988ae375948533ced378a721a02d8e22c2eb1491"}'
     )
     assert canonical == expected
     assert publication_regeneration_readiness_record_digest(record) == (
-        "9d6bd1ac15d5a6e34fd062d6d103610398f21f63d43c025a992619979436dff7"
+        "52e8cbfef26f719c9e5b5b5ab5468400184bdfc948460c03922de3eafff7d84c"
     )
     assert hashlib.sha256(canonical.encode("utf-8")).hexdigest() == record.digest
 
@@ -575,7 +575,9 @@ def test_loader_does_not_repair_or_delete_corrupt_sidecar(tmp_path: Path) -> Non
     assert path.read_bytes() == corrupt
 
 
-def test_public_phase268_assessment_digest_remains_unchanged(tmp_path: Path) -> None:
+def test_public_phase268_assessment_digest_remains_pinned_for_current_state_schema(
+    tmp_path: Path,
+) -> None:
     _, assessment = assessment_for_state(
         tmp_path / "phase268-compat", "insufficient_evidence"
     )
@@ -583,7 +585,7 @@ def test_public_phase268_assessment_digest_remains_unchanged(tmp_path: Path) -> 
         assessment
     ).startswith('{"business_output_sha256":')
     assert assessment.digest == (
-        "b2cbe77da22a1d2dda2555b5262ab76b9bc5548ee8786c2e620c7073e0372798"
+        "ecf250fa7bbd5d943967ecb3f80b819e3790caad7350a33378db3eb5559d06e7"
     )
 
 

@@ -42,12 +42,18 @@ from ai_office.invocation import (
 )
 from ai_office.planning.step_execution_request import StepExecutionRequest
 from ai_office.providers.openai import OpenAIApiKey
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    WorkflowExecutionState,
+    WorkflowRunBinding,
+)
 from ai_office.storage import (
     LoadedWorkflowExecutionHistory,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
+from tests._run_test_support import TestRun as RunFixture
+from tests._run_test_support import create_test_run
 
 
 def _step_request() -> StepExecutionRequest:
@@ -67,7 +73,11 @@ def _step_request() -> StepExecutionRequest:
     )
 
 
-def _history(output_text: str = "predecessor output") -> LoadedWorkflowExecutionHistory:
+def _history(
+    output_text: str = "predecessor output",
+    *,
+    binding: WorkflowRunBinding | None = None,
+) -> LoadedWorkflowExecutionHistory:
     return LoadedWorkflowExecutionHistory(
         state=WorkflowExecutionState(
             workflow_id="workflow",
@@ -77,6 +87,7 @@ def _history(output_text: str = "predecessor output") -> LoadedWorkflowExecution
             current_employee_id="employee-1",
             completed_step_ids=("step-1",),
             last_failure_category=None,
+            binding=binding,
         ),
         events=(
             RuntimeStepEvent(
@@ -93,6 +104,7 @@ def _history(output_text: str = "predecessor output") -> LoadedWorkflowExecution
                 request_id="request-1",
                 output_text=output_text,
                 message=None,
+                binding=binding,
             ),
         ),
     )
@@ -133,6 +145,20 @@ def _employee() -> EmployeeDefinition:
     )
 
 
+def _run_employees() -> tuple[EmployeeDefinition, ...]:
+    return (
+        EmployeeDefinition(
+            id="employee-1",
+            name="Employee 1",
+            role="worker",
+            instructions="employee-1 instructions",
+            model="model",
+            allowed_tools=[],
+        ),
+        _employee(),
+    )
+
+
 def _prepared_next() -> PreparedWorkflowStep:
     return PreparedWorkflowStep(
         workflow_id="workflow",
@@ -146,7 +172,9 @@ def _prepared_next() -> PreparedWorkflowStep:
     )
 
 
-def _phase190_decision() -> WorkflowProgressionDecision:
+def _phase190_decision(
+    *, binding: WorkflowRunBinding | None = None
+) -> WorkflowProgressionDecision:
     return WorkflowProgressionDecision(
         decision="prepare_next_step",
         workflow_id="workflow",
@@ -157,13 +185,16 @@ def _phase190_decision() -> WorkflowProgressionDecision:
         next_step_index=2,
         next_employee_id="employee-2",
         reason="next_step_available",
+        binding=binding,
     )
 
 
 def _phase190_start(
     upstream: tuple[UpstreamStepOutput, ...],
+    *,
+    binding: WorkflowRunBinding | None = None,
 ) -> PreparedStepExecutionStart:
-    history = _history("authoritative")
+    history = _history("authoritative", binding=binding)
     facts = build_persisted_continuation_runtime_facts(
         "workflow",
         2,
@@ -180,6 +211,9 @@ def _phase190_start(
             allowed_tools=(),
             upstream_inputs=upstream,
             runtime_facts=facts,
+            run_id=None if binding is None else binding.run_id,
+            manifest_digest=(None if binding is None else binding.manifest_digest),
+            run_input=None if binding is None else f"input-{binding.run_id}",
         ),
         running_state=WorkflowExecutionState(
             workflow_id="workflow",
@@ -189,16 +223,20 @@ def _phase190_start(
             current_employee_id="employee-2",
             completed_step_ids=("step-1",),
             last_failure_category=None,
+            binding=binding,
         ),
     )
 
 
 def _write_history(
-    tmp_path: Path, output_text: str = "authoritative"
+    tmp_path: Path,
+    output_text: str = "authoritative",
+    *,
+    run: RunFixture | None = None,
 ) -> tuple[Path, Path]:
-    state_path = tmp_path / "state.json"
-    events_path = tmp_path / "events.jsonl"
-    history = _history(output_text)
+    state_path = tmp_path / "state.json" if run is None else run.state_path
+    events_path = tmp_path / "events.jsonl" if run is None else run.events_path
+    history = _history(output_text, binding=None if run is None else run.binding)
     state_path.write_bytes(
         serialize_workflow_execution_state_json(history.state).encode("utf-8")
     )
@@ -215,6 +253,8 @@ def _phase190_common(
     execution_approval: object,
     phase147_calls: list[object],
     transport_calls: list[object],
+    *,
+    binding: WorkflowRunBinding | None = None,
 ) -> None:
     workflow = _workflow()
     employee = _employee()
@@ -235,7 +275,7 @@ def _phase190_common(
         return object()
 
     route_approved_workflow_continuation_cycle(
-        _phase190_decision(),
+        _phase190_decision(binding=binding),
         workflow,
         preparation_approval,
         employee,
@@ -474,12 +514,13 @@ def test_14_prepared_step_start_reconstructs_exact_predecessor_output() -> None:
 def test_phase190_rejects_stale_approval_before_running_or_provider(
     tmp_path: Path,
 ) -> None:
-    state_path, events_path = _write_history(tmp_path)
+    run = create_test_run(tmp_path, "run-upstream", _workflow(), _run_employees())
+    state_path, events_path = _write_history(tmp_path, run=run)
     before = state_path.read_bytes(), events_path.read_bytes()
     authoritative = (
         UpstreamStepOutput("workflow", "step-1", 1, "employee-1", "authoritative"),
     )
-    start = _phase190_start(authoritative)
+    start = _phase190_start(authoritative, binding=run.binding)
     approval = approve_model_invocation_execution(
         start.request, (), provider="openai", approved_by="reviewer", approval_id="id"
     )
@@ -510,6 +551,7 @@ def test_phase190_rejects_stale_approval_before_running_or_provider(
                 invalid,
                 phase147_calls,
                 transport_calls,
+                binding=run.binding,
             )
 
         assert caught.value.detail.classification == "approval_contract"

@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ai_office.definitions.workflow import WorkflowDefinition
-from ai_office.runtime import WorkflowExecutionState
+from ai_office.runtime import (
+    WorkflowExecutionState,
+    WorkflowRunBinding,
+    binding_of,
+    select_run_binding,
+)
 from ai_office.storage.workflow_execution_history import LoadedWorkflowExecutionHistory
 
 WorkflowProgressionDecisionType = Literal[
@@ -27,7 +32,7 @@ WorkflowProgressionCompatibilityClassification = Literal[
 _COMPATIBILITY_ERROR_MESSAGE = "workflow progression inputs are incompatible"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class WorkflowProgressionDecision:
     """An explicit, immutable decision about one loaded workflow state."""
 
@@ -40,6 +45,88 @@ class WorkflowProgressionDecision:
     next_step_index: int | None
     next_employee_id: str | None
     reason: str
+
+    def __init__(
+        self,
+        decision: WorkflowProgressionDecisionType,
+        workflow_id: str,
+        current_step_id: str,
+        current_step_index: int,
+        current_employee_id: str,
+        next_step_id: str | None,
+        next_step_index: int | None,
+        next_employee_id: str | None,
+        reason: str,
+        *,
+        binding: WorkflowRunBinding | None = None,
+    ) -> None:
+        object.__setattr__(self, "decision", decision)
+        object.__setattr__(self, "workflow_id", workflow_id)
+        object.__setattr__(self, "current_step_id", current_step_id)
+        object.__setattr__(self, "current_step_index", current_step_index)
+        object.__setattr__(self, "current_employee_id", current_employee_id)
+        object.__setattr__(self, "next_step_id", next_step_id)
+        object.__setattr__(self, "next_step_index", next_step_index)
+        object.__setattr__(self, "next_employee_id", next_employee_id)
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(
+            self, "_run_binding", select_run_binding(binding, None, None)
+        )
+
+    def __eq__(self, other: object) -> bool:
+        """Compare the decision together with its direct Run binding."""
+        if type(other) is not WorkflowProgressionDecision:
+            return NotImplemented
+        assert isinstance(other, WorkflowProgressionDecision)
+        return (
+            self.decision,
+            self.workflow_id,
+            self.current_step_id,
+            self.current_step_index,
+            self.current_employee_id,
+            self.next_step_id,
+            self.next_step_index,
+            self.next_employee_id,
+            self.reason,
+            binding_of(self),
+        ) == (
+            other.decision,
+            other.workflow_id,
+            other.current_step_id,
+            other.current_step_index,
+            other.current_employee_id,
+            other.next_step_id,
+            other.next_step_index,
+            other.next_employee_id,
+            other.reason,
+            binding_of(other),
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.decision,
+                self.workflow_id,
+                self.current_step_id,
+                self.current_step_index,
+                self.current_employee_id,
+                self.next_step_id,
+                self.next_step_index,
+                self.next_employee_id,
+                self.reason,
+                binding_of(self),
+            )
+        )
+
+    @property
+    def run_id(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.run_id
+
+    @property
+    def manifest_digest(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.manifest_digest
 
 
 @dataclass(frozen=True)
@@ -83,7 +170,7 @@ def decide_workflow_progression(
     if state.current_step_index == len(workflow.steps):
         return _decision(state, "workflow_complete", "last_step_succeeded")
     next_step = workflow.steps[state.current_step_index]
-    return WorkflowProgressionDecision(
+    decision = WorkflowProgressionDecision(
         decision="prepare_next_step",
         workflow_id=state.workflow_id,
         current_step_id=state.current_step_id,
@@ -93,7 +180,9 @@ def decide_workflow_progression(
         next_step_index=state.current_step_index + 1,
         next_employee_id=next_step.employee,
         reason="next_step_available",
+        binding=binding_of(state),
     )
+    return decision
 
 
 def _validate_compatibility(
@@ -153,7 +242,7 @@ def _decision(
     reason: str,
 ) -> WorkflowProgressionDecision:
     """Build a decision with no stale next-step identity."""
-    return WorkflowProgressionDecision(
+    decision = WorkflowProgressionDecision(
         decision=decision,
         workflow_id=state.workflow_id,
         current_step_id=state.current_step_id,
@@ -163,4 +252,6 @@ def _decision(
         next_step_index=None,
         next_employee_id=None,
         reason=reason,
+        binding=binding_of(state),
     )
+    return decision

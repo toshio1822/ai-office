@@ -530,10 +530,10 @@ def test_phase_268_and_phase_269_canonical_identities_remain_pinned(
     )
 
     assert assessment.digest == (
-        "b2cbe77da22a1d2dda2555b5262ab76b9bc5548ee8786c2e620c7073e0372798"
+        "ecf250fa7bbd5d943967ecb3f80b819e3790caad7350a33378db3eb5559d06e7"
     )
     assert readiness_record.digest == (
-        "9d6bd1ac15d5a6e34fd062d6d103610398f21f63d43c025a992619979436dff7"
+        "52e8cbfef26f719c9e5b5b5ab5468400184bdfc948460c03922de3eafff7d84c"
     )
     assert projection.readiness == "insufficient_evidence"
 

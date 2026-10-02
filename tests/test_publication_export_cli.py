@@ -602,6 +602,9 @@ def test_real_success_creates_only_explicit_output_not_receipt_or_manifest(
         if path.is_file()
     }
     assert result.exit_code == 0
-    assert set(after) - set(before) == {output_path.relative_to(tmp_path)}
-    assert not any("receipt" in path.name or "manifest" in path.name for path in after)
+    created = set(after) - set(before)
+    assert created == {output_path.relative_to(tmp_path)}
+    assert not any(
+        "receipt" in path.name or "manifest" in path.name for path in created
+    )
     assert after[output_path.relative_to(tmp_path)] == b"one exact output"

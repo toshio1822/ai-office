@@ -9,7 +9,9 @@ from ai_office.runtime import (
     RuntimeStepEvent,
     WorkflowExecutionState,
     WorkflowExecutionTransition,
+    binding_of,
 )
+from ai_office.runtime.run_binding import WorkflowRunBinding
 
 _INPUT_ERROR_MESSAGE = "workflow execution persistence inputs are inconsistent"
 _PERSISTENCE_ERROR_MESSAGE = "workflow execution persistence failed"
@@ -18,10 +20,35 @@ _ROLLBACK_ERROR_MESSAGE = "workflow execution persistence rollback failed"
 
 @dataclass(frozen=True)
 class WorkflowExecutionPersistenceTargets:
-    """Explicit filesystem targets for a state snapshot and event log."""
+    """Explicit targets for one state/event pair.
+
+    ``binding`` is optional for the provider-free historical persistence
+    primitive.  Run-owned callers must supply it; when present it is an exact
+    expected value that is never inferred from the two paths.  Old Run-less
+    histories remain readable through the unbound form, but they are not
+    adopted as Run execution data.
+    """
 
     state_path: Path
     events_path: Path
+    binding: WorkflowRunBinding | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.state_path) is not type(Path()):
+            raise TypeError("state_path must be a Path")
+        if type(self.events_path) is not type(Path()):
+            raise TypeError("events_path must be a Path")
+        if self.binding is not None:
+            if type(self.binding) is not WorkflowRunBinding:
+                raise TypeError("execution target binding is invalid")
+            expected_state = (
+                self.state_path.parent / f"{self.binding.run_id}.state.json"
+            )
+            expected_events = (
+                self.state_path.parent / f"{self.binding.run_id}.events.jsonl"
+            )
+            if self.state_path != expected_state or self.events_path != expected_events:
+                raise ValueError("execution targets are not Run identity-derived")
 
 
 @dataclass(frozen=True)
@@ -72,7 +99,7 @@ def build_workflow_execution_state_dict(
     state: WorkflowExecutionState,
 ) -> dict[str, object]:
     """Build a JSON-compatible state dictionary in deterministic key order."""
-    return {
+    value: dict[str, object] = {
         "workflow_id": state.workflow_id,
         "status": state.status,
         "current_step_id": state.current_step_id,
@@ -81,6 +108,11 @@ def build_workflow_execution_state_dict(
         "completed_step_ids": list(state.completed_step_ids),
         "last_failure_category": state.last_failure_category,
     }
+    binding = binding_of(state)
+    if binding is not None:
+        value["run_id"] = binding.run_id
+        value["manifest_digest"] = binding.manifest_digest
+    return value
 
 
 def serialize_workflow_execution_state_json(state: WorkflowExecutionState) -> str:
@@ -105,6 +137,10 @@ def build_runtime_step_event_dict(event: RuntimeStepEvent) -> dict[str, object]:
         "output_text": event.output_text,
         "message": event.message,
     }
+    binding = binding_of(event)
+    if binding is not None:
+        value["run_id"] = binding.run_id
+        value["manifest_digest"] = binding.manifest_digest
     if event.response_diagnostics is not None:
         value["response_diagnostics"] = {
             "status_code": event.response_diagnostics.status_code,
@@ -200,7 +236,31 @@ def _validate_persistence_input(
         or (next_state.status == "succeeded" and event.event_type != "step_succeeded")
         or (next_state.status == "failed" and event.event_type != "step_failed")
     )
-    if paths_are_invalid or transition_is_invalid:
+    previous_binding = binding_of(previous_state)
+    next_binding = binding_of(next_state)
+    event_binding = binding_of(event)
+    binding_is_invalid = not (
+        (previous_binding is None and next_binding is None and event_binding is None)
+        or (
+            previous_binding is not None
+            and previous_binding == next_binding == event_binding
+        )
+    )
+    if targets.binding is not None and next_binding != targets.binding:
+        binding_is_invalid = True
+    if next_binding is not None:
+        expected_state = targets.state_path.parent / (
+            f"{next_binding.run_id}.state.json"
+        )
+        expected_events = targets.events_path.parent / (
+            f"{next_binding.run_id}.events.jsonl"
+        )
+        if (
+            targets.state_path != expected_state
+            or targets.events_path != expected_events
+        ):
+            binding_is_invalid = True
+    if paths_are_invalid or transition_is_invalid or binding_is_invalid:
         raise WorkflowExecutionPersistenceInputError(_INPUT_ERROR_MESSAGE) from None
 
 

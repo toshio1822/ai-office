@@ -58,7 +58,11 @@ from ai_office.invocation import (
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    WorkflowExecutionState,
+    WorkflowRunBinding,
+)
 from ai_office.storage import (
     WorkflowExecutionLoadError,
     load_workflow_execution_state,
@@ -66,6 +70,7 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from tests._phase260_test_support import synthetic_continuation_facts
+from tests._run_test_support import TestRun as RunFixture, create_test_run
 
 
 def _workflow(count: int = 4) -> WorkflowDefinition:
@@ -103,6 +108,8 @@ def _failure_outcome(
     workflow: WorkflowDefinition,
     index: int = 1,
     category: str = "api_error",
+    *,
+    binding: WorkflowRunBinding | None = None,
 ) -> PersistedExecutionOutcome:
     step = workflow.steps[index - 1]
     return PersistedExecutionOutcome(
@@ -112,11 +119,15 @@ def _failure_outcome(
         index,
         step.employee,
         category,
+        binding=binding,
     )
 
 
 def _prepare(
-    workflow: WorkflowDefinition, index: int = 1
+    workflow: WorkflowDefinition,
+    index: int = 1,
+    *,
+    binding: WorkflowRunBinding | None = None,
 ) -> WorkflowProgressionDecision:
     current = workflow.steps[index - 1]
     next_step = workflow.steps[index]
@@ -130,7 +141,26 @@ def _prepare(
         index + 1,
         next_step.employee,
         "next_step_available",
+        binding=binding,
     )
+
+
+def _test_run(
+    tmp_path: Path, workflow: WorkflowDefinition, run_id: str = "run-terminal"
+) -> RunFixture:
+    return create_test_run(
+        tmp_path,
+        run_id,
+        workflow,
+        tuple(
+            _employee(workflow, index) for index in range(1, len(workflow.steps) + 1)
+        ),
+    )
+
+
+def _run_for_paths(state_path: Path, workflow: WorkflowDefinition) -> RunFixture:
+    run_id = state_path.name.removesuffix(".state.json")
+    return _test_run(state_path.parent, workflow, run_id)
 
 
 def _opaque_context() -> ApprovedWorkflowContinuationContext:
@@ -170,6 +200,7 @@ def _bootstrap_context(
     calls: list[str],
     *,
     status: int = 200,
+    run: RunFixture | None = None,
 ) -> ApprovedWorkflowBootstrapContext:
     step = workflow.steps[0]
     employee = _employee(workflow, 1)
@@ -178,6 +209,8 @@ def _bootstrap_context(
         employee.instructions,
         step.instructions,
         (),
+        binding=None if run is None else run.binding,
+        run_input=None if run is None else f"input-{run.binding.run_id}",
     )
     approval = approve_model_invocation_execution(
         request,
@@ -199,6 +232,8 @@ def _bootstrap_context(
         OpenAIApiKey(value=SecretStr("synthetic-key")),
         approval,
         _transport(calls, "step-1", status=status),
+        binding=None if run is None else run.binding,
+        manifest_store=None if run is None else run.store,
     )
 
 
@@ -208,6 +243,7 @@ def _continuation_context(
     calls: list[str],
     *,
     status: int = 200,
+    run: RunFixture | None = None,
 ) -> ApprovedWorkflowContinuationContext:
     current = workflow.steps[index - 2]
     next_step = workflow.steps[index - 1]
@@ -235,7 +271,10 @@ def _continuation_context(
             response_id=f"response-step-{index - 1}",
             request_id=f"request-step-{index - 1}",
             next_step_index=index,
+            binding=None if run is None else run.binding,
         ),
+        binding=None if run is None else run.binding,
+        run_input=None if run is None else f"input-{run.binding.run_id}",
     )
     approval = approve_model_invocation_execution(
         request,
@@ -268,14 +307,14 @@ def _seed_two_step_prefix(
     tmp_path: Path,
     workflow: WorkflowDefinition,
     calls: list[str],
-) -> tuple[Path, Path]:
-    state_path = tmp_path / "state.json"
-    events_path = tmp_path / "events.jsonl"
+) -> tuple[Path, Path, RunFixture]:
+    run = _test_run(tmp_path, workflow)
+    state_path, events_path = run.state_path, run.events_path
     first = route_approved_workflow_fresh_start(
         workflow,
         state_path,
         events_path,
-        _bootstrap_context(workflow, calls),
+        _bootstrap_context(workflow, calls, run=run),
     )
     assert type(first) is WorkflowProgressionDecision
     assert first.decision == "prepare_next_step"
@@ -284,12 +323,12 @@ def _seed_two_step_prefix(
         workflow,
         state_path,
         events_path,
-        (_continuation_context(workflow, 2, calls),),
+        (_continuation_context(workflow, 2, calls, run=run),),
     )
     assert type(second) is WorkflowProgressionDecision
     assert second.decision == "prepare_next_step"
     assert second.current_step_index == 2
-    return state_path, events_path
+    return state_path, events_path, run
 
 
 def _write_history(
@@ -408,15 +447,15 @@ def test_02_prepare_result_advances_once_without_retry_or_duplicate_execution(
 ) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
-    state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
+    state_path, events_path, run = _seed_two_step_prefix(tmp_path, workflow, calls)
 
     result = route_persisted_terminal_workflow_bounded(
         workflow,
         state_path,
         events_path,
         (
-            _continuation_context(workflow, 3, calls),
-            _continuation_context(workflow, 4, calls),
+            _continuation_context(workflow, 3, calls, run=run),
+            _continuation_context(workflow, 4, calls, run=run),
         ),
     )
     assert type(result) is WorkflowProgressionDecision
@@ -453,7 +492,7 @@ def test_03_prepare_context_validation_stops_before_bounded_execution(
         directory = tmp_path / str(index)
         directory.mkdir()
         calls: list[str] = []
-        state_path, events_path = _seed_two_step_prefix(directory, workflow, calls)
+        state_path, events_path, run = _seed_two_step_prefix(directory, workflow, calls)
         before = (state_path.read_bytes(), events_path.read_bytes())
         _assert_runner_error(
             lambda contexts=contexts: route_persisted_terminal_workflow_bounded(
@@ -589,13 +628,13 @@ def test_06_persisted_failure_terminal_ignores_malformed_contexts(
 ) -> None:
     workflow = _workflow(1)
     calls: list[str] = []
-    state_path = tmp_path / "state.json"
-    events_path = tmp_path / "events.jsonl"
+    run = _test_run(tmp_path, workflow, "run-failure")
+    state_path, events_path = run.state_path, run.events_path
     result = route_approved_workflow_fresh_start(
         workflow,
         state_path,
         events_path,
-        _bootstrap_context(workflow, calls, status=500),
+        _bootstrap_context(workflow, calls, status=500, run=run),
     )
     assert type(result) is PersistedExecutionOutcome
     assert result.outcome == "persisted_failure"
@@ -627,15 +666,15 @@ def test_07_final_success_terminal_ignores_malformed_contexts(
 ) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
-    state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
+    state_path, events_path, run = _seed_two_step_prefix(tmp_path, workflow, calls)
     completed = route_bounded_approved_workflow_continuation(
-        _prepare(workflow, 2),
+        _prepare(workflow, 2, binding=run.binding),
         workflow,
         state_path,
         events_path,
         (
-            _continuation_context(workflow, 3, calls),
-            _continuation_context(workflow, 4, calls),
+            _continuation_context(workflow, 3, calls, run=run),
+            _continuation_context(workflow, 4, calls, run=run),
         ),
     )
     assert type(completed) is WorkflowProgressionDecision
@@ -665,14 +704,14 @@ def test_07_final_success_terminal_ignores_malformed_contexts(
 def test_08_restart_success_does_not_replay_completed_steps(tmp_path: Path) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
-    state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
+    state_path, events_path, run = _seed_two_step_prefix(tmp_path, workflow, calls)
     result = route_persisted_terminal_workflow_bounded(
         workflow,
         state_path,
         events_path,
         (
-            _continuation_context(workflow, 3, calls),
-            _continuation_context(workflow, 4, calls),
+            _continuation_context(workflow, 3, calls, run=run),
+            _continuation_context(workflow, 4, calls, run=run),
         ),
     )
     assert type(result) is WorkflowProgressionDecision
@@ -693,12 +732,12 @@ def test_09_restart_context_exhaustion_returns_exact_remaining_prepare(
 ) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
-    state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
+    state_path, events_path, run = _seed_two_step_prefix(tmp_path, workflow, calls)
     result = route_persisted_terminal_workflow_bounded(
         workflow,
         state_path,
         events_path,
-        (_continuation_context(workflow, 3, calls),),
+        (_continuation_context(workflow, 3, calls, run=run),),
     )
     assert type(result) is WorkflowProgressionDecision
     assert result.decision == "prepare_next_step"
@@ -716,14 +755,14 @@ def test_09_restart_context_exhaustion_returns_exact_remaining_prepare(
 def test_10_restart_failure_does_not_consume_later_context(tmp_path: Path) -> None:
     workflow = _workflow(4)
     calls: list[str] = []
-    state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
+    state_path, events_path, run = _seed_two_step_prefix(tmp_path, workflow, calls)
     result = route_persisted_terminal_workflow_bounded(
         workflow,
         state_path,
         events_path,
         (
-            _continuation_context(workflow, 3, calls, status=500),
-            _continuation_context(workflow, 4, calls),
+            _continuation_context(workflow, 3, calls, status=500, run=run),
+            _continuation_context(workflow, 4, calls, run=run),
         ),
     )
     assert type(result) is PersistedExecutionOutcome
@@ -805,7 +844,7 @@ def test_13_default_lower_safe_errors_and_read_only_targets_are_preserved(
     with pytest.raises(PersistedExecutionOutcomeRoutingCompatibilityError):
         route_persisted_terminal_workflow_bounded(workflow, object(), object(), ())
     calls: list[str] = []
-    state_path, events_path = _seed_two_step_prefix(tmp_path, workflow, calls)
+    state_path, events_path, run = _seed_two_step_prefix(tmp_path, workflow, calls)
     before = (state_path.read_bytes(), events_path.read_bytes())
     with pytest.raises(Phase145Error):
         route_persisted_terminal_workflow_bounded(

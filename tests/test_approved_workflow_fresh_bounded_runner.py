@@ -56,6 +56,7 @@ from ai_office.runtime.persisted_start_execution import (
 )
 from ai_office.storage import load_workflow_execution_state
 from tests._phase260_test_support import synthetic_continuation_facts
+from tests._run_test_support import TestRun as RunFixture, create_test_run
 
 _MISSING = object()
 
@@ -122,10 +123,22 @@ def _failure_transport(calls: list[str], label: str):
     return transport
 
 
+def _test_run(
+    root: Path, wf: WorkflowDefinition, run_id: str = "run-fresh-bounded"
+) -> RunFixture:
+    return create_test_run(
+        root,
+        run_id,
+        wf,
+        tuple(_employee(wf, index) for index in range(1, len(wf.steps) + 1)),
+    )
+
+
 def _bootstrap_context(
     wf: WorkflowDefinition,
     calls: list[str] | None = None,
     *,
+    run: RunFixture | None = None,
     preparation_approval: object = _MISSING,
     employee_value: object = _MISSING,
     execution_approval: object = _MISSING,
@@ -137,6 +150,8 @@ def _bootstrap_context(
         employee.instructions,
         wf.steps[0].instructions,
         (),
+        binding=None if run is None else run.binding,
+        run_input=None if run is None else f"input-{run.binding.run_id}",
     )
     approved_execution = approve_model_invocation_execution(
         request,
@@ -154,6 +169,8 @@ def _bootstrap_context(
         OpenAIApiKey(value=SecretStr("synthetic-key")),
         approved_execution,
         _success_transport(calls, "step-1") if calls is not None else object(),
+        binding=None if run is None else run.binding,
+        manifest_store=None if run is None else run.store,
     )
     if preparation_approval is not _MISSING:
         context = replace(context, preparation_approval=preparation_approval)
@@ -171,6 +188,7 @@ def _continuation_context(
     index: int,
     calls: list[str] | None = None,
     *,
+    run: RunFixture | None = None,
     preparation_approval: object = _MISSING,
     execution_approval: object = _MISSING,
     transport: object = _MISSING,
@@ -199,7 +217,10 @@ def _continuation_context(
             response_id=f"response-step-{index - 1}",
             request_id=f"request-step-{index - 1}",
             next_step_index=index,
+            binding=None if run is None else run.binding,
         ),
+        binding=None if run is None else run.binding,
+        run_input=None if run is None else f"input-{run.binding.run_id}",
     )
     approved_execution = approve_model_invocation_execution(
         request,
@@ -674,48 +695,58 @@ def test_11_default_fresh_safe_errors_keep_durable_ownership(tmp_path: Path) -> 
     wf = workflow(2)
     contexts = (_opaque_context(),)
 
-    preexisting_state = tmp_path / "preexisting-state"
-    preexisting_events = tmp_path / "preexisting-events"
+    preexisting_run = _test_run(tmp_path, wf, "run-preexisting")
+    preexisting_state = preexisting_run.state_path
+    preexisting_events = preexisting_run.events_path
     preexisting_state.write_bytes(b"preexisting-state")
     with pytest.raises(FreshWorkflowBootstrapCompatibilityError) as preexisting_error:
         route_approved_fresh_workflow_bounded(
             wf,
             preexisting_state,
             preexisting_events,
-            _bootstrap_context(wf),
+            _bootstrap_context(wf, run=preexisting_run),
             contexts,
         )
     assert preexisting_error.value.detail.classification == "target_exists"
     assert preexisting_state.read_bytes() == b"preexisting-state"
     assert not preexisting_events.exists()
 
-    ready_state = tmp_path / "ready-state"
-    ready_events = tmp_path / "ready-events"
+    ready_run = _test_run(tmp_path, wf, "run-ready")
+    ready_state = ready_run.state_path
+    ready_events = ready_run.events_path
     with pytest.raises(FreshWorkflowBootstrapCompatibilityError) as ready_error:
         route_approved_fresh_workflow_bounded(
             wf,
             ready_state,
             ready_events,
-            _bootstrap_context(wf, preparation_approval=object()),
+            _bootstrap_context(wf, preparation_approval=object(), run=ready_run),
             contexts,
         )
     assert ready_error.value.detail.classification == "preparation_approval"
     assert load_workflow_execution_state(ready_state).status == "ready"
     assert ready_events.read_bytes() == b""
 
-    running_state = tmp_path / "running-state"
-    running_events = tmp_path / "running-events"
+    running_run = _test_run(tmp_path, wf, "run-running")
+    running_state = running_run.state_path
+    running_events = running_run.events_path
     with pytest.raises(PersistedStartExecutionCompatibilityError) as running_error:
         route_approved_fresh_workflow_bounded(
             wf,
             running_state,
             running_events,
-            _bootstrap_context(wf, execution_approval=object()),
+            _bootstrap_context(wf, execution_approval=object(), run=running_run),
             contexts,
         )
     assert running_error.value.detail.classification == "request_data"
     assert load_workflow_execution_state(running_state) == WorkflowExecutionState(
-        wf.id, "running", wf.steps[0].id, 1, wf.steps[0].employee, (), None
+        wf.id,
+        "running",
+        wf.steps[0].id,
+        1,
+        wf.steps[0].employee,
+        (),
+        None,
+        binding=running_run.binding,
     )
     assert running_events.read_bytes() == b""
 
@@ -725,26 +756,27 @@ def test_12_real_default_three_step_success_is_bounded_and_durable(
 ) -> None:
     wf = workflow(3)
     calls: list[str] = []
+    run = _test_run(tmp_path, wf, "run-success")
     contexts = (
-        _continuation_context(wf, 2, calls),
-        _continuation_context(wf, 3, calls),
+        _continuation_context(wf, 2, calls, run=run),
+        _continuation_context(wf, 3, calls, run=run),
     )
 
     result = route_approved_fresh_workflow_bounded(
         wf,
-        tmp_path / "state.json",
-        tmp_path / "events.jsonl",
-        _bootstrap_context(wf, calls),
+        run.state_path,
+        run.events_path,
+        _bootstrap_context(wf, calls, run=run),
         contexts,
     )
     assert type(result) is WorkflowProgressionDecision
     assert result.decision == "workflow_complete"
     assert result.current_step_index == 3
     assert calls == ["step-1", "step-2", "step-3"]
-    state = load_workflow_execution_state(tmp_path / "state.json")
+    state = load_workflow_execution_state(run.state_path)
     assert state.status == "succeeded"
     assert state.completed_step_ids == ("step-1", "step-2", "step-3")
-    assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 3
+    assert len(run.events_path.read_text().splitlines()) == 3
 
 
 def test_13_real_default_context_exhaustion_returns_exact_next_prepare(
@@ -752,12 +784,13 @@ def test_13_real_default_context_exhaustion_returns_exact_next_prepare(
 ) -> None:
     wf = workflow(3)
     calls: list[str] = []
+    run = _test_run(tmp_path, wf, "run-exhausted")
     result = route_approved_fresh_workflow_bounded(
         wf,
-        tmp_path / "state.json",
-        tmp_path / "events.jsonl",
-        _bootstrap_context(wf, calls),
-        (_continuation_context(wf, 2, calls),),
+        run.state_path,
+        run.events_path,
+        _bootstrap_context(wf, calls, run=run),
+        (_continuation_context(wf, 2, calls, run=run),),
     )
     assert type(result) is WorkflowProgressionDecision
     assert result.decision == "prepare_next_step"
@@ -765,11 +798,11 @@ def test_13_real_default_context_exhaustion_returns_exact_next_prepare(
     assert result.next_step_id == "step-3"
     assert result.next_step_index == 3
     assert calls == ["step-1", "step-2"]
-    state = load_workflow_execution_state(tmp_path / "state.json")
+    state = load_workflow_execution_state(run.state_path)
     assert state.status == "succeeded"
     assert state.current_step_index == 2
     assert state.completed_step_ids == ("step-1", "step-2")
-    assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 2
+    assert len(run.events_path.read_text().splitlines()) == 2
 
 
 def test_14_real_default_step2_failure_does_not_consume_later_context(
@@ -777,14 +810,15 @@ def test_14_real_default_step2_failure_does_not_consume_later_context(
 ) -> None:
     wf = workflow(3)
     calls: list[str] = []
-    first = _continuation_context(wf, 2, calls)
+    run = _test_run(tmp_path, wf, "run-step2-failure")
+    first = _continuation_context(wf, 2, calls, run=run)
     first = replace(first, transport=_failure_transport(calls, "step-2"))
-    later = _continuation_context(wf, 3, calls)
+    later = _continuation_context(wf, 3, calls, run=run)
     result = route_approved_fresh_workflow_bounded(
         wf,
-        tmp_path / "state.json",
-        tmp_path / "events.jsonl",
-        _bootstrap_context(wf, calls),
+        run.state_path,
+        run.events_path,
+        _bootstrap_context(wf, calls, run=run),
         (first, later),
     )
     assert type(result) is PersistedExecutionOutcome
@@ -792,11 +826,11 @@ def test_14_real_default_step2_failure_does_not_consume_later_context(
     assert result.current_step_index == 2
     assert result.failure_category == "api_error"
     assert calls == ["step-1", "step-2"]
-    state = load_workflow_execution_state(tmp_path / "state.json")
+    state = load_workflow_execution_state(run.state_path)
     assert state.status == "failed"
     assert state.current_step_index == 2
     assert state.completed_step_ids == ("step-1",)
-    assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 2
+    assert len(run.events_path.read_text().splitlines()) == 2
 
 
 def test_15_real_one_step_success_skips_bounded_continuation_and_contexts(
@@ -804,21 +838,22 @@ def test_15_real_one_step_success_skips_bounded_continuation_and_contexts(
 ) -> None:
     wf = workflow(1)
     calls: list[str] = []
+    run = _test_run(tmp_path, wf, "run-one-step")
     result = route_approved_fresh_workflow_bounded(
         wf,
-        tmp_path / "state.json",
-        tmp_path / "events.jsonl",
-        _bootstrap_context(wf, calls),
+        run.state_path,
+        run.events_path,
+        _bootstrap_context(wf, calls, run=run),
         (_opaque_context(), _opaque_context()),
     )
     assert type(result) is WorkflowProgressionDecision
     assert result.decision == "workflow_complete"
     assert result.current_step_index == 1
     assert calls == ["step-1"]
-    assert load_workflow_execution_state(
-        tmp_path / "state.json"
-    ).completed_step_ids == ("step-1",)
-    assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 1
+    assert load_workflow_execution_state(run.state_path).completed_step_ids == (
+        "step-1",
+    )
+    assert len(run.events_path.read_text().splitlines()) == 1
 
 
 def test_16_real_step1_failure_skips_bounded_continuation_and_contexts(
@@ -826,13 +861,15 @@ def test_16_real_step1_failure_skips_bounded_continuation_and_contexts(
 ) -> None:
     wf = workflow(2)
     calls: list[str] = []
+    run = _test_run(tmp_path, wf, "run-step1-failure")
     result = route_approved_fresh_workflow_bounded(
         wf,
-        tmp_path / "state.json",
-        tmp_path / "events.jsonl",
+        run.state_path,
+        run.events_path,
         _bootstrap_context(
             wf,
             calls,
+            run=run,
             transport=_failure_transport(calls, "step-1"),
         ),
         (_opaque_context(), _opaque_context()),
@@ -842,7 +879,7 @@ def test_16_real_step1_failure_skips_bounded_continuation_and_contexts(
     assert result.current_step_index == 1
     assert result.failure_category == "api_error"
     assert calls == ["step-1"]
-    state = load_workflow_execution_state(tmp_path / "state.json")
+    state = load_workflow_execution_state(run.state_path)
     assert state.status == "failed"
     assert state.completed_step_ids == ()
-    assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 1
+    assert len(run.events_path.read_text().splitlines()) == 1

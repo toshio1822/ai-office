@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ai_office.definitions.employee import LoadedEmployee
 from ai_office.planning.execution_plan import ExecutionPlan, ExecutionPlanStep
@@ -27,6 +27,18 @@ class StepExecutionRequest(BaseModel):
     allowed_tools: tuple[str, ...]
     employee_instructions: str
     step_instructions: str
+    # These fields are intentionally separate from the instruction fields.
+    # Older provider-free planning callers may omit them; Run-owned callers
+    # must provide the complete immutable (run_id, manifest_digest) identity.
+    # Run Input is not carried here: its only authority is the Run Manifest.
+    run_id: str | None = None
+    manifest_digest: str | None = None
+
+    @model_validator(mode="after")
+    def run_binding_is_complete(self) -> StepExecutionRequest:
+        if (self.run_id is None) != (self.manifest_digest is None):
+            raise ValueError("workflow Run binding is incomplete")
+        return self
 
 
 class StepSelectionError(ValueError):
@@ -63,6 +75,9 @@ def build_step_execution_request(
     plan: ExecutionPlan,
     step_index: int,
     employees: Sequence[LoadedEmployee],
+    *,
+    run_id: str | None = None,
+    manifest_digest: str | None = None,
 ) -> StepExecutionRequest:
     """Build a detached immutable request from one plan step and employee."""
     step = find_plan_step_by_index(plan, step_index)
@@ -82,4 +97,6 @@ def build_step_execution_request(
         allowed_tools=tuple(definition.allowed_tools),
         employee_instructions=definition.instructions,
         step_instructions=step.instructions,
+        run_id=run_id,
+        manifest_digest=manifest_digest,
     )

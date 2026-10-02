@@ -72,6 +72,10 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_
     RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161ChainError,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.engine.workflow_run_manifest import (
+    WorkflowRunManifestStore,
+    load_workflow_run_manifest,
+)
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationFailureCategory,
@@ -84,12 +88,14 @@ from ai_office.runtime import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
+    binding_of,
     is_valid_step_runtime_execution_result,
 )
 from ai_office.storage import (
     RunningStatePersistenceResult,
     WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     load_workflow_execution_history_with_source_digests,
     load_workflow_execution_state,
     parse_runtime_step_event,
@@ -206,6 +212,7 @@ def route_approved_workflow_continuation_cycle(
         events_path,
     )
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
+    _check_result_target_binding(result, state_path, events_path)
     original = _capture_targets(state_path, events_path)
 
     try:
@@ -386,6 +393,45 @@ def _check_prepare_configuration(
     _check_regular_file(events_path, "event_target")
 
 
+def _check_result_target_binding(
+    result: WorkflowProgressionDecision | PersistedExecutionOutcome,
+    state_path: Path,
+    events_path: Path,
+) -> None:
+    """Require one authoritative Manifest-backed execution namespace."""
+    try:
+        result_binding = binding_of(result)
+        # ``WorkflowExecutionPersistenceTargets`` deliberately supports an
+        # unbound, provider-free persistence primitive.  It must not be
+        # allowed to make this provider-owning boundary appear bound merely
+        # because ``None == None``.
+        if result_binding is None:
+            _fail("phase145_contract")
+        store = WorkflowRunManifestStore(state_path.parent)
+        manifest = load_workflow_run_manifest(store, result_binding.run_id)
+        expected_state, expected_events = store.execution_paths(result_binding.run_id)
+        if (
+            manifest.workflow_id != result.workflow_id
+            or manifest.digest != result_binding.manifest_digest
+            or state_path != expected_state
+            or events_path != expected_events
+        ):
+            _fail("phase145_contract")
+        targets = WorkflowExecutionPersistenceTargets(
+            state_path, events_path, binding=result_binding
+        )
+        history = load_workflow_execution_history(targets)
+    except Exception:
+        _fail("phase145_contract")
+    target_binding = targets.binding
+    if (
+        target_binding != result_binding
+        or binding_of(history.state) != result_binding
+        or any(binding_of(event) != result_binding for event in history.events)
+    ):
+        _fail("phase145_contract")
+
+
 def _check_regular_file(path: Path, classification: Classification) -> None:
     try:
         if not path.is_file():
@@ -509,6 +555,7 @@ def _check_prepared(
         and type(value.allowed_tool_names) is tuple
         and all(_nonempty(item) for item in value.allowed_tool_names)
         and value.allowed_tool_names == tuple(employee.allowed_tools)
+        and value.binding == binding_of(decision)
     ):
         _fail("phase145_contract")
 
@@ -570,6 +617,8 @@ def _check_prepared_start(
         and type(request.allowed_tools) is tuple
         and all(_nonempty(item) for item in request.allowed_tools)
         and request.allowed_tools == prepared.allowed_tool_names
+        and binding_of(running) == prepared.binding
+        and binding_of(request) == prepared.binding
         and type(request.upstream_inputs) is tuple
         and all(
             type(upstream) is UpstreamStepOutput
@@ -593,9 +642,14 @@ def _check_authoritative_pre_persistence(
 ) -> object:
     """Reload terminal history and validate the complete approved request."""
     try:
+        binding = binding_of(prepared_start.running_state)
         history, state_source_sha256, _events_source_sha256 = (
             load_workflow_execution_history_with_source_digests(
-                WorkflowExecutionPersistenceTargets(state_path, events_path)
+                WorkflowExecutionPersistenceTargets(
+                    state_path,
+                    events_path,
+                    binding=binding,
+                )
             )
         )
         authoritative_upstream = build_immediate_predecessor_upstream_inputs(
@@ -626,6 +680,9 @@ def _check_authoritative_pre_persistence(
             allowed_tools=prepared_start.request.allowed_tools,
             upstream_inputs=authoritative_upstream,
             runtime_facts=authoritative_runtime_facts,
+            run_id=prepared_start.request.run_id,
+            manifest_digest=prepared_start.request.manifest_digest,
+            run_input=prepared_start.request.run_input,
         )
     except (TypeError, ValueError):
         _fail("phase146_contract")
@@ -679,7 +736,9 @@ def _check_persisted_running(
         _restore_or_fail(state_path, events_path, original)
         _fail("committed_mutation")
     try:
-        loaded = load_workflow_execution_state(state_path)
+        loaded = load_workflow_execution_state(
+            state_path, binding=binding_of(prepared_start.running_state)
+        )
     except Exception:
         _restore_or_fail(state_path, events_path, original)
         _fail("phase147_contract")
@@ -722,6 +781,8 @@ def _check_runtime_result(
             step_id=running.current_step_id,
             step_index=running.current_step_index,
             employee_id=running.current_employee_id,
+            run_id=running.run_id,
+            manifest_digest=running.manifest_digest,
         )
     except Exception:
         valid = False
@@ -747,6 +808,7 @@ def _valid_phase172_result(
         and type(value.current_step_index) is int
         and value.current_step_index == index
         and _exact(value.current_employee_id, step.employee)
+        and binding_of(value) == binding_of(runtime_result)
     )
     if not identity:
         return False
@@ -805,12 +867,15 @@ def _valid_phase172_persistence(
         appended = event_bytes[len(running_snapshot[1]) :]
         if not appended or not appended.endswith(b"\n") or appended.count(b"\n") != 1:
             return False
-        event = parse_runtime_step_event(json.loads(appended.decode("utf-8")))
+        binding = binding_of(runtime_result)
+        event = parse_runtime_step_event(
+            json.loads(appended.decode("utf-8")), binding=binding
+        )
         if type(event) is not RuntimeStepEvent:
             return False
         if serialize_runtime_step_event_jsonl(event).encode("utf-8") != appended:
             return False
-        state = load_workflow_execution_state(state_path)
+        state = load_workflow_execution_state(state_path, binding=binding)
         if state_bytes != serialize_workflow_execution_state_json(state).encode(
             "utf-8"
         ):
@@ -832,6 +897,8 @@ def _valid_phase172_persistence(
         and type(event.step_index) is int
         and event.step_index == runtime_result.step_index
         and _exact(event.employee_id, step.employee)
+        and binding_of(state) == binding
+        and binding_of(event) == binding
         and _exact(event.previous_status, "running")
         and _exact(event.provider, invocation.provider)
         and event.request_id == invocation.request_id

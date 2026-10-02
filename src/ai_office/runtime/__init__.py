@@ -1,5 +1,11 @@
 """Runtime state and event handling."""
 
+from ai_office.runtime.run_binding import (
+    WorkflowRunBinding,
+    binding_of,
+    require_run_binding,
+    select_run_binding,
+)
 from ai_office.runtime.step_runtime_execution import (
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionInput,
@@ -26,6 +32,10 @@ __all__ = [
     "StepRuntimeExecutionInputError",
     "StepRuntimeExecutionResult",
     "StepRuntimeExecutionSuccess",
+    "WorkflowRunBinding",
+    "binding_of",
+    "require_run_binding",
+    "select_run_binding",
     "RuntimeStepEvent",
     "RuntimeStepEventType",
     "WorkflowExecutionState",

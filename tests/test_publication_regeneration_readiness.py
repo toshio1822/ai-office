@@ -15,7 +15,9 @@ import pytest
 from typer.testing import CliRunner
 
 from ai_office.cli import app
-from ai_office.definitions.workflow import WorkflowDefinition
+from ai_office.definitions.employee import EmployeeDefinition, LoadedEmployee
+from ai_office.definitions.workflow import LoadedWorkflow, WorkflowDefinition
+from ai_office.engine import WorkflowRunManifestStore, create_workflow_run_manifest
 from ai_office.engine.post_terminal_facts import (
     PublicationClaimContract,
     assess_terminal_publication_readiness,
@@ -56,7 +58,11 @@ from ai_office.invocation import (
     RuntimeFactsSnapshot,
     UpstreamStepOutput,
 )
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    WorkflowExecutionState,
+    WorkflowRunBinding,
+)
 from ai_office.storage import (
     WorkflowExecutionPersistenceTargets,
     serialize_runtime_step_event_jsonl,
@@ -76,6 +82,8 @@ class ReadinessFixture:
     audit_path: Path
     result_path: Path
     ledger_directory: Path
+    run_store: Path
+    run_id: str
     state_path: Path
     events_path: Path
     audit: object
@@ -109,6 +117,29 @@ def workflow() -> WorkflowDefinition:
 def write_history(path: Path) -> WorkflowExecutionPersistenceTargets:
     path.mkdir(parents=True)
     definition = workflow()
+    store = WorkflowRunManifestStore(path)
+    run_id = "run-1"
+    manifest = create_workflow_run_manifest(
+        store,
+        run_id,
+        "Regenerate the published output exactly as supplied.",
+        LoadedWorkflow(source_path=path / "workflow.yaml", definition=definition),
+        tuple(
+            LoadedEmployee(
+                source_path=path / f"{employee_id}.yaml",
+                definition=EmployeeDefinition(
+                    id=employee_id,
+                    name=employee_id.title(),
+                    role="Work deterministically.",
+                    instructions="Work deterministically.",
+                    model="fixture-model",
+                    allowed_tools=(),
+                ),
+            )
+            for employee_id in ("researcher", "editor")
+        ),
+    )
+    binding = WorkflowRunBinding(manifest.run_id, manifest.digest)
     state = WorkflowExecutionState(
         workflow_id=definition.id,
         status="succeeded",
@@ -117,6 +148,7 @@ def write_history(path: Path) -> WorkflowExecutionPersistenceTargets:
         current_employee_id="editor",
         completed_step_ids=("research", "publish"),
         last_failure_category=None,
+        binding=binding,
     )
     events = (
         RuntimeStepEvent(
@@ -133,6 +165,7 @@ def write_history(path: Path) -> WorkflowExecutionPersistenceTargets:
             request_id="request-one",
             output_text="intermediate",
             message=None,
+            binding=binding,
         ),
         RuntimeStepEvent(
             event_type="step_succeeded",
@@ -148,11 +181,13 @@ def write_history(path: Path) -> WorkflowExecutionPersistenceTargets:
             request_id="request-terminal",
             output_text="ORIGINAL BUSINESS OUTPUT 日本語",
             message=None,
+            binding=binding,
         ),
     )
     targets = WorkflowExecutionPersistenceTargets(
-        state_path=path / "state.json",
-        events_path=path / "events.jsonl",
+        state_path=path / f"{run_id}.state.json",
+        events_path=path / f"{run_id}.events.jsonl",
+        binding=binding,
     )
     targets.state_path.write_text(
         serialize_workflow_execution_state_json(state), encoding="utf-8"
@@ -289,6 +324,8 @@ def readiness_fixture(
         audit_path=audit_path,
         result_path=result_path,
         ledger_directory=ledger_directory,
+        run_store=history_targets.state_path.parent,
+        run_id="run-1",
         state_path=history_targets.state_path,
         events_path=history_targets.events_path,
         audit=audit,
@@ -725,25 +762,25 @@ def test_canonical_wrapper_fixture_is_compact_and_digest_bound(tmp_path: Path) -
         '"claim_contract_sha256":null,"evaluated_claim_contract":null,"outcome":"success",'
         '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
         '"regeneration_id":"regen-20260912-01",'
-        '"result_record_sha256":"ded25e22fb8c1fac42db443c4e5a60682b10b9697ddb749bebacecd708624eda",'
+        '"result_record_sha256":"6d2f19676b7b574d9630af949fe5384a5d3386ee9f5935247c071c10679926e3",'
         '"schema_version":"publication-regeneration-readiness.v1",'
-        '"source_audit_sha256":"34d656c42f0b15d74b8d92babe0d361fa0a1c0a69a221b68e985ba87cfe68926",'
+        '"source_audit_sha256":"8f8409ef4715d67fb3dab6e5988ae375948533ced378a721a02d8e22c2eb1491",'
         '"source_post_terminal_facts":{"completed_step_ids":["research","publish"],'
-        '"events_sha256":"1232505d7388720951336b434fe00df5474cefd0d659a99283c52a72d29ad6c8",'
+        '"events_sha256":"a9f9d7b2078baccd1726f9230d150c32501d8321c87dd60535470eedd9a99eb7",'
         '"final_output_sha256":"f5a064be281eea4db190ed7268f4a1e005ca05227654bbfa260a6c5684da743e",'
         '"schema_version":"post-terminal-facts.v1",'
-        '"state_sha256":"6e4acd32f41a8dc7c8d1e1a49b1ee6dde461786ac454cecf10f14f9af650c022",'
+        '"state_sha256":"328ffc7442f48340241cf40f0b5b4e2ad2fcd18fb819461f6ea7b6cea2b301af",'
         '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
         '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
         '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase268-workflow"},'
-        '"source_post_terminal_facts_sha256":"c3e68c8c60eee1b1e7a41a7df2dc338a3e0d7eca6838916a68396ff511aec6dd"}'
+        '"source_post_terminal_facts_sha256":"20ebdefae796866e982688f98706115f58414c9307b445c4ffad9b616b3fd561"}'
     )
     assert canonical == expected
     assert publication_regeneration_readiness_assessment_digest(assessment) == (
         hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     )
     assert assessment.digest == (
-        "b2cbe77da22a1d2dda2555b5262ab76b9bc5548ee8786c2e620c7073e0372798"
+        "ecf250fa7bbd5d943967ecb3f80b819e3790caad7350a33378db3eb5559d06e7"
     )
 
 
@@ -922,15 +959,9 @@ allowed_tools: []
     args = [
         "workflows",
         "result",
-        "phase268-workflow",
-        "--state-path",
-        str(fixture.state_path),
-        "--events-path",
-        str(fixture.events_path),
-        "--directory",
-        str(workflows_directory),
-        "--employees-directory",
-        str(employees_directory),
+        str(fixture.run_id),
+        "--run-store",
+        str(fixture.run_store),
     ]
     before = runner.invoke(app, args)
     assert before.exit_code == 0, before.output

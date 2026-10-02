@@ -23,9 +23,15 @@ from ai_office.providers.openai import (
     execute_openai_model_invocation,
     send_openai_responses_http_request,
 )
+from ai_office.runtime.run_binding import (
+    WorkflowRunBinding,
+    binding_of,
+    select_run_binding,
+)
 from ai_office.tools import ToolDefinition
 
 _INPUT_ERROR_MESSAGE = "runtime step execution inputs are inconsistent"
+_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -38,9 +44,9 @@ class StepRuntimeExecutionInput:
     approval: ModelInvocationExecutionApproval
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class StepRuntimeExecutionSuccess:
-    """A successful provider invocation with its original step identity."""
+    """A successful provider invocation with its original step and Run identity."""
 
     workflow_id: str
     step_id: str
@@ -48,16 +54,148 @@ class StepRuntimeExecutionSuccess:
     employee_id: str
     invocation_result: ModelInvocationSuccess
 
+    def __init__(
+        self,
+        workflow_id: str,
+        step_id: str,
+        step_index: int,
+        employee_id: str,
+        invocation_result: ModelInvocationSuccess,
+        *,
+        run_id: str | None = None,
+        manifest_digest: str | None = None,
+        binding: WorkflowRunBinding | None = None,
+    ) -> None:
+        _initialize_runtime_result(
+            self,
+            workflow_id,
+            step_id,
+            step_index,
+            employee_id,
+            invocation_result,
+            run_id=run_id,
+            manifest_digest=manifest_digest,
+            binding=binding,
+        )
 
-@dataclass(frozen=True)
+    @property
+    def run_id(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.run_id
+
+    @property
+    def manifest_digest(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.manifest_digest
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not StepRuntimeExecutionSuccess:
+            return NotImplemented
+        assert isinstance(other, StepRuntimeExecutionSuccess)
+        return (
+            self.workflow_id,
+            self.step_id,
+            self.step_index,
+            self.employee_id,
+            self.invocation_result,
+            binding_of(self),
+        ) == (
+            other.workflow_id,
+            other.step_id,
+            other.step_index,
+            other.employee_id,
+            other.invocation_result,
+            binding_of(other),
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.workflow_id,
+                self.step_id,
+                self.step_index,
+                self.employee_id,
+                self.invocation_result,
+                binding_of(self),
+            )
+        )
+
+
+@dataclass(frozen=True, init=False)
 class StepRuntimeExecutionFailure:
-    """A failed provider invocation with its original step identity."""
+    """A failed provider invocation with its original step and Run identity."""
 
     workflow_id: str
     step_id: str
     step_index: int
     employee_id: str
     invocation_result: ModelInvocationFailure
+
+    def __init__(
+        self,
+        workflow_id: str,
+        step_id: str,
+        step_index: int,
+        employee_id: str,
+        invocation_result: ModelInvocationFailure,
+        *,
+        run_id: str | None = None,
+        manifest_digest: str | None = None,
+        binding: WorkflowRunBinding | None = None,
+    ) -> None:
+        _initialize_runtime_result(
+            self,
+            workflow_id,
+            step_id,
+            step_index,
+            employee_id,
+            invocation_result,
+            run_id=run_id,
+            manifest_digest=manifest_digest,
+            binding=binding,
+        )
+
+    @property
+    def run_id(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.run_id
+
+    @property
+    def manifest_digest(self) -> str | None:
+        binding = binding_of(self)
+        return None if binding is None else binding.manifest_digest
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not StepRuntimeExecutionFailure:
+            return NotImplemented
+        assert isinstance(other, StepRuntimeExecutionFailure)
+        return (
+            self.workflow_id,
+            self.step_id,
+            self.step_index,
+            self.employee_id,
+            self.invocation_result,
+            binding_of(self),
+        ) == (
+            other.workflow_id,
+            other.step_id,
+            other.step_index,
+            other.employee_id,
+            other.invocation_result,
+            binding_of(other),
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.workflow_id,
+                self.step_id,
+                self.step_index,
+                self.employee_id,
+                self.invocation_result,
+                binding_of(self),
+            )
+        )
 
 
 StepRuntimeExecutionResult = StepRuntimeExecutionSuccess | StepRuntimeExecutionFailure
@@ -110,6 +248,8 @@ def execute_openai_runtime_step(
         step_id=execution_input.step_request.step_id,
         step_index=execution_input.step_request.step_index,
         employee_id=execution_input.step_request.employee_id,
+        run_id=execution_input.step_request.run_id,
+        manifest_digest=execution_input.step_request.manifest_digest,
     ):
         raise RuntimeError("runtime step execution result is invalid")
     return result
@@ -123,6 +263,8 @@ def _validate_execution_input(execution_input: StepRuntimeExecutionInput) -> Non
         or step_request.employee_instructions != invocation_request.system_instructions
         or step_request.step_instructions != invocation_request.task_instructions
         or step_request.allowed_tools != invocation_request.allowed_tools
+        or step_request.run_id != invocation_request.run_id
+        or step_request.manifest_digest != invocation_request.manifest_digest
     ):
         raise StepRuntimeExecutionInputError(_INPUT_ERROR_MESSAGE)
 
@@ -147,6 +289,8 @@ def _build_input_failure(
             provider_error_type=None,
             provider_error_code=None,
         ),
+        run_id=step_request.run_id,
+        manifest_digest=step_request.manifest_digest,
     )
 
 
@@ -165,6 +309,8 @@ def _build_runtime_result(
         "step_id": step_request.step_id,
         "step_index": step_request.step_index,
         "employee_id": step_request.employee_id,
+        "run_id": step_request.run_id,
+        "manifest_digest": step_request.manifest_digest,
     }
     if isinstance(invocation_result, ModelInvocationSuccess):
         return StepRuntimeExecutionSuccess(
@@ -184,8 +330,10 @@ def is_valid_step_runtime_execution_result(
     step_id: str,
     step_index: int,
     employee_id: str,
+    run_id: object = _UNSET,
+    manifest_digest: object = _UNSET,
 ) -> bool:
-    """Check the exact Phase 21 result contract without rebuilding it."""
+    """Check the exact runtime result, including an optional expected Run."""
     if type(result) not in {
         StepRuntimeExecutionSuccess,
         StepRuntimeExecutionFailure,
@@ -193,9 +341,38 @@ def is_valid_step_runtime_execution_result(
         result, workflow_id, step_id, step_index, employee_id
     ):
         return False
+    if run_id is not _UNSET or manifest_digest is not _UNSET:
+        if run_id is _UNSET or manifest_digest is _UNSET:
+            return False
+        if (result.run_id, result.manifest_digest) != (run_id, manifest_digest):
+            return False
     if type(result) is StepRuntimeExecutionSuccess:
         return _valid_invocation_success(result.invocation_result)
     return _valid_invocation_failure(result.invocation_result)
+
+
+def _initialize_runtime_result(
+    value: object,
+    workflow_id: str,
+    step_id: str,
+    step_index: int,
+    employee_id: str,
+    invocation_result: object,
+    *,
+    run_id: str | None,
+    manifest_digest: str | None,
+    binding: WorkflowRunBinding | None,
+) -> None:
+    selected = select_run_binding(binding, run_id, manifest_digest)
+    for name, item in (
+        ("workflow_id", workflow_id),
+        ("step_id", step_id),
+        ("step_index", step_index),
+        ("employee_id", employee_id),
+        ("invocation_result", invocation_result),
+    ):
+        object.__setattr__(value, name, item)
+    object.__setattr__(value, "_run_binding", selected)
 
 
 def _valid_runtime_identity(
@@ -206,11 +383,14 @@ def _valid_runtime_identity(
     employee_id: str,
 ) -> bool:
     return (
-        all(type(value) is str and value != "" for value in (
-            result.workflow_id,
-            result.step_id,
-            result.employee_id,
-        ))
+        all(
+            type(value) is str and value != ""
+            for value in (
+                result.workflow_id,
+                result.step_id,
+                result.employee_id,
+            )
+        )
         and type(result.step_index) is int
         and result.workflow_id == workflow_id
         and result.step_id == step_id
@@ -223,11 +403,14 @@ def _valid_invocation_success(value: object) -> bool:
     return (
         type(value) is ModelInvocationSuccess
         and is_supported_execution_provider(value.provider)
-        and all(type(item) is str and item != "" for item in (
-            value.provider,
-            value.response_id,
-            value.status,
-        ))
+        and all(
+            type(item) is str and item != ""
+            for item in (
+                value.provider,
+                value.response_id,
+                value.status,
+            )
+        )
         and _valid_optional_string(value.request_id)
         and type(value.text_parts) is tuple
         and all(type(item) is str for item in value.text_parts)
@@ -244,7 +427,8 @@ def _valid_invocation_failure(value: object) -> bool:
         type(value) is ModelInvocationFailure
         and is_supported_execution_provider(value.provider)
         and type(value.provider) is str
-        and value.category in {
+        and value.category
+        in {
             "api_error",
             "transport_error",
             "invalid_response",
@@ -287,7 +471,8 @@ def _valid_failure_diagnostics(
         and type(value.body_length) is int
         and value.body_length >= 0
         and type(value.body_kind) is str
-        and value.body_kind in {
+        and value.body_kind
+        in {
             "empty",
             "json",
             "sse",

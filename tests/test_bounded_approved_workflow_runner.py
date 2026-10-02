@@ -38,7 +38,11 @@ from ai_office.invocation import (
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    WorkflowExecutionState,
+    WorkflowRunBinding,
+)
 from ai_office.storage import (
     load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
@@ -48,6 +52,7 @@ from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_br
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
 from tests._phase260_test_support import synthetic_continuation_facts
+from tests._run_test_support import create_test_run
 
 
 def workflow(count: int = 4) -> WorkflowDefinition:
@@ -69,7 +74,12 @@ def workflow(count: int = 4) -> WorkflowDefinition:
     )
 
 
-def preparation(wf: WorkflowDefinition, current: int) -> WorkflowProgressionDecision:
+def preparation(
+    wf: WorkflowDefinition,
+    current: int,
+    *,
+    binding: WorkflowRunBinding | None = None,
+) -> WorkflowProgressionDecision:
     step = wf.steps[current - 1]
     next_step = wf.steps[current]
     return WorkflowProgressionDecision(
@@ -82,6 +92,7 @@ def preparation(wf: WorkflowDefinition, current: int) -> WorkflowProgressionDeci
         current + 1,
         next_step.employee,
         "next_step_available",
+        binding=binding,
     )
 
 
@@ -154,33 +165,42 @@ def preparation_approval(
 
 
 def _history_event(
-    wf: WorkflowDefinition, index: int, **changes: object
+    wf: WorkflowDefinition,
+    index: int,
+    *,
+    binding: WorkflowRunBinding | None = None,
+    **changes: object,
 ) -> RuntimeStepEvent:
     step = wf.steps[index - 1]
-    return replace(
-        RuntimeStepEvent(
-            "step_succeeded",
-            wf.id,
-            step.id,
-            index,
-            step.employee,
-            "running",
-            "succeeded",
-            "openai",
-            None,
-            f"response-{step.id}",
-            f"request-{step.id}",
-            f"output-{step.id}",
-            None,
-        ),
-        **changes,  # type: ignore[arg-type]
-    )
+    values: dict[str, object] = {
+        "event_type": "step_succeeded",
+        "workflow_id": wf.id,
+        "step_id": step.id,
+        "step_index": index,
+        "employee_id": step.employee,
+        "previous_status": "running",
+        "next_status": "succeeded",
+        "provider": "openai",
+        "failure_category": None,
+        "response_id": f"response-{step.id}",
+        "request_id": f"request-{step.id}",
+        "output_text": f"output-{step.id}",
+        "message": None,
+    }
+    values.update(changes)
+    return RuntimeStepEvent(**values, binding=binding)  # type: ignore[arg-type]
 
 
 def real_setup(
     tmp_path: Path, *, current: int = 9, count: int = 11
 ) -> dict[str, object]:
     wf = workflow(count)
+    run = create_test_run(
+        tmp_path,
+        "run-bounded",
+        wf,
+        tuple(employee(wf, index) for index in range(1, count + 1)),
+    )
     state = WorkflowExecutionState(
         wf.id,
         "succeeded",
@@ -189,27 +209,50 @@ def real_setup(
         wf.steps[current - 1].employee,
         tuple(step.id for step in wf.steps[:current]),
         None,
+        binding=run.binding,
     )
-    state_path, events_path = tmp_path / "state.json", tmp_path / "events.jsonl"
+    state_path, events_path = run.state_path, run.events_path
     state_path.write_bytes(serialize_workflow_execution_state_json(state).encode())
     events = []
     for index in range(1, current + 1):
         if index == current:
-            events.append(_history_event(wf, index, output_text="output"))
+            events.append(
+                _history_event(wf, index, binding=run.binding, output_text="output")
+            )
         elif index == current - 1:
-            events.append(_history_event(wf, index, output_text="", request_id=None))
+            events.append(
+                _history_event(
+                    wf,
+                    index,
+                    binding=run.binding,
+                    output_text="",
+                    request_id=None,
+                )
+            )
         elif index in (2, 3, 4):
-            events.append(_history_event(wf, index, output_text=""))
+            events.append(
+                _history_event(wf, index, binding=run.binding, output_text="")
+            )
         else:
-            events.append(_history_event(wf, index))
+            events.append(_history_event(wf, index, binding=run.binding))
     events_path.write_bytes(
         b"".join(serialize_runtime_step_event_jsonl(event).encode() for event in events)
     )
-    return {"workflow": wf, "state_path": state_path, "events_path": events_path}
+    return {
+        "workflow": wf,
+        "state_path": state_path,
+        "events_path": events_path,
+        "binding": run.binding,
+        "manifest_store": run.store,
+    }
 
 
 def real_context(
-    wf: WorkflowDefinition, index: int, *, bad_execution_approval: bool = False
+    wf: WorkflowDefinition,
+    index: int,
+    *,
+    bad_execution_approval: bool = False,
+    binding: WorkflowRunBinding | None = None,
 ) -> ApprovedWorkflowContinuationContext:
     emp = employee(wf, index)
     upstream = UpstreamStepOutput(
@@ -239,7 +282,11 @@ def real_context(
                 "request_123" if index == 11 else f"request-{wf.steps[index - 2].id}"
             ),
             next_step_index=index,
+            binding=binding,
         ),
+        run_id=None if binding is None else binding.run_id,
+        manifest_digest=None if binding is None else binding.manifest_digest,
+        run_input=None if binding is None else f"input-{binding.run_id}",
     )
     approval = approve_model_invocation_execution(
         prepared_request,
@@ -329,10 +376,13 @@ def test_02_two_contexts_progress_to_terminal_completion(tmp_path: Path) -> None
             item.execution_approval,
             synthetic_transport(calls),
         )
-        for item in (real_context(wf, 10), real_context(wf, 11))
+        for item in (
+            real_context(wf, 10, binding=values["binding"]),
+            real_context(wf, 11, binding=values["binding"]),
+        )
     )
     result = route_bounded_approved_workflow_continuation(
-        preparation(wf, 9),
+        preparation(wf, 9, binding=values["binding"]),
         wf,
         values["state_path"],
         values["events_path"],
@@ -355,7 +405,7 @@ def test_03_tuple_length_is_exact_bound_and_exhaustion_preserves_identity(
     wf = values["workflow"]
     assert isinstance(wf, WorkflowDefinition)
     calls: list[object] = []
-    supplied = real_context(wf, 10)
+    supplied = real_context(wf, 10, binding=values["binding"])
     supplied = ApprovedWorkflowContinuationContext(
         supplied.preparation_approval,
         supplied.employee,
@@ -364,7 +414,7 @@ def test_03_tuple_length_is_exact_bound_and_exhaustion_preserves_identity(
         supplied.execution_approval,
         synthetic_transport(calls),
     )
-    initial = preparation(wf, 9)
+    initial = preparation(wf, 9, binding=values["binding"])
     result = route_bounded_approved_workflow_continuation(
         initial, wf, values["state_path"], values["events_path"], (supplied,)
     )
@@ -529,7 +579,7 @@ def test_incompatible_execution_target_provider_binding_fails_closed_before_owne
     values = real_setup(tmp_path, current=9, count=11)
     wf = values["workflow"]
     assert isinstance(wf, WorkflowDefinition)
-    valid = real_context(wf, 10)
+    valid = real_context(wf, 10, binding=values["binding"])
     owner_calls: list[object] = []
     owner = continuation_module.route_approved_workflow_continuation_cycle
 
@@ -566,7 +616,7 @@ def test_incompatible_execution_target_provider_binding_fails_closed_before_owne
 
         with pytest.raises(RunnerError) as caught:
             route_bounded_approved_workflow_continuation(
-                preparation(wf, 9),
+                preparation(wf, 9, binding=values["binding"]),
                 wf,
                 values["state_path"],
                 values["events_path"],
@@ -594,7 +644,7 @@ def test_11_real_composition_first_context_failure_stops_without_retry(
     wf = values["workflow"]
     assert isinstance(wf, WorkflowDefinition)
     calls: list[object] = []
-    first = real_context(wf, 10)
+    first = real_context(wf, 10, binding=values["binding"])
     first = ApprovedWorkflowContinuationContext(
         first.preparation_approval,
         first.employee,
@@ -603,7 +653,7 @@ def test_11_real_composition_first_context_failure_stops_without_retry(
         first.execution_approval,
         synthetic_transport(calls, status=500),
     )
-    later = real_context(wf, 11)
+    later = real_context(wf, 11, binding=values["binding"])
     later = ApprovedWorkflowContinuationContext(
         later.preparation_approval,
         later.employee,
@@ -613,7 +663,7 @@ def test_11_real_composition_first_context_failure_stops_without_retry(
         synthetic_transport(calls),
     )
     result = route_bounded_approved_workflow_continuation(
-        preparation(wf, 9),
+        preparation(wf, 9, binding=values["binding"]),
         wf,
         values["state_path"],
         values["events_path"],
@@ -759,7 +809,7 @@ def test_15_wrong_step_context_stops_before_provider_without_repair(
     wf = values["workflow"]
     assert isinstance(wf, WorkflowDefinition)
     calls: list[object] = []
-    wrong = real_context(wf, 11)
+    wrong = real_context(wf, 11, binding=values["binding"])
     wrong = ApprovedWorkflowContinuationContext(
         wrong.preparation_approval,
         wrong.employee,
@@ -770,7 +820,7 @@ def test_15_wrong_step_context_stops_before_provider_without_repair(
     )
     with pytest.raises(Phase145Error):
         route_bounded_approved_workflow_continuation(
-            preparation(wf, 9),
+            preparation(wf, 9, binding=values["binding"]),
             wf,
             values["state_path"],
             values["events_path"],
@@ -787,7 +837,7 @@ def test_terminal_result_stops_before_later_context_real_composition(
     wf = values["workflow"]
     assert isinstance(wf, WorkflowDefinition)
     calls: list[object] = []
-    first = real_context(wf, 10)
+    first = real_context(wf, 10, binding=values["binding"])
     first = ApprovedWorkflowContinuationContext(
         first.preparation_approval,
         first.employee,
@@ -798,7 +848,7 @@ def test_terminal_result_stops_before_later_context_real_composition(
     )
     later = context("unused")
     result = route_bounded_approved_workflow_continuation(
-        preparation(wf, 9),
+        preparation(wf, 9, binding=values["binding"]),
         wf,
         values["state_path"],
         values["events_path"],
@@ -848,7 +898,7 @@ def test_real_second_context_failures_preserve_owner_semantics(
         wf = values["workflow"]
         assert isinstance(wf, WorkflowDefinition)
         calls: list[object] = []
-        first = real_context(wf, 10)
+        first = real_context(wf, 10, binding=values["binding"])
         first = ApprovedWorkflowContinuationContext(
             first.preparation_approval,
             first.employee,
@@ -857,7 +907,12 @@ def test_real_second_context_failures_preserve_owner_semantics(
             first.execution_approval,
             synthetic_transport(calls),
         )
-        second = real_context(wf, 11, bad_execution_approval=mode == "execution")
+        second = real_context(
+            wf,
+            11,
+            bad_execution_approval=mode == "execution",
+            binding=values["binding"],
+        )
         if mode == "preparation":
             second = ApprovedWorkflowContinuationContext(
                 object(),
@@ -878,7 +933,7 @@ def test_real_second_context_failures_preserve_owner_semantics(
             )
         with pytest.raises(Phase145Error if mode == "preparation" else Phase190Error):
             route_bounded_approved_workflow_continuation(
-                preparation(wf, 9),
+                preparation(wf, 9, binding=values["binding"]),
                 wf,
                 values["state_path"],
                 values["events_path"],
