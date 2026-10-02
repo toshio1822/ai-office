@@ -206,7 +206,6 @@ def _build_step_request(
         step_instructions=request.task_instructions,
         run_id=request.run_id,
         manifest_digest=request.manifest_digest,
-        run_input=request.run_input,
     )
 
 

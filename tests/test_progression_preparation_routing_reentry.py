@@ -614,7 +614,17 @@ def test_completion_contract_precedes_missing_targets(tmp_path: Path) -> None:
     ),
     [
         (
-            DecisionSubclass(*decision().__dict__.values()),
+            DecisionSubclass(
+                "prepare_next_step",
+                "workflow",
+                "first",
+                1,
+                "one",
+                "second",
+                2,
+                "two",
+                "next_step_available",
+            ),
             None,
             approval(),
             employee(),

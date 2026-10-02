@@ -18,8 +18,12 @@ from ai_office.engine.prepared_step_execution_start import (
     prepare_prepared_step_execution_start,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.engine.workflow_run_manifest import (
+    WorkflowRunManifestStore,
+    load_workflow_run_manifest,
+)
 from ai_office.invocation import ModelInvocationFailureCategory
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState, binding_of
 from ai_office.storage import (
     LoadedWorkflowExecutionHistory,
     WorkflowExecutionPersistenceTargets,
@@ -126,9 +130,13 @@ def route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_con
     loaded, state_source_sha256 = _check_predecessor(
         result, workflow, state_path, events_path
     )
+    run_input = _manifest_run_input(loaded.state, state_path)
     try:
         value = prepare_prepared_step_execution_start(
-            result, loaded, state_source_sha256=state_source_sha256
+            result,
+            loaded,
+            state_source_sha256=state_source_sha256,
+            run_input=run_input,
         )
     except PreparedStepExecutionStartError:
         _fail("start_contract")
@@ -283,6 +291,27 @@ def _check_targets(state_path: Path, events_path: Path) -> None:
                 _fail(classification)
         except OSError:
             _fail(classification)
+
+
+def _manifest_run_input(state: WorkflowExecutionState, state_path: Path) -> str | None:
+    """Resolve Run Input from the pinned Manifest that the binding names.
+
+    A Run-bound history has no Run Input of its own; the Manifest stays the
+    only authority.  A legacy Run-less history keeps the unbound value and is
+    never silently adopted as Run execution data.
+    """
+    binding = binding_of(state)
+    if binding is None:
+        return None
+    try:
+        manifest = load_workflow_run_manifest(
+            WorkflowRunManifestStore(state_path.parent), binding.run_id
+        )
+    except Exception:
+        _fail("terminal_contract")
+    if manifest.digest != binding.manifest_digest:
+        _fail("terminal_contract")
+    return manifest.run_input
 
 
 def _load_history(

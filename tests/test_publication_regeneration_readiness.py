@@ -139,7 +139,7 @@ def write_history(path: Path) -> WorkflowExecutionPersistenceTargets:
             for employee_id in ("researcher", "editor")
         ),
     )
-    binding = WorkflowRunBinding(manifest.run_id, manifest.digest, manifest.run_input)
+    binding = WorkflowRunBinding(manifest.run_id, manifest.digest)
     state = WorkflowExecutionState(
         workflow_id=definition.id,
         status="succeeded",
@@ -188,7 +188,6 @@ def write_history(path: Path) -> WorkflowExecutionPersistenceTargets:
         state_path=path / f"{run_id}.state.json",
         events_path=path / f"{run_id}.events.jsonl",
         binding=binding,
-        namespace_root=path,
     )
     targets.state_path.write_text(
         serialize_workflow_execution_state_json(state), encoding="utf-8"
@@ -763,25 +762,25 @@ def test_canonical_wrapper_fixture_is_compact_and_digest_bound(tmp_path: Path) -
         '"claim_contract_sha256":null,"evaluated_claim_contract":null,"outcome":"success",'
         '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
         '"regeneration_id":"regen-20260912-01",'
-        '"result_record_sha256":"94bda189c8241fae04ae3585614accba215fa5415f6b1e86e37b264725aca49b",'
+        '"result_record_sha256":"6d2f19676b7b574d9630af949fe5384a5d3386ee9f5935247c071c10679926e3",'
         '"schema_version":"publication-regeneration-readiness.v1",'
-        '"source_audit_sha256":"f17c1637a7c9e8c54803b6374fb2a31a1f808790b14610893f249521119b12eb",'
+        '"source_audit_sha256":"8f8409ef4715d67fb3dab6e5988ae375948533ced378a721a02d8e22c2eb1491",'
         '"source_post_terminal_facts":{"completed_step_ids":["research","publish"],'
-        '"events_sha256":"49e0bacc1a9253dd38a63431f12ee470acf3b360d906627f5a746ae6ceaa8807",'
+        '"events_sha256":"a9f9d7b2078baccd1726f9230d150c32501d8321c87dd60535470eedd9a99eb7",'
         '"final_output_sha256":"f5a064be281eea4db190ed7268f4a1e005ca05227654bbfa260a6c5684da743e",'
         '"schema_version":"post-terminal-facts.v1",'
-        '"state_sha256":"8d70a91547318afe11454ae226941826bd8e3f461fcfd9df001f41e5c0c1706d",'
+        '"state_sha256":"328ffc7442f48340241cf40f0b5b4e2ad2fcd18fb819461f6ea7b6cea2b301af",'
         '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
         '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
         '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase268-workflow"},'
-        '"source_post_terminal_facts_sha256":"527d537477261dd75bd67e034a388e78043ef8f7b87379cde69cd3ee54af3407"}'
+        '"source_post_terminal_facts_sha256":"20ebdefae796866e982688f98706115f58414c9307b445c4ffad9b616b3fd561"}'
     )
     assert canonical == expected
     assert publication_regeneration_readiness_assessment_digest(assessment) == (
         hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     )
     assert assessment.digest == (
-        "1837d766e751aadc5c315f7f920034751884768916f4a65b1ce81f0d05c85baa"
+        "ecf250fa7bbd5d943967ecb3f80b819e3790caad7350a33378db3eb5559d06e7"
     )
 
 

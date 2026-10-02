@@ -313,7 +313,17 @@ def test_prevalidation_rejects_with_zero_calls_and_writes(
 @pytest.mark.parametrize(
     "invalid",
     [
-        DecisionSubclass(**decision().__dict__),
+        DecisionSubclass(
+            "prepare_next_step",
+            "workflow",
+            "first",
+            1,
+            "one",
+            "second",
+            2,
+            "two",
+            "next_step_available",
+        ),
         WorkflowSubclass.model_validate(workflow().model_dump()),
         ApprovalSubclass(*approval().__dict__.values()),
         EmployeeSubclass.model_validate(employee().model_dump()),
@@ -400,7 +410,17 @@ def test_missing_target_rejects_before_calls_or_writes(
     "returned",
     [
         object(),
-        DecisionSubclass(**decision().__dict__),
+        DecisionSubclass(
+            "prepare_next_step",
+            "workflow",
+            "first",
+            1,
+            "one",
+            "second",
+            2,
+            "two",
+            "next_step_available",
+        ),
         decision(workflow_id="other"),
         decision(current_step_id="other"),
         decision(current_step_index=2),

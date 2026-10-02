@@ -54,8 +54,14 @@ def prepare_prepared_step_execution_start(
     history: LoadedWorkflowExecutionHistory,
     *,
     state_source_sha256: str,
+    run_input: str | None = None,
 ) -> PreparedStepExecutionStart:
-    """Return immutable request data and a proposed running state without I/O."""
+    """Return immutable request data and a proposed running state without I/O.
+
+    ``run_input`` is the Manifest-authoritative business input for the Run.  It
+    is supplied here as a distinct semantic value rather than read from the
+    state or event bytes, which persist only the Run binding.
+    """
     state = history.state
     state_binding = binding_of(state)
     if prepared_step.binding is not None and prepared_step.binding != state_binding:
@@ -100,7 +106,7 @@ def prepare_prepared_step_execution_start(
         manifest_digest=(
             None if state_binding is None else state_binding.manifest_digest
         ),
-        run_input=None if state_binding is None else state_binding.run_input,
+        run_input=run_input,
     )
     return PreparedStepExecutionStart(
         request,

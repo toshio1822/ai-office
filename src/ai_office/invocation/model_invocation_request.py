@@ -1,7 +1,10 @@
 """Provider-independent inputs for a future model adapter."""
 
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ai_office.invocation.runtime_facts import (
     EMPTY_RUNTIME_FACTS,
@@ -10,6 +13,9 @@ from ai_office.invocation.runtime_facts import (
     serialize_runtime_facts_snapshot_canonical,
 )
 from ai_office.planning.step_execution_request import StepExecutionRequest
+
+if TYPE_CHECKING:
+    from ai_office.runtime.run_binding import WorkflowRunBinding
 
 
 @dataclass(frozen=True)
@@ -27,10 +33,12 @@ class UpstreamStepOutput:
 class ModelInvocationRequest:
     """Immutable values required to invoke a model for one workflow step.
 
-    Run identity and Run Input are carried directly by this request but kept out
-    of the historical dataclass field set.  This preserves the provider-facing
-    request shape for old unbound callers while making every Run-owned request
-    explicit and independently checkable.
+    The Run binding (Run identity + Manifest digest) and the business Run Input
+    are fixed here at construction and never mutated.  Run Input is semantic
+    task data whose only durable authority is the Run Manifest; it is not part
+    of the Run binding.  The historical dataclass field set omits both so that
+    provider-facing unbound callers keep their shape, while every Run-owned
+    request stays explicit and independently checkable.
     """
 
     model: str
@@ -52,32 +60,41 @@ class ModelInvocationRequest:
         run_id: str | None = None,
         manifest_digest: str | None = None,
         run_input: str | None = None,
+        binding: WorkflowRunBinding | None = None,
     ) -> None:
-        _validate_optional_run_binding(run_id, manifest_digest, run_input)
+        if run_input is not None and type(run_input) is not str:
+            raise TypeError("workflow Run input must be a string")
+        # Imported here so that this provider-independent leaf module does not
+        # create an import cycle back into the runtime package.
+        from ai_office.runtime.run_binding import select_run_binding
+
+        selected = select_run_binding(binding, run_id, manifest_digest)
+        if run_input is not None and selected is None:
+            raise ValueError("workflow Run input is unbound")
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "system_instructions", system_instructions)
         object.__setattr__(self, "task_instructions", task_instructions)
         object.__setattr__(self, "allowed_tools", allowed_tools)
         object.__setattr__(self, "upstream_inputs", upstream_inputs)
         object.__setattr__(self, "runtime_facts", runtime_facts)
-        if run_id is not None:
-            object.__setattr__(self, "_run_id", run_id)
-            object.__setattr__(self, "_manifest_digest", manifest_digest)
-            object.__setattr__(self, "_run_input", run_input)
+        object.__setattr__(self, "_run_binding", selected)
+        object.__setattr__(self, "_run_input", run_input)
         _validate_upstream_inputs(self.upstream_inputs)
         _validate_runtime_facts(self.runtime_facts)
 
     @property
     def run_id(self) -> str | None:
-        return getattr(self, "_run_id", None)
+        binding = self._run_binding
+        return None if binding is None else binding.run_id
 
     @property
     def manifest_digest(self) -> str | None:
-        return getattr(self, "_manifest_digest", None)
+        binding = self._run_binding
+        return None if binding is None else binding.manifest_digest
 
     @property
     def run_input(self) -> str | None:
-        return getattr(self, "_run_input", None)
+        return self._run_input
 
     def __eq__(self, other: object) -> bool:
         """Compare the complete request, including its direct Run binding."""
@@ -91,9 +108,8 @@ class ModelInvocationRequest:
             self.allowed_tools,
             self.upstream_inputs,
             self.runtime_facts,
-            self.run_id,
-            self.manifest_digest,
-            self.run_input,
+            self._run_binding,
+            self._run_input,
         ) == (
             other.model,
             other.system_instructions,
@@ -101,9 +117,8 @@ class ModelInvocationRequest:
             other.allowed_tools,
             other.upstream_inputs,
             other.runtime_facts,
-            other.run_id,
-            other.manifest_digest,
-            other.run_input,
+            other._run_binding,
+            other._run_input,
         )
 
     def __hash__(self) -> int:
@@ -115,9 +130,8 @@ class ModelInvocationRequest:
                 self.allowed_tools,
                 self.upstream_inputs,
                 self.runtime_facts,
-                self.run_id,
-                self.manifest_digest,
-                self.run_input,
+                self._run_binding,
+                self._run_input,
             )
         )
 
@@ -127,8 +141,14 @@ def build_model_invocation_request(
     *,
     upstream_inputs: tuple[UpstreamStepOutput, ...] = (),
     runtime_facts: RuntimeFactsSnapshot = EMPTY_RUNTIME_FACTS,
+    run_input: str | None = None,
 ) -> ModelInvocationRequest:
-    """Copy a step request into the provider-independent invocation boundary."""
+    """Copy a step request into the provider-independent invocation boundary.
+
+    ``run_input`` is the Manifest-authoritative business input for the Run.  It
+    is passed as a distinct semantic value, separate from step/employee
+    instructions, upstream outputs, and runtime facts.
+    """
     _validate_upstream_inputs(upstream_inputs)
     _validate_runtime_facts(runtime_facts)
     return ModelInvocationRequest(
@@ -140,7 +160,7 @@ def build_model_invocation_request(
         runtime_facts=runtime_facts,
         run_id=step_request.run_id,
         manifest_digest=step_request.manifest_digest,
-        run_input=step_request.run_input,
+        run_input=run_input,
     )
 
 
@@ -181,29 +201,6 @@ def build_model_invocation_task_input(request: ModelInvocationRequest) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
-
-
-def _validate_optional_run_binding(
-    run_id: object,
-    manifest_digest: object,
-    run_input: object,
-) -> None:
-    if run_id is None and manifest_digest is None:
-        if run_input is not None:
-            raise ValueError("workflow Run input is unbound")
-        return
-    if run_id is None or manifest_digest is None:
-        raise ValueError("workflow Run binding is incomplete")
-    if type(run_id) is not str or not run_id:
-        raise ValueError("workflow Run identity is invalid")
-    if (
-        type(manifest_digest) is not str
-        or len(manifest_digest) != 64
-        or any(character not in "0123456789abcdef" for character in manifest_digest)
-    ):
-        raise ValueError("workflow Run Manifest identity is invalid")
-    if run_input is not None and type(run_input) is not str:
-        raise TypeError("workflow Run input must be a string")
 
 
 def _validate_upstream_inputs(value: object) -> None:

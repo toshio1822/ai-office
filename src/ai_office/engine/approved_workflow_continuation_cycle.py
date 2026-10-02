@@ -395,9 +395,11 @@ def _check_result_target_binding(
 ) -> None:
     """Reject a Run-bound decision/outcome for another execution namespace."""
     try:
-        targets = WorkflowExecutionPersistenceTargets(state_path, events_path)
-        target_binding = targets.binding
         result_binding = binding_of(result)
+        targets = WorkflowExecutionPersistenceTargets(
+            state_path, events_path, binding=result_binding
+        )
+        target_binding = targets.binding
     except (OSError, TypeError, ValueError):
         _fail("phase145_contract")
     if target_binding != result_binding:
@@ -621,7 +623,6 @@ def _check_authoritative_pre_persistence(
                     state_path,
                     events_path,
                     binding=binding,
-                    namespace_root=None if binding is None else state_path.parent,
                 )
             )
         )

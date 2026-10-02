@@ -54,7 +54,6 @@ _EVENT_KEYS = frozenset(
     }
 )
 _RUN_BINDING_KEYS = frozenset({"run_id", "manifest_digest"})
-_RUN_INPUT_KEY = "run_input"
 _RESPONSE_DIAGNOSTICS_KEYS = frozenset(
     {"status_code", "content_type", "body_length", "body_kind"}
 )
@@ -179,7 +178,6 @@ def parse_workflow_execution_state(
         allowed=(
             _STATE_KEYS,
             _STATE_KEYS | _RUN_BINDING_KEYS,
-            _STATE_KEYS | _RUN_BINDING_KEYS | {_RUN_INPUT_KEY},
         ),
     )
     workflow_id = _require_non_empty_string(data["workflow_id"], "state_parse")
@@ -231,8 +229,6 @@ def parse_runtime_step_event(
         _EVENT_KEYS | {"response_diagnostics"},
         binding_keys,
         binding_keys | {"response_diagnostics"},
-        binding_keys | {_RUN_INPUT_KEY},
-        binding_keys | {_RUN_INPUT_KEY, "response_diagnostics"},
     }:
         raise WorkflowExecutionDataError("events_parse")
     data = value
@@ -494,15 +490,11 @@ def _parse_run_binding(
 ) -> WorkflowRunBinding | None:
     present = {key for key in _RUN_BINDING_KEYS if key in data}
     if not present:
-        if _RUN_INPUT_KEY in data:
-            raise WorkflowExecutionDataError(operation)
         return None
     if present != _RUN_BINDING_KEYS:
         raise WorkflowExecutionDataError(operation)
     try:
-        return WorkflowRunBinding(
-            data["run_id"], data["manifest_digest"], data.get(_RUN_INPUT_KEY)
-        )
+        return WorkflowRunBinding(data["run_id"], data["manifest_digest"])
     except (TypeError, ValueError):
         raise WorkflowExecutionDataError(operation) from None
 

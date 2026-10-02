@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ai_office.definitions.workflow import WorkflowDefinition
-from ai_office.runtime import WorkflowExecutionState, bind_run_value, binding_of
+from ai_office.runtime import (
+    WorkflowExecutionState,
+    WorkflowRunBinding,
+    binding_of,
+    select_run_binding,
+)
 from ai_office.storage.workflow_execution_history import LoadedWorkflowExecutionHistory
 
 WorkflowProgressionDecisionType = Literal[
@@ -27,7 +32,7 @@ WorkflowProgressionCompatibilityClassification = Literal[
 _COMPATIBILITY_ERROR_MESSAGE = "workflow progression inputs are incompatible"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class WorkflowProgressionDecision:
     """An explicit, immutable decision about one loaded workflow state."""
 
@@ -40,6 +45,33 @@ class WorkflowProgressionDecision:
     next_step_index: int | None
     next_employee_id: str | None
     reason: str
+
+    def __init__(
+        self,
+        decision: WorkflowProgressionDecisionType,
+        workflow_id: str,
+        current_step_id: str,
+        current_step_index: int,
+        current_employee_id: str,
+        next_step_id: str | None,
+        next_step_index: int | None,
+        next_employee_id: str | None,
+        reason: str,
+        *,
+        binding: WorkflowRunBinding | None = None,
+    ) -> None:
+        object.__setattr__(self, "decision", decision)
+        object.__setattr__(self, "workflow_id", workflow_id)
+        object.__setattr__(self, "current_step_id", current_step_id)
+        object.__setattr__(self, "current_step_index", current_step_index)
+        object.__setattr__(self, "current_employee_id", current_employee_id)
+        object.__setattr__(self, "next_step_id", next_step_id)
+        object.__setattr__(self, "next_step_index", next_step_index)
+        object.__setattr__(self, "next_employee_id", next_employee_id)
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(
+            self, "_run_binding", select_run_binding(binding, None, None)
+        )
 
     def __eq__(self, other: object) -> bool:
         """Compare the decision together with its direct Run binding."""
@@ -96,11 +128,6 @@ class WorkflowProgressionDecision:
         binding = binding_of(self)
         return None if binding is None else binding.manifest_digest
 
-    @property
-    def run_input(self) -> str | None:
-        binding = binding_of(self)
-        return None if binding is None else binding.run_input
-
 
 @dataclass(frozen=True)
 class WorkflowProgressionCompatibilityDetail:
@@ -153,10 +180,8 @@ def decide_workflow_progression(
         next_step_index=state.current_step_index + 1,
         next_employee_id=next_step.employee,
         reason="next_step_available",
+        binding=binding_of(state),
     )
-    binding = binding_of(state)
-    if binding is not None:
-        bind_run_value(decision, binding)
     return decision
 
 
@@ -227,8 +252,6 @@ def _decision(
         next_step_index=None,
         next_employee_id=None,
         reason=reason,
+        binding=binding_of(state),
     )
-    binding = binding_of(state)
-    if binding is not None:
-        bind_run_value(decision, binding)
     return decision

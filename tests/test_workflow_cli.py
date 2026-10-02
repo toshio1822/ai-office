@@ -212,7 +212,7 @@ def ensure_run_manifest(
             workflow,
             employees,
         )
-    return WorkflowRunBinding(manifest.run_id, manifest.digest, manifest.run_input)
+    return WorkflowRunBinding(manifest.run_id, manifest.digest)
 
 
 def synthetic_transport(
@@ -3145,7 +3145,7 @@ def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step_fa
     assert preview["step_index"] == 2
     assert preview["employee_id"] == "general-researcher"
     assert preview["request_fingerprint"] == (
-        "2e682e66cd0d34e1cbac81e058f5cbb9dac15f53e36dae59fca8447109d3f7e2"
+        "40656162bf9a133026fb6cfbf63c399fbe2311717d64e9dda53fd5256d8e3841"
     )
     assert [fact["key"] for fact in preview["runtime_facts"]["facts"]] == [
         "predecessor.employee_id",
@@ -3950,9 +3950,7 @@ def test_workflows_result_rejects_foreign_run_binding_without_mutation(
 
     assert result.exit_code == 2
     assert result.stdout == ""
-    assert result.stderr == (
-        "Error: persisted workflow state requires recovery or investigation\n"
-    )
+    assert result.stderr == "Error: persisted workflow Run binding is inconsistent\n"
     assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == before
 
 

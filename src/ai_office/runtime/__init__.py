@@ -2,11 +2,9 @@
 
 from ai_office.runtime.run_binding import (
     WorkflowRunBinding,
-    bind_run_value,
     binding_of,
-    bindings_match,
     require_run_binding,
-    run_binding_of,
+    select_run_binding,
 )
 from ai_office.runtime.step_runtime_execution import (
     StepRuntimeExecutionFailure,
@@ -35,11 +33,9 @@ __all__ = [
     "StepRuntimeExecutionResult",
     "StepRuntimeExecutionSuccess",
     "WorkflowRunBinding",
-    "bind_run_value",
     "binding_of",
-    "bindings_match",
     "require_run_binding",
-    "run_binding_of",
+    "select_run_binding",
     "RuntimeStepEvent",
     "RuntimeStepEventType",
     "WorkflowExecutionState",

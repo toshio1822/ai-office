@@ -29,17 +29,15 @@ class StepExecutionRequest(BaseModel):
     step_instructions: str
     # These fields are intentionally separate from the instruction fields.
     # Older provider-free planning callers may omit them; Run-owned callers
-    # must provide the complete pair and the immutable business input.
+    # must provide the complete immutable (run_id, manifest_digest) identity.
+    # Run Input is not carried here: its only authority is the Run Manifest.
     run_id: str | None = None
     manifest_digest: str | None = None
-    run_input: str | None = None
 
     @model_validator(mode="after")
     def run_binding_is_complete(self) -> StepExecutionRequest:
         if (self.run_id is None) != (self.manifest_digest is None):
             raise ValueError("workflow Run binding is incomplete")
-        if self.run_input is not None and self.run_id is None:
-            raise ValueError("workflow Run input is unbound")
         return self
 
 
@@ -80,7 +78,6 @@ def build_step_execution_request(
     *,
     run_id: str | None = None,
     manifest_digest: str | None = None,
-    run_input: str | None = None,
 ) -> StepExecutionRequest:
     """Build a detached immutable request from one plan step and employee."""
     step = find_plan_step_by_index(plan, step_index)
@@ -102,5 +99,4 @@ def build_step_execution_request(
         step_instructions=step.instructions,
         run_id=run_id,
         manifest_digest=manifest_digest,
-        run_input=run_input,
     )

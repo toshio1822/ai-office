@@ -244,9 +244,7 @@ class WorkflowRunManifestStore:
             binding=WorkflowRunBinding(
                 run_id=manifest.run_id,
                 manifest_digest=manifest.digest,
-                run_input=manifest.run_input,
             ),
-            namespace_root=self.root,
         )
 
 

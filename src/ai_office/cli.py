@@ -515,7 +515,6 @@ def _run_binding_for_manifest(manifest: object) -> WorkflowRunBinding:
         return WorkflowRunBinding(
             manifest.run_id,
             manifest.digest,
-            manifest.run_input,
         )
     except (AttributeError, TypeError, ValueError):
         _workflow_cli_error("Run Manifest binding is invalid")
@@ -580,6 +579,7 @@ def _build_workflow_step_preview(
     runtime_facts: RuntimeFactsSnapshot = EMPTY_RUNTIME_FACTS,
     *,
     run_binding: WorkflowRunBinding | None = None,
+    run_input: str | None = None,
     tool_catalog: ToolCatalog = DEFAULT_TOOL_CATALOG,
 ) -> tuple[object, _WorkflowStepPreview]:
     """Construct one exact step request through the existing public seams."""
@@ -594,13 +594,13 @@ def _build_workflow_step_preview(
             manifest_digest=(
                 None if run_binding is None else run_binding.manifest_digest
             ),
-            run_input=None if run_binding is None else run_binding.run_input,
         )
         selected_employee = find_employee_by_id(employees, step_request.employee_id)
         invocation_request = build_model_invocation_request(
             step_request,
             upstream_inputs=upstream_inputs,  # type: ignore[arg-type]
             runtime_facts=runtime_facts,
+            run_input=run_input,
         )
         resolved_tools = resolve_tool_names(
             tool_catalog, invocation_request.allowed_tools
@@ -759,6 +759,8 @@ def _result_json(
     operation: str,
     mode: str,
     result: WorkflowProgressionDecision | PersistedExecutionOutcome,
+    *,
+    run_input: str | None = None,
 ) -> dict[str, object]:
     """Build safe result metadata without copying provider result contents."""
     binding = binding_of(result)
@@ -768,7 +770,7 @@ def _result_json(
         else {
             "manifest_digest": binding.manifest_digest,
             "run_id": binding.run_id,
-            "run_input": binding.run_input,
+            "run_input": run_input,
         }
     )
     if type(result) is WorkflowProgressionDecision:
@@ -1008,6 +1010,8 @@ def _read_persisted_continue_route(
 def _persisted_result_json(
     routed: PersistedExecutionOutcome | WorkflowProgressionDecision,
     history: object,
+    *,
+    run_input: str | None = None,
 ) -> dict[str, object]:
     """Project one canonical persisted route and its exact terminal event."""
     try:
@@ -1038,7 +1042,7 @@ def _persisted_result_json(
     binding_value = {
         "manifest_digest": state_binding.manifest_digest,
         "run_id": state_binding.run_id,
-        "run_input": state_binding.run_input,
+        "run_input": run_input,
     }
     routed_identity = (
         routed.workflow_id,
@@ -1215,6 +1219,7 @@ def start_workflow(
         1,
         execution_target=target,
         run_binding=binding,
+        run_input=manifest.run_input,
         tool_catalog=tool_catalog,
     )
     if preview_only:
@@ -1244,7 +1249,9 @@ def start_workflow(
         events_path,
         context,
     )
-    _emit_json(_result_json("start", "execute", result))
+    _emit_json(
+        _result_json("start", "execute", result, run_input=manifest.run_input)
+    )
     if type(result) is PersistedExecutionOutcome:
         raise typer.Exit(code=1)
 
@@ -1296,7 +1303,10 @@ def continue_workflow(
     if type(routed) is PersistedExecutionOutcome:
         _emit_json(
             _result_json(
-                "continue", "preview" if preview_only else "execute", routed
+                "continue",
+                "preview" if preview_only else "execute",
+                routed,
+                run_input=manifest.run_input,
             )
         )
         if not preview_only:
@@ -1305,7 +1315,10 @@ def continue_workflow(
     if routed.decision == "workflow_complete":
         _emit_json(
             _result_json(
-                "continue", "preview" if preview_only else "execute", routed
+                "continue",
+                "preview" if preview_only else "execute",
+                routed,
+                run_input=manifest.run_input,
             )
         )
         return
@@ -1320,7 +1333,6 @@ def continue_workflow(
                     state_path,
                     events_path,
                     binding=binding,
-                    namespace_root=store.root,
                 )
             )
         )
@@ -1346,6 +1358,7 @@ def continue_workflow(
         execution_target=target,
         runtime_facts=runtime_facts,
         run_binding=binding,
+        run_input=manifest.run_input,
         tool_catalog=tool_catalog,
     )
     if preview_only:
@@ -1377,7 +1390,9 @@ def continue_workflow(
     result = _run_persisted_workflow(
         workflow.definition, state_path, events_path, context
     )
-    _emit_json(_result_json("continue", "execute", result))
+    _emit_json(
+        _result_json("continue", "execute", result, run_input=manifest.run_input)
+    )
     if type(result) is PersistedExecutionOutcome:
         raise typer.Exit(code=1)
 
@@ -1406,14 +1421,15 @@ def result_workflow(
                 state_path=state_path,
                 events_path=events_path,
                 binding=binding,
-                namespace_root=store.root,
             )
         )
     except Exception:
         _workflow_cli_error(
             "persisted workflow state requires recovery or investigation"
         )
-    _emit_json(_persisted_result_json(routed, history))
+    _emit_json(
+        _persisted_result_json(routed, history, run_input=manifest.run_input)
+    )
     if type(routed) is PersistedExecutionOutcome:
         raise typer.Exit(code=1)
 

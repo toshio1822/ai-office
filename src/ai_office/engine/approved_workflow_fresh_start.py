@@ -252,9 +252,6 @@ def route_approved_workflow_fresh_start(
         events_path,
         created_targets,
         binding=context.binding,
-        namespace_root=(
-            None if context.manifest_store is None else context.manifest_store.root
-        ),
     )
 
     # From this point onward the ready pair is the first durable commit and is
@@ -264,7 +261,12 @@ def route_approved_workflow_fresh_start(
     prepared_step = _build_prepared_step(
         workflow, first_step, context.employee, context.binding
     )
-    prepared_start = _build_prepared_start(workflow, prepared_step, context.employee)
+    prepared_start = _build_prepared_start(
+        workflow,
+        prepared_step,
+        context.employee,
+        _run_input_for_context(context),
+    )
 
     target = _validate_context_execution_target(context)
     if type(context.execution_approval) is ModelInvocationExecutionApproval:
@@ -390,7 +392,6 @@ def _check_initial_inputs(
         if (
             manifest.digest != context.binding.manifest_digest
             or manifest.workflow_id != workflow.id
-            or manifest.run_input != context.binding.run_input
             or state_path != expected_state
             or events_path != expected_events
         ):
@@ -526,7 +527,6 @@ def _loadback_accept_ready(
     created_targets: tuple[bool, bool],
     *,
     binding: WorkflowRunBinding | None = None,
-    namespace_root: Path | None = None,
 ) -> None:
     """Strictly load and accept the durable ready commit."""
     try:
@@ -537,7 +537,6 @@ def _loadback_accept_ready(
                 state_path,
                 events_path,
                 binding=binding,
-                namespace_root=namespace_root,
             )
         )
     except Exception:
@@ -639,10 +638,24 @@ def _build_prepared_step(
     )
 
 
+def _run_input_for_context(context: ApprovedWorkflowBootstrapContext) -> str | None:
+    """Return the Run Input of the context's pinned Manifest as the authority."""
+    if context.binding is None or context.manifest_store is None:
+        return None
+    try:
+        manifest = load_workflow_run_manifest(
+            context.manifest_store, context.binding.run_id
+        )
+    except Exception:
+        _fail("run_binding")
+    return manifest.run_input
+
+
 def _build_prepared_start(
     workflow: WorkflowDefinition,
     prepared_step: PreparedWorkflowStep,
     employee: EmployeeDefinition,
+    run_input: str | None = None,
 ) -> PreparedStepExecutionStart:
     del workflow
     request = ModelInvocationRequest(
@@ -660,11 +673,7 @@ def _build_prepared_start(
             if prepared_step.binding is None
             else prepared_step.binding.manifest_digest
         ),
-        run_input=(
-            None
-            if prepared_step.binding is None
-            else prepared_step.binding.run_input
-        ),
+        run_input=run_input,
     )
     running_state = WorkflowExecutionState(
         workflow_id=prepared_step.workflow_id,

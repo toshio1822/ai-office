@@ -255,7 +255,17 @@ def test_mismatched_terminal_history_fails_closed(
         completed_step_ids=("first",),
         last_failure_category="api_error",
     )
-    value = state(**{**base.__dict__, **changes})
+    values: dict[str, object] = {
+        "workflow_id": base.workflow_id,
+        "status": base.status,
+        "current_step_id": base.current_step_id,
+        "current_step_index": base.current_step_index,
+        "current_employee_id": base.current_employee_id,
+        "completed_step_ids": base.completed_step_ids,
+        "last_failure_category": base.last_failure_category,
+    }
+    values.update(changes)
+    value = WorkflowExecutionState(**values)  # type: ignore[arg-type]
     terminal = event(
         event_type="step_failed",
         next_status="failed",

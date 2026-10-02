@@ -23,78 +23,30 @@ class WorkflowExecutionPersistenceTargets:
     """Explicit targets for one state/event pair.
 
     ``binding`` is optional for the provider-free historical persistence
-    primitive.  Run-owned callers must supply it; when present it is an
-    expected value, not metadata inferred from the two paths.  This keeps the
-    durable Run contract direct while allowing the lower owner to retain its
-    existing generic transition tests.
+    primitive.  Run-owned callers must supply it; when present it is an exact
+    expected value that is never inferred from the two paths.  Old Run-less
+    histories remain readable through the unbound form, but they are not
+    adopted as Run execution data.
     """
 
     state_path: Path
     events_path: Path
     binding: WorkflowRunBinding | None = None
-    namespace_root: Path | None = None
 
     def __post_init__(self) -> None:
         if type(self.state_path) is not type(Path()):
             raise TypeError("state_path must be a Path")
         if type(self.events_path) is not type(Path()):
             raise TypeError("events_path must be a Path")
-        if self.binding is not None and type(self.binding) is not WorkflowRunBinding:
-            raise TypeError("execution target binding is invalid")
-        if self.namespace_root is not None and type(self.namespace_root) is not type(
-            Path()
-        ):
-            raise TypeError("namespace_root must be a Path")
-        # Run-owned filenames are an authoritative namespace even when a
-        # lower path-based owner is called without an explicit target object.
-        # Resolve the manifest from that namespace rather than allowing a
-        # caller to pair an identity-derived history with another manifest.
-        if self.binding is None and self.namespace_root is None:
-            state_suffix = ".state.json"
-            events_suffix = ".events.jsonl"
-            state_name = self.state_path.name
-            events_name = self.events_path.name
-            if state_name.endswith(state_suffix) and events_name.endswith(
-                events_suffix
-            ):
-                state_run_id = state_name[: -len(state_suffix)]
-                events_run_id = events_name[: -len(events_suffix)]
-                if not state_run_id or state_run_id != events_run_id:
-                    raise ValueError("execution targets are not Run identity-derived")
-                try:
-                    from ai_office.engine.workflow_run_manifest import (
-                        WorkflowRunManifestStore,
-                        load_workflow_run_manifest,
-                    )
-
-                    manifest = load_workflow_run_manifest(
-                        WorkflowRunManifestStore(self.state_path.parent), state_run_id
-                    )
-                    object.__setattr__(
-                        self,
-                        "binding",
-                        WorkflowRunBinding(
-                            manifest.run_id,
-                            manifest.digest,
-                            manifest.run_input,
-                        ),
-                    )
-                    object.__setattr__(
-                        self, "namespace_root", self.state_path.parent
-                    )
-                except Exception as error:
-                    raise ValueError(
-                        "identity-derived execution namespace is invalid"
-                    ) from error
-        if self.namespace_root is not None and self.binding is not None:
-            namespace_root = self.namespace_root
-        elif self.binding is not None:
-            namespace_root = self.state_path.parent
-        else:
-            namespace_root = None
-        if namespace_root is not None and self.binding is not None:
-            expected_state = namespace_root / f"{self.binding.run_id}.state.json"
-            expected_events = namespace_root / f"{self.binding.run_id}.events.jsonl"
+        if self.binding is not None:
+            if type(self.binding) is not WorkflowRunBinding:
+                raise TypeError("execution target binding is invalid")
+            expected_state = (
+                self.state_path.parent / f"{self.binding.run_id}.state.json"
+            )
+            expected_events = (
+                self.state_path.parent / f"{self.binding.run_id}.events.jsonl"
+            )
             if self.state_path != expected_state or self.events_path != expected_events:
                 raise ValueError("execution targets are not Run identity-derived")
 
@@ -160,7 +112,6 @@ def build_workflow_execution_state_dict(
     if binding is not None:
         value["run_id"] = binding.run_id
         value["manifest_digest"] = binding.manifest_digest
-        value["run_input"] = binding.run_input
     return value
 
 
@@ -190,7 +141,6 @@ def build_runtime_step_event_dict(event: RuntimeStepEvent) -> dict[str, object]:
     if binding is not None:
         value["run_id"] = binding.run_id
         value["manifest_digest"] = binding.manifest_digest
-        value["run_input"] = binding.run_input
     if event.response_diagnostics is not None:
         value["response_diagnostics"] = {
             "status_code": event.response_diagnostics.status_code,
@@ -293,16 +243,10 @@ def _validate_persistence_input(
         (previous_binding is None and next_binding is None and event_binding is None)
         or (
             previous_binding is not None
-            and next_binding is not None
-            and event_binding is not None
-            and previous_binding.identity
-            == next_binding.identity
-            == event_binding.identity
+            and previous_binding == next_binding == event_binding
         )
     )
-    if targets.binding is not None and (
-        next_binding is None or next_binding.identity != targets.binding.identity
-    ):
+    if targets.binding is not None and next_binding != targets.binding:
         binding_is_invalid = True
     if next_binding is not None:
         expected_state = targets.state_path.parent / (

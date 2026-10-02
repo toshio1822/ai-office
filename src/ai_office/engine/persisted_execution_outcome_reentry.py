@@ -9,8 +9,9 @@ from ai_office.invocation import ModelInvocationFailureCategory
 from ai_office.runtime import (
     RuntimeStepEvent,
     WorkflowExecutionState,
-    bind_run_value,
+    WorkflowRunBinding,
     binding_of,
+    select_run_binding,
 )
 from ai_office.storage.workflow_execution_history import (
     LoadedWorkflowExecutionHistory,
@@ -38,7 +39,7 @@ PersistedExecutionOutcomeType = Literal["persisted_success", "persisted_failure"
 _ERROR_MESSAGE = "persisted execution outcome inputs are incompatible"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class PersistedExecutionOutcome:
     """Minimal immutable classification of one persisted terminal outcome."""
 
@@ -48,6 +49,27 @@ class PersistedExecutionOutcome:
     current_step_index: int
     current_employee_id: str
     failure_category: ModelInvocationFailureCategory | None
+
+    def __init__(
+        self,
+        outcome: PersistedExecutionOutcomeType,
+        workflow_id: str,
+        current_step_id: str,
+        current_step_index: int,
+        current_employee_id: str,
+        failure_category: ModelInvocationFailureCategory | None,
+        *,
+        binding: WorkflowRunBinding | None = None,
+    ) -> None:
+        object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "workflow_id", workflow_id)
+        object.__setattr__(self, "current_step_id", current_step_id)
+        object.__setattr__(self, "current_step_index", current_step_index)
+        object.__setattr__(self, "current_employee_id", current_employee_id)
+        object.__setattr__(self, "failure_category", failure_category)
+        object.__setattr__(
+            self, "_run_binding", select_run_binding(binding, None, None)
+        )
 
     def __eq__(self, other: object) -> bool:
         """Compare the outcome together with its direct Run binding."""
@@ -94,11 +116,6 @@ class PersistedExecutionOutcome:
     def manifest_digest(self) -> str | None:
         binding = binding_of(self)
         return None if binding is None else binding.manifest_digest
-
-    @property
-    def run_input(self) -> str | None:
-        binding = binding_of(self)
-        return None if binding is None else binding.run_input
 
 
 @dataclass(frozen=True)
@@ -362,10 +379,8 @@ def _build_result(state: WorkflowExecutionState) -> PersistedExecutionOutcome:
         current_step_index=state.current_step_index,
         current_employee_id=state.current_employee_id,
         failure_category=state.last_failure_category,
+        binding=binding_of(state),
     )
-    binding = binding_of(state)
-    if binding is not None:
-        bind_run_value(result, binding)
     return result
 
 

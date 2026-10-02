@@ -10,8 +10,8 @@ from ai_office.invocation import (
 from ai_office.planning import StepExecutionRequest
 from ai_office.runtime.run_binding import (
     WorkflowRunBinding,
-    bind_run_value,
     binding_of,
+    select_run_binding,
 )
 from ai_office.runtime.step_runtime_execution import (
     StepRuntimeExecutionFailure,
@@ -23,29 +23,6 @@ WorkflowExecutionStatus = Literal["ready", "running", "succeeded", "failed"]
 RuntimeStepEventType = Literal["step_succeeded", "step_failed"]
 
 _INPUT_ERROR_MESSAGE = "workflow execution transition inputs are inconsistent"
-
-
-def _select_binding(
-    run_id: str | None,
-    manifest_digest: str | None,
-    run_input: str | None,
-    binding: WorkflowRunBinding | None,
-) -> WorkflowRunBinding | None:
-    if binding is not None:
-        if type(binding) is not WorkflowRunBinding:
-            raise TypeError("workflow Run binding is invalid")
-        if run_id is not None and run_id != binding.run_id:
-            raise ValueError("workflow Run binding is inconsistent")
-        if manifest_digest is not None and manifest_digest != binding.manifest_digest:
-            raise ValueError("workflow Run binding is inconsistent")
-        if run_input is not None and run_input != binding.run_input:
-            raise ValueError("workflow Run binding is inconsistent")
-        return binding
-    if run_id is None and manifest_digest is None and run_input is None:
-        return None
-    if run_id is None or manifest_digest is None:
-        raise ValueError("workflow Run binding is incomplete")
-    return WorkflowRunBinding(run_id, manifest_digest, run_input)
 
 
 @dataclass(frozen=True, init=False)
@@ -77,10 +54,9 @@ class WorkflowExecutionState:
         *,
         run_id: str | None = None,
         manifest_digest: str | None = None,
-        run_input: str | None = None,
         binding: WorkflowRunBinding | None = None,
     ) -> None:
-        selected = _select_binding(run_id, manifest_digest, run_input, binding)
+        selected = select_run_binding(binding, run_id, manifest_digest)
         object.__setattr__(self, "workflow_id", workflow_id)
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "current_step_id", current_step_id)
@@ -88,8 +64,7 @@ class WorkflowExecutionState:
         object.__setattr__(self, "current_employee_id", current_employee_id)
         object.__setattr__(self, "completed_step_ids", completed_step_ids)
         object.__setattr__(self, "last_failure_category", last_failure_category)
-        if selected is not None:
-            bind_run_value(self, selected)
+        object.__setattr__(self, "_run_binding", selected)
 
     @property
     def run_id(self) -> str | None:
@@ -100,11 +75,6 @@ class WorkflowExecutionState:
     def manifest_digest(self) -> str | None:
         binding = binding_of(self)
         return None if binding is None else binding.manifest_digest
-
-    @property
-    def run_input(self) -> str | None:
-        binding = binding_of(self)
-        return None if binding is None else binding.run_input
 
     def __eq__(self, other: object) -> bool:
         """Compare state meaning and the complete direct Run binding."""
@@ -186,7 +156,7 @@ class RuntimeStepEvent:
         manifest_digest: str | None = None,
         binding: WorkflowRunBinding | None = None,
     ) -> None:
-        selected = _select_binding(run_id, manifest_digest, None, binding)
+        selected = select_run_binding(binding, run_id, manifest_digest)
         object.__setattr__(self, "event_type", event_type)
         object.__setattr__(self, "workflow_id", workflow_id)
         object.__setattr__(self, "step_id", step_id)
@@ -201,8 +171,7 @@ class RuntimeStepEvent:
         object.__setattr__(self, "output_text", output_text)
         object.__setattr__(self, "message", message)
         object.__setattr__(self, "response_diagnostics", response_diagnostics)
-        if selected is not None:
-            bind_run_value(self, selected)
+        object.__setattr__(self, "_run_binding", selected)
 
     @property
     def run_id(self) -> str | None:
@@ -213,11 +182,6 @@ class RuntimeStepEvent:
     def manifest_digest(self) -> str | None:
         binding = binding_of(self)
         return None if binding is None else binding.manifest_digest
-
-    @property
-    def run_input(self) -> str | None:
-        binding = binding_of(self)
-        return None if binding is None else binding.run_input
 
     def __eq__(self, other: object) -> bool:
         """Compare event meaning and the complete direct Run binding."""
@@ -309,7 +273,6 @@ def build_running_workflow_execution_state(
         last_failure_category=None,
         run_id=step_request.run_id,
         manifest_digest=step_request.manifest_digest,
-        run_input=step_request.run_input,
     )
 
 
@@ -332,11 +295,7 @@ def _validate_transition_input(
     result_binding = binding_of(result)
     bindings_valid = (
         state_binding is None and result_binding is None
-    ) or (
-        state_binding is not None
-        and result_binding is not None
-        and state_binding.identity == result_binding.identity
-    )
+    ) or (state_binding is not None and state_binding == result_binding)
     if (
         current_state.workflow_id != result.workflow_id
         or current_state.current_step_id != result.step_id

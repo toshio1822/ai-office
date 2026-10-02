@@ -1,8 +1,10 @@
-"""Direct Run/Manifest identity validation for execution contracts.
+"""Exact immutable Run identity for execution contracts.
 
-The binding is carried by the state, event, request, and runtime-result values
-that own it.  This module contains only the small value-level validation and
-copy helpers; it is not a second durable authority or a binding sidecar.
+A binding is fixed when the value that owns it is constructed and is never
+mutated afterwards.  Durable Run identity is exactly ``run_id +
+manifest_digest``; Run Input is not part of it because the Run Manifest is its
+only authority.  This module contains only value-level validation and read
+helpers; it is not a durable authority or a binding sidecar.
 """
 
 from __future__ import annotations
@@ -20,23 +22,13 @@ class WorkflowRunBinding:
 
     run_id: str
     manifest_digest: str
-    run_input: str | None = None
 
     def __post_init__(self) -> None:
-        validate_run_binding(self.run_id, self.manifest_digest, self.run_input)
-
-    @property
-    def identity(self) -> tuple[str, str, str | None]:
-        """Return the complete immutable Run/Manifest value identity."""
-        return self.run_id, self.manifest_digest, self.run_input
+        validate_run_binding(self.run_id, self.manifest_digest)
 
 
-def validate_run_binding(
-    run_id: object,
-    manifest_digest: object,
-    run_input: object = None,
-) -> None:
-    """Validate an optional complete Run binding without coercion."""
+def validate_run_binding(run_id: object, manifest_digest: object) -> None:
+    """Validate one complete Run binding without coercion."""
     if type(run_id) is not str or _RUN_ID_PATTERN.fullmatch(run_id) is None:
         raise ValueError("workflow Run identity is invalid")
     if (
@@ -44,59 +36,43 @@ def validate_run_binding(
         or _MANIFEST_DIGEST_PATTERN.fullmatch(manifest_digest) is None
     ):
         raise ValueError("workflow Run Manifest identity is invalid")
-    if run_input is not None and type(run_input) is not str:
-        raise TypeError("workflow Run input must be a string")
 
 
-def validate_optional_run_binding(
+def select_run_binding(
+    binding: object,
     run_id: object,
     manifest_digest: object,
-    run_input: object = None,
-) -> None:
-    """Allow the legacy unbound in-memory shape, but reject partial binding."""
-    if run_id is None and manifest_digest is None:
-        if run_input is not None:
-            raise ValueError("workflow Run input is unbound")
-        return
-    if run_id is None or manifest_digest is None:
-        raise ValueError("workflow Run binding is incomplete")
-    validate_run_binding(run_id, manifest_digest, run_input)
+) -> WorkflowRunBinding | None:
+    """Resolve the one immutable binding fixed at construction time.
 
-
-def attach_run_binding(
-    value: object,
-    binding: WorkflowRunBinding,
-) -> object:
-    """Attach identity directly to an immutable execution value.
-
-    State/event/request/result classes expose these attributes through their
-    public properties.  No separate mutable binding record is consulted.
+    Accepts either a complete binding value or the explicit identity fields.
+    Mixing inconsistent sources fails closed; a partial identity is rejected.
+    This helper only computes the construction-time value; callers store the
+    returned binding in ``__init__`` and never mutate it afterwards.
     """
-    if type(binding) is not WorkflowRunBinding:
-        raise TypeError("workflow Run binding is invalid")
-    object.__setattr__(value, "_run_id", binding.run_id)
-    object.__setattr__(value, "_manifest_digest", binding.manifest_digest)
-    object.__setattr__(value, "_run_input", binding.run_input)
-    return value
-
-
-def binding_of(value: object) -> WorkflowRunBinding | None:
-    """Read the direct identity carried by one execution value."""
-    run_id = getattr(value, "_run_id", None)
-    manifest_digest = getattr(value, "_manifest_digest", None)
-    run_input = getattr(value, "_run_input", None)
+    if binding is not None:
+        if type(binding) is not WorkflowRunBinding:
+            raise TypeError("workflow Run binding is invalid")
+        if run_id is not None and run_id != binding.run_id:
+            raise ValueError("workflow Run binding is inconsistent")
+        if manifest_digest is not None and manifest_digest != binding.manifest_digest:
+            raise ValueError("workflow Run binding is inconsistent")
+        return binding
     if run_id is None and manifest_digest is None:
-        if run_input is not None:
-            raise ValueError("workflow Run input is unbound")
         return None
     if run_id is None or manifest_digest is None:
         raise ValueError("workflow Run binding is incomplete")
-    return WorkflowRunBinding(run_id, manifest_digest, run_input)
+    return WorkflowRunBinding(run_id, manifest_digest)
 
 
-def bind_run_value(value: object, binding: WorkflowRunBinding) -> object:
-    """Compatibility spelling for the direct-value attachment helper."""
-    return attach_run_binding(value, binding)
+def binding_of(value: object) -> WorkflowRunBinding | None:
+    """Read the immutable binding fixed on one execution value, if any."""
+    binding = getattr(value, "_run_binding", None)
+    if binding is None:
+        return None
+    if type(binding) is not WorkflowRunBinding:
+        raise TypeError("workflow Run binding is invalid")
+    return binding
 
 
 def require_run_binding(value: object) -> WorkflowRunBinding:
@@ -107,33 +83,10 @@ def require_run_binding(value: object) -> WorkflowRunBinding:
     return binding
 
 
-def bindings_match(left: object, right: object) -> bool:
-    """Return true only for two complete, exact Run/Manifest identities."""
-    try:
-        left_binding = binding_of(left)
-        right_binding = binding_of(right)
-    except (AttributeError, TypeError, ValueError):
-        return False
-    return (
-        left_binding is not None
-        and right_binding is not None
-        and left_binding.identity == right_binding.identity
-    )
-
-
-def run_binding_of(value: object) -> WorkflowRunBinding | None:
-    """Explicit alias useful to callers that want to name the boundary."""
-    return binding_of(value)
-
-
 __all__ = [
     "WorkflowRunBinding",
-    "attach_run_binding",
-    "bind_run_value",
     "binding_of",
-    "bindings_match",
     "require_run_binding",
-    "run_binding_of",
-    "validate_optional_run_binding",
+    "select_run_binding",
     "validate_run_binding",
 ]

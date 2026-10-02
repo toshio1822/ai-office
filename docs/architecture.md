@@ -27,6 +27,38 @@ Phase 番号は開発履歴であり、runtime architecture の階層ではな�
 
 以下の Phase 記述は、過去にどの保証をどの構造で検証したかを理解するための資料として扱う。将来の実装は、同じ保証をより単純な構造で実現できるかを改めて評価する。
 
+## Current Run-bound workflow execution (Milestone 1 — Run Foundation)
+
+2026年10月2日時点で、公開 workflow 実行は Run identity を中心に動作する。
+`WorkflowRunManifestStore` が 1 つの authoritative Run namespace を所有し、Run
+identity から次の永続化対象を決定する。
+
+```text
+<run-id>.manifest.json
+<run-id>.state.json
+<run-id>.events.jsonl
+```
+
+`workflows start` は明示的な `run_id` と `run_input` を受け取り、検証済みの
+workflow、参照 employee、required tool contract の意味を Manifest に固定する。
+Manifest は provider/credential の処理より前に排他的に durable commit され、続いて
+Run-bound な初期 state が commit される。どちらかの前提永続化に失敗した場合、
+provider には到達しない。`workflows continue` と `workflows result` は state/event
+path を identity の代用にせず、Run identity から Manifest と state/event 対を選ぶ。
+
+Execution state、runtime event、model invocation request、runtime result、
+progression/outcome は immutable な `WorkflowRunBinding` を直接保持する。この binding
+は `run_id` と Manifest digest の組であり、state/event の JSON/JSONL にも同じ組を
+記録する。Manifest digest、Run identity、namespace path、state/event 間のいずれかが
+一致しない場合は fail closed する。Run-less の旧 persisted data は Run identity を
+推測して採用せず、公開 Run 操作では拒否する。
+
+Continue/result は live YAML を再解釈せず、選択した Run Manifest から workflow、
+employee、tool contract の snapshot を再構成する。Run Input は Manifest の唯一の
+durable authority とし、binding identity には混ぜない。provider-facing task input では
+Run Input、Step Instructions、Upstream Step Output、Runtime Facts を別々の semantic
+field として保持するため、同じ Run Input は各 applicable step に届く。
+
 
 ## Phase 59: classified persisted outcome routing phase bridge reentry
 

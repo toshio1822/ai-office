@@ -23,7 +23,11 @@ from ai_office.providers.openai import (
     execute_openai_model_invocation,
     send_openai_responses_http_request,
 )
-from ai_office.runtime.run_binding import WorkflowRunBinding, bind_run_value
+from ai_office.runtime.run_binding import (
+    WorkflowRunBinding,
+    binding_of,
+    select_run_binding,
+)
 from ai_office.tools import ToolDefinition
 
 _INPUT_ERROR_MESSAGE = "runtime step execution inputs are inconsistent"
@@ -60,7 +64,6 @@ class StepRuntimeExecutionSuccess:
         *,
         run_id: str | None = None,
         manifest_digest: str | None = None,
-        run_input: str | None = None,
         binding: WorkflowRunBinding | None = None,
     ) -> None:
         _initialize_runtime_result(
@@ -72,21 +75,18 @@ class StepRuntimeExecutionSuccess:
             invocation_result,
             run_id=run_id,
             manifest_digest=manifest_digest,
-            run_input=run_input,
             binding=binding,
         )
 
     @property
     def run_id(self) -> str | None:
-        return getattr(self, "_run_id", None)
+        binding = binding_of(self)
+        return None if binding is None else binding.run_id
 
     @property
     def manifest_digest(self) -> str | None:
-        return getattr(self, "_manifest_digest", None)
-
-    @property
-    def run_input(self) -> str | None:
-        return getattr(self, "_run_input", None)
+        binding = binding_of(self)
+        return None if binding is None else binding.manifest_digest
 
     def __eq__(self, other: object) -> bool:
         if type(other) is not StepRuntimeExecutionSuccess:
@@ -98,18 +98,14 @@ class StepRuntimeExecutionSuccess:
             self.step_index,
             self.employee_id,
             self.invocation_result,
-            self.run_id,
-            self.manifest_digest,
-            self.run_input,
+            binding_of(self),
         ) == (
             other.workflow_id,
             other.step_id,
             other.step_index,
             other.employee_id,
             other.invocation_result,
-            other.run_id,
-            other.manifest_digest,
-            other.run_input,
+            binding_of(other),
         )
 
     def __hash__(self) -> int:
@@ -120,9 +116,7 @@ class StepRuntimeExecutionSuccess:
                 self.step_index,
                 self.employee_id,
                 self.invocation_result,
-                self.run_id,
-                self.manifest_digest,
-                self.run_input,
+                binding_of(self),
             )
         )
 
@@ -147,7 +141,6 @@ class StepRuntimeExecutionFailure:
         *,
         run_id: str | None = None,
         manifest_digest: str | None = None,
-        run_input: str | None = None,
         binding: WorkflowRunBinding | None = None,
     ) -> None:
         _initialize_runtime_result(
@@ -159,21 +152,18 @@ class StepRuntimeExecutionFailure:
             invocation_result,
             run_id=run_id,
             manifest_digest=manifest_digest,
-            run_input=run_input,
             binding=binding,
         )
 
     @property
     def run_id(self) -> str | None:
-        return getattr(self, "_run_id", None)
+        binding = binding_of(self)
+        return None if binding is None else binding.run_id
 
     @property
     def manifest_digest(self) -> str | None:
-        return getattr(self, "_manifest_digest", None)
-
-    @property
-    def run_input(self) -> str | None:
-        return getattr(self, "_run_input", None)
+        binding = binding_of(self)
+        return None if binding is None else binding.manifest_digest
 
     def __eq__(self, other: object) -> bool:
         if type(other) is not StepRuntimeExecutionFailure:
@@ -185,18 +175,14 @@ class StepRuntimeExecutionFailure:
             self.step_index,
             self.employee_id,
             self.invocation_result,
-            self.run_id,
-            self.manifest_digest,
-            self.run_input,
+            binding_of(self),
         ) == (
             other.workflow_id,
             other.step_id,
             other.step_index,
             other.employee_id,
             other.invocation_result,
-            other.run_id,
-            other.manifest_digest,
-            other.run_input,
+            binding_of(other),
         )
 
     def __hash__(self) -> int:
@@ -207,9 +193,7 @@ class StepRuntimeExecutionFailure:
                 self.step_index,
                 self.employee_id,
                 self.invocation_result,
-                self.run_id,
-                self.manifest_digest,
-                self.run_input,
+                binding_of(self),
             )
         )
 
@@ -281,7 +265,6 @@ def _validate_execution_input(execution_input: StepRuntimeExecutionInput) -> Non
         or step_request.allowed_tools != invocation_request.allowed_tools
         or step_request.run_id != invocation_request.run_id
         or step_request.manifest_digest != invocation_request.manifest_digest
-        or step_request.run_input != invocation_request.run_input
     ):
         raise StepRuntimeExecutionInputError(_INPUT_ERROR_MESSAGE)
 
@@ -308,7 +291,6 @@ def _build_input_failure(
         ),
         run_id=step_request.run_id,
         manifest_digest=step_request.manifest_digest,
-        run_input=step_request.run_input,
     )
 
 
@@ -329,7 +311,6 @@ def _build_runtime_result(
         "employee_id": step_request.employee_id,
         "run_id": step_request.run_id,
         "manifest_digest": step_request.manifest_digest,
-        "run_input": step_request.run_input,
     }
     if isinstance(invocation_result, ModelInvocationSuccess):
         return StepRuntimeExecutionSuccess(
@@ -380,22 +361,9 @@ def _initialize_runtime_result(
     *,
     run_id: str | None,
     manifest_digest: str | None,
-    run_input: str | None,
     binding: WorkflowRunBinding | None,
 ) -> None:
-    if binding is not None:
-        if type(binding) is not WorkflowRunBinding:
-            raise TypeError("workflow Run binding is invalid")
-        if run_id is not None and run_id != binding.run_id:
-            raise ValueError("workflow Run binding is inconsistent")
-        if manifest_digest is not None and manifest_digest != binding.manifest_digest:
-            raise ValueError("workflow Run binding is inconsistent")
-        if run_input is not None and run_input != binding.run_input:
-            raise ValueError("workflow Run binding is inconsistent")
-    elif run_id is not None or manifest_digest is not None or run_input is not None:
-        if run_id is None or manifest_digest is None:
-            raise ValueError("workflow Run binding is incomplete")
-        binding = WorkflowRunBinding(run_id, manifest_digest, run_input)
+    selected = select_run_binding(binding, run_id, manifest_digest)
     for name, item in (
         ("workflow_id", workflow_id),
         ("step_id", step_id),
@@ -404,8 +372,7 @@ def _initialize_runtime_result(
         ("invocation_result", invocation_result),
     ):
         object.__setattr__(value, name, item)
-    if binding is not None:
-        bind_run_value(value, binding)
+    object.__setattr__(value, "_run_binding", selected)
 
 
 def _valid_runtime_identity(
