@@ -12,7 +12,11 @@ from ai_office.invocation import (
     RuntimeFactsSnapshot,
     approve_model_invocation_execution,
 )
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    WorkflowExecutionState,
+    WorkflowRunBinding,
+)
 from ai_office.storage import (
     LoadedWorkflowExecutionHistory,
     WorkflowExecutionPersistenceTargets,
@@ -33,6 +37,7 @@ def synthetic_continuation_facts(
     request_id: str | None,
     next_step_index: int,
     provider: str = "openai",
+    binding: WorkflowRunBinding | None = None,
 ) -> RuntimeFactsSnapshot:
     """Build facts for the exact synthetic persisted snapshot used by a test."""
     state = WorkflowExecutionState(
@@ -43,6 +48,7 @@ def synthetic_continuation_facts(
         predecessor_employee_id,
         completed_step_ids,
         None,
+        binding=binding,
     )
     event = RuntimeStepEvent(
         "step_succeeded",
@@ -58,6 +64,7 @@ def synthetic_continuation_facts(
         request_id,
         output_text,
         None,
+        binding=binding,
     )
     state_sha256 = sha256(
         serialize_workflow_execution_state_json(state).encode("utf-8")

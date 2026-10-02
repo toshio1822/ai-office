@@ -72,6 +72,10 @@ from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_
     RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161ChainError,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.engine.workflow_run_manifest import (
+    WorkflowRunManifestStore,
+    load_workflow_run_manifest,
+)
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationFailureCategory,
@@ -91,6 +95,7 @@ from ai_office.storage import (
     RunningStatePersistenceResult,
     WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     load_workflow_execution_history_with_source_digests,
     load_workflow_execution_state,
     parse_runtime_step_event,
@@ -393,16 +398,37 @@ def _check_result_target_binding(
     state_path: Path,
     events_path: Path,
 ) -> None:
-    """Reject a Run-bound decision/outcome for another execution namespace."""
+    """Require one authoritative Manifest-backed execution namespace."""
     try:
         result_binding = binding_of(result)
+        # ``WorkflowExecutionPersistenceTargets`` deliberately supports an
+        # unbound, provider-free persistence primitive.  It must not be
+        # allowed to make this provider-owning boundary appear bound merely
+        # because ``None == None``.
+        if result_binding is None:
+            _fail("phase145_contract")
+        store = WorkflowRunManifestStore(state_path.parent)
+        manifest = load_workflow_run_manifest(store, result_binding.run_id)
+        expected_state, expected_events = store.execution_paths(result_binding.run_id)
+        if (
+            manifest.workflow_id != result.workflow_id
+            or manifest.digest != result_binding.manifest_digest
+            or state_path != expected_state
+            or events_path != expected_events
+        ):
+            _fail("phase145_contract")
         targets = WorkflowExecutionPersistenceTargets(
             state_path, events_path, binding=result_binding
         )
-        target_binding = targets.binding
-    except (OSError, TypeError, ValueError):
+        history = load_workflow_execution_history(targets)
+    except Exception:
         _fail("phase145_contract")
-    if target_binding != result_binding:
+    target_binding = targets.binding
+    if (
+        target_binding != result_binding
+        or binding_of(history.state) != result_binding
+        or any(binding_of(event) != result_binding for event in history.events)
+    ):
         _fail("phase145_contract")
 
 

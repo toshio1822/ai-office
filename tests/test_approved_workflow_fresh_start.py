@@ -49,7 +49,7 @@ from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesRawHttpResponse,
 )
-from ai_office.runtime import StepRuntimeExecutionSuccess
+from ai_office.runtime import StepRuntimeExecutionSuccess, WorkflowRunBinding
 from ai_office.runtime.persisted_start_execution import (
     PersistedStartExecutionCompatibilityError,
 )
@@ -63,6 +63,7 @@ from ai_office.storage import (
 )
 from ai_office.tools import ToolDefinition
 from tests._phase260_test_support import synthetic_continuation_facts
+from tests._run_test_support import create_test_run
 
 
 def workflow(steps: int = 2) -> WorkflowDefinition:
@@ -119,13 +120,28 @@ def context(
     wf: WorkflowDefinition | None = None,
     index: int = 1,
     *,
+    state_path: Path,
     bad_execution_approval: bool = False,
     tools: tuple[ToolDefinition, ...] = (),
 ) -> ApprovedWorkflowBootstrapContext:
     wf = wf or workflow()
+    run_id = state_path.name.removesuffix(".state.json")
+    run = create_test_run(
+        state_path.parent,
+        run_id,
+        wf,
+        tuple(employee(step_index) for step_index, _ in enumerate(wf.steps, 1)),
+    )
+    binding = run.binding
     emp = employee(index)
     request = ModelInvocationRequest(
-        emp.model, emp.instructions, wf.steps[index - 1].instructions, ()
+        emp.model,
+        emp.instructions,
+        wf.steps[index - 1].instructions,
+        tools,
+        run_id=binding.run_id,
+        manifest_digest=binding.manifest_digest,
+        run_input=f"input-{run_id}",
     )
     execution_approval = approve_model_invocation_execution(
         request,
@@ -141,6 +157,8 @@ def context(
         api_key=OpenAIApiKey(value=SecretStr("synthetic-key")),
         execution_approval=(object() if bad_execution_approval else execution_approval),
         transport=None,
+        binding=binding,
+        manifest_store=run.store,
     )
 
 
@@ -177,6 +195,8 @@ def real_context_for(
     wf: WorkflowDefinition,
     index: int,
     calls: list[object] | None = None,
+    *,
+    binding: WorkflowRunBinding | None = None,
 ) -> ApprovedWorkflowContinuationContext:
     """One Phase-192 context for a real bounded continuation run."""
     emp = employee(index)
@@ -203,7 +223,11 @@ def real_context_for(
             response_id="resp-1",
             request_id="request-1",
             next_step_index=index,
+            binding=binding,
         ),
+        run_id=None if binding is None else binding.run_id,
+        manifest_digest=None if binding is None else binding.manifest_digest,
+        run_input=None if binding is None else f"input-{binding.run_id}",
     )
     approval_value = approve_model_invocation_execution(
         request,
@@ -246,7 +270,10 @@ def test_01_canonical_stages_run_once_and_preserve_non_final_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wf = workflow(2)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path, events_path = (
+        tmp_path / "run-1.state.json",
+        tmp_path / "run-1.events.jsonl",
+    )
     transport_calls: list[object] = []
     persistence_calls: list[object] = []
     execution_calls: list[object] = []
@@ -292,7 +319,10 @@ def test_01_canonical_stages_run_once_and_preserve_non_final_result(
         wf,
         state_path,
         events_path,
-        replace(context(wf, 1), transport=success_transport(transport_calls)),
+        replace(
+            context(wf, 1, state_path=state_path),
+            transport=success_transport(transport_calls),
+        ),
     )
 
     assert type(result) is WorkflowProgressionDecision
@@ -321,18 +351,25 @@ def test_01_canonical_stages_run_once_and_preserve_non_final_result(
 def test_02_one_step_success_returns_workflow_complete(tmp_path: Path) -> None:
     wf = workflow(1)
     calls: list[object] = []
+    state_path, events_path = (
+        tmp_path / "run-2.state.json",
+        tmp_path / "run-2.events.jsonl",
+    )
     result = route_approved_workflow_fresh_start(
         wf,
-        tmp_path / "state",
-        tmp_path / "events",
-        replace(context(wf, 1), transport=success_transport(calls)),
+        state_path,
+        events_path,
+        replace(
+            context(wf, 1, state_path=state_path),
+            transport=success_transport(calls),
+        ),
     )
     assert type(result) is WorkflowProgressionDecision
     assert result.decision == "workflow_complete"
     assert result.current_step_id == "step-1"
     assert result.reason == "last_step_succeeded"
     assert calls == [1]
-    state = load_workflow_execution_state(tmp_path / "state")
+    state = load_workflow_execution_state(state_path)
     assert state.status == "succeeded"
     assert state.completed_step_ids == ("step-1",)
 
@@ -340,18 +377,25 @@ def test_02_one_step_success_returns_workflow_complete(tmp_path: Path) -> None:
 def test_03_runtime_failure_returns_persisted_failure_once(tmp_path: Path) -> None:
     wf = workflow(2)
     calls: list[object] = []
+    state_path, events_path = (
+        tmp_path / "run-3.state.json",
+        tmp_path / "run-3.events.jsonl",
+    )
     result = route_approved_workflow_fresh_start(
         wf,
-        tmp_path / "state",
-        tmp_path / "events",
-        replace(context(wf, 1), transport=failure_transport(calls)),
+        state_path,
+        events_path,
+        replace(
+            context(wf, 1, state_path=state_path),
+            transport=failure_transport(calls),
+        ),
     )
     assert type(result) is PersistedExecutionOutcome
     assert result.outcome == "persisted_failure"
     assert result.current_step_id == "step-1"
     assert result.failure_category == "api_error"
     assert calls == [1]
-    state = load_workflow_execution_state(tmp_path / "state")
+    state = load_workflow_execution_state(state_path)
     assert state.status == "failed"
     assert state.completed_step_ids == ()
     assert state.last_failure_category == "api_error"
@@ -384,21 +428,73 @@ def test_04_public_contract_has_four_inputs_and_rejects_removed_keywords(
             "phase172_function",
         )
     ):
+        state_path = tmp_path / f"run-4-{index}.state.json"
+        events_path = tmp_path / f"run-4-{index}.events.jsonl"
         with pytest.raises(TypeError):
             route_approved_workflow_fresh_start(
                 wf,
-                tmp_path / f"state-{index}",
-                tmp_path / f"events-{index}",
-                context(wf, 1),
+                state_path,
+                events_path,
+                context(wf, 1, state_path=state_path),
                 **{removed_keyword: object()},
             )
+
+
+def test_runless_or_arbitrary_targets_fail_before_provider_or_durable_mutation(
+    tmp_path: Path,
+) -> None:
+    wf = workflow(2)
+    source_state = tmp_path / "source.state.json"
+    source_context = context(wf, 1, state_path=source_state)
+
+    runless_calls: list[object] = []
+    arbitrary_state = tmp_path / "arbitrary.state.json"
+    arbitrary_events = tmp_path / "arbitrary.events.jsonl"
+    runless_context = replace(
+        source_context,
+        binding=None,
+        manifest_store=None,
+        transport=success_transport(runless_calls),
+    )
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
+            wf, arbitrary_state, arbitrary_events, runless_context
+        ),
+        "run_binding",
+    )
+    assert runless_calls == []
+    assert not arbitrary_state.exists()
+    assert not arbitrary_events.exists()
+
+    bound_calls: list[object] = []
+    bound_context = replace(
+        source_context,
+        transport=success_transport(bound_calls),
+    )
+    bound_arbitrary_state = tmp_path / "bound-arbitrary.state.json"
+    bound_arbitrary_events = tmp_path / "bound-arbitrary.events.jsonl"
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
+            wf,
+            bound_arbitrary_state,
+            bound_arbitrary_events,
+            bound_context,
+        ),
+        "run_binding",
+    )
+    assert bound_calls == []
+    assert not bound_arbitrary_state.exists()
+    assert not bound_arbitrary_events.exists()
 
 
 def test_05_ready_pair_is_strictly_committed_before_running_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wf = workflow(2)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path, events_path = (
+        tmp_path / "run-5.state.json",
+        tmp_path / "run-5.events.jsonl",
+    )
     observed: list[tuple[str, bytes]] = []
     original_persistence = fresh_start_module.persist_prepared_running_state
 
@@ -420,7 +516,10 @@ def test_05_ready_pair_is_strictly_committed_before_running_stage(
         wf,
         state_path,
         events_path,
-        replace(context(wf, 1), transport=success_transport([])),
+        replace(
+            context(wf, 1, state_path=state_path),
+            transport=success_transport([]),
+        ),
     )
     assert type(result) is WorkflowProgressionDecision
     assert observed == [("ready", b"")]
@@ -429,11 +528,14 @@ def test_05_ready_pair_is_strictly_committed_before_running_stage(
 
 def test_06_existing_targets_are_not_overwritten(tmp_path: Path) -> None:
     wf = workflow(2)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path, events_path = (
+        tmp_path / "run-6.state.json",
+        tmp_path / "run-6.events.jsonl",
+    )
     state_path.write_bytes(b"existing-state")
     bootstrap_error(
         lambda: route_approved_workflow_fresh_start(
-            wf, state_path, events_path, context(wf, 1)
+            wf, state_path, events_path, context(wf, 1, state_path=state_path)
         ),
         "target_exists",
     )
@@ -443,28 +545,32 @@ def test_06_existing_targets_are_not_overwritten(tmp_path: Path) -> None:
     events_path.write_bytes(b"existing-events")
     bootstrap_error(
         lambda: route_approved_workflow_fresh_start(
-            wf, state_path, events_path, context(wf, 1)
+            wf, state_path, events_path, context(wf, 1, state_path=state_path)
         ),
         "target_exists",
     )
     assert state_path.read_bytes() == b"existing-state"
     assert events_path.read_bytes() == b"existing-events"
 
-    same_path = tmp_path / "same"
+    same_path = tmp_path / "run-6-same.state.json"
     bootstrap_error(
         lambda: route_approved_workflow_fresh_start(
-            wf, same_path, same_path, context(wf, 1)
+            wf, same_path, same_path, context(wf, 1, state_path=same_path)
         ),
         "target_conflict",
     )
     assert not same_path.exists()
 
-    missing_parent = tmp_path / "missing" / "state"
+    missing_parent = tmp_path / "missing" / "run-6.state.json"
+    valid_state = tmp_path / "run-6-valid.state.json"
     bootstrap_error(
         lambda: route_approved_workflow_fresh_start(
-            wf, missing_parent, tmp_path / "missing-events", context(wf, 1)
+            wf,
+            missing_parent,
+            tmp_path / "missing" / "run-6.events.jsonl",
+            context(wf, 1, state_path=valid_state),
         ),
-        "state_target",
+        "run_binding",
     )
     assert not missing_parent.exists()
 
@@ -473,7 +579,10 @@ def test_07_initialization_failure_compensates_only_created_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wf = workflow(2)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path, events_path = (
+        tmp_path / "run-7.state.json",
+        tmp_path / "run-7.events.jsonl",
+    )
     original_open = Path.open
 
     def failing_events_open(
@@ -490,7 +599,7 @@ def test_07_initialization_failure_compensates_only_created_targets(
     )
     bootstrap_error(
         lambda: route_approved_workflow_fresh_start(
-            wf, state_path, events_path, context(wf, 1)
+            wf, state_path, events_path, context(wf, 1, state_path=state_path)
         ),
         "dependency_error",
     )
@@ -502,7 +611,10 @@ def test_08_loadback_mismatch_compensates_created_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wf = workflow(2)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path, events_path = (
+        tmp_path / "run-8.state.json",
+        tmp_path / "run-8.events.jsonl",
+    )
 
     def mismatched_loadback(*_: object) -> object:
         assert state_path.is_file()
@@ -515,7 +627,7 @@ def test_08_loadback_mismatch_compensates_created_pair(
     )
     bootstrap_error(
         lambda: route_approved_workflow_fresh_start(
-            wf, state_path, events_path, context(wf, 1)
+            wf, state_path, events_path, context(wf, 1, state_path=state_path)
         ),
         "initialization_contract",
     )
@@ -523,8 +635,8 @@ def test_08_loadback_mismatch_compensates_created_pair(
     assert not events_path.exists()
 
     rollback_state, rollback_events = (
-        tmp_path / "rollback-state",
-        tmp_path / "rollback-events",
+        tmp_path / "run-8-rollback.state.json",
+        tmp_path / "run-8-rollback.events.jsonl",
     )
     original_unlink = Path.unlink
 
@@ -539,7 +651,10 @@ def test_08_loadback_mismatch_compensates_created_pair(
     )
     bootstrap_error(
         lambda: route_approved_workflow_fresh_start(
-            wf, rollback_state, rollback_events, context(wf, 1)
+            wf,
+            rollback_state,
+            rollback_events,
+            context(wf, 1, state_path=rollback_state),
         ),
         "rollback_failure",
     )
@@ -560,12 +675,12 @@ def test_09_invalid_approval_keeps_ready_pair_and_skips_provider(
     )
     for index, bad in enumerate(invalid):
         state_path, events_path = (
-            tmp_path / f"state-{index}",
-            tmp_path / f"events-{index}",
+            tmp_path / f"run-9-{index}.state.json",
+            tmp_path / f"run-9-{index}.events.jsonl",
         )
         calls: list[object] = []
         ctx = replace(
-            context(wf, 1),
+            context(wf, 1, state_path=state_path),
             preparation_approval=bad,  # type: ignore[arg-type]
             transport=success_transport(calls),
         )
@@ -582,9 +697,12 @@ def test_09_invalid_approval_keeps_ready_pair_and_skips_provider(
 
 def test_10_wrong_employee_keeps_ready_pair(tmp_path: Path) -> None:
     wf = workflow(2)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path, events_path = (
+        tmp_path / "run-10.state.json",
+        tmp_path / "run-10.events.jsonl",
+    )
     ctx = replace(
-        context(wf, 1),
+        context(wf, 1, state_path=state_path),
         employee=employee(2),  # type: ignore[arg-type]
         transport=success_transport([]),
     )
@@ -601,7 +719,10 @@ def test_11_running_persistence_failure_recovers_ready_without_retry(
 ) -> None:
     wf = workflow(2)
 
-    safe_state, safe_events = tmp_path / "safe-state", tmp_path / "safe-events"
+    safe_state, safe_events = (
+        tmp_path / "run-11-safe.state.json",
+        tmp_path / "run-11-safe.events.jsonl",
+    )
     safe_calls: list[object] = []
     safe_snapshot: list[tuple[bytes, bytes]] = []
     safe_error = RunningStatePersistenceError("safe persistence failure")
@@ -621,7 +742,9 @@ def test_11_running_persistence_failure_recovers_ready_without_retry(
             wf,
             safe_state,
             safe_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=safe_state), transport=success_transport([])
+            ),
         )
     assert caught.value is safe_error
     assert safe_calls == [1]
@@ -630,8 +753,8 @@ def test_11_running_persistence_failure_recovers_ready_without_retry(
     assert load_workflow_execution_state(safe_state).status == "ready"
     assert safe_events.read_bytes() == b""
 
-    malformed_state = tmp_path / "malformed-state"
-    malformed_events = tmp_path / "malformed-events"
+    malformed_state = tmp_path / "run-11-malformed.state.json"
+    malformed_events = tmp_path / "run-11-malformed.events.jsonl"
     malformed_calls: list[object] = []
 
     def malformed(*_: object, **__: object) -> object:
@@ -644,7 +767,10 @@ def test_11_running_persistence_failure_recovers_ready_without_retry(
             wf,
             malformed_state,
             malformed_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=malformed_state),
+                transport=success_transport([]),
+            ),
         ),
         "running_persistence_contract",
     )
@@ -652,8 +778,8 @@ def test_11_running_persistence_failure_recovers_ready_without_retry(
     assert load_workflow_execution_state(malformed_state).status == "ready"
     assert malformed_events.read_bytes() == b""
 
-    unexpected_state = tmp_path / "unexpected-state"
-    unexpected_events = tmp_path / "unexpected-events"
+    unexpected_state = tmp_path / "run-11-unexpected.state.json"
+    unexpected_events = tmp_path / "run-11-unexpected.events.jsonl"
     unexpected_calls: list[object] = []
 
     def unexpected(*_: object, **__: object) -> object:
@@ -670,7 +796,10 @@ def test_11_running_persistence_failure_recovers_ready_without_retry(
             wf,
             unexpected_state,
             unexpected_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=unexpected_state),
+                transport=success_transport([]),
+            ),
         )
     assert classification(caught_unexpected.value) == "dependency_error"
     assert "secret" not in str(caught_unexpected.value)
@@ -683,7 +812,10 @@ def test_12_invalid_execution_approval_keeps_running_and_skips_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     wf = workflow(2)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
+    state_path, events_path = (
+        tmp_path / "run-12.state.json",
+        tmp_path / "run-12.events.jsonl",
+    )
     transport_calls: list[object] = []
     phase_calls: list[object] = []
 
@@ -697,7 +829,7 @@ def test_12_invalid_execution_approval_keeps_running_and_skips_provider(
         unexpected_phase,
     )
     ctx = replace(
-        context(wf, 1, bad_execution_approval=True),
+        context(wf, 1, state_path=state_path, bad_execution_approval=True),
         transport=success_transport(transport_calls),
     )
     with pytest.raises(PersistedStartExecutionCompatibilityError) as caught:
@@ -715,8 +847,8 @@ def test_13_execution_failure_and_malformed_output_recover_running_without_retry
     wf = workflow(2)
 
     malformed_state, malformed_events = (
-        tmp_path / "malformed-state",
-        tmp_path / "malformed-events",
+        tmp_path / "run-13-malformed.state.json",
+        tmp_path / "run-13-malformed.events.jsonl",
     )
     malformed_calls: list[object] = []
 
@@ -732,7 +864,10 @@ def test_13_execution_failure_and_malformed_output_recover_running_without_retry
             wf,
             malformed_state,
             malformed_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=malformed_state),
+                transport=success_transport([]),
+            ),
         ),
         "execution_contract",
     )
@@ -741,8 +876,8 @@ def test_13_execution_failure_and_malformed_output_recover_running_without_retry
     assert malformed_events.read_bytes() == b""
 
     mutation_state, mutation_events = (
-        tmp_path / "mutation-state",
-        tmp_path / "mutation-events",
+        tmp_path / "run-13-mutation.state.json",
+        tmp_path / "run-13-mutation.events.jsonl",
     )
     mutation_calls: list[object] = []
     mutation_snapshot: list[tuple[bytes, bytes]] = []
@@ -764,7 +899,10 @@ def test_13_execution_failure_and_malformed_output_recover_running_without_retry
             wf,
             mutation_state,
             mutation_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=mutation_state),
+                transport=success_transport([]),
+            ),
         ),
         "execution_contract",
     )
@@ -777,7 +915,10 @@ def test_13_execution_failure_and_malformed_output_recover_running_without_retry
     assert load_workflow_execution_state(mutation_state).status == "running"
     assert mutation_events.read_bytes() == b""
 
-    safe_state, safe_events = tmp_path / "safe-state", tmp_path / "safe-events"
+    safe_state, safe_events = (
+        tmp_path / "run-13-safe.state.json",
+        tmp_path / "run-13-safe.events.jsonl",
+    )
     safe_calls: list[object] = []
     safe_error = PersistedStartExecutionCompatibilityError("state_status")
 
@@ -795,15 +936,17 @@ def test_13_execution_failure_and_malformed_output_recover_running_without_retry
             wf,
             safe_state,
             safe_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=safe_state), transport=success_transport([])
+            ),
         )
     assert caught_safe.value is safe_error
     assert safe_calls == [1]
     assert load_workflow_execution_state(safe_state).status == "running"
     assert safe_events.read_bytes() == b""
 
-    unexpected_state = tmp_path / "unexpected-state"
-    unexpected_events = tmp_path / "unexpected-events"
+    unexpected_state = tmp_path / "run-13-unexpected.state.json"
+    unexpected_events = tmp_path / "run-13-unexpected.events.jsonl"
     unexpected_calls: list[object] = []
 
     def unexpected(*_: object, **__: object) -> object:
@@ -820,7 +963,10 @@ def test_13_execution_failure_and_malformed_output_recover_running_without_retry
             wf,
             unexpected_state,
             unexpected_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=unexpected_state),
+                transport=success_transport([]),
+            ),
         )
     assert classification(caught_unexpected.value) == "dependency_error"
     assert "secret" not in str(caught_unexpected.value)
@@ -834,7 +980,10 @@ def test_14_phase172_errors_keep_post_invocation_bytes_without_outer_rollback(
 ) -> None:
     wf = workflow(2)
 
-    safe_state, safe_events = tmp_path / "safe-state", tmp_path / "safe-events"
+    safe_state, safe_events = (
+        tmp_path / "run-14-safe.state.json",
+        tmp_path / "run-14-safe.events.jsonl",
+    )
     safe_calls: list[object] = []
     safe_error = Phase172Error("synthetic Phase 172 safe error")
 
@@ -854,15 +1003,17 @@ def test_14_phase172_errors_keep_post_invocation_bytes_without_outer_rollback(
             wf,
             safe_state,
             safe_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=safe_state), transport=success_transport([])
+            ),
         )
     assert caught_safe.value is safe_error
     assert safe_calls == [1]
     assert safe_state.read_bytes() == b"phase172-safe-state"
     assert safe_events.read_bytes() == b"phase172-safe-events"
 
-    unexpected_state = tmp_path / "unexpected-state"
-    unexpected_events = tmp_path / "unexpected-events"
+    unexpected_state = tmp_path / "run-14-unexpected.state.json"
+    unexpected_events = tmp_path / "run-14-unexpected.events.jsonl"
     unexpected_calls: list[object] = []
 
     def unexpected_phase(*_: object, **__: object) -> object:
@@ -881,7 +1032,10 @@ def test_14_phase172_errors_keep_post_invocation_bytes_without_outer_rollback(
             wf,
             unexpected_state,
             unexpected_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=unexpected_state),
+                transport=success_transport([]),
+            ),
         )
     assert classification(caught_unexpected.value) == "dependency_error"
     assert "secret" not in str(caught_unexpected.value)
@@ -889,8 +1043,8 @@ def test_14_phase172_errors_keep_post_invocation_bytes_without_outer_rollback(
     assert unexpected_state.read_bytes() == b"phase172-unexpected-state"
     assert unexpected_events.read_bytes() == b"phase172-unexpected-events"
 
-    malformed_state = tmp_path / "malformed-state"
-    malformed_events = tmp_path / "malformed-events"
+    malformed_state = tmp_path / "run-14-malformed.state.json"
+    malformed_events = tmp_path / "run-14-malformed.events.jsonl"
     malformed_calls: list[object] = []
 
     def malformed_phase(*_: object, **__: object) -> object:
@@ -909,7 +1063,10 @@ def test_14_phase172_errors_keep_post_invocation_bytes_without_outer_rollback(
             wf,
             malformed_state,
             malformed_events,
-            replace(context(wf, 1), transport=success_transport([])),
+            replace(
+                context(wf, 1, state_path=malformed_state),
+                transport=success_transport([]),
+            ),
         ),
         "phase172_contract",
     )
@@ -923,33 +1080,39 @@ def test_15_fresh_start_stops_before_explicit_phase192_continuation(
 ) -> None:
     wf = workflow(3)
     calls: list[object] = []
+    state_path, events_path = (
+        tmp_path / "run-15.state.json",
+        tmp_path / "run-15.events.jsonl",
+    )
+    bootstrap = context(wf, 1, state_path=state_path)
     first = route_approved_workflow_fresh_start(
         wf,
-        tmp_path / "state",
-        tmp_path / "events",
-        replace(context(wf, 1), transport=success_transport(calls)),
+        state_path,
+        events_path,
+        replace(bootstrap, transport=success_transport(calls)),
     )
     assert type(first) is WorkflowProgressionDecision
     assert first.decision == "prepare_next_step"
     assert calls == [1]
-    assert load_workflow_execution_state(tmp_path / "state").completed_step_ids == (
-        "step-1",
-    )
+    assert load_workflow_execution_state(state_path).completed_step_ids == ("step-1",)
 
     final = route_bounded_approved_workflow_continuation(
         first,
         wf,
-        tmp_path / "state",
-        tmp_path / "events",
-        (real_context_for(wf, 2, calls), real_context_for(wf, 3, calls)),
+        state_path,
+        events_path,
+        (
+            real_context_for(wf, 2, calls, binding=bootstrap.binding),
+            real_context_for(wf, 3, calls, binding=bootstrap.binding),
+        ),
     )
     assert type(final) is WorkflowProgressionDecision
     assert final.decision == "workflow_complete"
     assert final.current_step_index == 3
     assert calls == [1, 1, 1]
-    state = load_workflow_execution_state(tmp_path / "state")
+    state = load_workflow_execution_state(state_path)
     assert state.completed_step_ids == ("step-1", "step-2", "step-3")
     history = load_workflow_execution_history(
-        WorkflowExecutionPersistenceTargets(tmp_path / "state", tmp_path / "events")
+        WorkflowExecutionPersistenceTargets(state_path, events_path)
     )
     assert len(history.events) == 3

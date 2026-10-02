@@ -164,7 +164,7 @@ class InitialStepPreparationApproval:
 
 @dataclass(frozen=True)
 class ApprovedWorkflowBootstrapContext:
-    """The six caller-supplied values required by one fresh bootstrap."""
+    """The Run-bound values required by one provider-owning fresh bootstrap."""
 
     preparation_approval: InitialStepPreparationApproval
     employee: EmployeeDefinition
@@ -375,27 +375,30 @@ def _check_initial_inputs(
         _fail("target_conflict")
     if type(context) is not ApprovedWorkflowBootstrapContext:
         _fail("context_type")
-    if context.binding is not None:
-        if type(context.binding) is not WorkflowRunBinding:
-            _fail("run_binding")
-        if type(context.manifest_store) is not WorkflowRunManifestStore:
-            _fail("run_binding")
-        try:
-            manifest = load_workflow_run_manifest(
-                context.manifest_store, context.binding.run_id
-            )
-            expected_state, expected_events = context.manifest_store.execution_paths(
-                context.binding.run_id
-            )
-        except Exception:
-            _fail("run_binding")
-        if (
-            manifest.digest != context.binding.manifest_digest
-            or manifest.workflow_id != workflow.id
-            or state_path != expected_state
-            or events_path != expected_events
-        ):
-            _fail("run_binding")
+    # This is the public fresh-start execution gate.  Do not let the
+    # provider-owning path reinterpret a missing binding/store as a legacy
+    # unbound execution (or create durable ready state before rejecting it).
+    if (
+        type(context.binding) is not WorkflowRunBinding
+        or type(context.manifest_store) is not WorkflowRunManifestStore
+    ):
+        _fail("run_binding")
+    try:
+        manifest = load_workflow_run_manifest(
+            context.manifest_store, context.binding.run_id
+        )
+        expected_state, expected_events = context.manifest_store.execution_paths(
+            context.binding.run_id
+        )
+    except Exception:
+        _fail("run_binding")
+    if (
+        manifest.digest != context.binding.manifest_digest
+        or manifest.workflow_id != workflow.id
+        or state_path != expected_state
+        or events_path != expected_events
+    ):
+        _fail("run_binding")
     try:
         if not state_path.parent.is_dir() or not events_path.parent.is_dir():
             _fail("state_target" if not state_path.parent.is_dir() else "event_target")
@@ -638,11 +641,11 @@ def _build_prepared_step(
     )
 
 
-def _run_input_for_context(context: ApprovedWorkflowBootstrapContext) -> str | None:
+def _run_input_for_context(context: ApprovedWorkflowBootstrapContext) -> str:
     """Return the Run Input of the context's pinned Manifest as the authority."""
-    if context.binding is None or context.manifest_store is None:
-        return None
     try:
+        assert context.binding is not None
+        assert context.manifest_store is not None
         manifest = load_workflow_run_manifest(
             context.manifest_store, context.binding.run_id
         )
