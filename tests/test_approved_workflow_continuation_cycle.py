@@ -717,6 +717,31 @@ def test_real_composition_nonfinal_success_returns_next_progression_once(
     assert len(events) == 10
 
 
+def test_durable_business_approval_is_reused_without_new_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    values = setup(tmp_path, current=9, count=11)
+    wf = values["workflow"]
+    assert isinstance(wf, WorkflowDefinition)
+    calls: list[object] = []
+    args = list(valid_args(values))
+    args[-1] = transport(calls)
+
+    def fail_if_repersisted(*_: object, **__: object) -> object:
+        raise AssertionError("durable Business Approval must not be re-persisted")
+
+    monkeypatch.setattr(
+        continuation_module,
+        "persist_business_approval_evidence",
+        fail_if_repersisted,
+    )
+    result = phase190(*args)
+
+    assert type(result) is WorkflowProgressionDecision
+    assert result.next_step_index == 11
+    assert len(calls) == 1
+
+
 def test_real_composition_final_success_returns_workflow_complete(
     tmp_path: Path,
 ) -> None:

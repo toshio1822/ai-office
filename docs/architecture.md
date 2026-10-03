@@ -76,15 +76,21 @@ Approval evidence は同じ `WorkflowRunManifestStore` の Run namespace に、�
 canonical JSON sidecar として排他的に保存する。
 
 ```text
-<run-id>.business-approval.<approval-id>.json
-<run-id>.execution-approval.<approval-id>.json
+<run-id>.business-approval.<approval-storage-key>.json
+<run-id>.execution-approval.<approval-storage-key>.json
 ```
+
+従来の安全な文字種の approval identity は storage key にそのまま使い、その他の
+非空 metadata は approval identity を変更せず SHA-256 storage key に写像する。
 
 Business Approval evidence は Run、Manifest、workflow、step/index、employee、
 progression point、approver、approval identity、および affirmative decision に
 束縛される。Execution Approval evidence はさらに provider、execution-target
-fingerprint、invocation request fingerprint に束縛される。Business / Execution /
-Publication / Recovery は別の approval purpose であり、互いの evidence を代用しない。
+fingerprint、invocation request fingerprint に束縛される。Execution Approval evidence
+は別の invocation の permission として再利用されず、provider path は毎回 current
+invocation に対する明示的な Execution Approval を検証してから evidence を保存する。
+Business / Execution / Publication / Recovery は別の approval purpose であり、互いの
+evidence を代用しない。
 
 sidecar は compact な canonical UTF-8 JSON と SHA-256 identity を使い、strict load、
 exclusive create、exact-byte idempotence、conflict-without-overwrite を実施する。

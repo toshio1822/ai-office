@@ -428,23 +428,28 @@ def _ensure_business_approval(
             snapshot.id == next_step.id and snapshot.employee == next_step.employee
         ):
             _fail("business_approval")
-        evidence = (
-            preparation_approval.business_approval_evidence
-            if type(preparation_approval) is NextStepPreparationApproval
-            else None
-        )
+        # The Run namespace is authoritative after restart.  A caller carrier
+        # is only a new explicit approval when no exact durable evidence is
+        # present; it never replaces an already committed grant.
+        evidence = None
+        durable_evidence = None
         if snapshot.business_approval_required:
-            if evidence is None:
-                evidence = find_business_approval_evidence(
-                    store,
-                    binding=binding,
-                    workflow_id=workflow.id,
-                    step_id=next_step.id,
-                    step_index=next_index,
-                    employee_id=next_step.employee,
-                    progression_from_step_id=result.current_step_id,
-                    progression_from_step_index=result.current_step_index,
-                )
+            durable_evidence = find_business_approval_evidence(
+                store,
+                binding=binding,
+                workflow_id=workflow.id,
+                step_id=next_step.id,
+                step_index=next_index,
+                employee_id=next_step.employee,
+                progression_from_step_id=result.current_step_id,
+                progression_from_step_index=result.current_step_index,
+            )
+            evidence = durable_evidence
+            if (
+                evidence is None
+                and type(preparation_approval) is NextStepPreparationApproval
+            ):
+                evidence = preparation_approval.business_approval_evidence
             if evidence is None:
                 _fail("business_approval")
             validate_business_approval_evidence(
@@ -457,20 +462,21 @@ def _ensure_business_approval(
                 progression_from_step_id=result.current_step_id,
                 progression_from_step_index=result.current_step_index,
             )
-            persist_business_approval_evidence(store, evidence)
-            loaded = load_business_approval_evidence(
-                store, binding.run_id, evidence.approval_id
-            )
-            validate_business_approval_evidence(
-                loaded,
-                binding=binding,
-                workflow_id=workflow.id,
-                step_id=next_step.id,
-                step_index=next_index,
-                employee_id=next_step.employee,
-                progression_from_step_id=result.current_step_id,
-                progression_from_step_index=result.current_step_index,
-            )
+            if durable_evidence is None:
+                persist_business_approval_evidence(store, evidence)
+                loaded = load_business_approval_evidence(
+                    store, binding.run_id, evidence.approval_id
+                )
+                validate_business_approval_evidence(
+                    loaded,
+                    binding=binding,
+                    workflow_id=workflow.id,
+                    step_id=next_step.id,
+                    step_index=next_index,
+                    employee_id=next_step.employee,
+                    progression_from_step_id=result.current_step_id,
+                    progression_from_step_index=result.current_step_index,
+                )
         # The lower provider-free preparation owner still consumes its
         # historical shape, but its boolean is normalized only after the
         # pinned business policy/evidence gate has completed.  A malformed

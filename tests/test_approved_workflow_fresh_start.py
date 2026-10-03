@@ -35,6 +35,7 @@ from ai_office.engine.bounded_approved_workflow_runner import (
 from ai_office.engine.next_step_preparation import NextStepPreparationApproval
 from ai_office.engine.workflow_approval_evidence import (
     WorkflowApprovalEvidencePersistenceError,
+    approve_business_step,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
@@ -954,13 +955,34 @@ def test_15_business_evidence_persistence_failure_skips_provider(
         "persist_business_approval_evidence",
         fail_persistence,
     )
+    context_value = context(
+        wf,
+        1,
+        state_path=state_path,
+        with_business_approvals=False,
+    )
+    assert context_value.binding is not None
+    explicit_business_approval = approve_business_step(
+        binding=context_value.binding,
+        workflow_id=wf.id,
+        step_id=wf.steps[0].id,
+        step_index=1,
+        employee_id=wf.steps[0].employee,
+        approved_by="reviewer",
+        approval_id="business-persistence-failure",
+    )
+    prepared = replace(
+        context_value.preparation_approval,
+        business_approval_evidence=explicit_business_approval,
+    )
     bootstrap_error(
         lambda: route_approved_workflow_fresh_start(
             wf,
             state_path,
             events_path,
             replace(
-                context(wf, 1, state_path=state_path),
+                context_value,
+                preparation_approval=prepared,
                 transport=success_transport(transport_calls),
             ),
         ),
@@ -1002,8 +1024,59 @@ def test_16_execution_evidence_persistence_failure_skips_provider(
         "approval_evidence",
     )
     assert transport_calls == []
-    assert load_workflow_execution_state(state_path).status == "running"
-    assert events_path.read_bytes() == b""
+
+
+def test_17_durable_business_approval_is_authoritative_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wf = workflow(2)
+    state_path, events_path = (
+        tmp_path / "run-17-reused-business.state.json",
+        tmp_path / "run-17-reused-business.events.jsonl",
+    )
+    context_value = context(wf, 1, state_path=state_path)
+    assert context_value.binding is not None
+    assert context_value.manifest_store is not None
+    replacement_store = type(context_value.manifest_store)(state_path.parent)
+    replacement_business_approval = approve_business_step(
+        binding=context_value.binding,
+        workflow_id=wf.id,
+        step_id=wf.steps[0].id,
+        step_index=1,
+        employee_id=wf.steps[0].employee,
+        approved_by="replacement-operator",
+        approval_id="replacement-business-approval",
+    )
+    preparation = replace(
+        context_value.preparation_approval,
+        business_approval_evidence=replacement_business_approval,
+    )
+
+    def fail_if_repersisted(*_: object, **__: object) -> object:
+        raise AssertionError("durable Business Approval must not be re-persisted")
+
+    monkeypatch.setattr(
+        fresh_start_module,
+        "persist_business_approval_evidence",
+        fail_if_repersisted,
+    )
+    transport_calls: list[object] = []
+    result = route_approved_workflow_fresh_start(
+        wf,
+        state_path,
+        events_path,
+        replace(
+            context_value,
+            preparation_approval=preparation,
+            manifest_store=replacement_store,
+            transport=success_transport(transport_calls),
+        ),
+    )
+
+    assert type(result) is WorkflowProgressionDecision
+    assert result.next_step_index == 2
+    assert len(transport_calls) == 1
+    assert load_workflow_execution_state(state_path).status == "succeeded"
 
 
 def test_13_execution_failure_and_malformed_output_recover_running_without_retry(

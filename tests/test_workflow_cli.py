@@ -18,8 +18,10 @@ from ai_office.definitions.employee import load_employees
 from ai_office.definitions.workflow import load_workflows
 from ai_office.engine import (
     WorkflowRunManifestStore,
+    approve_business_step,
     create_workflow_run_manifest,
     load_workflow_run_manifest,
+    persist_business_approval_evidence,
 )
 from ai_office.invocation import ModelInvocationRequest
 from ai_office.providers.openai import (
@@ -292,14 +294,22 @@ def preview_command(
     return result, json.loads(result.stdout)
 
 
-def execution_options(preview: dict[str, object]) -> list[str]:
+def execution_options(
+    preview: dict[str, object], *, include_business: bool = True
+) -> list[str]:
     """Return caller-supplied approval binding copied exactly from a preview."""
-    return [
-        "--approve-business",
-        "--business-approved-by",
-        "synthetic-business-operator",
-        "--business-approval-id",
-        "synthetic-business-approval",
+    business = (
+        [
+            "--approve-business",
+            "--business-approved-by",
+            "synthetic-business-operator",
+            "--business-approval-id",
+            "synthetic-business-approval",
+        ]
+        if include_business
+        else []
+    )
+    return business + [
         "--approve-execution",
         "--execution-approved-by",
         "synthetic-operator",
@@ -327,6 +337,20 @@ def invoke_execution(
         app,
         workflow_command_args(operation, workflow_id, paths)
         + execution_options(preview),
+    )
+
+
+def invoke_execution_without_business(
+    operation: str,
+    workflow_id: str,
+    paths: dict[str, Path],
+    preview: dict[str, object],
+) -> object:
+    """Invoke after a matching durable Business Approval already exists."""
+    return runner.invoke(
+        app,
+        workflow_command_args(operation, workflow_id, paths)
+        + execution_options(preview, include_business=False),
     )
 
 
@@ -3108,6 +3132,41 @@ def test_workflows_start_success_executes_step1_once_with_empty_continuation(
     assert paths["events"].read_text(encoding="utf-8").count("step_succeeded") == 1
 
 
+def test_workflows_start_reuses_exact_durable_business_approval_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    binding = ensure_run_manifest(paths)
+    persist_business_approval_evidence(
+        WorkflowRunManifestStore(paths["run_store"]),
+        approve_business_step(
+            binding=binding,
+            workflow_id="research-and-summarize",
+            step_id="research",
+            step_index=1,
+            employee_id="general-researcher",
+            approved_by="durable-business-operator",
+            approval_id="durable-business-start",
+        ),
+    )
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+    _, preview = preview_command("start", "research-and-summarize", paths)
+
+    result = invoke_execution_without_business(
+        "start", "research-and-summarize", paths, preview
+    )
+    output = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert output["status"] == "prepare_next_step"
+    assert len(calls) == 1
+    assert key_calls == [1]
+
+
 def test_workflows_start_failure_executes_once_and_stops_without_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3306,6 +3365,45 @@ def test_workflows_continue_success_executes_exactly_one_next_step_and_stops(
         "research",
         "summarize",
     )
+
+
+def test_workflows_continue_reuses_exact_durable_business_approval_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_three_step_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    write_succeeded_prefix(paths, 1)
+    binding = ensure_run_manifest(paths)
+    persist_business_approval_evidence(
+        WorkflowRunManifestStore(paths["run_store"]),
+        approve_business_step(
+            binding=binding,
+            workflow_id="research-and-summarize",
+            step_id="summarize",
+            step_index=2,
+            employee_id="general-researcher",
+            progression_from_step_id="research",
+            progression_from_step_index=1,
+            approved_by="durable-business-operator",
+            approval_id="durable-business-continue",
+        ),
+    )
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+    _, preview = preview_command("continue", "research-and-summarize", paths)
+
+    result = invoke_execution_without_business(
+        "continue", "research-and-summarize", paths, preview
+    )
+    output = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert output["status"] == "prepare_next_step"
+    assert output["current_step_index"] == 2
+    assert len(calls) == 1
+    assert key_calls == [1]
 
 
 def test_workflows_continue_stale_expected_preview_is_rejected_before_transport(

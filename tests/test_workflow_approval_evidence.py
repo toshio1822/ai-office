@@ -125,7 +125,13 @@ def _business(
     )
 
 
-def _execution(workflow: WorkflowDefinition, run: RunFixture):
+def _execution(
+    workflow: WorkflowDefinition,
+    run: RunFixture,
+    *,
+    approved_by: str = "operator",
+    approval_id: str = "execution-1",
+):
     step = workflow.steps[0]
     request = ModelInvocationRequest(
         "test-model",
@@ -140,8 +146,8 @@ def _execution(workflow: WorkflowDefinition, run: RunFixture):
         request,
         (),
         provider="openai",
-        approved_by="operator",
-        approval_id="execution-1",
+        approved_by=approved_by,
+        approval_id=approval_id,
         execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
     )
     return build_execution_approval_evidence_for_tools(
@@ -340,6 +346,33 @@ def test_execution_evidence_binds_exact_request_and_target_and_is_restart_readab
             ),
             request_fingerprint="0" * 64,
         )
+
+
+def test_execution_evidence_preserves_nonempty_metadata_with_safe_storage_key(
+    tmp_path: Path,
+) -> None:
+    workflow, run = _run(tmp_path)
+    evidence = _execution(
+        workflow,
+        run,
+        approved_by="operator with space/日本語",
+        approval_id="execution approval/日本語",
+    )
+
+    persist_execution_approval_evidence(run.store, evidence)
+    restarted_store = type(run.store)(run.store.root)
+
+    assert (
+        load_execution_approval_evidence(
+            restarted_store, run.binding.run_id, evidence.approval_id
+        )
+        == evidence
+    )
+    paths = tuple(
+        run.store.root.glob(f"{run.binding.run_id}.execution-approval.*.json")
+    )
+    assert len(paths) == 1
+    assert evidence.approval_id not in paths[0].name
 
 
 def test_business_and_execution_purposes_are_separate_and_inspectable(

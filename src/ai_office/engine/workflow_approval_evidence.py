@@ -35,7 +35,8 @@ _BUSINESS_SCHEMA_VERSION = "workflow-business-approval-evidence.v1"
 _EXECUTION_SCHEMA_VERSION = "workflow-execution-approval-evidence.v1"
 _BUSINESS_PREFIX = "business-approval"
 _EXECUTION_PREFIX = "execution-approval"
-_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_SAFE_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DEFINITION_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _PATH_TYPE = type(Path())
@@ -325,7 +326,10 @@ def load_business_approval_evidence(
     manifest = _validate_store_and_manifest(store, run_id, None)
     path = _evidence_path(store, run_id, _BUSINESS_PREFIX, approval_id)
     value = _load_evidence(
-        path, expected_run_id=run_id, expected_approval_id=approval_id
+        path,
+        expected_run_id=run_id,
+        expected_approval_id=approval_id,
+        expected_prefix=_BUSINESS_PREFIX,
     )
     if type(value) is not BusinessApprovalEvidence:
         _raise_load("purpose")
@@ -341,7 +345,10 @@ def load_execution_approval_evidence(
     manifest = _validate_store_and_manifest(store, run_id, None)
     path = _evidence_path(store, run_id, _EXECUTION_PREFIX, approval_id)
     value = _load_evidence(
-        path, expected_run_id=run_id, expected_approval_id=approval_id
+        path,
+        expected_run_id=run_id,
+        expected_approval_id=approval_id,
+        expected_prefix=_EXECUTION_PREFIX,
     )
     if type(value) is not ExecutionApprovalEvidence:
         _raise_load("purpose")
@@ -366,8 +373,14 @@ def find_business_approval_evidence(
     matches: list[BusinessApprovalEvidence] = []
     prefix = f"{binding.run_id}.{_BUSINESS_PREFIX}."
     for path in sorted(store.root.glob(f"{prefix}*.json"), key=lambda item: item.name):
-        approval_id = path.name.removeprefix(prefix).removesuffix(".json")
-        value = load_business_approval_evidence(store, binding.run_id, approval_id)
+        value = _load_evidence(
+            path,
+            expected_run_id=binding.run_id,
+            expected_approval_id=None,
+            expected_prefix=_BUSINESS_PREFIX,
+        )
+        if type(value) is not BusinessApprovalEvidence:
+            _raise_load("purpose")
         try:
             validate_business_approval_evidence(
                 value,
@@ -393,16 +406,28 @@ def list_run_approval_evidence(
     """Read all strict approval evidence for one Run without external effects."""
     _validate_store_and_manifest(store, run_id, None)
     values: list[BusinessApprovalEvidence | ExecutionApprovalEvidence] = []
-    for prefix, loader in (
-        (_BUSINESS_PREFIX, load_business_approval_evidence),
-        (_EXECUTION_PREFIX, load_execution_approval_evidence),
-    ):
+    for prefix in (_BUSINESS_PREFIX, _EXECUTION_PREFIX):
         marker = f"{run_id}.{prefix}."
         for path in sorted(
             store.root.glob(f"{marker}*.json"), key=lambda item: item.name
         ):
-            approval_id = path.name.removeprefix(marker).removesuffix(".json")
-            values.append(loader(store, run_id, approval_id))
+            value = _load_evidence(
+                path,
+                expected_run_id=run_id,
+                expected_approval_id=None,
+                expected_prefix=prefix,
+            )
+            if (
+                prefix == _BUSINESS_PREFIX
+                and type(value) is not BusinessApprovalEvidence
+            ):
+                _raise_load("purpose")
+            if (
+                prefix == _EXECUTION_PREFIX
+                and type(value) is not ExecutionApprovalEvidence
+            ):
+                _raise_load("purpose")
+            values.append(value)
     return tuple(values)
 
 
@@ -529,7 +554,7 @@ def _validate_execution(value: object) -> None:
 
 
 def _validate_common(value: object) -> None:
-    _validate_metadata(value.run_id, "run_id")
+    _validate_run_id(value.run_id)
     _validate_sha256(value.manifest_digest, "manifest")
 
 
@@ -543,8 +568,13 @@ def _validate_definition_id(value: object) -> None:
         _raise("identity")
 
 
+def _validate_run_id(value: object) -> None:
+    if type(value) is not str or _RUN_ID_PATTERN.fullmatch(value) is None:
+        _raise("run_id")
+
+
 def _validate_metadata(value: object, classification: str) -> None:
-    if type(value) is not str or _ID_PATTERN.fullmatch(value) is None:
+    if not isinstance(value, str) or value == "":
         _raise(classification)
 
 
@@ -571,12 +601,12 @@ def _evidence_path(
 ) -> Path:
     if type(store) is not WorkflowRunManifestStore:
         _raise("store")
-    if type(run_id) is not str or _ID_PATTERN.fullmatch(run_id) is None:
+    if type(run_id) is not str or _RUN_ID_PATTERN.fullmatch(run_id) is None:
         _raise("run_id")
     if prefix not in {_BUSINESS_PREFIX, _EXECUTION_PREFIX}:
         _raise("purpose")
     _validate_metadata(approval_id, "approval_id")
-    return store.root / f"{run_id}.{prefix}.{approval_id}.json"
+    return store.root / f"{run_id}.{prefix}.{_approval_storage_key(approval_id)}.json"
 
 
 def _validate_store_and_manifest(
@@ -635,10 +665,15 @@ def _accept_existing_evidence(path: Path, contents: bytes) -> None:
 
 
 def _load_evidence(
-    path: Path, *, expected_run_id: str, expected_approval_id: str
+    path: Path,
+    *,
+    expected_run_id: str,
+    expected_approval_id: str | None,
+    expected_prefix: str,
 ) -> BusinessApprovalEvidence | ExecutionApprovalEvidence:
     if type(path) is not _PATH_TYPE or path.is_symlink() or not path.is_file():
         _raise_load("target")
+    storage_key = _storage_key_from_path(path, expected_run_id, expected_prefix)
     try:
         contents = path.read_bytes()
         value = json.loads(
@@ -668,11 +703,50 @@ def _load_evidence(
         raise
     except (TypeError, ValueError, AttributeError):
         _raise_load("record")
-    if record.run_id != expected_run_id or record.approval_id != expected_approval_id:
+    if (
+        record.run_id != expected_run_id
+        or (
+            expected_approval_id is not None
+            and record.approval_id != expected_approval_id
+        )
+        or _approval_storage_key(record.approval_id) != storage_key
+    ):
         _raise_load("identity")
     if _canonical_bytes(_record_dict(record)) != contents:
         _raise_load("noncanonical")
     return record
+
+
+def _approval_storage_key(approval_id: str) -> str:
+    """Derive a safe filename without narrowing valid approval metadata.
+
+    Keep the original readable sidecar name for the established safe identifier
+    shape.  Approval metadata itself is intentionally only required to be a
+    non-empty string, so values that cannot be one filename component use their
+    SHA-256 storage key instead.
+    """
+    _validate_metadata(approval_id, "approval_id")
+    if _SAFE_FILENAME_PATTERN.fullmatch(approval_id) is not None:
+        return approval_id
+    try:
+        return sha256(approval_id.encode("utf-8")).hexdigest()
+    except (UnicodeError, TypeError):
+        _raise("approval_id")
+
+
+def _storage_key_from_path(path: Path, run_id: str, prefix: str) -> str:
+    """Extract a safe or hashed approval identity from one sidecar path."""
+    marker = f"{run_id}.{prefix}."
+    name = path.name
+    if not name.startswith(marker) or not name.endswith(".json"):
+        _raise_load("identity")
+    storage_key = name.removeprefix(marker).removesuffix(".json")
+    if (
+        _SAFE_FILENAME_PATTERN.fullmatch(storage_key) is None
+        and _SHA256_PATTERN.fullmatch(storage_key) is None
+    ):
+        _raise_load("identity")
+    return storage_key
 
 
 def _record_dict(

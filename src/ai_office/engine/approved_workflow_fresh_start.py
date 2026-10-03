@@ -617,23 +617,27 @@ def _ensure_business_approval(
     """Require and durably commit the exact Business Approval when pinned."""
     assert context.binding is not None and context.manifest_store is not None
     step_index = step_position(workflow, step)
-    evidence = _business_evidence_from_preparation(context.preparation_approval)
     if not required:
         return None
-    if evidence is None:
-        try:
-            evidence = find_business_approval_evidence(
-                context.manifest_store,
-                binding=context.binding,
-                workflow_id=workflow.id,
-                step_id=step.id,
-                step_index=step_index,
-                employee_id=step.employee,
-                progression_from_step_id=progression_from_step_id,
-                progression_from_step_index=progression_from_step_index,
-            )
-        except Exception:
-            _fail("approval_evidence")
+    try:
+        # The durable Run namespace is authoritative after restart.  A caller
+        # carrier is consulted only when no exact durable evidence exists; it
+        # never replaces or re-approves an already committed exact grant.
+        evidence = find_business_approval_evidence(
+            context.manifest_store,
+            binding=context.binding,
+            workflow_id=workflow.id,
+            step_id=step.id,
+            step_index=step_index,
+            employee_id=step.employee,
+            progression_from_step_id=progression_from_step_id,
+            progression_from_step_index=progression_from_step_index,
+        )
+    except Exception:
+        _fail("approval_evidence")
+    durable_evidence = evidence
+    if durable_evidence is None:
+        evidence = _business_evidence_from_preparation(context.preparation_approval)
     if evidence is None:
         _fail("business_approval")
     try:
@@ -647,12 +651,16 @@ def _ensure_business_approval(
             progression_from_step_id=progression_from_step_id,
             progression_from_step_index=progression_from_step_index,
         )
-        persist_business_approval_evidence(context.manifest_store, evidence)
-        loaded = load_business_approval_evidence(
-            context.manifest_store, context.binding.run_id, evidence.approval_id
-        )
-        if loaded != evidence:
-            _fail("business_approval")
+        # ``find_business_approval_evidence`` already strict-loads an exact
+        # durable record.  Only a newly supplied explicit approval needs the
+        # first durable commit and read-back.
+        if durable_evidence is None:
+            persist_business_approval_evidence(context.manifest_store, evidence)
+            loaded = load_business_approval_evidence(
+                context.manifest_store, context.binding.run_id, evidence.approval_id
+            )
+            if loaded != evidence:
+                _fail("business_approval")
     except FreshWorkflowBootstrapCompatibilityError:
         raise
     except WorkflowApprovalEvidenceError:
