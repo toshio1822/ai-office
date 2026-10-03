@@ -10,7 +10,11 @@ from ai_office.invocation import (
     RuntimeFactsError,
     RuntimeFactsSnapshot,
 )
-from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
+from ai_office.runtime import (
+    RuntimeStepEvent,
+    WorkflowExecutionState,
+    binding_of,
+)
 from ai_office.storage.workflow_execution_history import LoadedWorkflowExecutionHistory
 from ai_office.storage.workflow_execution_persistence import (
     serialize_runtime_step_event_jsonl,
@@ -50,7 +54,12 @@ def build_persisted_continuation_runtime_facts(
             source_sha256=state_source_sha256,  # type: ignore[arg-type]
             observed_at=None,
         )
-        event_bytes = serialize_runtime_step_event_jsonl(predecessor).encode("utf-8")
+        # Evidence linkage is terminal audit metadata, not a semantic input to
+        # the next invocation.  Keep the predecessor fact identity stable when
+        # Milestone 3 enriches the persisted event with attempt/result digests;
+        # otherwise prebuilt bounded-run contexts would become stale solely
+        # because the prior result gained traceability metadata.
+        event_bytes = _serialize_runtime_fact_event(predecessor)
         event_provenance = RuntimeFactProvenance(
             origin="persisted_event",
             workflow_id=state.workflow_id,
@@ -172,6 +181,28 @@ def _validated_evidence(
     ):
         _raise()
     return state, predecessor
+
+
+def _serialize_runtime_fact_event(event: RuntimeStepEvent) -> bytes:
+    """Serialize the predecessor's semantic event without audit linkage."""
+    semantic_event = RuntimeStepEvent(
+        event_type=event.event_type,
+        workflow_id=event.workflow_id,
+        step_id=event.step_id,
+        step_index=event.step_index,
+        employee_id=event.employee_id,
+        previous_status=event.previous_status,
+        next_status=event.next_status,
+        provider=event.provider,
+        failure_category=event.failure_category,
+        response_id=event.response_id,
+        request_id=event.request_id,
+        output_text=event.output_text,
+        message=event.message,
+        response_diagnostics=event.response_diagnostics,
+        binding=binding_of(event),
+    )
+    return serialize_runtime_step_event_jsonl(semantic_event).encode("utf-8")
 
 
 def _raise() -> None:

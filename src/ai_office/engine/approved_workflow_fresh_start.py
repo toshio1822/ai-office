@@ -44,6 +44,7 @@ from ai_office.definitions.workflow import (
     WorkflowDefinition,
     WorkflowStepDefinition,
 )
+from ai_office.execution_evidence import ExecutionEvidenceError
 from ai_office.execution_target import (
     DIRECT_OPENAI_EXECUTION_TARGET,
     ModelExecutionTarget,
@@ -147,6 +148,7 @@ _PATH_TYPE = type(Path())
 _SAFE_EXECUTION_ERRORS = (
     PersistedStartExecutionError,
     PersistedStartExecutionCompatibilityError,
+    ExecutionEvidenceError,
 )
 _SAFE_RUNNING_PERSISTENCE_ERRORS = (
     RunningStatePersistenceError,

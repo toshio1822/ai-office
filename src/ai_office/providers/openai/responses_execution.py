@@ -2,6 +2,15 @@
 
 from collections.abc import Callable
 
+from ai_office.execution_evidence import (
+    ExecutionAttemptEvidence,
+    ExecutionEvidenceContext,
+    ExecutionEvidenceError,
+    RawProviderResponseEvidence,
+    claim_execution_attempt,
+    persist_normalized_result_evidence,
+    persist_raw_response_evidence,
+)
 from ai_office.execution_target import (
     ModelExecutionTarget,
     ModelExecutionTargetError,
@@ -75,6 +84,7 @@ def execute_openai_model_invocation(
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
     execution_target: ModelExecutionTarget | None = None,
     target: ModelExecutionTarget | None = None,
+    execution_evidence: ExecutionEvidenceContext | None = None,
 ) -> ModelInvocationResult:
     """Execute one guarded, non-streaming Responses invocation.
 
@@ -136,16 +146,67 @@ def execute_openai_model_invocation(
             http_request,
             api_key,
         )
-        raw_response = transport(authenticated_request)
-        response = parse_openai_responses_http_response(raw_response)
-        if isinstance(response, OpenAIResponsesSuccessResponse):
-            output = extract_openai_responses_output_text(response)
-            return build_model_invocation_success_from_openai(
-                output, provider=provider
+        attempt: ExecutionAttemptEvidence | None = None
+        if execution_evidence is not None:
+            # The claim consumes only the unauthenticated request template.  The
+            # Authorization-bearing value never crosses into durable evidence.
+            attempt = claim_execution_attempt(execution_evidence, http_request)
+        raw_response: OpenAIResponsesRawHttpResponse | None = None
+        raw_evidence: RawProviderResponseEvidence | None = None
+        try:
+            raw_response = transport(authenticated_request)
+            if execution_evidence is not None:
+                assert attempt is not None
+                raw_evidence = persist_raw_response_evidence(
+                    execution_evidence,
+                    attempt,
+                    raw_response,
+                )
+            response = parse_openai_responses_http_response(raw_response)
+            if isinstance(response, OpenAIResponsesSuccessResponse):
+                output = extract_openai_responses_output_text(response)
+                result = build_model_invocation_success_from_openai(
+                    output, provider=provider
+                )
+            else:
+                result = build_model_invocation_failure_from_openai_api_error(
+                    response, provider=provider
+                )
+        except OpenAIResponsesTransportError as error:
+            result = build_model_invocation_failure_from_openai_transport_error(
+                error, provider=provider
             )
-        return build_model_invocation_failure_from_openai_api_error(
-            response, provider=provider
-        )
+        except OpenAIResponsesInvalidResponseError as error:
+            result = build_model_invocation_failure_from_openai_invalid_response_error(
+                error, provider=provider
+            )
+        except OpenAIResponsesInvalidOutputError as error:
+            result = build_model_invocation_failure_from_openai_invalid_output_error(
+                error, provider=provider
+            )
+        except ExecutionEvidenceError:
+            raise
+        except Exception:
+            if execution_evidence is None:
+                raise
+            # A custom transport may raise an unexpected exception after the
+            # provider boundary.  Do not expose its internals; preserve the
+            # conservative transport-uncertainty meaning instead.
+            result = build_model_invocation_failure_from_openai_transport_error(
+                OpenAIResponsesTransportError(
+                    "OpenAI Responses transport failed"
+                ),
+                provider=provider,
+            )
+        if execution_evidence is not None:
+            assert attempt is not None
+            persist_normalized_result_evidence(
+                execution_evidence,
+                attempt,
+                result,
+                raw_response=raw_evidence,
+            )
+        return result
     except OpenAIResponsesTransportError as error:
         return build_model_invocation_failure_from_openai_transport_error(
             error, provider=provider

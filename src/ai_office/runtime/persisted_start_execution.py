@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Literal
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
+from ai_office.execution_evidence import build_execution_evidence_context
+from ai_office.execution_target import validate_execution_target_for_provider
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationRequest,
@@ -112,12 +114,35 @@ def execute_persisted_start_openai_step(
     step_request = _build_step_request(
         persisted_state, workflow, workflow_step, employee, start.request
     )
+    evidence_context = None
+    binding = binding_of(start.request)
+    if binding is not None:
+        try:
+            target = validate_execution_target_for_provider(
+                approval.execution_target,
+                provider=approval.provider,
+            )
+            evidence_context = build_execution_evidence_context(
+                store_root=state_path.parent,
+                binding=binding,
+                workflow_id=step_request.workflow_id,
+                step_id=step_request.step_id,
+                step_index=step_request.step_index,
+                employee_id=step_request.employee_id,
+                request=start.request,
+                resolved_tools=resolved_tools,
+                approval=approval,
+                target=target,
+            )
+        except Exception:
+            _raise("request_data")
     return execute_openai_runtime_step(
         StepRuntimeExecutionInput(
             step_request=step_request,
             invocation_request=start.request,
             resolved_tools=resolved_tools,
             approval=approval,
+            execution_evidence=evidence_context,
         ),
         api_key,
         transport=transport,

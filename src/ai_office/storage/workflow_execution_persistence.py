@@ -148,6 +148,25 @@ def build_runtime_step_event_dict(event: RuntimeStepEvent) -> dict[str, object]:
             "body_length": event.response_diagnostics.body_length,
             "body_kind": event.response_diagnostics.body_kind,
         }
+    execution_attempt_id = getattr(event, "execution_attempt_id", None)
+    if execution_attempt_id is not None:
+        value.update(
+            {
+                "execution_attempt_id": execution_attempt_id,
+                "execution_attempt_evidence_sha256": getattr(
+                    event, "execution_attempt_evidence_sha256", None
+                ),
+                "normalized_result_evidence_sha256": getattr(
+                    event, "normalized_result_evidence_sha256", None
+                ),
+                "raw_response_evidence_sha256": getattr(
+                    event, "raw_response_evidence_sha256", None
+                ),
+                "raw_response_body_sha256": getattr(
+                    event, "raw_response_body_sha256", None
+                ),
+            }
+        )
     return value
 
 
