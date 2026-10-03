@@ -7,6 +7,10 @@ from pathlib import Path
 
 from ai_office.definitions.employee import EmployeeDefinition, LoadedEmployee
 from ai_office.definitions.workflow import LoadedWorkflow, WorkflowDefinition
+from ai_office.engine.workflow_approval_evidence import (
+    approve_business_step,
+    persist_business_approval_evidence,
+)
 from ai_office.engine.workflow_run_manifest import (
     WorkflowRunManifestStore,
     create_workflow_run_manifest,
@@ -30,8 +34,15 @@ def create_test_run(
     run_id: str,
     workflow: WorkflowDefinition,
     employees: tuple[EmployeeDefinition, ...],
+    *,
+    with_business_approvals: bool = True,
 ) -> TestRun:
-    """Create or reload one exact Manifest-backed test Run."""
+    """Create or reload one exact Manifest-backed test Run.
+
+    Provider-owning test fixtures opt in to the same explicit approval
+    evidence that a real caller supplies.  The flag lets evidence-specific
+    tests construct a Run with no Business Approval sidecars.
+    """
     root.mkdir(parents=True, exist_ok=True)
     store = WorkflowRunManifestStore(root)
     manifest_path = store.manifest_path(run_id)
@@ -49,5 +60,22 @@ def create_test_run(
             ),
         )
     binding = WorkflowRunBinding(manifest.run_id, manifest.digest)
+    if with_business_approvals:
+        for index, step in enumerate(workflow.steps, 1):
+            if not step.business_approval_required:
+                continue
+            previous = workflow.steps[index - 2] if index > 1 else None
+            evidence = approve_business_step(
+                binding=binding,
+                workflow_id=workflow.id,
+                step_id=step.id,
+                step_index=index,
+                employee_id=step.employee,
+                approved_by="test-operator",
+                approval_id=f"test-business-{run_id}-{step.id}",
+                progression_from_step_id=None if previous is None else previous.id,
+                progression_from_step_index=None if previous is None else index - 1,
+            )
+            persist_business_approval_evidence(store, evidence)
     state_path, events_path = store.execution_paths(run_id)
     return TestRun(store, binding, state_path, events_path)

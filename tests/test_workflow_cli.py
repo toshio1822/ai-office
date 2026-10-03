@@ -295,11 +295,15 @@ def preview_command(
 def execution_options(preview: dict[str, object]) -> list[str]:
     """Return caller-supplied approval binding copied exactly from a preview."""
     return [
-        "--approve-preparation",
+        "--approve-business",
+        "--business-approved-by",
+        "synthetic-business-operator",
+        "--business-approval-id",
+        "synthetic-business-approval",
         "--approve-execution",
-        "--approved-by",
+        "--execution-approved-by",
         "synthetic-operator",
-        "--approval-id",
+        "--execution-approval-id",
         "synthetic-approval",
         "--expected-step-id",
         str(preview["step_id"]),
@@ -2975,6 +2979,7 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
     assert result.stderr == ""
     assert preview == {
         "allowed_tools": [],
+        "business_approval_required": True,
         "employee_id": "general-researcher",
         "execution_target": {
             "allow_loopback_http": False,
@@ -2989,7 +2994,7 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
         "run_id": "run-1",
         "run_input": "Research the requested topic exactly as supplied.",
         "request_fingerprint": (
-            "672ae377d711984047f3201668467816ffed24d0e3b7550ec1079fb2ba81b271"
+            "dc22b604947518ee38b7cc15fddc8253de000000bfa9a60442de2bcd385ef32f"
         ),
         "manifest_digest": str(ensure_run_manifest(paths).manifest_digest),
         "resolved_tools": [],
@@ -3020,15 +3025,19 @@ def test_workflows_start_rejects_ambiguous_or_incomplete_execution_approval(
     common = workflow_command_args("start", "research-and-summarize", paths)
 
     cases = [
-        common + ["--preview-only", "--approve-preparation"],
-        common + ["--approve-preparation"],
+        common + ["--preview-only", "--approve-business"],
+        common + ["--approve-business"],
         common
         + [
-            "--approve-preparation",
-            "--approve-execution",
-            "--approved-by",
+            "--approve-business",
+            "--business-approved-by",
             "operator",
-            "--approval-id",
+            "--business-approval-id",
+            "business-approval",
+            "--approve-execution",
+            "--execution-approved-by",
+            "operator",
+            "--execution-approval-id",
             "approval",
         ],
     ]
@@ -3145,7 +3154,7 @@ def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step_fa
     assert preview["step_index"] == 2
     assert preview["employee_id"] == "general-researcher"
     assert preview["request_fingerprint"] == (
-        "40656162bf9a133026fb6cfbf63c399fbe2311717d64e9dda53fd5256d8e3841"
+        "3b2285208c3f7ece7940738dfaccb3ebd0522f3ab8d00e4c947e6a93a53a572e"
     )
     assert [fact["key"] for fact in preview["runtime_facts"]["facts"]] == [
         "predecessor.employee_id",

@@ -27,6 +27,7 @@ class WorkflowStepDefinition(BaseModel):
     name: str
     employee: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     instructions: str
+    business_approval_required: bool = True
 
     @field_validator("name", "instructions")
     @classmethod

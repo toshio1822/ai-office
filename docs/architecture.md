@@ -59,6 +59,52 @@ durable authority とし、binding identity には混ぜない。provider-facing
 Run Input、Step Instructions、Upstream Step Output、Runtime Facts を別々の semantic
 field として保持するため、同じ Run Input は各 applicable step に届く。
 
+## Current approval policy and durable evidence (Milestone 2)
+
+2026年10月3日時点で、Workflow Definition の各 step は
+`business_approval_required` を持つ。省略時は `true` であり、既存の安全な
+Business Approval required 動作を維持する。明示的な `false` は Business Approval
+だけを不要にする設定であり、provider 実行に必要な Execution Approval、将来の
+Publication Approval、Recovery Approval を許可するものではない。
+
+この有効な policy は `workflow-run-manifest.v2` の workflow snapshot に含まれ、
+Run Manifest の canonical bytes と digest に pin される。`continue` は live YAML を
+再読込せず、Manifest に保存された policy を使う。旧 schema を v2 の policy として
+黙って解釈し直すことはしない。
+
+Approval evidence は同じ `WorkflowRunManifestStore` の Run namespace に、目的別の
+canonical JSON sidecar として排他的に保存する。
+
+```text
+<run-id>.business-approval.<approval-id>.json
+<run-id>.execution-approval.<approval-id>.json
+```
+
+Business Approval evidence は Run、Manifest、workflow、step/index、employee、
+progression point、approver、approval identity、および affirmative decision に
+束縛される。Execution Approval evidence はさらに provider、execution-target
+fingerprint、invocation request fingerprint に束縛される。Business / Execution /
+Publication / Recovery は別の approval purpose であり、互いの evidence を代用しない。
+
+sidecar は compact な canonical UTF-8 JSON と SHA-256 identity を使い、strict load、
+exclusive create、exact-byte idempotence、conflict-without-overwrite を実施する。
+symlink、unknown/missing field、duplicate key、非 canonical bytes、cross-Run または
+Manifest mismatch は fail closed する。通常の inspect/load は provider、tool、network
+を呼ばず、evidence に credential、environment value、raw provider payload を保存しない。
+
+fresh start と bounded continuation は、required Business Approval evidence を step の
+preparation/provider path に入る前に durable commit し、validated Execution Approval
+evidence を provider 呼出し前に durable commit する。永続化が失敗または曖昧な場合は
+provider を呼ばず、既存 Run の durable state/history を破壊しない。既存の preparation
+approval value はこの gate を通過したことを下位 owner に伝える内部 carrier に限定され、
+独立した Business Approval authority ではない。
+
+公開 CLI の `start` / `continue` は Business Approval と Execution Approval の option
+および identity を分離して要求し、preview は Business Approval の要否、Run/step
+identity、Execution Approval の request fingerprint を表示する。`workflows
+approval-evidence` は Run-bound evidence を read-only に再構成する inspection path である。
+Provider attempt、raw response、artifact、Recovery execution はこの Milestone の対象外である。
+
 
 ## Phase 59: classified persisted outcome routing phase bridge reentry
 

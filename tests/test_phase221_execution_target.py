@@ -480,12 +480,16 @@ def _cli_args(operation: str, paths: dict[str, Path]) -> list[str]:
 
 def _approval_args(preview: dict[str, object]) -> list[str]:
     return [
-        "--approve-preparation",
-        "--approve-execution",
-        "--approved-by",
+        "--approve-business",
+        "--business-approved-by",
         "operator",
-        "--approval-id",
-        "approval-cli",
+        "--business-approval-id",
+        f"business-approval-cli-{preview['step_id']}",
+        "--approve-execution",
+        "--execution-approved-by",
+        "operator",
+        "--execution-approval-id",
+        f"approval-cli-{preview['step_id']}",
         "--expected-step-id",
         str(preview["step_id"]),
         "--expected-step-index",

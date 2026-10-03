@@ -33,6 +33,9 @@ from ai_office.engine.bounded_approved_workflow_runner import (
     ApprovedWorkflowContinuationContext,
 )
 from ai_office.engine.next_step_preparation import NextStepPreparationApproval
+from ai_office.engine.workflow_approval_evidence import (
+    WorkflowApprovalEvidencePersistenceError,
+)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
@@ -66,7 +69,9 @@ from tests._phase260_test_support import synthetic_continuation_facts
 from tests._run_test_support import create_test_run
 
 
-def workflow(steps: int = 2) -> WorkflowDefinition:
+def workflow(
+    steps: int = 2, *, business_approval_required: bool = True
+) -> WorkflowDefinition:
     return WorkflowDefinition.model_validate(
         {
             "id": "w",
@@ -78,6 +83,7 @@ def workflow(steps: int = 2) -> WorkflowDefinition:
                     "name": f"Step {index}",
                     "employee": f"e{index}",
                     "instructions": f"instructions-{index}",
+                    "business_approval_required": business_approval_required,
                 }
                 for index in range(1, steps + 1)
             ],
@@ -123,6 +129,7 @@ def context(
     state_path: Path,
     bad_execution_approval: bool = False,
     tools: tuple[ToolDefinition, ...] = (),
+    with_business_approvals: bool = True,
 ) -> ApprovedWorkflowBootstrapContext:
     wf = wf or workflow()
     run_id = state_path.name.removesuffix(".state.json")
@@ -131,6 +138,7 @@ def context(
         run_id,
         wf,
         tuple(employee(step_index) for step_index, _ in enumerate(wf.steps, 1)),
+        with_business_approvals=with_business_approvals,
     )
     binding = run.binding
     emp = employee(index)
@@ -234,7 +242,7 @@ def real_context_for(
         (),
         provider="openai",
         approved_by="reviewer",
-        approval_id="approval-1",
+        approval_id=f"approval-{index}",
     )
     return ApprovedWorkflowContinuationContext(
         NextStepPreparationApproval(
@@ -667,7 +675,6 @@ def test_09_invalid_approval_keeps_ready_pair_and_skips_provider(
 ) -> None:
     wf = workflow(2)
     invalid = (
-        approval(wf.id, "step-1", 1, "e1", approved=False),
         approval("other", "step-1", 1, "e1"),
         approval(wf.id, "other-step", 1, "e1"),
         approval(wf.id, "step-1", 2, "e1"),
@@ -695,7 +702,31 @@ def test_09_invalid_approval_keeps_ready_pair_and_skips_provider(
         assert calls == []
 
 
-def test_10_wrong_employee_keeps_ready_pair(tmp_path: Path) -> None:
+def test_10_legacy_preparation_flag_is_not_business_authority(
+    tmp_path: Path,
+) -> None:
+    wf = workflow(2)
+    state_path, events_path = (
+        tmp_path / "run-10-legacy.state.json",
+        tmp_path / "run-10-legacy.events.jsonl",
+    )
+    calls: list[object] = []
+    result = route_approved_workflow_fresh_start(
+        wf,
+        state_path,
+        events_path,
+        replace(
+            context(wf, 1, state_path=state_path),
+            preparation_approval=approval(wf.id, "step-1", 1, "e1", approved=False),
+            transport=success_transport(calls),
+        ),
+    )
+    assert type(result) is WorkflowProgressionDecision
+    assert calls == [1]
+    assert load_workflow_execution_state(state_path).status == "succeeded"
+
+
+def test_11_wrong_employee_keeps_ready_pair(tmp_path: Path) -> None:
     wf = workflow(2)
     state_path, events_path = (
         tmp_path / "run-10.state.json",
@@ -839,6 +870,140 @@ def test_12_invalid_execution_approval_keeps_running_and_skips_provider(
     assert events_path.read_bytes() == b""
     assert transport_calls == []
     assert phase_calls == []
+
+
+def test_13_required_business_approval_missing_skips_provider(
+    tmp_path: Path,
+) -> None:
+    wf = workflow(2)
+    state_path, events_path = (
+        tmp_path / "run-13-business.state.json",
+        tmp_path / "run-13-business.events.jsonl",
+    )
+    transport_calls: list[object] = []
+
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
+            wf,
+            state_path,
+            events_path,
+            replace(
+                context(
+                    wf,
+                    1,
+                    state_path=state_path,
+                    with_business_approvals=False,
+                ),
+                transport=success_transport(transport_calls),
+            ),
+        ),
+        "business_approval",
+    )
+    assert transport_calls == []
+    assert load_workflow_execution_state(state_path).status == "ready"
+    assert events_path.read_bytes() == b""
+
+
+def test_14_business_not_required_does_not_authorize_execution(
+    tmp_path: Path,
+) -> None:
+    wf = workflow(2, business_approval_required=False)
+    state_path, events_path = (
+        tmp_path / "run-14-not-required.state.json",
+        tmp_path / "run-14-not-required.events.jsonl",
+    )
+    transport_calls: list[object] = []
+
+    with pytest.raises(PersistedStartExecutionCompatibilityError) as caught:
+        route_approved_workflow_fresh_start(
+            wf,
+            state_path,
+            events_path,
+            replace(
+                context(
+                    wf,
+                    1,
+                    state_path=state_path,
+                    bad_execution_approval=True,
+                    with_business_approvals=False,
+                ),
+                transport=success_transport(transport_calls),
+            ),
+        )
+    assert caught.value.detail.classification == "request_data"
+    assert transport_calls == []
+    assert load_workflow_execution_state(state_path).status == "running"
+    assert events_path.read_bytes() == b""
+
+
+def test_15_business_evidence_persistence_failure_skips_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wf = workflow(2)
+    state_path, events_path = (
+        tmp_path / "run-15-business-persist.state.json",
+        tmp_path / "run-15-business-persist.events.jsonl",
+    )
+    transport_calls: list[object] = []
+
+    def fail_persistence(*_: object, **__: object) -> object:
+        raise WorkflowApprovalEvidencePersistenceError("ambiguous")
+
+    monkeypatch.setattr(
+        fresh_start_module,
+        "persist_business_approval_evidence",
+        fail_persistence,
+    )
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
+            wf,
+            state_path,
+            events_path,
+            replace(
+                context(wf, 1, state_path=state_path),
+                transport=success_transport(transport_calls),
+            ),
+        ),
+        "approval_evidence",
+    )
+    assert transport_calls == []
+    assert load_workflow_execution_state(state_path).status == "ready"
+    assert events_path.read_bytes() == b""
+
+
+def test_16_execution_evidence_persistence_failure_skips_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wf = workflow(2)
+    state_path, events_path = (
+        tmp_path / "run-16-execution-persist.state.json",
+        tmp_path / "run-16-execution-persist.events.jsonl",
+    )
+    transport_calls: list[object] = []
+
+    def fail_persistence(*_: object, **__: object) -> object:
+        raise WorkflowApprovalEvidencePersistenceError("ambiguous")
+
+    monkeypatch.setattr(
+        fresh_start_module,
+        "persist_execution_approval_evidence",
+        fail_persistence,
+    )
+    bootstrap_error(
+        lambda: route_approved_workflow_fresh_start(
+            wf,
+            state_path,
+            events_path,
+            replace(
+                context(wf, 1, state_path=state_path),
+                transport=success_transport(transport_calls),
+            ),
+        ),
+        "approval_evidence",
+    )
+    assert transport_calls == []
+    assert load_workflow_execution_state(state_path).status == "running"
+    assert events_path.read_bytes() == b""
 
 
 def test_13_execution_failure_and_malformed_output_recover_running_without_retry(
