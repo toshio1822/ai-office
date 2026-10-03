@@ -293,7 +293,7 @@ def real_context(
         (),
         provider="openai",
         approved_by="reviewer",
-        approval_id="approval-1",
+        approval_id=f"approval-{index}",
     )
     return ApprovedWorkflowContinuationContext(
         preparation_approval(wf, index),

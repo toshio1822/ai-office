@@ -51,6 +51,19 @@ from ai_office.execution_target import (
     validate_execution_target_for_provider,
 )
 from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.engine.workflow_approval_evidence import (
+    BusinessApprovalEvidence,
+    build_execution_approval_evidence_for_tools,
+    find_business_approval_evidence,
+    load_business_approval_evidence,
+    load_execution_approval_evidence,
+    persist_business_approval_evidence,
+    persist_execution_approval_evidence,
+    WorkflowApprovalEvidenceError,
+    validate_business_approval_evidence,
+    validate_execution_approval_evidence,
+)
+from ai_office.execution_target import execution_target_fingerprint
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcomeError,
     PersistedExecutionOutcome,
@@ -78,7 +91,6 @@ from ai_office.engine.workflow_run_manifest import (
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationRequest,
-    validate_model_invocation_execution_approval,
 )
 from ai_office.providers.openai import OpenAIApiKey
 from ai_office.runtime import (
@@ -124,6 +136,8 @@ FreshWorkflowBootstrapClassification = Literal[
     "employee_contract",
     "running_persistence_contract",
     "execution_contract",
+    "business_approval",
+    "approval_evidence",
     "phase172_contract",
     "dependency_error",
     "rollback_failure",
@@ -153,13 +167,14 @@ _READY_EMPTY_EVENTS = b""
 
 @dataclass(frozen=True)
 class InitialStepPreparationApproval:
-    """Explicit step-1 preparation approval for one brand-new workflow."""
+    """Internal preparation data derived from the Business Approval gate."""
 
     approved: bool
     workflow_id: str
     step_id: str
     step_index: int
     employee_id: str
+    business_approval_evidence: BusinessApprovalEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -255,9 +270,27 @@ def route_approved_workflow_fresh_start(
     )
 
     # From this point onward the ready pair is the first durable commit and is
-    # never removed by later approval/employee/preparation errors.
-    _validate_approval(context.preparation_approval, workflow)
+    # never removed by later approval/employee/preparation errors.  The old
+    # preparation value is only a carrier for the explicit Business Approval
+    # evidence; its ``approved`` flag is not an authorization.
+    business_policy_required = _pinned_business_policy_required(
+        context, workflow, first_step
+    )
+    _validate_preparation_shape(
+        context.preparation_approval,
+        workflow,
+        first_step,
+        business_policy_required,
+    )
     _validate_employee(context.employee, workflow, first_step)
+    _ensure_business_approval(
+        context,
+        workflow,
+        first_step,
+        required=business_policy_required,
+        progression_from_step_id=None,
+        progression_from_step_index=None,
+    )
     prepared_step = _build_prepared_step(
         workflow, first_step, context.employee, context.binding
     )
@@ -269,18 +302,6 @@ def route_approved_workflow_fresh_start(
     )
 
     target = _validate_context_execution_target(context)
-    if type(context.execution_approval) is ModelInvocationExecutionApproval:
-        try:
-            validate_model_invocation_execution_approval(
-                prepared_start.request,
-                context.resolved_tools,
-                context.execution_approval,
-                provider=target.provider,
-                execution_target=target,
-            )
-        except Exception:
-            _fail("execution_contract")
-
     ready_snapshot = _capture(state_path, events_path)
     try:
         persisted = persist_prepared_running_state(prepared_start, state_path)
@@ -299,6 +320,13 @@ def route_approved_workflow_fresh_start(
     # The running step-1 state is now the second durable commit.  From this
     # point onward it is never rolled back to the ready pair.
     running_snapshot = _capture(state_path, events_path)
+    _persist_execution_approval_before_provider(
+        context,
+        prepared_start,
+        workflow,
+        first_step,
+        target,
+    )
     try:
         runtime_result = execute_persisted_start_openai_step(
             prepared_start,
@@ -577,27 +605,188 @@ def _valid_ready_history(
     )
 
 
-def _validate_approval(approval: object, workflow: WorkflowDefinition) -> None:
-    if type(approval) is not InitialStepPreparationApproval:
+def _ensure_business_approval(
+    context: ApprovedWorkflowBootstrapContext,
+    workflow: WorkflowDefinition,
+    step: WorkflowStepDefinition,
+    *,
+    required: bool,
+    progression_from_step_id: str | None,
+    progression_from_step_index: int | None,
+) -> BusinessApprovalEvidence | None:
+    """Require and durably commit the exact Business Approval when pinned."""
+    assert context.binding is not None and context.manifest_store is not None
+    step_index = step_position(workflow, step)
+    if not required:
+        return None
+    try:
+        # The durable Run namespace is authoritative after restart.  A caller
+        # carrier is consulted only when no exact durable evidence exists; it
+        # never replaces or re-approves an already committed exact grant.
+        evidence = find_business_approval_evidence(
+            context.manifest_store,
+            binding=context.binding,
+            workflow_id=workflow.id,
+            step_id=step.id,
+            step_index=step_index,
+            employee_id=step.employee,
+            progression_from_step_id=progression_from_step_id,
+            progression_from_step_index=progression_from_step_index,
+        )
+    except Exception:
+        _fail("approval_evidence")
+    durable_evidence = evidence
+    if durable_evidence is None:
+        evidence = _business_evidence_from_preparation(context.preparation_approval)
+    if evidence is None:
+        _fail("business_approval")
+    try:
+        validate_business_approval_evidence(
+            evidence,
+            binding=context.binding,
+            workflow_id=workflow.id,
+            step_id=step.id,
+            step_index=step_index,
+            employee_id=step.employee,
+            progression_from_step_id=progression_from_step_id,
+            progression_from_step_index=progression_from_step_index,
+        )
+        # ``find_business_approval_evidence`` already strict-loads an exact
+        # durable record.  Only a newly supplied explicit approval needs the
+        # first durable commit and read-back.
+        if durable_evidence is None:
+            persist_business_approval_evidence(context.manifest_store, evidence)
+            loaded = load_business_approval_evidence(
+                context.manifest_store, context.binding.run_id, evidence.approval_id
+            )
+            if loaded != evidence:
+                _fail("business_approval")
+    except FreshWorkflowBootstrapCompatibilityError:
+        raise
+    except WorkflowApprovalEvidenceError:
+        _fail("approval_evidence")
+    return evidence
+
+
+def _business_evidence_from_preparation(
+    preparation: object,
+) -> BusinessApprovalEvidence | None:
+    """Return the sole explicit Business Approval evidence carrier."""
+    if type(preparation) is not InitialStepPreparationApproval:
+        return None
+    return preparation.business_approval_evidence
+
+
+def _validate_preparation_shape(
+    preparation: object,
+    workflow: WorkflowDefinition,
+    step: WorkflowStepDefinition,
+    business_policy_required: bool,
+) -> None:
+    """Validate structural step identity without making the legacy flag authoritative."""
+    if type(preparation) is not InitialStepPreparationApproval:
         _fail("preparation_approval")
-    assert type(approval) is InitialStepPreparationApproval
-    first_step = workflow.steps[0]
+    assert isinstance(preparation, InitialStepPreparationApproval)
     if not (
-        approval.approved is True
-        and type(approval.workflow_id) is str
-        and bool(approval.workflow_id)
-        and type(approval.step_id) is str
-        and bool(approval.step_id)
-        and type(approval.employee_id) is str
-        and bool(approval.employee_id)
-        and type(approval.step_index) is int
-        and not isinstance(approval.step_index, bool)
-        and approval.step_index == 1
-        and approval.workflow_id == workflow.id
-        and approval.step_id == first_step.id
-        and approval.employee_id == first_step.employee
+        type(preparation.approved) is bool
+        and type(preparation.workflow_id) is str
+        and bool(preparation.workflow_id)
+        and type(preparation.step_id) is str
+        and bool(preparation.step_id)
+        and type(preparation.employee_id) is str
+        and bool(preparation.employee_id)
+        and type(preparation.step_index) is int
+        and not isinstance(preparation.step_index, bool)
+        and preparation.step_index == step_position(workflow, step)
+        and preparation.workflow_id == workflow.id
+        and preparation.step_id == step.id
+        and preparation.employee_id == step.employee
     ):
         _fail("preparation_approval")
+    del business_policy_required
+
+
+def _pinned_business_policy_required(
+    context: ApprovedWorkflowBootstrapContext,
+    workflow: WorkflowDefinition,
+    step: WorkflowStepDefinition,
+) -> bool:
+    """Read the effective Business policy only from the authoritative Manifest."""
+    try:
+        assert context.binding is not None and context.manifest_store is not None
+        manifest = load_workflow_run_manifest(
+            context.manifest_store, context.binding.run_id
+        )
+        index = step_position(workflow, step)
+        if manifest.workflow_id != workflow.id:
+            _fail("run_binding")
+        snapshot = manifest.workflow_snapshot.steps[index - 1]
+        if snapshot.id != step.id or snapshot.employee != step.employee:
+            _fail("run_binding")
+        return snapshot.business_approval_required
+    except FreshWorkflowBootstrapCompatibilityError:
+        raise
+    except Exception:
+        _fail("run_binding")
+
+
+def _persist_execution_approval_before_provider(
+    context: ApprovedWorkflowBootstrapContext,
+    prepared_start: PreparedStepExecutionStart,
+    workflow: WorkflowDefinition,
+    step: WorkflowStepDefinition,
+    target: ModelExecutionTarget,
+) -> None:
+    """Persist accepted Execution Approval evidence before provider execution."""
+    # Preserve the lower execution owner's established safe classification for
+    # malformed caller values.  It rejects non-approval objects before the
+    # provider; only an already-valid approval can produce durable evidence.
+    if type(context.execution_approval) is not ModelInvocationExecutionApproval:
+        return
+    try:
+        evidence = build_execution_approval_evidence_for_tools(
+            prepared_start.request,
+            context.resolved_tools,
+            context.execution_approval,
+            workflow_id=workflow.id,
+            step_id=step.id,
+            step_index=1,
+            employee_id=step.employee,
+            target=target,
+        )
+    except WorkflowApprovalEvidenceError:
+        _fail("execution_contract")
+    try:
+        assert context.manifest_store is not None and context.binding is not None
+        persist_execution_approval_evidence(context.manifest_store, evidence)
+        loaded = load_execution_approval_evidence(
+            context.manifest_store, context.binding.run_id, evidence.approval_id
+        )
+        validate_execution_approval_evidence(
+            loaded,
+            binding=context.binding,
+            workflow_id=workflow.id,
+            step_id=step.id,
+            step_index=1,
+            employee_id=step.employee,
+            provider=target.provider,
+            execution_target_fingerprint_value=execution_target_fingerprint(target),
+            request_fingerprint=context.execution_approval.request_fingerprint,
+        )
+    except WorkflowApprovalEvidenceError:
+        _fail("approval_evidence")
+    except FreshWorkflowBootstrapCompatibilityError:
+        raise
+    except Exception:
+        _fail("approval_evidence")
+
+
+def step_position(workflow: WorkflowDefinition, step: WorkflowStepDefinition) -> int:
+    """Return the one-based position of an exact workflow step."""
+    for index, candidate in enumerate(workflow.steps, 1):
+        if candidate is step:
+            return index
+    _fail("workflow_definition")
 
 
 def _validate_employee(

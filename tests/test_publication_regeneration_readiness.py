@@ -762,25 +762,25 @@ def test_canonical_wrapper_fixture_is_compact_and_digest_bound(tmp_path: Path) -
         '"claim_contract_sha256":null,"evaluated_claim_contract":null,"outcome":"success",'
         '"readiness":"insufficient_evidence","reason_codes":["claim_contract_missing"],'
         '"regeneration_id":"regen-20260912-01",'
-        '"result_record_sha256":"6d2f19676b7b574d9630af949fe5384a5d3386ee9f5935247c071c10679926e3",'
+        '"result_record_sha256":"78fd7ec7f3aaf812e8adefd264d96ce0563c838adb17db1ec3fd1ea2142ef35f",'
         '"schema_version":"publication-regeneration-readiness.v1",'
-        '"source_audit_sha256":"8f8409ef4715d67fb3dab6e5988ae375948533ced378a721a02d8e22c2eb1491",'
+        '"source_audit_sha256":"c6fb204e99ddfb246f9a5ec932fc26cf0764d29afa6a589a46d93971ea36e109",'
         '"source_post_terminal_facts":{"completed_step_ids":["research","publish"],'
-        '"events_sha256":"a9f9d7b2078baccd1726f9230d150c32501d8321c87dd60535470eedd9a99eb7",'
+        '"events_sha256":"cab39832fb559ac62c7653703eb87b3d57c8a2a66b97c45db322cabeabb63ce4",'
         '"final_output_sha256":"f5a064be281eea4db190ed7268f4a1e005ca05227654bbfa260a6c5684da743e",'
         '"schema_version":"post-terminal-facts.v1",'
-        '"state_sha256":"328ffc7442f48340241cf40f0b5b4e2ad2fcd18fb819461f6ea7b6cea2b301af",'
+        '"state_sha256":"c2e82e8c4a5349fb29df598cab046973e362b63087788376622879d8e02d34fd",'
         '"terminal_employee_id":"editor","terminal_provider":"terminal-provider",'
         '"terminal_reason":"last_step_succeeded","terminal_status":"workflow_complete",'
         '"terminal_step_id":"publish","terminal_step_index":2,"workflow_id":"phase268-workflow"},'
-        '"source_post_terminal_facts_sha256":"20ebdefae796866e982688f98706115f58414c9307b445c4ffad9b616b3fd561"}'
+        '"source_post_terminal_facts_sha256":"6efefda4825123d24c4cdc505253ae9931a1c3372359cb368428e8ede0fb7366"}'
     )
     assert canonical == expected
     assert publication_regeneration_readiness_assessment_digest(assessment) == (
         hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     )
     assert assessment.digest == (
-        "ecf250fa7bbd5d943967ecb3f80b819e3790caad7350a33378db3eb5559d06e7"
+        "2ca2c5e820f17e285f7e789b2d129fd0758aee064724bc2f5893313e80357ceb"
     )
 
 

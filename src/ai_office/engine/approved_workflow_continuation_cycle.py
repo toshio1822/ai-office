@@ -8,7 +8,7 @@ contract and persistence semantics.
 
 # ruff: noqa: E501,E701,I001
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 from typing import Literal, get_args
@@ -17,9 +17,23 @@ from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.execution_target import (
     ModelExecutionTargetError,
+    execution_target_fingerprint,
     validate_execution_target_for_provider,
 )
-from ai_office.engine.next_step_preparation import PreparedWorkflowStep
+from ai_office.engine.next_step_preparation import (
+    NextStepPreparationApproval,
+    PreparedWorkflowStep,
+)
+from ai_office.engine.workflow_approval_evidence import (
+    build_execution_approval_evidence_for_tools,
+    find_business_approval_evidence,
+    load_business_approval_evidence,
+    load_execution_approval_evidence,
+    persist_business_approval_evidence,
+    persist_execution_approval_evidence,
+    validate_business_approval_evidence,
+    validate_execution_approval_evidence,
+)
 from ai_office.engine.persisted_continuation_runtime_facts import (
     build_persisted_continuation_runtime_facts,
 )
@@ -114,6 +128,8 @@ Classification = Literal[
     "phase147_contract",
     "phase155_contract",
     "approval_contract",
+    "business_approval",
+    "approval_evidence",
     "phase172_contract",
     "dependency_error",
     "committed_mutation",
@@ -213,13 +229,19 @@ def route_approved_workflow_continuation_cycle(
     )
     assert type(state_path) is _PATH_TYPE and type(events_path) is _PATH_TYPE
     _check_result_target_binding(result, state_path, events_path)
+    effective_preparation_approval = _ensure_business_approval(
+        result,
+        workflow,
+        preparation_approval,
+        state_path,
+    )
     original = _capture_targets(state_path, events_path)
 
     try:
         prepared = route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
             result,
             workflow,
-            preparation_approval,
+            effective_preparation_approval,
             employee,
             state_path,
             events_path,
@@ -279,6 +301,15 @@ def route_approved_workflow_continuation_cycle(
     if _changed(state_path, events_path, guard_before):
         _restore_or_fail(state_path, events_path, original)
         _fail("committed_mutation")
+
+    _persist_execution_approval_evidence(
+        prepared_start,
+        workflow,
+        employee,
+        resolved_tools,
+        effective_execution_approval,
+        state_path,
+    )
 
     pre_persistence = _capture_targets(state_path, events_path)
     try:
@@ -368,6 +399,154 @@ def route_approved_workflow_continuation_cycle(
     ):
         _fail("phase172_contract")
     return progressed
+
+
+def _ensure_business_approval(
+    result: WorkflowProgressionDecision,
+    workflow: WorkflowDefinition,
+    preparation_approval: object,
+    state_path: Path,
+) -> object:
+    """Commit the exact Business Approval before next-step preparation."""
+    binding = binding_of(result)
+    if binding is None:
+        _fail("business_approval")
+    try:
+        store = WorkflowRunManifestStore(state_path.parent)
+        manifest = load_workflow_run_manifest(store, binding.run_id)
+        if (
+            manifest.workflow_id != workflow.id
+            or manifest.digest != binding.manifest_digest
+        ):
+            _fail("business_approval")
+        next_index = result.next_step_index
+        if type(next_index) is not int or not 1 <= next_index <= len(workflow.steps):
+            _fail("business_approval")
+        next_step = workflow.steps[next_index - 1]
+        snapshot = manifest.workflow_snapshot.steps[next_index - 1]
+        if not (
+            snapshot.id == next_step.id and snapshot.employee == next_step.employee
+        ):
+            _fail("business_approval")
+        # The Run namespace is authoritative after restart.  A caller carrier
+        # is only a new explicit approval when no exact durable evidence is
+        # present; it never replaces an already committed grant.
+        evidence = None
+        durable_evidence = None
+        if snapshot.business_approval_required:
+            durable_evidence = find_business_approval_evidence(
+                store,
+                binding=binding,
+                workflow_id=workflow.id,
+                step_id=next_step.id,
+                step_index=next_index,
+                employee_id=next_step.employee,
+                progression_from_step_id=result.current_step_id,
+                progression_from_step_index=result.current_step_index,
+            )
+            evidence = durable_evidence
+            if (
+                evidence is None
+                and type(preparation_approval) is NextStepPreparationApproval
+            ):
+                evidence = preparation_approval.business_approval_evidence
+            if evidence is None:
+                _fail("business_approval")
+            validate_business_approval_evidence(
+                evidence,
+                binding=binding,
+                workflow_id=workflow.id,
+                step_id=next_step.id,
+                step_index=next_index,
+                employee_id=next_step.employee,
+                progression_from_step_id=result.current_step_id,
+                progression_from_step_index=result.current_step_index,
+            )
+            if durable_evidence is None:
+                persist_business_approval_evidence(store, evidence)
+                loaded = load_business_approval_evidence(
+                    store, binding.run_id, evidence.approval_id
+                )
+                validate_business_approval_evidence(
+                    loaded,
+                    binding=binding,
+                    workflow_id=workflow.id,
+                    step_id=next_step.id,
+                    step_index=next_index,
+                    employee_id=next_step.employee,
+                    progression_from_step_id=result.current_step_id,
+                    progression_from_step_index=result.current_step_index,
+                )
+        # The lower provider-free preparation owner still consumes its
+        # historical shape, but its boolean is normalized only after the
+        # pinned business policy/evidence gate has completed.  A malformed
+        # carrier is left untouched so that the existing lower owner retains
+        # its established compatibility classification; it is not an
+        # alternative Business Approval authority.
+        if type(preparation_approval) is NextStepPreparationApproval:
+            return replace(
+                preparation_approval,
+                approved=True,
+                business_approval_evidence=(
+                    evidence if snapshot.business_approval_required else None
+                ),
+            )
+        return preparation_approval
+    except ApprovedWorkflowContinuationCycleCompatibilityError:
+        raise
+    except Exception:
+        _fail("approval_evidence")
+
+
+def _persist_execution_approval_evidence(
+    prepared_start: PreparedStepExecutionStart,
+    workflow: WorkflowDefinition,
+    employee: object,
+    resolved_tools: object,
+    execution_approval: ModelInvocationExecutionApproval,
+    state_path: Path,
+) -> None:
+    """Commit validated Execution Approval evidence before running persistence."""
+    try:
+        binding = binding_of(prepared_start.request)
+        if binding is None or type(resolved_tools) is not tuple:
+            _fail("approval_evidence")
+        target = validate_execution_target_for_provider(
+            execution_approval.execution_target,
+            provider=execution_approval.provider,
+        )
+        if type(employee) is not EmployeeDefinition:
+            _fail("approval_evidence")
+        evidence = build_execution_approval_evidence_for_tools(
+            prepared_start.request,
+            resolved_tools,
+            execution_approval,
+            workflow_id=workflow.id,
+            step_id=prepared_start.running_state.current_step_id,
+            step_index=prepared_start.running_state.current_step_index,
+            employee_id=employee.id,
+            target=target,
+        )
+        store = WorkflowRunManifestStore(state_path.parent)
+        persist_execution_approval_evidence(store, evidence)
+        loaded = load_execution_approval_evidence(
+            store, binding.run_id, evidence.approval_id
+        )
+        validate_execution_approval_evidence(
+            loaded,
+            binding=binding,
+            workflow_id=workflow.id,
+            step_id=prepared_start.running_state.current_step_id,
+            step_index=prepared_start.running_state.current_step_index,
+            employee_id=employee.id,
+            provider=target.provider,
+            execution_target_fingerprint_value=execution_target_fingerprint(target),
+            request_fingerprint=execution_approval.request_fingerprint,
+        )
+    except ApprovedWorkflowContinuationCycleCompatibilityError:
+        raise
+    except Exception:
+        _fail("approval_evidence")
 
 
 def _check_result_and_workflow(result: object, workflow: object) -> None:

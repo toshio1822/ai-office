@@ -1,7 +1,7 @@
 """Command-line interface for AI Office."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import NoReturn
 
@@ -28,10 +28,13 @@ from ai_office.engine import (
     WorkflowRunManifestError,
     WorkflowRunManifestPersistenceError,
     WorkflowRunManifestStore,
+    approve_business_step,
     build_immediate_predecessor_upstream_inputs,
     build_persisted_continuation_runtime_facts,
     build_workflow_run_manifest,
     export_publication_regeneration_output,
+    find_business_approval_evidence,
+    list_run_approval_evidence,
     load_publication_regeneration_export_reconciliation,
     load_workflow_run_manifest,
     loaded_employees_from_run_manifest,
@@ -457,6 +460,7 @@ class _WorkflowStepPreview:
     resolved_tools: tuple[ToolDefinition, ...]
     request_fingerprint: str
     execution_target: ModelExecutionTarget
+    business_approval_required: bool
     run_binding: WorkflowRunBinding | None = None
     manifest_store: WorkflowRunManifestStore | None = None
 
@@ -630,6 +634,9 @@ def _build_workflow_step_preview(
         resolved_tools=resolved_tools,
         request_fingerprint=fingerprint,
         execution_target=target,
+        business_approval_required=workflow.definition.steps[
+            step_index - 1
+        ].business_approval_required,
         run_binding=run_binding,
     )
 
@@ -693,6 +700,7 @@ def _step_preview_json(
     invocation = preview.invocation_request
     value: dict[str, object] = {
         "allowed_tools": list(invocation.allowed_tools),
+        "business_approval_required": preview.business_approval_required,
         "execution_target": preview.execution_target.descriptor(),
         "employee_id": request.employee_id,
         "mode": "preview",
@@ -808,23 +816,49 @@ def _result_json(
     _workflow_cli_error("workflow result is incompatible")
 
 
-def _has_execution_fields(
-    approve_preparation: bool,
+@workflows_app.command("approval-evidence")
+def approval_evidence_workflow(
+    run_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Read the strict, durable approval evidence for one Run."""
+    store = _load_run_store_or_exit(run_store)
+    manifest = _load_run_manifest_or_exit(store, run_id)
+    try:
+        evidence = list_run_approval_evidence(store, run_id)
+    except Exception:
+        _workflow_cli_error("Run approval evidence is invalid or unavailable")
+    _emit_json(
+        {
+            "approvals": [asdict(item) for item in evidence],
+            "manifest_digest": manifest.digest,
+            "operation": "approval-evidence",
+            "run_id": manifest.run_id,
+        }
+    )
+
+
+def _has_approval_fields(
+    approve_business: bool,
+    business_approved_by: str | None,
+    business_approval_id: str | None,
     approve_execution: bool,
-    approved_by: str | None,
-    approval_id: str | None,
+    execution_approved_by: str | None,
+    execution_approval_id: str | None,
     expected_step_id: str | None,
     expected_step_index: int | None,
     expected_employee_id: str | None,
     expected_request_fingerprint: str | None,
 ) -> bool:
-    """Return whether any execution-only option was supplied by the caller."""
+    """Return whether any approval or execution-binding option was supplied."""
     return any(
         (
-            approve_preparation,
+            approve_business,
+            business_approved_by is not None,
+            business_approval_id is not None,
             approve_execution,
-            approved_by is not None,
-            approval_id is not None,
+            execution_approved_by is not None,
+            execution_approval_id is not None,
             expected_step_id is not None,
             expected_step_index is not None,
             expected_employee_id is not None,
@@ -834,22 +868,43 @@ def _has_execution_fields(
 
 
 def _require_execution_options(
-    approve_preparation: bool,
+    preview: _WorkflowStepPreview,
+    approve_business: bool,
+    business_approved_by: str | None,
+    business_approval_id: str | None,
     approve_execution: bool,
-    approved_by: str | None,
-    approval_id: str | None,
+    execution_approved_by: str | None,
+    execution_approval_id: str | None,
     expected_step_id: str | None,
     expected_step_index: int | None,
     expected_employee_id: str | None,
     expected_request_fingerprint: str | None,
+    business_approval_durable: bool = False,
 ) -> None:
-    """Reject incomplete explicit approval before credential or provider work."""
-    if not approve_preparation or not approve_execution:
-        _workflow_cli_error("both explicit approvals are required")
-    if approved_by is None or approved_by == "":
-        _workflow_cli_error("approved-by is required")
-    if approval_id is None or approval_id == "":
-        _workflow_cli_error("approval-id is required")
+    """Reject incomplete purpose-specific approval before credential work."""
+    if preview.business_approval_required:
+        if not business_approval_durable and not approve_business:
+            _workflow_cli_error("business approval is required")
+        if approve_business:
+            if business_approved_by is None or business_approved_by == "":
+                _workflow_cli_error("business-approved-by is required")
+            if business_approval_id is None or business_approval_id == "":
+                _workflow_cli_error("business-approval-id is required")
+        elif business_approved_by is not None or business_approval_id is not None:
+            _workflow_cli_error("--approve-business is required for new approval")
+    elif (
+        approve_business
+        or business_approved_by is not None
+        or business_approval_id is not None
+    ):
+        _workflow_cli_error("business approval is not required for this step")
+
+    if not approve_execution:
+        _workflow_cli_error("execution approval is required")
+    if execution_approved_by is None or execution_approved_by == "":
+        _workflow_cli_error("execution-approved-by is required")
+    if execution_approval_id is None or execution_approval_id == "":
+        _workflow_cli_error("execution-approval-id is required")
     if (
         expected_step_id is None
         or expected_step_index is None
@@ -883,13 +938,32 @@ def _expected_preview_matches(
 
 def _build_start_context(
     preview: _WorkflowStepPreview,
-    approved_by: str,
-    approval_id: str,
+    business_approved_by: str | None,
+    business_approval_id: str | None,
+    execution_approved_by: str,
+    execution_approval_id: str,
     *,
     manifest_store: WorkflowRunManifestStore,
 ) -> ApprovedWorkflowBootstrapContext:
     """Create the exact fresh-start context only after preview binding passes."""
     try:
+        business_approval_evidence = None
+        if (
+            preview.business_approval_required
+            and business_approved_by is not None
+            and business_approval_id is not None
+        ):
+            if preview.run_binding is None:
+                raise ValueError("business approval is incomplete")
+            business_approval_evidence = approve_business_step(
+                binding=preview.run_binding,
+                workflow_id=preview.step_request.workflow_id,
+                step_id=preview.step_request.step_id,
+                step_index=preview.step_request.step_index,
+                employee_id=preview.step_request.employee_id,
+                approved_by=business_approved_by,
+                approval_id=business_approval_id,
+            )
         api_key = _load_api_key_for_target(preview.execution_target)
         preparation_approval = InitialStepPreparationApproval(
             True,
@@ -897,13 +971,14 @@ def _build_start_context(
             preview.step_request.step_id,
             preview.step_request.step_index,
             preview.step_request.employee_id,
+            business_approval_evidence,
         )
         execution_approval = approve_model_invocation_execution(
             preview.invocation_request,
             preview.resolved_tools,
             provider=preview.execution_target.provider,
-            approved_by=approved_by,
-            approval_id=approval_id,
+            approved_by=execution_approved_by,
+            approval_id=execution_approval_id,
             execution_target=preview.execution_target,
         )
     except Exception:
@@ -924,11 +999,38 @@ def _build_start_context(
 def _build_continuation_context(
     decision: WorkflowProgressionDecision,
     preview: _WorkflowStepPreview,
-    approved_by: str,
-    approval_id: str,
+    business_approved_by: str | None,
+    business_approval_id: str | None,
+    execution_approved_by: str,
+    execution_approval_id: str,
 ) -> ApprovedWorkflowContinuationContext:
     """Create one exact next-step context only after preview binding passes."""
     try:
+        business_approval_evidence = None
+        if (
+            preview.business_approval_required
+            and business_approved_by is not None
+            and business_approval_id is not None
+        ):
+            if preview.run_binding is None:
+                raise ValueError("business approval is incomplete")
+            if (
+                decision.next_step_id is None
+                or decision.next_step_index is None
+                or decision.next_employee_id is None
+            ):
+                _workflow_cli_error("next-step business approval is invalid")
+            business_approval_evidence = approve_business_step(
+                binding=preview.run_binding,
+                workflow_id=decision.workflow_id,
+                step_id=decision.next_step_id,
+                step_index=decision.next_step_index,
+                employee_id=decision.next_employee_id,
+                approved_by=business_approved_by,
+                approval_id=business_approval_id,
+                progression_from_step_id=decision.current_step_id,
+                progression_from_step_index=decision.current_step_index,
+            )
         api_key = _load_api_key_for_target(preview.execution_target)
         preparation_approval = NextStepPreparationApproval(
             True,
@@ -938,13 +1040,14 @@ def _build_continuation_context(
             decision.next_step_id,
             decision.next_step_index,
             decision.next_employee_id,
+            business_approval_evidence,
         )
         execution_approval = approve_model_invocation_execution(
             preview.invocation_request,
             preview.resolved_tools,
             provider=preview.execution_target.provider,
-            approved_by=approved_by,
-            approval_id=approval_id,
+            approved_by=execution_approved_by,
+            approval_id=execution_approval_id,
             execution_target=preview.execution_target,
         )
     except Exception:
@@ -958,6 +1061,41 @@ def _build_continuation_context(
         transport=send_openai_responses_http_request,
         execution_target=preview.execution_target,
     )
+
+
+def _durable_business_approval_exists(
+    store: WorkflowRunManifestStore,
+    preview: _WorkflowStepPreview,
+    *,
+    progression_from_step_id: str | None = None,
+    progression_from_step_index: int | None = None,
+) -> bool:
+    """Check only authoritative exact durable Business Approval evidence."""
+    if not preview.business_approval_required or preview.run_binding is None:
+        return False
+    try:
+        manifest = load_workflow_run_manifest(store, preview.run_binding.run_id)
+    except (WorkflowRunManifestError, OSError):
+        return False
+    if (
+        manifest.digest != preview.run_binding.manifest_digest
+        or manifest.workflow_id != preview.step_request.workflow_id
+    ):
+        return False
+    try:
+        evidence = find_business_approval_evidence(
+            store,
+            binding=preview.run_binding,
+            workflow_id=preview.step_request.workflow_id,
+            step_id=preview.step_request.step_id,
+            step_index=preview.step_request.step_index,
+            employee_id=preview.step_request.employee_id,
+            progression_from_step_id=progression_from_step_id,
+            progression_from_step_index=progression_from_step_index,
+        )
+    except Exception:
+        _workflow_cli_error("Run Business Approval evidence is invalid")
+    return evidence is not None
 
 
 def _run_fresh_workflow(
@@ -1164,10 +1302,12 @@ def start_workflow(
     ),
     preview_only: bool = typer.Option(False, "--preview-only"),
     execution_target: str = typer.Option("openai", "--execution-target"),
-    approve_preparation: bool = typer.Option(False, "--approve-preparation"),
+    approve_business: bool = typer.Option(False, "--approve-business"),
+    business_approved_by: str | None = typer.Option(None, "--business-approved-by"),
+    business_approval_id: str | None = typer.Option(None, "--business-approval-id"),
     approve_execution: bool = typer.Option(False, "--approve-execution"),
-    approved_by: str | None = typer.Option(None, "--approved-by"),
-    approval_id: str | None = typer.Option(None, "--approval-id"),
+    execution_approved_by: str | None = typer.Option(None, "--execution-approved-by"),
+    execution_approval_id: str | None = typer.Option(None, "--execution-approval-id"),
     expected_step_id: str | None = typer.Option(None, "--expected-step-id"),
     expected_step_index: int | None = typer.Option(None, "--expected-step-index"),
     expected_employee_id: str | None = typer.Option(None, "--expected-employee-id"),
@@ -1177,28 +1317,19 @@ def start_workflow(
 ) -> None:
     """Preview or execute exactly one fresh workflow step."""
     target = _resolve_execution_target(execution_target)
-    if preview_only and _has_execution_fields(
-        approve_preparation,
+    if preview_only and _has_approval_fields(
+        approve_business,
+        business_approved_by,
+        business_approval_id,
         approve_execution,
-        approved_by,
-        approval_id,
+        execution_approved_by,
+        execution_approval_id,
         expected_step_id,
         expected_step_index,
         expected_employee_id,
         expected_request_fingerprint,
     ):
         _workflow_cli_error("preview-only cannot include execution options")
-    if not preview_only:
-        _require_execution_options(
-            approve_preparation,
-            approve_execution,
-            approved_by,
-            approval_id,
-            expected_step_id,
-            expected_step_index,
-            expected_employee_id,
-            expected_request_fingerprint,
-        )
 
     workflows, employees = _load_workflow_command_inputs(
         directory, employees_directory
@@ -1225,7 +1356,27 @@ def start_workflow(
     if preview_only:
         _emit_json(_step_preview_json("start", preview))
         return
-    assert approved_by is not None and approval_id is not None
+    durable_business_approval = False
+    if run_store.exists():
+        existing_store = _load_run_store_or_exit(run_store)
+        durable_business_approval = _durable_business_approval_exists(
+            existing_store, preview
+        )
+    _require_execution_options(
+        preview,
+        approve_business,
+        business_approved_by,
+        business_approval_id,
+        approve_execution,
+        execution_approved_by,
+        execution_approval_id,
+        expected_step_id,
+        expected_step_index,
+        expected_employee_id,
+        expected_request_fingerprint,
+        business_approval_durable=durable_business_approval,
+    )
+    assert execution_approved_by is not None and execution_approval_id is not None
     if not _expected_preview_matches(
         preview,
         expected_step_id,
@@ -1239,8 +1390,10 @@ def start_workflow(
     state_path, events_path = store.execution_paths(binding.run_id)
     context = _build_start_context(
         preview,
-        approved_by,
-        approval_id,
+        business_approved_by,
+        business_approval_id,
+        execution_approved_by,
+        execution_approval_id,
         manifest_store=store,
     )
     result = _run_fresh_workflow(
@@ -1262,10 +1415,12 @@ def continue_workflow(
     run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
     preview_only: bool = typer.Option(False, "--preview-only"),
     execution_target: str = typer.Option("openai", "--execution-target"),
-    approve_preparation: bool = typer.Option(False, "--approve-preparation"),
+    approve_business: bool = typer.Option(False, "--approve-business"),
+    business_approved_by: str | None = typer.Option(None, "--business-approved-by"),
+    business_approval_id: str | None = typer.Option(None, "--business-approval-id"),
     approve_execution: bool = typer.Option(False, "--approve-execution"),
-    approved_by: str | None = typer.Option(None, "--approved-by"),
-    approval_id: str | None = typer.Option(None, "--approval-id"),
+    execution_approved_by: str | None = typer.Option(None, "--execution-approved-by"),
+    execution_approval_id: str | None = typer.Option(None, "--execution-approval-id"),
     expected_step_id: str | None = typer.Option(None, "--expected-step-id"),
     expected_step_index: int | None = typer.Option(None, "--expected-step-index"),
     expected_employee_id: str | None = typer.Option(None, "--expected-employee-id"),
@@ -1275,11 +1430,13 @@ def continue_workflow(
 ) -> None:
     """Preview or execute exactly one persisted next workflow step."""
     target = _resolve_execution_target(execution_target)
-    if preview_only and _has_execution_fields(
-        approve_preparation,
+    if preview_only and _has_approval_fields(
+        approve_business,
+        business_approved_by,
+        business_approval_id,
         approve_execution,
-        approved_by,
-        approval_id,
+        execution_approved_by,
+        execution_approval_id,
         expected_step_id,
         expected_step_index,
         expected_employee_id,
@@ -1365,17 +1522,27 @@ def continue_workflow(
         _emit_json(_step_preview_json("continue", preview))
         return
 
+    durable_business_approval = _durable_business_approval_exists(
+        store,
+        preview,
+        progression_from_step_id=routed.current_step_id,
+        progression_from_step_index=routed.current_step_index,
+    )
     _require_execution_options(
-        approve_preparation,
+        preview,
+        approve_business,
+        business_approved_by,
+        business_approval_id,
         approve_execution,
-        approved_by,
-        approval_id,
+        execution_approved_by,
+        execution_approval_id,
         expected_step_id,
         expected_step_index,
         expected_employee_id,
         expected_request_fingerprint,
+        business_approval_durable=durable_business_approval,
     )
-    assert approved_by is not None and approval_id is not None
+    assert execution_approved_by is not None and execution_approval_id is not None
     if not _expected_preview_matches(
         preview,
         expected_step_id,
@@ -1385,7 +1552,12 @@ def continue_workflow(
     ):
         _workflow_cli_error("expected preview does not match current step")
     context = _build_continuation_context(
-        routed, preview, approved_by, approval_id
+        routed,
+        preview,
+        business_approved_by,
+        business_approval_id,
+        execution_approved_by,
+        execution_approval_id,
     )
     result = _run_persisted_workflow(
         workflow.definition, state_path, events_path, context

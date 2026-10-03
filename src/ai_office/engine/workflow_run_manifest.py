@@ -33,7 +33,7 @@ from ai_office.tools import (
     resolve_tool_names,
 )
 
-_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v1"
+_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v2"
 _MANIFEST_ERROR_MESSAGE = "workflow run manifest is invalid"
 _PERSISTENCE_ERROR_MESSAGE = "workflow run manifest persistence failed"
 _LOAD_ERROR_MESSAGE = "workflow run manifest could not be loaded"
@@ -52,7 +52,9 @@ _MANIFEST_KEYS = frozenset(
     }
 )
 _WORKFLOW_KEYS = frozenset({"description", "id", "name", "steps"})
-_WORKFLOW_STEP_KEYS = frozenset({"employee", "id", "instructions", "name"})
+_WORKFLOW_STEP_KEYS = frozenset(
+    {"business_approval_required", "employee", "id", "instructions", "name"}
+)
 _EMPLOYEE_KEYS = frozenset(
     {"allowed_tools", "id", "instructions", "model", "name", "role"}
 )
@@ -68,7 +70,7 @@ class WorkflowRunManifestFailureDetail:
 
 
 class WorkflowRunManifestError(ValueError):
-    """Raised when a Run Manifest value is not an exact v1 contract."""
+    """Raised when a Run Manifest value is not an exact v2 contract."""
 
     def __init__(self, classification: str = "contract") -> None:
         super().__init__(_MANIFEST_ERROR_MESSAGE)
@@ -88,7 +90,7 @@ class WorkflowRunManifestConflictError(WorkflowRunManifestPersistenceError):
 
 
 class WorkflowRunManifestLoadError(WorkflowRunManifestError):
-    """Raised when a target is not an exact canonical v1 manifest."""
+    """Raised when a target is not an exact canonical v2 manifest."""
 
     def __init__(self, classification: str = "load") -> None:
         ValueError.__init__(self, _LOAD_ERROR_MESSAGE)
@@ -103,6 +105,7 @@ class WorkflowStepSnapshot:
     name: str
     employee: str
     instructions: str
+    business_approval_required: bool
 
     def __post_init__(self) -> None:
         _validate_workflow_step_snapshot(self)
@@ -170,7 +173,7 @@ class WorkflowRunManifest:
     each employee's allowed-tool order remain semantic and are preserved.
     """
 
-    schema_version: Literal["workflow-run-manifest.v1"]
+    schema_version: Literal["workflow-run-manifest.v2"]
     run_id: str
     workflow_id: str
     run_input: str
@@ -459,6 +462,7 @@ def workflow_definition_from_run_manifest(
                     "name": step.name,
                     "employee": step.employee,
                     "instructions": step.instructions,
+                    "business_approval_required": step.business_approval_required,
                 }
                 for step in snapshot.steps
             ],
@@ -583,6 +587,7 @@ def _workflow_step_snapshot(step: WorkflowStepDefinition) -> WorkflowStepSnapsho
             name=step.name,
             employee=step.employee,
             instructions=step.instructions,
+            business_approval_required=step.business_approval_required,
         )
     except WorkflowRunManifestError:
         raise
@@ -677,6 +682,7 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
             "name": workflow.name,
             "steps": [
                 {
+                    "business_approval_required": step.business_approval_required,
                     "employee": step.employee,
                     "id": step.id,
                     "instructions": step.instructions,
@@ -747,6 +753,8 @@ def _validate_workflow_step_snapshot(snapshot: object) -> None:
     _validate_nonblank_text(snapshot.name, "workflow_step_name")
     _validate_definition_id(snapshot.employee)
     _validate_nonblank_text(snapshot.instructions, "workflow_step_instructions")
+    if type(snapshot.business_approval_required) is not bool:
+        _raise_manifest("business_approval_policy")
 
 
 def _validate_workflow_snapshot(snapshot: object) -> None:
@@ -1036,6 +1044,7 @@ def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
             name=value["name"],
             employee=value["employee"],
             instructions=value["instructions"],
+            business_approval_required=value["business_approval_required"],
         )
     except Exception:
         _raise_load("workflow_step")
