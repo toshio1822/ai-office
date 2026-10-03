@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from ai_office.execution_evidence import execution_evidence_of_result
 from ai_office.invocation import (
     ModelInvocationFailureCategory,
     ModelInvocationFailureDiagnostics,
@@ -155,6 +156,11 @@ class RuntimeStepEvent:
         run_id: str | None = None,
         manifest_digest: str | None = None,
         binding: WorkflowRunBinding | None = None,
+        execution_attempt_id: str | None = None,
+        execution_attempt_evidence_sha256: str | None = None,
+        normalized_result_evidence_sha256: str | None = None,
+        raw_response_evidence_sha256: str | None = None,
+        raw_response_body_sha256: str | None = None,
     ) -> None:
         selected = select_run_binding(binding, run_id, manifest_digest)
         object.__setattr__(self, "event_type", event_type)
@@ -172,6 +178,14 @@ class RuntimeStepEvent:
         object.__setattr__(self, "message", message)
         object.__setattr__(self, "response_diagnostics", response_diagnostics)
         object.__setattr__(self, "_run_binding", selected)
+        _set_execution_evidence_linkage(
+            self,
+            execution_attempt_id=execution_attempt_id,
+            execution_attempt_evidence_sha256=execution_attempt_evidence_sha256,
+            normalized_result_evidence_sha256=normalized_result_evidence_sha256,
+            raw_response_evidence_sha256=raw_response_evidence_sha256,
+            raw_response_body_sha256=raw_response_body_sha256,
+        )
 
     @property
     def run_id(self) -> str | None:
@@ -203,6 +217,7 @@ class RuntimeStepEvent:
             self.output_text,
             self.message,
             self.response_diagnostics,
+            _execution_evidence_linkage(self),
             binding_of(self),
         ) == (
             other.event_type,
@@ -219,6 +234,7 @@ class RuntimeStepEvent:
             other.output_text,
             other.message,
             other.response_diagnostics,
+            _execution_evidence_linkage(other),
             binding_of(other),
         )
 
@@ -239,6 +255,7 @@ class RuntimeStepEvent:
                 self.output_text,
                 self.message,
                 self.response_diagnostics,
+                _execution_evidence_linkage(self),
                 binding_of(self),
             )
         )
@@ -338,6 +355,7 @@ def _build_success_transition(
         request_id=invocation_result.request_id,
         output_text=invocation_result.text,
         message=None,
+        **_execution_evidence_kwargs(invocation_result),
         binding=binding,
     )
     return WorkflowExecutionTransition(current_state, next_state, event)
@@ -374,6 +392,90 @@ def _build_failure_transition(
         output_text=None,
         message=invocation_result.message,
         response_diagnostics=invocation_result.response_diagnostics,
+        **_execution_evidence_kwargs(invocation_result),
         binding=binding,
     )
     return WorkflowExecutionTransition(current_state, next_state, event)
+
+
+def _execution_evidence_kwargs(value: object) -> dict[str, str | None]:
+    evidence = execution_evidence_of_result(value)
+    if evidence is None:
+        return {}
+    return {
+        "execution_attempt_id": evidence[0],
+        "execution_attempt_evidence_sha256": evidence[1],
+        "normalized_result_evidence_sha256": evidence[2],
+        "raw_response_evidence_sha256": evidence[3],
+        "raw_response_body_sha256": getattr(
+            value, "raw_response_body_sha256", None
+        ),
+    }
+
+
+def _set_execution_evidence_linkage(
+    value: object,
+    *,
+    execution_attempt_id: str | None,
+    execution_attempt_evidence_sha256: str | None,
+    normalized_result_evidence_sha256: str | None,
+    raw_response_evidence_sha256: str | None,
+    raw_response_body_sha256: str | None,
+) -> None:
+    linkage = (
+        execution_attempt_id,
+        execution_attempt_evidence_sha256,
+        normalized_result_evidence_sha256,
+        raw_response_evidence_sha256,
+        raw_response_body_sha256,
+    )
+    if all(item is None for item in linkage):
+        return
+    if (
+        execution_attempt_id is None
+        or execution_attempt_evidence_sha256 is None
+        or normalized_result_evidence_sha256 is None
+        or (raw_response_evidence_sha256 is None) != (raw_response_body_sha256 is None)
+        or any(
+            type(item) is not str or len(item) != 64 or not _is_lower_hex(item)
+            for item in linkage[:3]
+        )
+        or any(
+            item is not None
+            and (type(item) is not str or len(item) != 64 or not _is_lower_hex(item))
+            for item in linkage[3:]
+        )
+    ):
+        raise ValueError(_INPUT_ERROR_MESSAGE) from None
+    for name, item in zip(
+        (
+            "execution_attempt_id",
+            "execution_attempt_evidence_sha256",
+            "normalized_result_evidence_sha256",
+            "raw_response_evidence_sha256",
+            "raw_response_body_sha256",
+        ),
+        linkage,
+        strict=True,
+    ):
+        object.__setattr__(value, name, item)
+
+
+def _execution_evidence_linkage(value: object) -> tuple[object, ...] | None:
+    attempt_id = getattr(value, "execution_attempt_id", None)
+    if attempt_id is None:
+        return None
+    return tuple(
+        getattr(value, name, None)
+        for name in (
+            "execution_attempt_id",
+            "execution_attempt_evidence_sha256",
+            "normalized_result_evidence_sha256",
+            "raw_response_evidence_sha256",
+            "raw_response_body_sha256",
+        )
+    )
+
+
+def _is_lower_hex(value: str) -> bool:
+    return all(character in "0123456789abcdef" for character in value)
