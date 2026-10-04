@@ -24,7 +24,14 @@ from ai_office.engine import (
 )
 from ai_office.engine.workflow_approval_evidence import (
     build_execution_approval_evidence_for_tools,
+    build_recovery_approval_evidence,
     persist_execution_approval_evidence,
+    persist_recovery_approval_evidence,
+)
+from ai_office.engine.workflow_recovery import (
+    WorkflowRecoveryError,
+    assess_workflow_recovery,
+    validate_workflow_recovery_authorization,
 )
 from ai_office.execution_evidence import (
     ExecutionEvidencePersistenceError,
@@ -36,6 +43,7 @@ from ai_office.execution_evidence import (
     list_run_execution_evidence,
     load_normalized_result_evidence,
     load_raw_response_evidence,
+    persist_raw_response_evidence,
 )
 from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import (
@@ -249,12 +257,19 @@ def _persist_result(fixture: RecoveryFixture, result: object) -> None:
     )
 
 
-def _snapshot_run_namespace(root: Path) -> dict[str, bytes]:
-    return {
-        path.name: path.read_bytes()
-        for path in sorted(root.iterdir(), key=lambda item: item.name)
-        if path.is_file()
-    }
+def _snapshot_run_namespace(
+    root: Path,
+) -> dict[str, tuple[str, bytes | str | None]]:
+    snapshot: dict[str, tuple[str, bytes | str | None]] = {}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            snapshot[relative] = ("symlink", path.readlink().as_posix())
+        elif path.is_file():
+            snapshot[relative] = ("file", path.read_bytes())
+        elif path.is_dir():
+            snapshot[relative] = ("directory", None)
+    return snapshot
 
 
 def _inspect(fixture: RecoveryFixture):
@@ -288,14 +303,26 @@ def _recover_args(fixture: RecoveryFixture, decision: dict[str, object]) -> list
 
 
 def _with_execution_approval(
-    fixture: RecoveryFixture, decision: dict[str, object]
+    fixture: RecoveryFixture,
+    decision: dict[str, object],
+    *,
+    recovery_approval_id: str | None = None,
+    execution_approval_id: str | None = None,
 ) -> list[str]:
-    return _recover_args(fixture, decision) + [
+    recovery_id = recovery_approval_id or (
+        f"recovery-approval-{fixture.run.binding.run_id}"
+    )
+    execution_id = execution_approval_id or (
+        f"recovery-execution-{fixture.run.binding.run_id}"
+    )
+    args = _recover_args(fixture, decision)
+    args[args.index(f"recovery-approval-{fixture.run.binding.run_id}")] = recovery_id
+    return args + [
         "--approve-execution",
         "--execution-approved-by",
         "new-execution-operator",
         "--execution-approval-id",
-        f"recovery-execution-{fixture.run.binding.run_id}",
+        execution_id,
         "--expected-step-id",
         str(decision["step_id"]),
         "--expected-step-index",
@@ -458,6 +485,12 @@ def test_durable_normalized_result_is_completed_without_provider_replay(
     assert len(artifacts) == 1
     assert artifacts[0].execution_attempt_id == attempt.attempt_id
 
+    completed_namespace = _snapshot_run_namespace(fixture.run.store.root)
+    completed_inspection = _inspect(fixture)
+    assert completed_inspection.exit_code != 0
+    assert _snapshot_run_namespace(fixture.run.store.root) == completed_namespace
+    assert calls == []
+
 
 def test_durable_raw_response_is_normalized_without_provider_replay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -507,6 +540,213 @@ def test_durable_raw_response_is_normalized_without_provider_replay(
     artifacts = list_run_artifacts(fixture.run.store, fixture.run.binding.run_id)
     assert len(artifacts) == 1
     assert artifacts[0].execution_attempt_id == attempt.attempt_id
+
+
+def test_recovery_decision_is_stale_after_authoritative_response_arrives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path, "run-stale-recovery")
+    _claim_only(fixture)
+    decision = _inspect_value(fixture)
+    assessment = assess_workflow_recovery(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )
+    assert decision["action"] == "retry_ambiguous"
+    assert assessment.digest == decision["recovery_decision_sha256"]
+
+    approval = build_recovery_approval_evidence(
+        assessment,
+        approved_by="recovery-operator",
+        approval_id="stale-recovery-approval",
+    )
+    persist_recovery_approval_evidence(fixture.run.store, approval)
+    attempt = list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )[0]
+    persist_raw_response_evidence(
+        fixture.execution_context,
+        attempt,
+        _success_response("provider response is now durable"),
+    )
+    current = assess_workflow_recovery(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )
+    assert current.action == "complete_raw_response"
+    with pytest.raises(WorkflowRecoveryError):
+        validate_workflow_recovery_authorization(
+            fixture.run.store.root, assessment, approval
+        )
+
+    before_recovery = _snapshot_run_namespace(fixture.run.store.root)
+    calls: list[object] = []
+    _prepare_new_transport(monkeypatch, calls)
+    stale_recovery = runner.invoke(app, _recover_args(fixture, decision))
+    assert stale_recovery.exit_code == 2
+    assert calls == []
+    assert _snapshot_run_namespace(fixture.run.store.root) == before_recovery
+
+
+def test_recovery_decision_cannot_authorize_another_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _fixture(tmp_path / "first", "run-first-recovery")
+    second = _fixture(tmp_path / "second", "run-second-recovery")
+    _claim_only(first)
+    _claim_only(second)
+    first_decision = _inspect_value(first)
+    before_second = _snapshot_run_namespace(second.run.store.root)
+
+    calls: list[object] = []
+    _prepare_new_transport(monkeypatch, calls)
+    cross_run_recovery = runner.invoke(app, _recover_args(second, first_decision))
+
+    assert cross_run_recovery.exit_code == 2
+    assert calls == []
+    assert _snapshot_run_namespace(second.run.store.root) == before_second
+
+
+def test_failed_recovery_preserves_both_attempts_and_requires_new_approvals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path, "run-failed-retry")
+    first_result = execute_openai_model_invocation(
+        fixture.request,
+        (),
+        OpenAIApiKey(value=SecretStr("initial-key")),
+        fixture.approval,
+        transport=lambda _: _api_failure_response(),
+        execution_evidence=fixture.execution_context,
+    )
+    assert type(first_result) is ModelInvocationFailure
+    _persist_result(fixture, first_result)
+    first_attempt = list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )[0]
+    first_attempt_bytes = execution_attempt_evidence_path(
+        fixture.run.store.root, fixture.run.binding.run_id, first_attempt.attempt_id
+    ).read_bytes()
+    first_raw_bytes = execution_raw_response_evidence_path(
+        fixture.run.store.root, fixture.run.binding.run_id, first_attempt.attempt_id
+    ).read_bytes()
+    first_result_bytes = execution_normalized_result_evidence_path(
+        fixture.run.store.root, fixture.run.binding.run_id, first_attempt.attempt_id
+    ).read_bytes()
+    first_decision = _inspect_value(fixture)
+
+    calls: list[object] = []
+
+    def fail_retry(request: object) -> OpenAIResponsesRawHttpResponse:
+        calls.append(request)
+        return _api_failure_response()
+
+    monkeypatch.setattr(cli_module, "send_openai_responses_http_request", fail_retry)
+    monkeypatch.setattr(
+        cli_module,
+        "load_openai_api_key_from_environment",
+        lambda: OpenAIApiKey(value=SecretStr("synthetic-recovery-key")),
+    )
+    first_retry = runner.invoke(
+        app, _with_execution_approval(fixture, first_decision)
+    )
+    assert first_retry.exit_code == 1
+    assert len(calls) == 1
+    second_attempt = next(
+        attempt
+        for attempt in list_run_execution_evidence(
+            fixture.run.store.root, fixture.run.binding.run_id
+        )
+        if attempt.attempt_id != first_attempt.attempt_id
+    )
+    assert second_attempt.previous_attempt_id == first_attempt.attempt_id
+    second_attempt_paths = (
+        execution_attempt_evidence_path(
+            fixture.run.store.root,
+            fixture.run.binding.run_id,
+            second_attempt.attempt_id,
+        ),
+        execution_raw_response_evidence_path(
+            fixture.run.store.root,
+            fixture.run.binding.run_id,
+            second_attempt.attempt_id,
+        ),
+        execution_normalized_result_evidence_path(
+            fixture.run.store.root,
+            fixture.run.binding.run_id,
+            second_attempt.attempt_id,
+        ),
+    )
+    second_attempt_bytes = tuple(path.read_bytes() for path in second_attempt_paths)
+    assert fixture.run.events_path.read_text(encoding="utf-8").count(
+        '"event_type":"step_failed"'
+    ) == 2
+    assert fixture.run.events_path.read_text(encoding="utf-8").count(
+        '"event_type":"step_recovery_started"'
+    ) == 1
+    assert execution_attempt_evidence_path(
+        fixture.run.store.root, fixture.run.binding.run_id, first_attempt.attempt_id
+    ).read_bytes() == first_attempt_bytes
+    assert execution_raw_response_evidence_path(
+        fixture.run.store.root, fixture.run.binding.run_id, first_attempt.attempt_id
+    ).read_bytes() == first_raw_bytes
+    assert execution_normalized_result_evidence_path(
+        fixture.run.store.root, fixture.run.binding.run_id, first_attempt.attempt_id
+    ).read_bytes() == first_result_bytes
+
+    second_decision = _inspect_value(fixture)
+    assert second_decision["action"] == "retry_failed"
+    assert second_decision["previous_attempt_id"] == second_attempt.attempt_id
+    before_reuse = _snapshot_run_namespace(fixture.run.store.root)
+    reused_approval = runner.invoke(
+        app, _with_execution_approval(fixture, second_decision)
+    )
+    assert reused_approval.exit_code == 2
+    assert len(calls) == 1
+    assert _snapshot_run_namespace(fixture.run.store.root) == before_reuse
+
+    def succeed_retry(request: object) -> OpenAIResponsesRawHttpResponse:
+        calls.append(request)
+        return _success_response("success after a second explicit recovery")
+
+    monkeypatch.setattr(cli_module, "send_openai_responses_http_request", succeed_retry)
+    second_retry = runner.invoke(
+        app,
+        _with_execution_approval(
+            fixture,
+            second_decision,
+            recovery_approval_id="fresh-recovery-approval",
+            execution_approval_id="fresh-execution-approval",
+        ),
+    )
+    assert second_retry.exit_code == 0, second_retry.stdout + second_retry.stderr
+    assert len(calls) == 2
+    attempts = list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )
+    assert len(attempts) == 3
+    third_attempt = next(
+        attempt
+        for attempt in attempts
+        if attempt.attempt_id != first_attempt.attempt_id
+        and attempt.attempt_id != second_attempt.attempt_id
+    )
+    assert third_attempt.previous_attempt_id == second_attempt.attempt_id
+    assert fixture.run.events_path.read_text(encoding="utf-8").count(
+        '"event_type":"step_failed"'
+    ) == 2
+    assert fixture.run.events_path.read_text(encoding="utf-8").count(
+        '"event_type":"step_recovery_started"'
+    ) == 2
+    assert fixture.run.events_path.read_text(encoding="utf-8").count(
+        '"event_type":"step_succeeded"'
+    ) == 1
+    assert (
+        tuple(path.read_bytes() for path in second_attempt_paths)
+        == second_attempt_bytes
+    )
+    artifacts = list_run_artifacts(fixture.run.store, fixture.run.binding.run_id)
+    assert len(artifacts) == 1
+    assert artifacts[0].execution_attempt_id == third_attempt.attempt_id
+    assert artifacts[0].content == b"success after a second explicit recovery"
 
 
 def test_ambiguous_claim_requires_both_approvals_and_normal_continue_never_replays(
