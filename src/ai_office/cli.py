@@ -47,6 +47,13 @@ from ai_office.engine import (
     route_persisted_terminal_workflow_bounded,
     tool_catalog_from_run_manifest,
 )
+from ai_office.engine.artifact import (
+    WorkflowArtifact,
+    WorkflowArtifactError,
+    export_run_artifact,
+    list_run_artifacts,
+    read_run_artifact,
+)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
@@ -857,6 +864,110 @@ def execution_evidence_workflow(
             "manifest_digest": manifest.digest,
             "operation": "execution-evidence",
             "run_id": manifest.run_id,
+        }
+    )
+
+
+def _artifact_metadata_json(artifact: WorkflowArtifact) -> dict[str, object]:
+    return {
+        "artifact_id": artifact.artifact_id,
+        "content_length": artifact.content_length,
+        "content_sha256": artifact.content_sha256,
+        "content_type": artifact.content_type,
+        "consistent_with_execution_evidence": True,
+        "employee_id": artifact.employee_id,
+        "manifest_digest": artifact.manifest_digest,
+        "normalized_result_evidence_sha256": (
+            artifact.normalized_result_evidence_sha256
+        ),
+        "provenance": {
+            "execution_attempt_evidence_sha256": (
+                artifact.execution_attempt_evidence_sha256
+            ),
+            "execution_attempt_id": artifact.execution_attempt_id,
+            "normalized_result_evidence_sha256": (
+                artifact.normalized_result_evidence_sha256
+            ),
+            "raw_response_body_sha256": artifact.raw_response_body_sha256,
+            "raw_response_evidence_sha256": artifact.raw_response_evidence_sha256,
+            "terminal_success_event_sha256": (
+                artifact.terminal_success_event_sha256
+            ),
+        },
+        "run_id": artifact.run_id,
+        "step_id": artifact.step_id,
+        "step_index": artifact.step_index,
+        "workflow_id": artifact.workflow_id,
+    }
+
+
+@workflows_app.command("artifacts")
+def list_workflow_artifacts(
+    run_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """List verified Artifact metadata for one Run without printing contents."""
+    store = _load_run_store_or_exit(run_store)
+    manifest = _load_run_manifest_or_exit(store, run_id)
+    try:
+        artifacts = list_run_artifacts(store, run_id)
+    except (WorkflowArtifactError, OSError):
+        _workflow_cli_error("Run Artifacts are invalid or unavailable")
+    _emit_json(
+        {
+            "artifacts": [_artifact_metadata_json(item) for item in artifacts],
+            "manifest_digest": manifest.digest,
+            "operation": "artifacts",
+            "run_id": manifest.run_id,
+        }
+    )
+
+
+@workflows_app.command("artifact")
+def read_workflow_artifact(
+    run_id: str,
+    artifact_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Read one verified Artifact and its exact UTF-8 business content."""
+    store = _load_run_store_or_exit(run_store)
+    try:
+        artifact = read_run_artifact(store, run_id, artifact_id)
+        content = artifact.content.decode("utf-8")
+    except (WorkflowArtifactError, OSError, UnicodeDecodeError):
+        _workflow_cli_error("Run Artifact is invalid or unavailable")
+    _emit_json(
+        {
+            "artifact": {
+                **_artifact_metadata_json(artifact),
+                "content": content,
+            },
+            "operation": "artifact",
+        }
+    )
+
+
+@workflows_app.command("artifact-export")
+def export_workflow_artifact(
+    run_id: str,
+    artifact_id: str,
+    destination: Path = typer.Option(..., "--output"),
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Export exact verified Artifact bytes to a new local file."""
+    store = _load_run_store_or_exit(run_store)
+    try:
+        receipt = export_run_artifact(store, run_id, artifact_id, destination)
+    except (WorkflowArtifactError, OSError):
+        _workflow_cli_error("Run Artifact export could not be completed")
+    _emit_json(
+        {
+            "artifact_id": receipt.artifact_id,
+            "content_length": receipt.content_length,
+            "content_sha256": receipt.content_sha256,
+            "destination": str(receipt.destination),
+            "operation": "artifact-export",
+            "run_id": run_id,
         }
     )
 

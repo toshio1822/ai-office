@@ -72,6 +72,33 @@ def test_load_workflow_file_loads_valid_yaml_and_preserves_step_order(
     assert [step.id for step in loaded.definition.steps] == ["research", "summarize"]
 
 
+def test_workflow_artifact_content_type_is_explicit_and_validated(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "workflow.yaml"
+    definition = workflow_data()
+    definition["steps"][0]["artifact_content_type"] = "text/markdown"
+    source.write_text(yaml.safe_dump(definition, sort_keys=False), encoding="utf-8")
+
+    loaded = load_workflow_file(source)
+
+    assert loaded.definition.steps[0].artifact_content_type == "text/markdown"
+    assert loaded.definition.steps[1].artifact_content_type is None
+
+
+@pytest.mark.parametrize("content_type", ["", "markdown", "text/*", " text/csv"])
+def test_workflow_artifact_content_type_rejects_missing_media_type_separator(
+    tmp_path: Path, content_type: str
+) -> None:
+    source = tmp_path / "workflow.yaml"
+    definition = workflow_data()
+    definition["steps"][0]["artifact_content_type"] = content_type
+    source.write_text(yaml.safe_dump(definition, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(WorkflowLoadError, match="invalid workflow definition"):
+        load_workflow_file(source)
+
+
 def test_load_workflows_loads_yaml_and_yml_in_path_order(tmp_path: Path) -> None:
     write_workflow(tmp_path / "zeta.yml", id="zeta")
     write_workflow(tmp_path / "alpha.yaml", id="alpha")

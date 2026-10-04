@@ -67,10 +67,10 @@ Business Approval required 動作を維持する。明示的な `false` は Busi
 だけを不要にする設定であり、provider 実行に必要な Execution Approval、将来の
 Publication Approval、Recovery Approval を許可するものではない。
 
-この有効な policy は `workflow-run-manifest.v2` の workflow snapshot に含まれ、
-Run Manifest の canonical bytes と digest に pin される。`continue` は live YAML を
-再読込せず、Manifest に保存された policy を使う。旧 schema を v2 の policy として
-黙って解釈し直すことはしない。
+この有効な policy は Run Manifest の workflow snapshot に含まれ、canonical bytes と
+digest に pin される。Artifact policy を明示した Run は
+`workflow-run-manifest.v3` を使う。Artifact policy がない新規 Run と既存 Run は v2
+形式を厳密に保ち、Artifact がない意味と既存の canonical identity を維持する。
 
 Approval evidence は同じ `WorkflowRunManifestStore` の Run namespace に、目的別の
 canonical JSON sidecar として排他的に保存する。
@@ -153,6 +153,14 @@ nonexistent、mismatched、cross-attempt linkageはterminal commitを拒否す�
 
 この Milestone では Recovery Approval、retry/new-attempt、Artifact、provider failover、
 generic event-sourcing framework は実装しない。
+
+## Current workflow Artifacts (Milestone 4)
+
+Workflow step は `artifact_content_type` に具体的な media type を指定して、成功した正規化済み step output を Artifact として保存する。省略した step は Artifact を作らない。Artifact policy を持つ Run Manifest は `workflow-run-manifest.v3` としてこの policy/content type を pin し、policy を持たない v2 Manifest は Artifact なしの意味と canonical identity を維持する。
+
+Artifact は Run namespace 内の canonical immutable record で、Run/Manifest、workflow/step/index/employee、content bytes の SHA-256 と byte length、execution attempt、attempt evidence、normalized result、該当する raw-response digest、および successful terminal event digest を束縛する。保存済み Manifest と authoritative execution evidence からのみ生成し、同じ Artifact identity の異なる bytes/metadata は拒否する。persisted success の routing 前に required Artifact を確立し、保存が失敗しても成功済み state/event は維持する。再開時は既存 evidence から missing Artifact を完成し、provider を再実行しない。
+
+`workflows artifacts <run-id>` は検証済み Artifact metadata を一覧し、`workflows artifact <run-id> <artifact-id>` は指定された content を読み、`workflows artifact-export <run-id> <artifact-id> --output <path>` は exact bytes を新規 local file に出力する。既存 export destination は上書きしない。この provider-free local export は External Publication ではなく、Publication Approval の authority を持たない。Artifact、Model Output、Step Output、および既存 Publication は別の意味と authority を保つ。
 
 
 ## Phase 59: classified persisted outcome routing phase bridge reentry
