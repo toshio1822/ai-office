@@ -73,6 +73,7 @@ from ai_office.tools import ToolDefinition
 OpenAIResponsesTransport = Callable[
     [OpenAIResponsesAuthenticatedHttpRequest], OpenAIResponsesRawHttpResponse
 ]
+ExecutionAttemptClaimed = Callable[[ExecutionAttemptEvidence], None]
 
 
 def execute_openai_model_invocation(
@@ -86,6 +87,7 @@ def execute_openai_model_invocation(
     target: ModelExecutionTarget | None = None,
     execution_evidence: ExecutionEvidenceContext,
     before_transport: Callable[[], None] | None = None,
+    attempt_claimed: ExecutionAttemptClaimed | None = None,
 ) -> ModelInvocationResult:
     """Execute one guarded, non-streaming Responses invocation.
 
@@ -165,6 +167,8 @@ def execute_openai_model_invocation(
         attempt: ExecutionAttemptEvidence = claim_execution_attempt(
             execution_evidence, http_request
         )
+        if attempt_claimed is not None:
+            attempt_claimed(attempt)
         if before_transport is not None:
             before_transport()
         raw_evidence: RawProviderResponseEvidence | None = None
@@ -175,16 +179,9 @@ def execute_openai_model_invocation(
                 attempt,
                 raw_response,
             )
-            response = parse_openai_responses_http_response(raw_response)
-            if isinstance(response, OpenAIResponsesSuccessResponse):
-                output = extract_openai_responses_output_text(response)
-                result = build_model_invocation_success_from_openai(
-                    output, provider=provider
-                )
-            else:
-                result = build_model_invocation_failure_from_openai_api_error(
-                    response, provider=provider
-                )
+            result = normalize_openai_responses_raw_response(
+                raw_response, provider=provider
+            )
         except OpenAIResponsesTransportError as error:
             result = build_model_invocation_failure_from_openai_transport_error(
                 error, provider=provider
@@ -219,6 +216,30 @@ def execute_openai_model_invocation(
     except OpenAIResponsesTransportError as error:
         return build_model_invocation_failure_from_openai_transport_error(
             error, provider=provider
+        )
+    except OpenAIResponsesInvalidResponseError as error:
+        return build_model_invocation_failure_from_openai_invalid_response_error(
+            error, provider=provider
+        )
+    except OpenAIResponsesInvalidOutputError as error:
+        return build_model_invocation_failure_from_openai_invalid_output_error(
+            error, provider=provider
+        )
+
+
+def normalize_openai_responses_raw_response(
+    raw_response: OpenAIResponsesRawHttpResponse, *, provider: str = "openai"
+) -> ModelInvocationResult:
+    """Deterministically normalize saved raw response bytes without transport."""
+    try:
+        response = parse_openai_responses_http_response(raw_response)
+        if isinstance(response, OpenAIResponsesSuccessResponse):
+            output = extract_openai_responses_output_text(response)
+            return build_model_invocation_success_from_openai(
+                output, provider=provider
+            )
+        return build_model_invocation_failure_from_openai_api_error(
+            response, provider=provider
         )
     except OpenAIResponsesInvalidResponseError as error:
         return build_model_invocation_failure_from_openai_invalid_response_error(

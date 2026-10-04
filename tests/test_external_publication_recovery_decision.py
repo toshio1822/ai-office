@@ -1689,7 +1689,7 @@ def test_source_audit_no_forbidden_direct_calls() -> None:
     assert "digest_function" in called
 
 
-def test_no_cli_change_and_no_phase293_command() -> None:
+def test_cli_does_not_expose_phase293_command() -> None:
     from typer.testing import CliRunner
 
     from ai_office.cli import app
@@ -1697,12 +1697,11 @@ def test_no_cli_change_and_no_phase293_command() -> None:
     runner = CliRunner()
     root = runner.invoke(app, ["--help"])
     assert root.exit_code == 0
-    assert "recovery_decision" not in root.output.lower()
+    assert "phase293" not in root.output.lower().replace(" ", "")
 
     workflows = runner.invoke(app, ["workflows", "--help"])
     assert workflows.exit_code == 0
-    assert "recovery" not in workflows.output.lower()
     assert "phase293" not in workflows.output.lower().replace(" ", "")
 
     cli_source = Path("src/ai_office/cli.py").read_text(encoding="utf-8")
-    assert "recovery_decision" not in cli_source
+    assert "phase293" not in cli_source.lower()

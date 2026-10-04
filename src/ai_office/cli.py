@@ -1756,6 +1756,554 @@ def result_workflow(
         raise typer.Exit(code=1)
 
 
+def _recovery_assessment_json(assessment: object) -> dict[str, object]:
+    return {
+        "action": assessment.action,
+        "eligible": assessment.eligible,
+        "employee_id": assessment.employee_id,
+        "events_sha256": assessment.events_sha256,
+        "execution_target_fingerprint": assessment.execution_target_fingerprint,
+        "invocation_fingerprint": assessment.invocation_fingerprint,
+        "manifest_digest": assessment.manifest_digest,
+        "normalized_result_evidence_sha256": (
+            assessment.normalized_result_evidence_sha256
+        ),
+        "operation": "recovery",
+        "previous_attempt_evidence_sha256": (
+            assessment.previous_attempt_evidence_sha256
+        ),
+        "previous_attempt_id": assessment.previous_attempt_id,
+        "provider": assessment.provider,
+        "raw_response_evidence_sha256": assessment.raw_response_evidence_sha256,
+        "reason": assessment.reason,
+        "recovery_decision_sha256": assessment.digest,
+        "run_id": assessment.run_id,
+        "state_sha256": assessment.state_sha256,
+        "state_status": assessment.state_status,
+        "step_id": assessment.step_id,
+        "step_index": assessment.step_index,
+        "workflow_id": assessment.workflow_id,
+    }
+
+
+def _build_recovery_preview(
+    store: WorkflowRunManifestStore,
+    manifest: object,
+    binding: WorkflowRunBinding,
+    pinned_workflows: list[object],
+    pinned_employees: list[object],
+    tool_catalog: object,
+    assessment: object,
+) -> tuple[object, _WorkflowStepPreview, object, str, str, object]:
+    """Reconstruct the pinned request for the exact current recovery attempt."""
+    from hashlib import sha256
+
+    from ai_office.engine.persisted_continuation_runtime_facts import (
+        build_persisted_continuation_runtime_facts,
+    )
+    from ai_office.engine.upstream_step_output_handoff import (
+        build_immediate_predecessor_upstream_inputs,
+    )
+    from ai_office.execution_evidence import (
+        execution_target_fingerprint,
+        load_execution_attempt_evidence,
+    )
+    from ai_office.invocation import (
+        EMPTY_RUNTIME_FACTS,
+        build_model_invocation_task_input,
+    )
+    from ai_office.runtime import WorkflowExecutionState
+    from ai_office.storage.workflow_execution_history import (
+        LoadedWorkflowExecutionHistory,
+        load_workflow_execution_history_with_source_digests,
+    )
+    from ai_office.storage.workflow_execution_persistence import (
+        WorkflowExecutionPersistenceTargets,
+        serialize_workflow_execution_state_json,
+    )
+
+    try:
+        workflow = _select_workflow_or_exit(pinned_workflows, manifest.workflow_id)
+        state_path, events_path = store.execution_paths(binding.run_id)
+        history, state_digest, events_digest = (
+            load_workflow_execution_history_with_source_digests(
+                WorkflowExecutionPersistenceTargets(
+                    state_path, events_path, binding=binding
+                )
+            )
+        )
+        state = history.state
+        if (
+            state.status not in {"running", "failed"}
+            or state.workflow_id != manifest.workflow_id
+            or state.current_step_id != assessment.step_id
+            or state.current_step_index != assessment.step_index
+            or state.current_employee_id != assessment.employee_id
+            or state.current_step_index > len(workflow.definition.steps)
+        ):
+            _workflow_cli_error("recovery state does not match the pinned step")
+        expected_completed = tuple(
+            step.id
+            for step in workflow.definition.steps[
+                : state.current_step_index - 1
+            ]
+        )
+        if state.completed_step_ids != expected_completed:
+            _workflow_cli_error("completed predecessor history is inconsistent")
+
+        attempt = load_execution_attempt_evidence(
+            store.root, binding.run_id, assessment.previous_attempt_id
+        )
+        if (
+            attempt.digest != assessment.previous_attempt_evidence_sha256
+            or attempt.workflow_id != manifest.workflow_id
+            or attempt.step_id != state.current_step_id
+            or attempt.step_index != state.current_step_index
+            or attempt.employee_id != state.current_employee_id
+            or attempt.invocation_fingerprint != assessment.invocation_fingerprint
+        ):
+            _workflow_cli_error("recovery attempt binding is inconsistent")
+
+        upstream_inputs: tuple[object, ...] = ()
+        runtime_facts = EMPTY_RUNTIME_FACTS
+        if state.current_step_index > 1:
+            predecessor_index = state.current_step_index - 1
+            predecessor_definition = workflow.definition.steps[predecessor_index - 1]
+            matches = tuple(
+                (event_index, event)
+                for event_index, event in enumerate(history.events)
+                if event.event_type == "step_succeeded"
+                and event.step_index == predecessor_index
+                and event.step_id == predecessor_definition.id
+                and event.employee_id == predecessor_definition.employee
+            )
+            if len(matches) != 1:
+                _workflow_cli_error("completed predecessor evidence is inconsistent")
+            event_index, predecessor_event = matches[0]
+            predecessor_state = WorkflowExecutionState(
+                workflow_id=manifest.workflow_id,
+                status="succeeded",
+                current_step_id=predecessor_definition.id,
+                current_step_index=predecessor_index,
+                current_employee_id=predecessor_definition.employee,
+                completed_step_ids=expected_completed,
+                last_failure_category=None,
+                binding=binding,
+            )
+            prior_history = LoadedWorkflowExecutionHistory(
+                state=predecessor_state,
+                events=history.events[: event_index + 1],
+            )
+            prior_state_bytes = serialize_workflow_execution_state_json(
+                predecessor_state
+            ).encode("utf-8")
+            upstream_inputs = build_immediate_predecessor_upstream_inputs(
+                manifest.workflow_id, state.current_step_index, prior_history
+            )
+            runtime_facts = build_persisted_continuation_runtime_facts(
+                manifest.workflow_id,
+                state.current_step_index,
+                prior_history,
+                state_source_sha256=sha256(prior_state_bytes).hexdigest(),
+            )
+
+        target = execution_target_for_name(assessment.provider)
+        if execution_target_fingerprint(target) != attempt.execution_target_fingerprint:
+            _workflow_cli_error("recovery cannot change the pinned execution target")
+        _workflow, preview = _build_workflow_step_preview(
+            pinned_workflows,
+            pinned_employees,
+            manifest.workflow_id,
+            state.current_step_index,
+            upstream_inputs,
+            execution_target=target,
+            runtime_facts=runtime_facts,
+            run_binding=binding,
+            run_input=manifest.run_input,
+            tool_catalog=tool_catalog,
+        )
+        task_digest = sha256(
+            build_model_invocation_task_input(preview.invocation_request).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        if (
+            preview.request_fingerprint != attempt.invocation_fingerprint
+            or sha256(preview.invocation_request.system_instructions.encode("utf-8"))
+            .hexdigest()
+            != attempt.system_instruction_sha256
+            or task_digest != attempt.task_input_sha256
+            or preview.execution_target.provider != attempt.provider
+        ):
+            _workflow_cli_error("pinned recovery invocation is inconsistent")
+        return workflow, preview, history, state_digest, events_digest, attempt
+    except typer.Exit:
+        raise
+    except Exception:
+        _workflow_cli_error("pinned recovery request could not be reconstructed")
+
+
+def _existing_attempt_evidence_context(
+    store: WorkflowRunManifestStore,
+    preview: _WorkflowStepPreview,
+    attempt: object,
+) -> object:
+    from ai_office.engine.workflow_approval_evidence import (
+        load_execution_approval_evidence,
+        validate_execution_approval_evidence,
+    )
+    from ai_office.execution_evidence import (
+        build_execution_evidence_context,
+        execution_target_fingerprint,
+    )
+
+    assert preview.run_binding is not None
+    try:
+        evidence = load_execution_approval_evidence(
+            store, preview.run_binding.run_id, attempt.execution_approval_id
+        )
+        validate_execution_approval_evidence(
+            evidence,
+            binding=preview.run_binding,
+            workflow_id=preview.step_request.workflow_id,
+            step_id=preview.step_request.step_id,
+            step_index=preview.step_request.step_index,
+            employee_id=preview.step_request.employee_id,
+            provider=attempt.provider,
+            execution_target_fingerprint_value=execution_target_fingerprint(
+                preview.execution_target
+            ),
+            request_fingerprint=preview.request_fingerprint,
+        )
+        if evidence.digest != attempt.execution_approval_evidence_sha256:
+            raise ValueError("execution approval does not match attempt")
+        approval = approve_model_invocation_execution(
+            preview.invocation_request,
+            preview.resolved_tools,
+            provider=attempt.provider,
+            approved_by=evidence.approved_by,
+            approval_id=evidence.approval_id,
+            execution_target=preview.execution_target,
+        )
+        return build_execution_evidence_context(
+            store_root=store.root,
+            binding=preview.run_binding,
+            workflow_id=preview.step_request.workflow_id,
+            step_id=preview.step_request.step_id,
+            step_index=preview.step_request.step_index,
+            employee_id=preview.step_request.employee_id,
+            request=preview.invocation_request,
+            resolved_tools=preview.resolved_tools,
+            approval=approval,
+            target=preview.execution_target,
+        )
+    except Exception:
+        _workflow_cli_error("existing attempt approval is invalid")
+
+
+def _recovery_runtime_result(preview: _WorkflowStepPreview, result: object) -> object:
+    from ai_office.invocation import ModelInvocationFailure, ModelInvocationSuccess
+    from ai_office.runtime import (
+        StepRuntimeExecutionFailure,
+        StepRuntimeExecutionSuccess,
+    )
+
+    identity = {
+        "workflow_id": preview.step_request.workflow_id,
+        "step_id": preview.step_request.step_id,
+        "step_index": preview.step_request.step_index,
+        "employee_id": preview.step_request.employee_id,
+        "binding": preview.run_binding,
+    }
+    if type(result) is ModelInvocationSuccess:
+        return StepRuntimeExecutionSuccess(
+            **identity, invocation_result=result
+        )
+    if type(result) is ModelInvocationFailure:
+        return StepRuntimeExecutionFailure(
+            **identity, invocation_result=result
+        )
+    _workflow_cli_error("durable normalized result is invalid")
+
+
+@workflows_app.command("recovery")
+def inspect_workflow_recovery(
+    run_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Inspect a Run's recovery eligibility using read-only durable evidence."""
+    from ai_office.engine.workflow_recovery import assess_workflow_recovery
+
+    store = _load_run_store_or_exit(run_store)
+    try:
+        assessment = assess_workflow_recovery(store.root, run_id)
+    except Exception:
+        _workflow_cli_error("Run recovery evidence is invalid or unavailable")
+    _emit_json(_recovery_assessment_json(assessment))
+    if not assessment.eligible:
+        raise typer.Exit(code=1)
+
+
+@workflows_app.command("recover")
+def recover_workflow(
+    run_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+    recovery_decision_sha256: str = typer.Option(..., "--recovery-decision-sha256"),
+    approve_recovery: bool = typer.Option(False, "--approve-recovery"),
+    recovery_approved_by: str | None = typer.Option(None, "--recovery-approved-by"),
+    recovery_approval_id: str | None = typer.Option(None, "--recovery-approval-id"),
+    execution_target: str = typer.Option("openai", "--execution-target"),
+    approve_execution: bool = typer.Option(False, "--approve-execution"),
+    execution_approved_by: str | None = typer.Option(None, "--execution-approved-by"),
+    execution_approval_id: str | None = typer.Option(None, "--execution-approval-id"),
+    expected_step_id: str | None = typer.Option(None, "--expected-step-id"),
+    expected_step_index: int | None = typer.Option(None, "--expected-step-index"),
+    expected_employee_id: str | None = typer.Option(None, "--expected-employee-id"),
+    expected_request_fingerprint: str | None = typer.Option(
+        None, "--expected-request-fingerprint"
+    ),
+) -> None:
+    """Apply one explicit recovery decision to the exact current Run evidence."""
+    from ai_office.engine.prepared_step_execution_start import (
+        PreparedStepExecutionStart,
+    )
+    from ai_office.engine.workflow_approval_evidence import (
+        build_execution_approval_evidence_for_tools,
+        build_recovery_approval_evidence,
+        persist_execution_approval_evidence,
+        persist_recovery_approval_evidence,
+    )
+    from ai_office.engine.workflow_recovery import (
+        WorkflowRecoveryAssessment,
+        assess_workflow_recovery,
+        validate_workflow_recovery_authorization,
+    )
+    from ai_office.execution_evidence import (
+        execution_target_fingerprint,
+        load_normalized_result_evidence,
+        load_raw_response_evidence,
+        persist_normalized_result_evidence,
+    )
+    from ai_office.providers.openai import (
+        OpenAIResponsesRawHttpResponse,
+        normalize_openai_responses_raw_response,
+    )
+    from ai_office.runtime import WorkflowExecutionState
+    from ai_office.runtime.executed_step_transition_persistence import (
+        persist_executed_step_transition,
+    )
+    from ai_office.runtime.persisted_start_execution import (
+        execute_persisted_start_openai_step,
+    )
+
+    store = _load_run_store_or_exit(run_store)
+    try:
+        assessment = assess_workflow_recovery(store.root, run_id)
+    except Exception:
+        _workflow_cli_error("Run recovery evidence is invalid or unavailable")
+    if type(assessment) is not WorkflowRecoveryAssessment or not assessment.eligible:
+        _workflow_cli_error("Run is not eligible for explicit recovery")
+    if recovery_decision_sha256 != assessment.digest:
+        _workflow_cli_error("recovery decision is stale or does not match")
+    if (
+        not approve_recovery
+        or not recovery_approved_by
+        or not recovery_approval_id
+    ):
+        _workflow_cli_error("Recovery Approval requires explicit approval fields")
+
+    manifest = _load_run_manifest_or_exit(store, run_id)
+    binding = _run_binding_for_manifest(manifest)
+    pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
+    state_path, events_path = store.execution_paths(run_id)
+    workflow, preview, history, state_digest, events_digest, attempt = (
+        _build_recovery_preview(
+            store,
+            manifest,
+            binding,
+            pinned_workflows,
+            pinned_employees,
+            tool_catalog,
+            assessment,
+        )
+    )
+    if (state_digest, events_digest) != (
+        assessment.state_sha256,
+        assessment.events_sha256,
+    ):
+        _workflow_cli_error("recovery decision became stale")
+
+    recovery_evidence = build_recovery_approval_evidence(
+        assessment,
+        approved_by=recovery_approved_by,
+        approval_id=recovery_approval_id,
+    )
+
+    if assessment.action in {"complete_result", "complete_raw_response"}:
+        if any(
+            (
+                approve_execution,
+                execution_approved_by is not None,
+                execution_approval_id is not None,
+                expected_step_id is not None,
+                expected_step_index is not None,
+                expected_employee_id is not None,
+                expected_request_fingerprint is not None,
+            )
+        ):
+            _workflow_cli_error(
+                "deterministic completion does not accept execution options"
+            )
+        try:
+            persist_recovery_approval_evidence(store, recovery_evidence)
+            validate_workflow_recovery_authorization(
+                store.root, assessment, recovery_evidence
+            )
+            if assessment.action == "complete_result":
+                normalized = load_normalized_result_evidence(
+                    store.root, run_id, attempt.attempt_id
+                )
+            else:
+                raw = load_raw_response_evidence(
+                    store.root, run_id, attempt.attempt_id
+                )
+                execution_evidence = _existing_attempt_evidence_context(
+                    store, preview, attempt
+                )
+                raw_response = OpenAIResponsesRawHttpResponse(
+                    status_code=raw.status_code,
+                    reason="",
+                    headers=raw.safe_headers,
+                    body=raw.body,
+                )
+                outcome = normalize_openai_responses_raw_response(
+                    raw_response, provider=attempt.provider
+                )
+                normalized = persist_normalized_result_evidence(
+                    execution_evidence,
+                    attempt,
+                    outcome,
+                    raw_response=raw,
+                )
+            runtime_result = _recovery_runtime_result(
+                preview, normalized.result
+            )
+            persist_executed_step_transition(
+                runtime_result, state_path, events_path
+            )
+        except Exception:
+            _workflow_cli_error("durable recovery completion could not be persisted")
+    else:
+        if (
+            not approve_execution
+            or not execution_approved_by
+            or not execution_approval_id
+        ):
+            _workflow_cli_error(
+                "provider recovery requires a new explicit Execution Approval"
+            )
+        if not _expected_preview_matches(
+            preview,
+            expected_step_id,
+            expected_step_index,
+            expected_employee_id,
+            expected_request_fingerprint,
+        ):
+            _workflow_cli_error("expected recovery preview does not match")
+        if preview.business_approval_required:
+            predecessor = (
+                None
+                if preview.step_request.step_index == 1
+                else pinned_workflows[0].definition.steps[
+                    preview.step_request.step_index - 2
+                ]
+            )
+            if not _durable_business_approval_exists(
+                store,
+                preview,
+                progression_from_step_id=(
+                    None if predecessor is None else predecessor.id
+                ),
+                progression_from_step_index=(
+                    None if predecessor is None else preview.step_request.step_index - 1
+                ),
+            ):
+                _workflow_cli_error("the step's durable Business Approval is required")
+        requested_target = _resolve_execution_target(execution_target)
+        target = preview.execution_target
+        if requested_target != target:
+            _workflow_cli_error("recovery cannot change the pinned execution target")
+        if execution_target_fingerprint(target) != attempt.execution_target_fingerprint:
+            _workflow_cli_error("recovery cannot change the pinned execution target")
+        try:
+            api_key = _load_api_key_for_target(target)
+            execution_approval = approve_model_invocation_execution(
+                preview.invocation_request,
+                preview.resolved_tools,
+                provider=target.provider,
+                approved_by=execution_approved_by,
+                approval_id=execution_approval_id,
+                execution_target=target,
+            )
+            execution_evidence = build_execution_approval_evidence_for_tools(
+                preview.invocation_request,
+                preview.resolved_tools,
+                execution_approval,
+                workflow_id=preview.step_request.workflow_id,
+                step_id=preview.step_request.step_id,
+                step_index=preview.step_request.step_index,
+                employee_id=preview.step_request.employee_id,
+                target=target,
+            )
+            persist_execution_approval_evidence(store, execution_evidence)
+            persist_recovery_approval_evidence(store, recovery_evidence)
+            validate_workflow_recovery_authorization(
+                store.root, assessment, recovery_evidence
+            )
+            running_state = WorkflowExecutionState(
+                workflow_id=preview.step_request.workflow_id,
+                status="running",
+                current_step_id=preview.step_request.step_id,
+                current_step_index=preview.step_request.step_index,
+                current_employee_id=preview.step_request.employee_id,
+                completed_step_ids=history.state.completed_step_ids,
+                last_failure_category=None,
+                binding=binding,
+            )
+            start = PreparedStepExecutionStart(
+                preview.invocation_request,
+                running_state,
+            )
+            result = execute_persisted_start_openai_step(
+                start,
+                state_path,
+                workflow.definition,
+                preview.employee,
+                preview.resolved_tools,
+                api_key,
+                execution_approval,
+                transport=send_openai_responses_http_request,
+                recovery_assessment=assessment,
+                recovery_approval=recovery_evidence,
+            )
+            persist_executed_step_transition(result, state_path, events_path)
+        except Exception:
+            _workflow_cli_error("explicit provider recovery failed")
+
+    routed = _read_persisted_continue_route(
+        workflow.definition,
+        state_path,
+        events_path,
+        allow_artifact_completion=True,
+        expected_binding=binding,
+    )
+    _emit_json(
+        _result_json("recover", "execute", routed, run_input=manifest.run_input)
+    )
+    if type(routed) is PersistedExecutionOutcome:
+        raise typer.Exit(code=1)
+
+
 @workflows_app.command("publication-result")
 def publication_result_workflow(
     readiness_record_path: Path = typer.Option(..., "--readiness-record-path"),

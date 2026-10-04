@@ -379,7 +379,8 @@ def _validate_artifact_lineage(
     matches = tuple(
         event
         for event in history.events
-        if event.execution_attempt_id == artifact.execution_attempt_id
+        if event.event_type == "step_succeeded"
+        and event.execution_attempt_id == artifact.execution_attempt_id
         and event.step_id == artifact.step_id
         and event.step_index == artifact.step_index
     )

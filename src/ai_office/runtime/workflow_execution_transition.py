@@ -21,7 +21,9 @@ from ai_office.runtime.step_runtime_execution import (
 )
 
 WorkflowExecutionStatus = Literal["ready", "running", "succeeded", "failed"]
-RuntimeStepEventType = Literal["step_succeeded", "step_failed"]
+RuntimeStepEventType = Literal[
+    "step_succeeded", "step_failed", "step_recovery_started"
+]
 
 _INPUT_ERROR_MESSAGE = "workflow execution transition inputs are inconsistent"
 
@@ -304,6 +306,58 @@ def transition_workflow_execution_from_step_result(
     return _build_failure_transition(current_state, result)
 
 
+def transition_workflow_execution_for_recovery(
+    current_state: WorkflowExecutionState, attempt: object
+) -> WorkflowExecutionTransition:
+    """Record an explicitly authorized retry while preserving prior events."""
+    binding = binding_of(current_state)
+    if (
+        binding is None
+        or current_state.status not in {"failed", "running"}
+        or getattr(attempt, "schema_version", None)
+        != "workflow-execution-attempt.v2"
+        or getattr(attempt, "state", None) != "claimed"
+        or getattr(attempt, "run_id", None) != binding.run_id
+        or getattr(attempt, "manifest_digest", None) != binding.manifest_digest
+        or getattr(attempt, "workflow_id", None) != current_state.workflow_id
+        or getattr(attempt, "step_id", None) != current_state.current_step_id
+        or getattr(attempt, "step_index", None) != current_state.current_step_index
+        or getattr(attempt, "employee_id", None) != current_state.current_employee_id
+        or type(getattr(attempt, "attempt_id", None)) is not str
+        or type(getattr(attempt, "digest", None)) is not str
+    ):
+        raise WorkflowExecutionTransitionInputError(_INPUT_ERROR_MESSAGE) from None
+    next_state = WorkflowExecutionState(
+        workflow_id=current_state.workflow_id,
+        status="running",
+        current_step_id=current_state.current_step_id,
+        current_step_index=current_state.current_step_index,
+        current_employee_id=current_state.current_employee_id,
+        completed_step_ids=current_state.completed_step_ids,
+        last_failure_category=None,
+        binding=binding,
+    )
+    event = RuntimeStepEvent(
+        event_type="step_recovery_started",
+        workflow_id=current_state.workflow_id,
+        step_id=current_state.current_step_id,
+        step_index=current_state.current_step_index,
+        employee_id=current_state.current_employee_id,
+        previous_status=current_state.status,
+        next_status="running",
+        provider=getattr(attempt, "provider"),
+        failure_category=None,
+        response_id=None,
+        request_id=None,
+        output_text=None,
+        message=None,
+        binding=binding,
+        execution_attempt_id=getattr(attempt, "attempt_id"),
+        execution_attempt_evidence_sha256=getattr(attempt, "digest"),
+    )
+    return WorkflowExecutionTransition(current_state, next_state, event)
+
+
 def _validate_transition_input(
     current_state: WorkflowExecutionState,
     result: StepRuntimeExecutionResult,
@@ -429,7 +483,20 @@ def _set_execution_evidence_linkage(
     )
     if all(item is None for item in linkage):
         return
-    if (
+    if getattr(value, "event_type", None) == "step_recovery_started":
+        if (
+            type(execution_attempt_id) is not str
+            or type(execution_attempt_evidence_sha256) is not str
+            or normalized_result_evidence_sha256 is not None
+            or raw_response_evidence_sha256 is not None
+            or raw_response_body_sha256 is not None
+            or any(
+                len(item) != 64 or not _is_lower_hex(item)
+                for item in (execution_attempt_id, execution_attempt_evidence_sha256)
+            )
+        ):
+            raise ValueError(_INPUT_ERROR_MESSAGE) from None
+    elif (
         execution_attempt_id is None
         or execution_attempt_evidence_sha256 is None
         or normalized_result_evidence_sha256 is None

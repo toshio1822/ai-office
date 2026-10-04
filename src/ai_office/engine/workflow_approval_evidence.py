@@ -1,8 +1,7 @@
-"""Run-bound immutable evidence for Business and Execution Approval.
+"""Run-bound immutable evidence for Business, Execution, and Recovery Approval.
 
-This module deliberately models only the two approval purposes owned by
-Milestone 2.  Publication and Recovery approvals have separate contracts and
-are never accepted by these records.
+The three approval purposes remain distinct. Publication Approval has a
+separate contract and is never accepted by these records.
 """
 
 from __future__ import annotations
@@ -33,8 +32,10 @@ from ai_office.runtime import WorkflowRunBinding, binding_of
 
 _BUSINESS_SCHEMA_VERSION = "workflow-business-approval-evidence.v1"
 _EXECUTION_SCHEMA_VERSION = "workflow-execution-approval-evidence.v1"
+_RECOVERY_SCHEMA_VERSION = "workflow-recovery-approval-evidence.v1"
 _BUSINESS_PREFIX = "business-approval"
 _EXECUTION_PREFIX = "execution-approval"
+_RECOVERY_PREFIX = "recovery-approval"
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SAFE_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DEFINITION_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -121,6 +122,108 @@ class ExecutionApprovalEvidence:
     @property
     def digest(self) -> str:
         return sha256(execution_approval_evidence_canonical_bytes(self)).hexdigest()
+
+
+@dataclass(frozen=True)
+class RecoveryApprovalEvidence:
+    """Affirmative Recovery Approval for one exact persisted decision."""
+
+    schema_version: Literal["workflow-recovery-approval-evidence.v1"]
+    purpose: Literal["recovery_approval"]
+    approved: bool
+    run_id: str
+    manifest_digest: str
+    workflow_id: str
+    step_id: str
+    step_index: int
+    employee_id: str
+    recovery_action: str
+    recovery_decision_sha256: str
+    state_sha256: str
+    events_sha256: str
+    previous_attempt_id: str
+    previous_attempt_evidence_sha256: str
+    approved_by: str
+    approval_id: str
+
+    def __post_init__(self) -> None:
+        _validate_recovery(self)
+
+    @property
+    def digest(self) -> str:
+        return sha256(recovery_approval_evidence_canonical_bytes(self)).hexdigest()
+
+
+def build_recovery_approval_evidence(
+    assessment: object,
+    *,
+    approved_by: str,
+    approval_id: str,
+) -> RecoveryApprovalEvidence:
+    """Bind operator approval to one read-only authoritative recovery decision."""
+    try:
+        if assessment.eligible is not True or assessment.action not in {
+            "complete_result",
+            "complete_raw_response",
+            "retry_failed",
+            "retry_ambiguous",
+        }:
+            _raise("recovery_decision")
+        values = {
+            "run_id": assessment.run_id,
+            "manifest_digest": assessment.manifest_digest,
+            "workflow_id": assessment.workflow_id,
+            "step_id": assessment.step_id,
+            "step_index": assessment.step_index,
+            "employee_id": assessment.employee_id,
+            "recovery_action": assessment.action,
+            "recovery_decision_sha256": assessment.digest,
+            "state_sha256": assessment.state_sha256,
+            "events_sha256": assessment.events_sha256,
+            "previous_attempt_id": assessment.previous_attempt_id,
+            "previous_attempt_evidence_sha256": (
+                assessment.previous_attempt_evidence_sha256
+            ),
+        }
+    except (AttributeError, TypeError):
+        _raise("recovery_decision")
+    return RecoveryApprovalEvidence(
+        schema_version=_RECOVERY_SCHEMA_VERSION,
+        purpose="recovery_approval",
+        approved=True,
+        **values,
+        approved_by=approved_by,
+        approval_id=approval_id,
+    )
+
+
+def validate_recovery_approval_evidence(
+    evidence: object, assessment: object
+) -> RecoveryApprovalEvidence:
+    """Reject an approval that does not authorize the exact current decision."""
+    if type(evidence) is not RecoveryApprovalEvidence:
+        _raise("recovery_approval")
+    try:
+        exact = (
+            evidence.run_id == assessment.run_id
+            and evidence.manifest_digest == assessment.manifest_digest
+            and evidence.workflow_id == assessment.workflow_id
+            and evidence.step_id == assessment.step_id
+            and evidence.step_index == assessment.step_index
+            and evidence.employee_id == assessment.employee_id
+            and evidence.recovery_action == assessment.action
+            and evidence.recovery_decision_sha256 == assessment.digest
+            and evidence.state_sha256 == assessment.state_sha256
+            and evidence.events_sha256 == assessment.events_sha256
+            and evidence.previous_attempt_id == assessment.previous_attempt_id
+            and evidence.previous_attempt_evidence_sha256
+            == assessment.previous_attempt_evidence_sha256
+        )
+    except (AttributeError, TypeError):
+        exact = False
+    if not exact:
+        _raise("recovery_binding")
+    return evidence
 
 
 def approve_business_step(
@@ -319,6 +422,19 @@ def persist_execution_approval_evidence(
     return evidence
 
 
+def persist_recovery_approval_evidence(
+    store: WorkflowRunManifestStore,
+    evidence: RecoveryApprovalEvidence,
+) -> RecoveryApprovalEvidence:
+    """Exclusively persist or idempotently accept one Recovery Approval."""
+    _validate_store_and_manifest(store, evidence.run_id, evidence.manifest_digest)
+    _persist_evidence(
+        _evidence_path(store, evidence.run_id, _RECOVERY_PREFIX, evidence.approval_id),
+        recovery_approval_evidence_canonical_bytes(evidence),
+    )
+    return evidence
+
+
 def load_business_approval_evidence(
     store: WorkflowRunManifestStore, run_id: str, approval_id: str
 ) -> BusinessApprovalEvidence:
@@ -351,6 +467,25 @@ def load_execution_approval_evidence(
         expected_prefix=_EXECUTION_PREFIX,
     )
     if type(value) is not ExecutionApprovalEvidence:
+        _raise_load("purpose")
+    if value.manifest_digest != manifest.digest:
+        _raise_load("manifest")
+    return value
+
+
+def load_recovery_approval_evidence(
+    store: WorkflowRunManifestStore, run_id: str, approval_id: str
+) -> RecoveryApprovalEvidence:
+    """Strictly load one Recovery Approval from the authoritative Run namespace."""
+    manifest = _validate_store_and_manifest(store, run_id, None)
+    path = _evidence_path(store, run_id, _RECOVERY_PREFIX, approval_id)
+    value = _load_evidence(
+        path,
+        expected_run_id=run_id,
+        expected_approval_id=approval_id,
+        expected_prefix=_RECOVERY_PREFIX,
+    )
+    if type(value) is not RecoveryApprovalEvidence:
         _raise_load("purpose")
     if value.manifest_digest != manifest.digest:
         _raise_load("manifest")
@@ -402,11 +537,16 @@ def find_business_approval_evidence(
 
 def list_run_approval_evidence(
     store: WorkflowRunManifestStore, run_id: str
-) -> tuple[BusinessApprovalEvidence | ExecutionApprovalEvidence, ...]:
+) -> tuple[
+    BusinessApprovalEvidence | ExecutionApprovalEvidence | RecoveryApprovalEvidence,
+    ...,
+]:
     """Read all strict approval evidence for one Run without external effects."""
     _validate_store_and_manifest(store, run_id, None)
-    values: list[BusinessApprovalEvidence | ExecutionApprovalEvidence] = []
-    for prefix in (_BUSINESS_PREFIX, _EXECUTION_PREFIX):
+    values: list[
+        BusinessApprovalEvidence | ExecutionApprovalEvidence | RecoveryApprovalEvidence
+    ] = []
+    for prefix in (_BUSINESS_PREFIX, _EXECUTION_PREFIX, _RECOVERY_PREFIX):
         marker = f"{run_id}.{prefix}."
         for path in sorted(
             store.root.glob(f"{marker}*.json"), key=lambda item: item.name
@@ -427,6 +567,11 @@ def list_run_approval_evidence(
                 and type(value) is not ExecutionApprovalEvidence
             ):
                 _raise_load("purpose")
+            if (
+                prefix == _RECOVERY_PREFIX
+                and type(value) is not RecoveryApprovalEvidence
+            ):
+                _raise_load("purpose")
             values.append(value)
     return tuple(values)
 
@@ -443,6 +588,13 @@ def execution_approval_evidence_canonical_bytes(
 ) -> bytes:
     _validate_execution(evidence)
     return _canonical_bytes(_execution_dict(evidence))
+
+
+def recovery_approval_evidence_canonical_bytes(
+    evidence: RecoveryApprovalEvidence,
+) -> bytes:
+    _validate_recovery(evidence)
+    return _canonical_bytes(_recovery_dict(evidence))
 
 
 def _execution_evidence_from_approval(
@@ -509,6 +661,28 @@ def _execution_dict(evidence: ExecutionApprovalEvidence) -> dict[str, object]:
     }
 
 
+def _recovery_dict(evidence: RecoveryApprovalEvidence) -> dict[str, object]:
+    return {
+        "approved": evidence.approved,
+        "approved_by": evidence.approved_by,
+        "approval_id": evidence.approval_id,
+        "employee_id": evidence.employee_id,
+        "events_sha256": evidence.events_sha256,
+        "manifest_digest": evidence.manifest_digest,
+        "previous_attempt_evidence_sha256": evidence.previous_attempt_evidence_sha256,
+        "previous_attempt_id": evidence.previous_attempt_id,
+        "purpose": evidence.purpose,
+        "recovery_action": evidence.recovery_action,
+        "recovery_decision_sha256": evidence.recovery_decision_sha256,
+        "run_id": evidence.run_id,
+        "schema_version": evidence.schema_version,
+        "state_sha256": evidence.state_sha256,
+        "step_id": evidence.step_id,
+        "step_index": evidence.step_index,
+        "workflow_id": evidence.workflow_id,
+    }
+
+
 def _validate_business(value: object) -> None:
     if type(value) is not BusinessApprovalEvidence:
         _raise("business_type")
@@ -549,6 +723,38 @@ def _validate_execution(value: object) -> None:
     _validate_metadata(value.provider, "provider")
     _validate_sha256(value.execution_target_fingerprint, "target")
     _validate_sha256(value.request_fingerprint, "request")
+    _validate_metadata(value.approved_by, "approved_by")
+    _validate_metadata(value.approval_id, "approval_id")
+
+
+def _validate_recovery(value: object) -> None:
+    if type(value) is not RecoveryApprovalEvidence:
+        _raise("recovery_type")
+    assert isinstance(value, RecoveryApprovalEvidence)
+    if value.schema_version != _RECOVERY_SCHEMA_VERSION:
+        _raise("schema_version")
+    if value.purpose != "recovery_approval" or value.approved is not True:
+        _raise("purpose")
+    _validate_common(value)
+    _validate_definition_id(value.workflow_id)
+    _validate_definition_id(value.step_id)
+    _validate_definition_id(value.employee_id)
+    _validate_step_index(value.step_index)
+    if value.recovery_action not in {
+        "complete_result",
+        "complete_raw_response",
+        "retry_failed",
+        "retry_ambiguous",
+    }:
+        _raise("recovery_action")
+    for field, digest in (
+        ("decision", value.recovery_decision_sha256),
+        ("state", value.state_sha256),
+        ("events", value.events_sha256),
+        ("attempt", value.previous_attempt_id),
+        ("attempt_evidence", value.previous_attempt_evidence_sha256),
+    ):
+        _validate_sha256(digest, field)
     _validate_metadata(value.approved_by, "approved_by")
     _validate_metadata(value.approval_id, "approval_id")
 
@@ -603,7 +809,7 @@ def _evidence_path(
         _raise("store")
     if type(run_id) is not str or _RUN_ID_PATTERN.fullmatch(run_id) is None:
         _raise("run_id")
-    if prefix not in {_BUSINESS_PREFIX, _EXECUTION_PREFIX}:
+    if prefix not in {_BUSINESS_PREFIX, _EXECUTION_PREFIX, _RECOVERY_PREFIX}:
         _raise("purpose")
     _validate_metadata(approval_id, "approval_id")
     return store.root / f"{run_id}.{prefix}.{_approval_storage_key(approval_id)}.json"
@@ -670,7 +876,7 @@ def _load_evidence(
     expected_run_id: str,
     expected_approval_id: str | None,
     expected_prefix: str,
-) -> BusinessApprovalEvidence | ExecutionApprovalEvidence:
+) -> BusinessApprovalEvidence | ExecutionApprovalEvidence | RecoveryApprovalEvidence:
     if type(path) is not _PATH_TYPE or path.is_symlink() or not path.is_file():
         _raise_load("target")
     storage_key = _storage_key_from_path(path, expected_run_id, expected_prefix)
@@ -697,6 +903,10 @@ def _load_evidence(
             if frozenset(value) != frozenset(_execution_dict_keys()):
                 _raise_load("fields")
             record = ExecutionApprovalEvidence(**value)  # type: ignore[arg-type]
+        elif purpose == "recovery_approval":
+            if frozenset(value) != frozenset(_recovery_dict_keys()):
+                _raise_load("fields")
+            record = RecoveryApprovalEvidence(**value)  # type: ignore[arg-type]
         else:
             _raise_load("purpose")
     except WorkflowApprovalEvidenceLoadError:
@@ -750,12 +960,18 @@ def _storage_key_from_path(path: Path, run_id: str, prefix: str) -> str:
 
 
 def _record_dict(
-    value: BusinessApprovalEvidence | ExecutionApprovalEvidence,
+    value: (
+        BusinessApprovalEvidence
+        | ExecutionApprovalEvidence
+        | RecoveryApprovalEvidence
+    ),
 ) -> dict[str, object]:
     if type(value) is BusinessApprovalEvidence:
         return _business_dict(value)
     if type(value) is ExecutionApprovalEvidence:
         return _execution_dict(value)
+    if type(value) is RecoveryApprovalEvidence:
+        return _recovery_dict(value)
     _raise_load("purpose")
 
 
@@ -790,6 +1006,28 @@ def _execution_dict_keys() -> tuple[str, ...]:
         "request_fingerprint",
         "run_id",
         "schema_version",
+        "step_id",
+        "step_index",
+        "workflow_id",
+    )
+
+
+def _recovery_dict_keys() -> tuple[str, ...]:
+    return (
+        "approved",
+        "approved_by",
+        "approval_id",
+        "employee_id",
+        "events_sha256",
+        "manifest_digest",
+        "previous_attempt_evidence_sha256",
+        "previous_attempt_id",
+        "purpose",
+        "recovery_action",
+        "recovery_decision_sha256",
+        "run_id",
+        "schema_version",
+        "state_sha256",
         "step_id",
         "step_index",
         "workflow_id",
@@ -845,6 +1083,7 @@ def _raise_load(classification: str) -> NoReturn:
 __all__ = [
     "BusinessApprovalEvidence",
     "ExecutionApprovalEvidence",
+    "RecoveryApprovalEvidence",
     "WorkflowApprovalEvidenceConflictError",
     "WorkflowApprovalEvidenceError",
     "WorkflowApprovalEvidenceLoadError",
@@ -852,14 +1091,19 @@ __all__ = [
     "approve_business_step",
     "build_execution_approval_evidence",
     "build_execution_approval_evidence_for_tools",
+    "build_recovery_approval_evidence",
     "business_approval_evidence_canonical_bytes",
     "execution_approval_evidence_canonical_bytes",
+    "recovery_approval_evidence_canonical_bytes",
     "find_business_approval_evidence",
     "list_run_approval_evidence",
     "load_business_approval_evidence",
     "load_execution_approval_evidence",
+    "load_recovery_approval_evidence",
     "persist_business_approval_evidence",
     "persist_execution_approval_evidence",
+    "persist_recovery_approval_evidence",
     "validate_business_approval_evidence",
     "validate_execution_approval_evidence",
+    "validate_recovery_approval_evidence",
 ]
