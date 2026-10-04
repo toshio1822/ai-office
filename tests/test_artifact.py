@@ -15,6 +15,9 @@ import ai_office.engine.artifact as artifact_module
 from ai_office.cli import app
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
+from ai_office.engine import (
+    route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as route_phase145_preparation,  # noqa: E501
+)
 from ai_office.engine.artifact import (
     WorkflowArtifactError,
     export_run_artifact,
@@ -22,10 +25,12 @@ from ai_office.engine.artifact import (
     read_run_artifact,
     workflow_artifact_path,
 )
+from ai_office.engine.next_step_preparation import NextStepPreparationApproval
 from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     PersistedExecutionOutcomeRoutingError,
     route_persisted_execution_outcome_reentry,
 )
+from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.engine.workflow_run_manifest import (
     load_workflow_run_manifest,
     workflow_definition_from_run_manifest,
@@ -262,8 +267,38 @@ def test_missing_artifact_is_completed_after_restart_without_provider_replay(
     state_before = evidence.run.state_path.read_bytes()
     events_before = evidence.run.events_path.read_bytes()
     assert b'"status":"succeeded"' in state_before
+    assert b'"event_type":"step_succeeded"' in events_before
     assert list_run_artifacts(evidence.run.store, evidence.run.binding.run_id) == ()
     assert not tuple(tmp_path.glob("run-artifact.artifact.*.json"))
+    assert calls == [1]
+
+    progression = WorkflowProgressionDecision(
+        "prepare_next_step",
+        workflow.id,
+        "draft",
+        1,
+        "author",
+        "review",
+        2,
+        "author",
+        "next_step_available",
+        binding=evidence.run.binding,
+    )
+    preparation_approval = NextStepPreparationApproval(
+        True, workflow.id, "draft", 1, "review", 2, "author"
+    )
+    with pytest.raises(PersistedExecutionOutcomeRoutingError):
+        route_phase145_preparation(
+            progression,
+            workflow,
+            preparation_approval,
+            _employee(),
+            evidence.run.state_path,
+            evidence.run.events_path,
+        )
+    assert evidence.run.state_path.read_bytes() == state_before
+    assert evidence.run.events_path.read_bytes() == events_before
+    assert list_run_artifacts(evidence.run.store, evidence.run.binding.run_id) == ()
     assert calls == [1]
 
     monkeypatch.setattr(artifact_module.os, "link", real_link)
@@ -275,6 +310,17 @@ def test_missing_artifact_is_completed_after_restart_without_provider_replay(
     assert calls == [1]
     assert evidence.run.state_path.read_bytes() == state_before
     assert evidence.run.events_path.read_bytes() == events_before
+
+    prepared = route_phase145_preparation(
+        progression,
+        workflow,
+        preparation_approval,
+        _employee(),
+        evidence.run.state_path,
+        evidence.run.events_path,
+    )
+    assert prepared.step_id == "review"
+    assert calls == [1]
 
 
 def test_non_artifact_success_keeps_normal_progression_without_artifact(

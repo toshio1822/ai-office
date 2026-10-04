@@ -91,6 +91,8 @@ def _ensure_required_run_artifacts(
     """Use the authoritative Manifest to gate Run-bound persisted progression."""
     binding = binding_of(history.state)
     if binding is None:
+        if any(step.artifact_content_type is not None for step in workflow.steps):
+            _raise("dependency_error")
         return
     manifest_path = state_path.parent / f"{binding.run_id}.manifest.json"
     try:
@@ -98,9 +100,7 @@ def _ensure_required_run_artifacts(
     except OSError:
         _raise("dependency_error")
     if not manifest_is_present:
-        if any(step.artifact_content_type is not None for step in workflow.steps):
-            _raise("dependency_error")
-        return
+        _raise("dependency_error")
 
     try:
         store = WorkflowRunManifestStore(state_path.parent)
@@ -115,10 +115,10 @@ def _ensure_required_run_artifacts(
         )
         if manifest.workflow_id != workflow.id:
             _raise("dependency_error")
-        if not has_artifact_policy and not has_artifact_records:
-            return
         if manifest.digest != binding.manifest_digest:
             _raise("dependency_error")
+        if not has_artifact_policy and not has_artifact_records:
+            return
         from ai_office.engine.artifact import _ensure_required_artifacts_for_history
 
         _ensure_required_artifacts_for_history(store, binding, history)

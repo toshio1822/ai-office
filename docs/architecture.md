@@ -160,6 +160,8 @@ Workflow step は `artifact_content_type` に具体的な media type を指定�
 
 Artifact は Run namespace 内の canonical immutable record で、Run/Manifest、workflow/step/index/employee、content bytes の SHA-256 と byte length、execution attempt、attempt evidence、normalized result、該当する raw-response digest、および successful terminal event digest を束縛する。保存済み Manifest と authoritative execution evidence からのみ生成し、同じ Artifact identity の異なる bytes/metadata は拒否する。persisted success の routing 前に required Artifact を確立し、保存が失敗しても成功済み state/event は維持する。再開時は既存 evidence から missing Artifact を完成し、provider を再実行しない。
 
+`route_persisted_execution_outcome_reentry` は persisted outcome から progression に入る canonical owner である。従来の `decide_persisted_success_progression()`、`route_persisted_success_progression_reentry()`、`route_progression_preparation_reentry()` は本番 caller のない過去 Phase の public seam であり、Artifact gate を避けて progression/preparation できるため削除した。残る standalone preparation route も canonical route を通り、required Artifact 完了前に `WorkflowProgressionDecision` や `PreparedWorkflowStep` を返さない。Run binding のある execution に Manifest がない場合、または binding と Manifest digest が一致しない場合は、Artifact policy の有無にかかわらず continuation を拒否する。
+
 `workflows artifacts <run-id>` は検証済み Artifact metadata を一覧し、`workflows artifact <run-id> <artifact-id>` は指定された content を読み、`workflows artifact-export <run-id> <artifact-id> --output <path>` は exact bytes を新規 local file に出力する。既存 export destination は上書きしない。この provider-free local export は External Publication ではなく、Publication Approval の authority を持たない。Artifact、Model Output、Step Output、および既存 Publication は別の意味と authority を保つ。
 
 
@@ -611,7 +613,10 @@ Phase 76 Prepared Start Persistence Routing Phase Bridge Cycle Continuation Boun
 
 Phase 77 Persisted Running Execution Routing Phase Bridge Cycle Continuation Boundaryは、Phase 76の正確な`RunningStatePersistenceResult`、`workflow_complete`、または`persisted_failure`を受けるread-only boundaryである。execution routeでは元の正確な`PreparedStepExecutionStart`、workflow、employee、resolved tools、OpenAI API key、approval、transportを検証し、state/event targetsと先行step historyを再検証した後、同じ10引数のobject identityで既存Phase 70へ正確に一度だけ委譲し、正確なruntime success/failureを返す。completion/failure stop routeはexecution-only inputsをすべてNoneとしてstrict terminal state/historyを検証し、Phase 70を呼ばず同じobjectで停止する。依存のtarget改変、不正返却、safe/unexpected error、rollback failureは両targetをbyte-for-byte補償復元し、安全なdetail classificationに変換する。Phase 70/63/56 logic、employee/tool/credential/approval選択、provider/tool実行、transition persistence、outcome分類、retry、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは複製・追加しない。
 
-Persisted Execution Outcome Routing Reentry Boundary（Phase 38）は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryである。1回のPhase 38 invocationでstrict historyを一度だけloadし、同じimmutableな`LoadedWorkflowExecutionHistory` viewをPhase 37-owned classification processingと、Phase 31-owned persisted-success progression processingへ渡す。Phase 37はterminal status、workflow/current-step/employee、completed-step、event-history linkage、failure-category consistencyをclassification ownerとして扱い、Phase 31はsuccess progression、Phase 25への委譲、returned decision contractを所有する。Phase 31のpublic path-based boundaryは他のproduction caller向けに維持されるが、Phase 38はそのpublic functionを呼ぶことを契約にせず、Phase 31-owned internal processingで同じviewを扱う。Phase 38からPhase 25を直接呼ばない。`persisted_failure`は正しいvalue-level terminal resultとして返し、Phase 31を呼ばず、progressionもstate/event writeも行わない。各処理後にtarget bytesの不変性を確認し、改変時のみ補償復元する。shared viewは重複semantic loadをなくすが、atomic cross-file snapshot、external writerの排除、filesystem locking、CAS、transaction、一般的なconcurrency safetyは保証しない。next-step preparation、completion persistence/finalization、retry/recovery、provider execution、data persistenceを行わない。
+
+Issue #681では、Phase 31のpublic path-based decision boundary、Phase 32のapproved next-step reentry、およびPhase 39/46のpersisted-success preparation routesを削除した。以下のPhase 31/32/39/46の記述は旧公開契約の開発履歴であり、現行APIを示さない。現在のpersisted-success progressionはPhase 38 canonical routeだけを通り、独立したPhase 145 preparation routeも同じcanonical routeでArtifact完了を確認する。
+
+Persisted Execution Outcome Routing Reentry Boundary（Phase 38）は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryである。1回のPhase 38 invocationでstrict historyを一度だけloadし、同じimmutableな`LoadedWorkflowExecutionHistory` viewをPhase 37-owned classification processingと、Phase 31-owned persisted-success progression processingへ渡す。Phase 37はterminal status、workflow/current-step/employee、completed-step、event-history linkage、failure-category consistencyをclassification ownerとして扱い、Phase 31はsuccess progression、Phase 25への委譲、returned decision contractを所有する。Phase 31の旧 public path-based boundaryは削除済みであり、Phase 38からのみRun-bound persisted progressionを公開する。Phase 38からPhase 25を直接呼ばない。`persisted_failure`は正しいvalue-level terminal resultとして返し、Phase 31を呼ばず、progressionもstate/event writeも行わない。各処理後にtarget bytesの不変性を確認し、改変時のみ補償復元する。shared viewは重複semantic loadをなくすが、atomic cross-file snapshot、external writerの排除、filesystem locking、CAS、transaction、一般的なconcurrency safetyは保証しない。next-step preparation、completion persistence/finalization、retry/recovery、provider execution、data persistenceを行わない。
 
 Persisted Success Preparation Routing Reentry Boundary（Phase 39）は、caller suppliedな正確なPhase 31 decisionを明示targetに対して再判定し、全fieldを照合するread-only boundaryである。`prepare_next_step`だけをcaller supplied approval/employeeとともにPhase 32へ一度委譲して同じprepared-step objectを返し、`workflow_complete`はPhase 32を呼ばず同じdecision objectを返す。approval作成、prepared-step execution、running-state persistence、completion persistence/finalization、retry、provider execution、data persistenceを行わない。
 
@@ -3802,8 +3807,8 @@ classificationとprogression routingのcanonical composition ownerである。
 Phase38は1回のrouting invocationでstrict `load_workflow_execution_history`を
 一度だけ呼び、同じimmutableなloaded viewをPhase37-owned classification
 processingとPhase31-owned success progression processingで共有する。Phase31の
-public path-based boundaryは他のproduction caller向けに維持されるが、Phase38の
-shared-history compositionが既存public functionを必ず呼ぶという契約ではない。
+旧 public path-based boundaryは廃止され、Phase38 canonical routeだけがRun-bound
+persisted progressionを公開する。
 Phase31-owned internal processingがPhase25 delegationとdecision contractを所有し、
 Phase38からPhase25を直接呼ばない。result CLIはPhase37 outcomeを事前に構築せず、
 step数やcompleted listから`prepare_next_step` / `workflow_complete`を手動推論しない。

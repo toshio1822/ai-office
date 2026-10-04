@@ -1266,6 +1266,18 @@ def _read_persisted_continue_route(
             events_path,
         )
     except Exception:
+        if expected_binding is not None:
+            try:
+                persisted = load_workflow_execution_history(
+                    WorkflowExecutionPersistenceTargets(state_path, events_path)
+                )
+            except Exception:
+                pass
+            else:
+                if binding_of(persisted.state) != expected_binding:
+                    _workflow_cli_error(
+                        "persisted workflow Run binding is inconsistent"
+                    )
         _workflow_cli_error(
             "persisted workflow state requires recovery or investigation"
         )

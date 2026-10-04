@@ -1,7 +1,6 @@
 """Read-only progression decision for one persisted successful step."""
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 from ai_office.definitions.workflow import WorkflowDefinition
@@ -9,21 +8,10 @@ from ai_office.engine.workflow_progression import (
     WorkflowProgressionDecision,
     decide_workflow_progression,
 )
-from ai_office.storage.workflow_execution_history import (
-    LoadedWorkflowExecutionHistory,
-    WorkflowExecutionDataError,
-    WorkflowExecutionHistoryInconsistencyError,
-    WorkflowExecutionLoadError,
-    load_workflow_execution_history,
-)
-from ai_office.storage.workflow_execution_persistence import (
-    WorkflowExecutionPersistenceTargets,
-)
+from ai_office.storage.workflow_execution_history import LoadedWorkflowExecutionHistory
 
 PersistedSuccessProgressionClassification = Literal[
     "workflow_definition",
-    "state_target",
-    "event_target",
     "history_data",
     "state_status",
     "state_identity",
@@ -53,24 +41,10 @@ class PersistedSuccessProgressionCompatibilityError(PersistedSuccessProgressionE
         self.detail = PersistedSuccessProgressionFailureDetail(classification)
 
 
-def decide_persisted_success_progression(
-    workflow: object,
-    state_path: object,
-    events_path: object,
-) -> WorkflowProgressionDecision:
-    """Load one persisted success and delegate exactly once to Phase 25."""
-    _validate_explicit_inputs(workflow, state_path, events_path)
-    assert isinstance(workflow, WorkflowDefinition)
-    assert isinstance(state_path, Path)
-    assert isinstance(events_path, Path)
-    history = _load_history(state_path, events_path)
-    return _decide_loaded_persisted_success_progression(workflow, history)
-
-
 def _decide_loaded_persisted_success_progression(
     workflow: object, history: object
 ) -> WorkflowProgressionDecision:
-    """Progress one already-loaded history while retaining Phase 31 ownership."""
+    """Decide from loaded success after canonical persisted routing gated Artifacts."""
     if not isinstance(workflow, WorkflowDefinition):
         _raise("workflow_definition")
     if type(history) is not LoadedWorkflowExecutionHistory:
@@ -82,37 +56,6 @@ def _decide_loaded_persisted_success_progression(
     decision = decide_workflow_progression(workflow, history)
     _validate_decision_contract(decision, workflow, history)
     return decision
-
-
-def _validate_explicit_inputs(
-    workflow: object, state_path: object, events_path: object
-) -> None:
-    if not isinstance(workflow, WorkflowDefinition):
-        _raise("workflow_definition")
-    if not isinstance(state_path, Path):
-        _raise("state_target")
-    if not isinstance(events_path, Path):
-        _raise("event_target")
-    try:
-        if not state_path.is_file():
-            _raise("state_target")
-        if not events_path.is_file():
-            _raise("event_target")
-    except OSError:
-        _raise("history_data")
-
-
-def _load_history(
-    state_path: Path, events_path: Path
-) -> LoadedWorkflowExecutionHistory:
-    try:
-        return load_workflow_execution_history(
-            WorkflowExecutionPersistenceTargets(state_path, events_path)
-        )
-    except (WorkflowExecutionDataError, WorkflowExecutionHistoryInconsistencyError):
-        _raise("history_data")
-    except WorkflowExecutionLoadError:
-        _raise("history_data")
 
 
 def _validate_persisted_success(history: LoadedWorkflowExecutionHistory) -> None:
