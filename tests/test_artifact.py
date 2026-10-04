@@ -206,6 +206,20 @@ def _route(workflow, evidence):
     )
 
 
+def _run_namespace_snapshot(root: Path) -> dict[str, tuple[str, bytes | str | None]]:
+    """Capture every Run-namespace entry and exact bytes for read-only checks."""
+    snapshot: dict[str, tuple[str, bytes | str | None]] = {}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            snapshot[relative] = ("symlink", path.readlink().as_posix())
+        elif path.is_file():
+            snapshot[relative] = ("file", path.read_bytes())
+        elif path.is_dir():
+            snapshot[relative] = ("directory", None)
+    return snapshot
+
+
 def test_configured_success_creates_exact_immutable_artifact_from_result_evidence(
     tmp_path: Path,
 ) -> None:
@@ -287,6 +301,9 @@ def test_missing_artifact_is_completed_after_restart_without_provider_replay(
     preparation_approval = NextStepPreparationApproval(
         True, workflow.id, "draft", 1, "review", 2, "author"
     )
+    monkeypatch.setattr(artifact_module.os, "link", real_link)
+
+    namespace_before = _run_namespace_snapshot(evidence.run.store.root)
     with pytest.raises(PersistedExecutionOutcomeRoutingError):
         route_phase145_preparation(
             progression,
@@ -296,12 +313,78 @@ def test_missing_artifact_is_completed_after_restart_without_provider_replay(
             evidence.run.state_path,
             evidence.run.events_path,
         )
+    assert _run_namespace_snapshot(evidence.run.store.root) == namespace_before
     assert evidence.run.state_path.read_bytes() == state_before
     assert evidence.run.events_path.read_bytes() == events_before
     assert list_run_artifacts(evidence.run.store, evidence.run.binding.run_id) == ()
     assert calls == [1]
 
-    monkeypatch.setattr(artifact_module.os, "link", real_link)
+    preview = runner.invoke(
+        app,
+        [
+            "workflows",
+            "continue",
+            evidence.run.binding.run_id,
+            "--run-store",
+            str(evidence.run.store.root),
+            "--preview-only",
+        ],
+    )
+    assert preview.exit_code == 2
+    assert "persisted workflow state requires recovery or investigation" in (
+        preview.stderr
+    )
+    assert _run_namespace_snapshot(evidence.run.store.root) == namespace_before
+    assert evidence.run.state_path.read_bytes() == state_before
+    assert evidence.run.events_path.read_bytes() == events_before
+    assert list_run_artifacts(evidence.run.store, evidence.run.binding.run_id) == ()
+    assert calls == [1]
+
+    inspected = runner.invoke(
+        app,
+        [
+            "workflows",
+            "result",
+            evidence.run.binding.run_id,
+            "--run-store",
+            str(evidence.run.store.root),
+        ],
+    )
+    assert inspected.exit_code == 2
+    assert "persisted workflow state requires recovery or investigation" in (
+        inspected.stderr
+    )
+    assert _run_namespace_snapshot(evidence.run.store.root) == namespace_before
+    assert evidence.run.state_path.read_bytes() == state_before
+    assert evidence.run.events_path.read_bytes() == events_before
+    assert list_run_artifacts(evidence.run.store, evidence.run.binding.run_id) == ()
+    assert calls == [1]
+
+    continued = runner.invoke(
+        app,
+        [
+            "workflows",
+            "continue",
+            evidence.run.binding.run_id,
+            "--run-store",
+            str(evidence.run.store.root),
+        ],
+    )
+    assert continued.exit_code == 2
+    namespace_after_continuation = _run_namespace_snapshot(evidence.run.store.root)
+    added_paths = set(namespace_after_continuation) - set(namespace_before)
+    assert len(added_paths) == 1
+    artifact_path = next(iter(added_paths))
+    assert artifact_path.startswith(f"{evidence.run.binding.run_id}.artifact.")
+    assert all(
+        namespace_after_continuation[path] == value
+        for path, value in namespace_before.items()
+    )
+    assert evidence.run.state_path.read_bytes() == state_before
+    assert evidence.run.events_path.read_bytes() == events_before
+    assert len(list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)) == 1
+    assert calls == [1]
+
     decision = _route(workflow, evidence)
 
     artifacts = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)

@@ -1256,14 +1256,16 @@ def _read_persisted_continue_route(
     state_path: Path,
     events_path: Path,
     *,
+    allow_artifact_completion: bool,
     expected_binding: WorkflowRunBinding | None = None,
 ) -> PersistedExecutionOutcome | WorkflowProgressionDecision:
-    """Run the canonical read-only persisted-target classification and route."""
+    """Run canonical persisted routing with the caller's Artifact-write policy."""
     try:
         routed = route_persisted_execution_outcome_reentry(
             workflow,
             state_path,
             events_path,
+            allow_artifact_completion=allow_artifact_completion,
         )
     except Exception:
         if expected_binding is not None:
@@ -1600,6 +1602,7 @@ def continue_workflow(
         workflow.definition,
         state_path,
         events_path,
+        allow_artifact_completion=not preview_only,
         expected_binding=binding,
     )
 
@@ -1731,6 +1734,7 @@ def result_workflow(
         workflow.definition,
         state_path,
         events_path,
+        allow_artifact_completion=False,
         expected_binding=binding,
     )
     try:

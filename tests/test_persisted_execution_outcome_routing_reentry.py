@@ -1,7 +1,6 @@
 """Observable Phase 38 shared-history routing guarantees."""
 
 import importlib
-import inspect
 from pathlib import Path
 
 import pytest
@@ -150,12 +149,6 @@ def mutate(path: Path, operation: str) -> None:
         path.write_bytes(path.read_bytes() + b"append")
     else:
         path.unlink()
-
-
-def test_public_contract_contains_only_three_business_inputs() -> None:
-    assert list(
-        inspect.signature(route_persisted_execution_outcome_reentry).parameters
-    ) == ["workflow", "state_path", "events_path"]
 
 
 @pytest.mark.parametrize(

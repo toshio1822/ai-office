@@ -185,9 +185,13 @@ def _ensure_required_artifacts_for_history(
     store: WorkflowRunManifestStore,
     binding: WorkflowRunBinding,
     history: LoadedWorkflowExecutionHistory,
+    *,
+    allow_creation: bool = True,
 ) -> tuple[WorkflowArtifact, ...]:
-    """Complete explicitly required Artifacts before persisted success routes."""
+    """Validate required Artifacts, optionally completing missing records."""
     _validate_store(store)
+    if type(allow_creation) is not bool:
+        _raise_load("contract")
     if type(binding) is not WorkflowRunBinding:
         _raise_load("binding")
     if (
@@ -231,6 +235,8 @@ def _ensure_required_artifacts_for_history(
             if existing != artifact:
                 _raise_load("identity_conflict")
             continue
+        if not allow_creation:
+            _raise_load("required_artifact_missing")
         _persist_workflow_artifact(store, artifact)
         existing_by_id[artifact.artifact_id] = artifact
 

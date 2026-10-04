@@ -134,9 +134,13 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
 
     # This public preparation route may be entered without the higher-level
     # continuation cycle. Reuse the canonical persisted route so standalone
-    # calls obey the same Artifact gate as the normal cycle.
+    # calls obey the same Artifact gate as the normal cycle without creating
+    # durable Artifacts from this read-only preparation route.
     routed = route_persisted_execution_outcome_reentry(
-        workflow, state_path, events_path
+        workflow,
+        state_path,
+        events_path,
+        allow_artifact_completion=False,
     )
     if routed != result:
         _fail("terminal_contract")

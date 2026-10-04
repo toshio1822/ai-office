@@ -66,15 +66,29 @@ def route_persisted_execution_outcome_reentry(
     workflow: object,
     state_path: object,
     events_path: object,
+    *,
+    allow_artifact_completion: bool = True,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Classify persisted outcome, complete required Artifacts, then route success."""
+    """Classify and route persisted outcomes through the required Artifact gate.
+
+    Callers performing a read-only observation disable Artifact completion. The
+    same gate then validates durable Artifacts and fails closed if one is missing.
+    """
     _validate_inputs(workflow, state_path, events_path)
+    if type(allow_artifact_completion) is not bool:
+        _raise("dependency_error")
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
     original = _capture(state_path, events_path)
     outcome, history = _call_classification(workflow, state_path, events_path, original)
     _validate_outcome_route(outcome)
-    _ensure_required_run_artifacts(workflow, state_path, events_path, history)
+    _ensure_required_run_artifacts(
+        workflow,
+        state_path,
+        events_path,
+        history,
+        allow_artifact_completion=allow_artifact_completion,
+    )
     if outcome.outcome == "persisted_failure":
         return outcome
     decision = _call_progression(workflow, history, state_path, events_path, original)
@@ -87,6 +101,8 @@ def _ensure_required_run_artifacts(
     state_path: Path,
     events_path: Path,
     history: LoadedWorkflowExecutionHistory,
+    *,
+    allow_artifact_completion: bool,
 ) -> None:
     """Use the authoritative Manifest to gate Run-bound persisted progression."""
     binding = binding_of(history.state)
@@ -121,7 +137,12 @@ def _ensure_required_run_artifacts(
             return
         from ai_office.engine.artifact import _ensure_required_artifacts_for_history
 
-        _ensure_required_artifacts_for_history(store, binding, history)
+        _ensure_required_artifacts_for_history(
+            store,
+            binding,
+            history,
+            allow_creation=allow_artifact_completion,
+        )
     except PersistedExecutionOutcomeRoutingError:
         raise
     except Exception:
