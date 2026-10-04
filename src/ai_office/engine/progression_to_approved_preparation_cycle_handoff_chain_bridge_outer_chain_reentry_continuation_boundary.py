@@ -12,10 +12,13 @@ from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
     NextStepPreparationError,
     PreparedWorkflowStep,
-    prepare_approved_next_workflow_step,
+    _prepare_approved_next_workflow_step,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
+)
+from ai_office.engine.persisted_execution_outcome_routing_reentry import (
+    route_persisted_execution_outcome_reentry,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import ModelInvocationFailureCategory
@@ -129,6 +132,19 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
         allow_accumulated_openai_none=not stop,
     )
 
+    # This public preparation route may be entered without the higher-level
+    # continuation cycle. Reuse the canonical persisted route so standalone
+    # calls obey the same Artifact gate as the normal cycle without creating
+    # durable Artifacts from this read-only preparation route.
+    routed = route_persisted_execution_outcome_reentry(
+        workflow,
+        state_path,
+        events_path,
+        allow_artifact_completion=False,
+    )
+    if routed != result:
+        _fail("terminal_contract")
+
     if stop:
         return result
 
@@ -136,7 +152,7 @@ def route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_c
     assert type(approval) is NextStepPreparationApproval
     assert type(employee) is EmployeeDefinition
     try:
-        prepared = prepare_approved_next_workflow_step(
+        prepared = _prepare_approved_next_workflow_step(
             workflow, loaded, result, approval, employee
         )
     except NextStepPreparationError:

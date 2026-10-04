@@ -28,6 +28,10 @@ class WorkflowStepDefinition(BaseModel):
     employee: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     instructions: str
     business_approval_required: bool = True
+    artifact_content_type: str | None = Field(
+        default=None,
+        pattern=r"^[!#$%&'+.^_`|~%0-9A-Za-z-]+/[!#$%&'+.^_`|~%0-9A-Za-z-]+$",
+    )
 
     @field_validator("name", "instructions")
     @classmethod

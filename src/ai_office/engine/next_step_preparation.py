@@ -82,7 +82,7 @@ class NextStepPreparationApprovalError(NextStepPreparationError):
         self.detail = NextStepPreparationFailureDetail(classification)
 
 
-def prepare_approved_next_workflow_step(
+def _prepare_approved_next_workflow_step(
     workflow: WorkflowDefinition,
     history: LoadedWorkflowExecutionHistory,
     decision: WorkflowProgressionDecision,

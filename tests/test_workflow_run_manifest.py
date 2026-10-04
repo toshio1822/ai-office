@@ -68,6 +68,7 @@ def workflow(
     *,
     description: str = "Researches the assigned subject.",
     step_instructions: str = "Gather relevant information.",
+    artifact_content_type: str | None = None,
 ) -> LoadedWorkflow:
     return LoadedWorkflow(
         source_path=Path("source-workflow.yaml"),
@@ -81,6 +82,7 @@ def workflow(
                     name="Research",
                     employee=employee_id,
                     instructions=step_instructions,
+                    artifact_content_type=artifact_content_type,
                 )
             ],
         ),
@@ -232,6 +234,53 @@ def test_meaningful_workflow_employee_and_tool_changes_change_identity() -> None
             parameters=(changed_tool.tool_contracts[0].parameters[0],),
         ),
     )
+
+
+def test_artifact_policy_is_pinned_and_changes_manifest_identity() -> None:
+    no_artifact = manifest()
+    artifact = manifest(
+        workflow_value=workflow(artifact_content_type="text/markdown")
+    )
+
+    assert no_artifact.workflow_snapshot.steps[0].artifact_content_type is None
+    assert artifact.workflow_snapshot.steps[0].artifact_content_type == "text/markdown"
+    assert no_artifact.digest != artifact.digest
+    assert b'"artifact_content_type":"text/markdown"' in (
+        workflow_run_manifest_canonical_bytes(artifact)
+    )
+
+
+def test_manifest_v2_loads_with_historical_no_artifact_semantics(
+    tmp_path: Path,
+) -> None:
+    store = WorkflowRunManifestStore(tmp_path)
+    current = create_workflow_run_manifest(
+        store,
+        "run-1",
+        "request",
+        workflow(artifact_content_type="text/markdown"),
+        [employee()],
+    )
+    value = json.loads(store.manifest_path("run-1").read_text(encoding="utf-8"))
+    value["schema_version"] = "workflow-run-manifest.v2"
+    for step in value["workflow_snapshot"]["steps"]:
+        step.pop("artifact_content_type")
+    historical_bytes = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    store.manifest_path("run-1").write_bytes(historical_bytes)
+
+    loaded = load_workflow_run_manifest(store, "run-1")
+
+    assert current.schema_version == "workflow-run-manifest.v3"
+    assert loaded.schema_version == "workflow-run-manifest.v2"
+    assert loaded.workflow_snapshot.steps[0].artifact_content_type is None
+    assert workflow_run_manifest_canonical_bytes(loaded) == historical_bytes
+    assert loaded.digest == hashlib.sha256(historical_bytes).hexdigest()
 
 
 def test_unrelated_employee_definitions_do_not_affect_pinned_manifest() -> None:

@@ -13,7 +13,9 @@ from ai_office.engine import (
     PreparedWorkflowStep,
     WorkflowProgressionDecision,
     decide_workflow_progression,
-    prepare_approved_next_workflow_step,
+)
+from ai_office.engine.next_step_preparation import (
+    _prepare_approved_next_workflow_step as prepare_approved_next_workflow_step,
 )
 from ai_office.runtime import WorkflowExecutionState
 from ai_office.storage import LoadedWorkflowExecutionHistory

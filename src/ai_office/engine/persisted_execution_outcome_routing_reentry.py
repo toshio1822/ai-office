@@ -1,4 +1,4 @@
-"""Read-only routing between persisted outcome classification and progression."""
+"""Persisted outcome routing with required Artifact completion before progression."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +16,11 @@ from ai_office.engine.persisted_success_progression import (
     _decide_loaded_persisted_success_progression,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.engine.workflow_run_manifest import (
+    WorkflowRunManifestStore,
+    load_workflow_run_manifest,
+)
+from ai_office.runtime import binding_of
 from ai_office.storage.workflow_execution_history import (
     LoadedWorkflowExecutionHistory,
     WorkflowExecutionLoadError,
@@ -44,7 +49,7 @@ class PersistedExecutionOutcomeRoutingFailureDetail:
 
 
 class PersistedExecutionOutcomeRoutingError(ValueError):
-    """Raised when Phase 38 cannot safely route a persisted outcome."""
+    """Raised when persisted outcome routing cannot proceed safely."""
 
 
 class PersistedExecutionOutcomeRoutingCompatibilityError(
@@ -61,19 +66,87 @@ def route_persisted_execution_outcome_reentry(
     workflow: object,
     state_path: object,
     events_path: object,
+    *,
+    allow_artifact_completion: bool = True,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Classify one persisted target and route only persisted success onward."""
+    """Classify and route persisted outcomes through the required Artifact gate.
+
+    Callers performing a read-only observation disable Artifact completion. The
+    same gate then validates durable Artifacts and fails closed if one is missing.
+    """
     _validate_inputs(workflow, state_path, events_path)
+    if type(allow_artifact_completion) is not bool:
+        _raise("dependency_error")
     assert type(workflow) is WorkflowDefinition
     assert isinstance(state_path, Path) and isinstance(events_path, Path)
     original = _capture(state_path, events_path)
     outcome, history = _call_classification(workflow, state_path, events_path, original)
     _validate_outcome_route(outcome)
+    _ensure_required_run_artifacts(
+        workflow,
+        state_path,
+        events_path,
+        history,
+        allow_artifact_completion=allow_artifact_completion,
+    )
     if outcome.outcome == "persisted_failure":
         return outcome
     decision = _call_progression(workflow, history, state_path, events_path, original)
     _validate_decision_route(decision)
     return decision
+
+
+def _ensure_required_run_artifacts(
+    workflow: WorkflowDefinition,
+    state_path: Path,
+    events_path: Path,
+    history: LoadedWorkflowExecutionHistory,
+    *,
+    allow_artifact_completion: bool,
+) -> None:
+    """Use the authoritative Manifest to gate Run-bound persisted progression."""
+    binding = binding_of(history.state)
+    if binding is None:
+        if any(step.artifact_content_type is not None for step in workflow.steps):
+            _raise("dependency_error")
+        return
+    manifest_path = state_path.parent / f"{binding.run_id}.manifest.json"
+    try:
+        manifest_is_present = manifest_path.exists() or manifest_path.is_symlink()
+    except OSError:
+        _raise("dependency_error")
+    if not manifest_is_present:
+        _raise("dependency_error")
+
+    try:
+        store = WorkflowRunManifestStore(state_path.parent)
+        if store.execution_paths(binding.run_id) != (state_path, events_path):
+            _raise("dependency_error")
+        manifest = load_workflow_run_manifest(store, binding.run_id)
+        marker = f"{binding.run_id}.artifact.*.json"
+        has_artifact_records = any(state_path.parent.glob(marker))
+        has_artifact_policy = any(
+            step.artifact_content_type is not None
+            for step in manifest.workflow_snapshot.steps
+        )
+        if manifest.workflow_id != workflow.id:
+            _raise("dependency_error")
+        if manifest.digest != binding.manifest_digest:
+            _raise("dependency_error")
+        if not has_artifact_policy and not has_artifact_records:
+            return
+        from ai_office.engine.artifact import _ensure_required_artifacts_for_history
+
+        _ensure_required_artifacts_for_history(
+            store,
+            binding,
+            history,
+            allow_creation=allow_artifact_completion,
+        )
+    except PersistedExecutionOutcomeRoutingError:
+        raise
+    except Exception:
+        _raise("dependency_error")
 
 
 def _validate_inputs(

@@ -33,12 +33,16 @@ from ai_office.tools import (
     resolve_tool_names,
 )
 
-_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v2"
+_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v3"
+_PREVIOUS_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v2"
 _MANIFEST_ERROR_MESSAGE = "workflow run manifest is invalid"
 _PERSISTENCE_ERROR_MESSAGE = "workflow run manifest persistence failed"
 _LOAD_ERROR_MESSAGE = "workflow run manifest could not be loaded"
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DEFINITION_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_CONTENT_TYPE_PATTERN = re.compile(
+    r"^[!#$%&'+.^_`|~%0-9A-Za-z-]+/[!#$%&'+.^_`|~%0-9A-Za-z-]+$"
+)
 _PATH_TYPE = type(Path())
 _MANIFEST_KEYS = frozenset(
     {
@@ -52,9 +56,10 @@ _MANIFEST_KEYS = frozenset(
     }
 )
 _WORKFLOW_KEYS = frozenset({"description", "id", "name", "steps"})
-_WORKFLOW_STEP_KEYS = frozenset(
+_WORKFLOW_STEP_KEYS_V2 = frozenset(
     {"business_approval_required", "employee", "id", "instructions", "name"}
 )
+_WORKFLOW_STEP_KEYS_V3 = _WORKFLOW_STEP_KEYS_V2 | {"artifact_content_type"}
 _EMPLOYEE_KEYS = frozenset(
     {"allowed_tools", "id", "instructions", "model", "name", "role"}
 )
@@ -106,6 +111,7 @@ class WorkflowStepSnapshot:
     employee: str
     instructions: str
     business_approval_required: bool
+    artifact_content_type: str | None = None
 
     def __post_init__(self) -> None:
         _validate_workflow_step_snapshot(self)
@@ -173,7 +179,9 @@ class WorkflowRunManifest:
     each employee's allowed-tool order remain semantic and are preserved.
     """
 
-    schema_version: Literal["workflow-run-manifest.v2"]
+    schema_version: Literal[
+        "workflow-run-manifest.v2", "workflow-run-manifest.v3"
+    ]
     run_id: str
     workflow_id: str
     run_input: str
@@ -321,7 +329,14 @@ def build_workflow_run_manifest(
     tool_contracts = tuple(_tool_contract_snapshot(tool) for tool in resolved_tools)
 
     return WorkflowRunManifest(
-        schema_version=_MANIFEST_SCHEMA_VERSION,
+        schema_version=(
+            _MANIFEST_SCHEMA_VERSION
+            if any(
+                step.artifact_content_type is not None
+                for step in workflow_snapshot.steps
+            )
+            else _PREVIOUS_MANIFEST_SCHEMA_VERSION
+        ),
         run_id=run_id,
         workflow_id=workflow_snapshot.id,
         run_input=run_input,
@@ -463,6 +478,7 @@ def workflow_definition_from_run_manifest(
                     "employee": step.employee,
                     "instructions": step.instructions,
                     "business_approval_required": step.business_approval_required,
+                    "artifact_content_type": step.artifact_content_type,
                 }
                 for step in snapshot.steps
             ],
@@ -588,6 +604,7 @@ def _workflow_step_snapshot(step: WorkflowStepDefinition) -> WorkflowStepSnapsho
             employee=step.employee,
             instructions=step.instructions,
             business_approval_required=step.business_approval_required,
+            artifact_content_type=step.artifact_content_type,
         )
     except WorkflowRunManifestError:
         raise
@@ -681,17 +698,26 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
             "id": workflow.id,
             "name": workflow.name,
             "steps": [
-                {
-                    "business_approval_required": step.business_approval_required,
-                    "employee": step.employee,
-                    "id": step.id,
-                    "instructions": step.instructions,
-                    "name": step.name,
-                }
+                _workflow_step_dict(step, manifest.schema_version)
                 for step in workflow.steps
             ],
         },
     }
+
+
+def _workflow_step_dict(
+    step: WorkflowStepSnapshot, schema_version: str
+) -> dict[str, object]:
+    value: dict[str, object] = {
+        "business_approval_required": step.business_approval_required,
+        "employee": step.employee,
+        "id": step.id,
+        "instructions": step.instructions,
+        "name": step.name,
+    }
+    if schema_version == _MANIFEST_SCHEMA_VERSION:
+        value["artifact_content_type"] = step.artifact_content_type
+    return value
 
 
 def _validate_manifest(manifest: object) -> None:
@@ -700,7 +726,8 @@ def _validate_manifest(manifest: object) -> None:
     assert isinstance(manifest, WorkflowRunManifest)
     if (
         type(manifest.schema_version) is not str
-        or manifest.schema_version != _MANIFEST_SCHEMA_VERSION
+        or manifest.schema_version
+        not in {_PREVIOUS_MANIFEST_SCHEMA_VERSION, _MANIFEST_SCHEMA_VERSION}
     ):
         _raise_manifest("schema_version")
     _validate_run_identity(manifest.run_id)
@@ -710,6 +737,11 @@ def _validate_manifest(manifest: object) -> None:
     if type(manifest.workflow_snapshot) is not WorkflowDefinitionSnapshot:
         _raise_manifest("workflow_snapshot")
     _validate_workflow_snapshot(manifest.workflow_snapshot)
+    if manifest.schema_version == _PREVIOUS_MANIFEST_SCHEMA_VERSION and any(
+        step.artifact_content_type is not None
+        for step in manifest.workflow_snapshot.steps
+    ):
+        _raise_manifest("schema_version")
     if manifest.workflow_id != manifest.workflow_snapshot.id:
         _raise_manifest("workflow_identity")
     if type(manifest.employee_snapshots) is not tuple:
@@ -755,6 +787,7 @@ def _validate_workflow_step_snapshot(snapshot: object) -> None:
     _validate_nonblank_text(snapshot.instructions, "workflow_step_instructions")
     if type(snapshot.business_approval_required) is not bool:
         _raise_manifest("business_approval_policy")
+    _validate_artifact_content_type(snapshot.artifact_content_type)
 
 
 def _validate_workflow_snapshot(snapshot: object) -> None:
@@ -831,6 +864,13 @@ def _validate_run_identity(value: object) -> None:
 def _validate_definition_id(value: object) -> None:
     if type(value) is not str or _DEFINITION_ID_PATTERN.fullmatch(value) is None:
         _raise_manifest("definition_id")
+
+
+def _validate_artifact_content_type(value: object) -> None:
+    if value is not None and (
+        type(value) is not str or _CONTENT_TYPE_PATTERN.fullmatch(value) is None
+    ):
+        _raise_manifest("artifact_content_type")
 
 
 def _validate_nonblank_text(value: object, classification: str) -> None:
@@ -1001,7 +1041,15 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         step_values = workflow_value["steps"]
         if type(step_values) is not list:
             _raise_load("workflow_steps")
-        steps = tuple(_parse_workflow_step(item) for item in step_values)
+        schema_version = value["schema_version"]
+        if schema_version not in {
+            _PREVIOUS_MANIFEST_SCHEMA_VERSION,
+            _MANIFEST_SCHEMA_VERSION,
+        }:
+            _raise_load("schema_version")
+        steps = tuple(
+            _parse_workflow_step(item, schema_version) for item in step_values
+        )
 
         employee_values = value["employee_snapshots"]
         if type(employee_values) is not list:
@@ -1035,8 +1083,13 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         _raise_load("manifest")
 
 
-def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
-    if type(value) is not dict or frozenset(value) != _WORKFLOW_STEP_KEYS:
+def _parse_workflow_step(value: object, schema_version: str) -> WorkflowStepSnapshot:
+    step_keys = (
+        _WORKFLOW_STEP_KEYS_V2
+        if schema_version == _PREVIOUS_MANIFEST_SCHEMA_VERSION
+        else _WORKFLOW_STEP_KEYS_V3
+    )
+    if type(value) is not dict or frozenset(value) != step_keys:
         _raise_load("workflow_step")
     try:
         return WorkflowStepSnapshot(
@@ -1045,6 +1098,11 @@ def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
             employee=value["employee"],
             instructions=value["instructions"],
             business_approval_required=value["business_approval_required"],
+            artifact_content_type=(
+                None
+                if schema_version == _PREVIOUS_MANIFEST_SCHEMA_VERSION
+                else value["artifact_content_type"]
+            ),
         )
     except Exception:
         _raise_load("workflow_step")

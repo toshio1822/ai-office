@@ -67,10 +67,10 @@ Business Approval required 動作を維持する。明示的な `false` は Busi
 だけを不要にする設定であり、provider 実行に必要な Execution Approval、将来の
 Publication Approval、Recovery Approval を許可するものではない。
 
-この有効な policy は `workflow-run-manifest.v2` の workflow snapshot に含まれ、
-Run Manifest の canonical bytes と digest に pin される。`continue` は live YAML を
-再読込せず、Manifest に保存された policy を使う。旧 schema を v2 の policy として
-黙って解釈し直すことはしない。
+この有効な policy は Run Manifest の workflow snapshot に含まれ、canonical bytes と
+digest に pin される。Artifact policy を明示した Run は
+`workflow-run-manifest.v3` を使う。Artifact policy がない新規 Run と既存 Run は v2
+形式を厳密に保ち、Artifact がない意味と既存の canonical identity を維持する。
 
 Approval evidence は同じ `WorkflowRunManifestStore` の Run namespace に、目的別の
 canonical JSON sidecar として排他的に保存する。
@@ -153,6 +153,16 @@ nonexistent、mismatched、cross-attempt linkageはterminal commitを拒否す�
 
 この Milestone では Recovery Approval、retry/new-attempt、Artifact、provider failover、
 generic event-sourcing framework は実装しない。
+
+## Current workflow Artifacts (Milestone 4)
+
+Workflow step は `artifact_content_type` に具体的な media type を指定して、成功した正規化済み step output を Artifact として保存する。省略した step は Artifact を作らない。Artifact policy を持つ Run Manifest は `workflow-run-manifest.v3` としてこの policy/content type を pin し、policy を持たない v2 Manifest は Artifact なしの意味と canonical identity を維持する。
+
+Artifact は Run namespace 内の canonical immutable record で、Run/Manifest、workflow/step/index/employee、content bytes の SHA-256 と byte length、execution attempt、attempt evidence、normalized result、該当する raw-response digest、および successful terminal event digest を束縛する。保存済み Manifest と authoritative execution evidence からのみ生成し、同じ Artifact identity の異なる bytes/metadata は拒否する。persisted success の routing 前に required Artifact を確立し、保存が失敗しても成功済み state/event は維持する。再開時は既存 evidence から missing Artifact を完成し、provider を再実行しない。
+
+`route_persisted_execution_outcome_reentry` は persisted outcome から progression に入る唯一の canonical owner である。通常の execution/continuation は authoritative evidence から required Artifact を完成してから decision を返す。同じ route は `allow_artifact_completion=False` で既存 Artifact の検証だけを行い、required Artifact が欠けていれば progression を返さず fail closed する。`workflows continue --preview-only` と `workflows result` はこの no-create mode を使い、state/events を含む Run namespace に durable file を作成しない。読み取り時に Artifact が欠けていれば、これらの operation はエラーで停止する。従来の `decide_persisted_success_progression()`、`route_persisted_success_progression_reentry()`、`route_progression_preparation_reentry()` は本番 caller のない過去 Phase の public seam であり、Artifact gate を避けて progression/preparation できるため削除した。残る standalone preparation route も canonical route を通り、required Artifact 完了前に `WorkflowProgressionDecision` や `PreparedWorkflowStep` を返さない。Run binding のある execution に Manifest がない場合、または binding と Manifest digest が一致しない場合は、Artifact policy の有無にかかわらず continuation を拒否する。
+
+`workflows artifacts <run-id>` は検証済み Artifact metadata を一覧し、`workflows artifact <run-id> <artifact-id>` は指定された content を読み、`workflows artifact-export <run-id> <artifact-id> --output <path>` は exact bytes を新規 local file に出力する。既存 export destination は上書きしない。この provider-free local export は External Publication ではなく、Publication Approval の authority を持たない。Artifact、Model Output、Step Output、および既存 Publication は別の意味と authority を保つ。
 
 
 ## Phase 59: classified persisted outcome routing phase bridge reentry
@@ -603,7 +613,10 @@ Phase 76 Prepared Start Persistence Routing Phase Bridge Cycle Continuation Boun
 
 Phase 77 Persisted Running Execution Routing Phase Bridge Cycle Continuation Boundaryは、Phase 76の正確な`RunningStatePersistenceResult`、`workflow_complete`、または`persisted_failure`を受けるread-only boundaryである。execution routeでは元の正確な`PreparedStepExecutionStart`、workflow、employee、resolved tools、OpenAI API key、approval、transportを検証し、state/event targetsと先行step historyを再検証した後、同じ10引数のobject identityで既存Phase 70へ正確に一度だけ委譲し、正確なruntime success/failureを返す。completion/failure stop routeはexecution-only inputsをすべてNoneとしてstrict terminal state/historyを検証し、Phase 70を呼ばず同じobjectで停止する。依存のtarget改変、不正返却、safe/unexpected error、rollback failureは両targetをbyte-for-byte補償復元し、安全なdetail classificationに変換する。Phase 70/63/56 logic、employee/tool/credential/approval選択、provider/tool実行、transition persistence、outcome分類、retry、自動継続、finalization、scheduler、loop、parallel execution、paid CLI/GUIは複製・追加しない。
 
-Persisted Execution Outcome Routing Reentry Boundary（Phase 38）は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryである。1回のPhase 38 invocationでstrict historyを一度だけloadし、同じimmutableな`LoadedWorkflowExecutionHistory` viewをPhase 37-owned classification processingと、Phase 31-owned persisted-success progression processingへ渡す。Phase 37はterminal status、workflow/current-step/employee、completed-step、event-history linkage、failure-category consistencyをclassification ownerとして扱い、Phase 31はsuccess progression、Phase 25への委譲、returned decision contractを所有する。Phase 31のpublic path-based boundaryは他のproduction caller向けに維持されるが、Phase 38はそのpublic functionを呼ぶことを契約にせず、Phase 31-owned internal processingで同じviewを扱う。Phase 38からPhase 25を直接呼ばない。`persisted_failure`は正しいvalue-level terminal resultとして返し、Phase 31を呼ばず、progressionもstate/event writeも行わない。各処理後にtarget bytesの不変性を確認し、改変時のみ補償復元する。shared viewは重複semantic loadをなくすが、atomic cross-file snapshot、external writerの排除、filesystem locking、CAS、transaction、一般的なconcurrency safetyは保証しない。next-step preparation、completion persistence/finalization、retry/recovery、provider execution、data persistenceを行わない。
+
+Issue #681では、Phase 31のpublic path-based decision boundary、Phase 32のapproved next-step reentry、およびPhase 39/46のpersisted-success preparation routesを削除した。以下のPhase 31/32/39/46の記述は旧公開契約の開発履歴であり、現行APIを示さない。現在のpersisted-success progressionはPhase 38 canonical routeだけを通る。独立したPhase 145 preparation routeも同じPhase 38 routeをcompletion-disabled modeで通り、Artifact が既に durable であることを確認する。Artifact 不足時は作成せず、decision や prepared step を返さない。
+
+Persisted Execution Outcome Routing Reentry Boundary（Phase 38）は`workflow`、`state_path`、`events_path`の3 business inputsと、Artifact 完成を許可するかを指定する keyword-only routing policy を受ける。1回のPhase 38 invocationでstrict historyを一度だけloadし、同じimmutableな`LoadedWorkflowExecutionHistory` viewをPhase 37-owned classification processingと、Phase 31-owned persisted-success progression processingへ渡す。Phase 37はterminal status、workflow/current-step/employee、completed-step、event-history linkage、failure-category consistencyをclassification ownerとして扱い、Phase 31はsuccess progression、Phase 25への委譲、returned decision contractを所有する。Phase 31の旧 public path-based boundaryは削除済みであり、Phase 38からのみRun-bound persisted progressionを公開する。Phase 38からPhase 25を直接呼ばない。completion-enabled route は Artifact owner に authoritative evidence からの不足 Artifact 完成を許し、その durable completion 後にだけ decision を返す。read-only caller は completion を無効にし、既存 Artifact と lineage を検証する。required Artifact が欠けていれば Artifact を作成せず、decision も返さない。どちらの mode も state/events を変更しない。`persisted_failure`は正しいvalue-level terminal resultとして返し、Phase 31を呼ばずprogressionもしない。各処理後にstate/event target bytesの不変性を確認し、改変時のみ補償復元する。shared viewは重複semantic loadをなくすが、atomic cross-file snapshot、external writerの排除、filesystem locking、CAS、transaction、一般的なconcurrency safetyは保証しない。next-step preparation、completion persistence/finalization、retry/recovery、provider execution、data persistenceを行わない。
 
 Persisted Success Preparation Routing Reentry Boundary（Phase 39）は、caller suppliedな正確なPhase 31 decisionを明示targetに対して再判定し、全fieldを照合するread-only boundaryである。`prepare_next_step`だけをcaller supplied approval/employeeとともにPhase 32へ一度委譲して同じprepared-step objectを返し、`workflow_complete`はPhase 32を呼ばず同じdecision objectを返す。approval作成、prepared-step execution、running-state persistence、completion persistence/finalization、retry、provider execution、data persistenceを行わない。
 
@@ -1453,11 +1466,11 @@ Phase 38 owns committed classification and persisted-success progression.
 
 ## Phase 145: Progression-to-Approved Preparation Cycle Handoff Chain Bridge Outer-Chain Reentry Continuation Boundary
 
-Phase 145は、canonical Phase 38のexact `WorkflowProgressionDecision(prepare_next_step)`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるouter-chain boundaryである。prepare routeでは、exact workflow/step models、regular targets、current step index `>= 1`（workflow step 1 onward; historical Phase-position lower bounds are removed）、current/next/reason linkage、completed-step prefix、canonical Phase 38 provenanceのsucceeded predecessor history、immediate predecessor provider=`"openai"`、terminal event linkage（terminal provider=`"openai"`、response_id non-empty、request_id `None`またはnon-empty、success `output_text`はexact built-in `str`でemptyも許容）を再検証する。検証後、公開Phase 137 `route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_reentry_continuation_boundary()`へcanonical six-argument order `(result, workflow, approval, employee, state_path, events_path)`でexactly once委譲し、返却されたexact `PreparedWorkflowStep`を再検証して返す。正常経路では両targetをbyte-for-byte不変に保つ。
+Phase 145は、canonical Phase 38のexact `WorkflowProgressionDecision(prepare_next_step)`、`WorkflowProgressionDecision(workflow_complete)`、または`PersistedExecutionOutcome(persisted_failure)`を受けるouter-chain boundaryである。prepare routeでは、exact workflow/step models、regular targets、current step index `>= 1`（workflow step 1 onward; historical Phase-position lower bounds are removed）、current/next/reason linkage、completed-step prefix、canonical Phase 38 provenanceのsucceeded predecessor history、immediate predecessor provider=`"openai"`、terminal event linkage（terminal provider=`"openai"`、response_id non-empty、request_id `None`またはnon-empty、success `output_text`はexact built-in `str`でemptyも許容）を再検証する。さらに同じcanonical Phase 38 routeを`allow_artifact_completion=False`で呼び、supplied decisionとの一致とrequired Artifactのdurable completionを確認する。Artifact が欠けていれば fail closed し、Artifact を作成せず `PreparedWorkflowStep` も返さない。確認後に既存の承認済み next-step preparation owner を呼び、exact `PreparedWorkflowStep`を再検証して返す。正常経路ではRun namespaceとstate/event targetsを変更しない。
 
-`workflow_complete`と`persisted_failure`はPhase 137を呼ばず、terminal state/historyを検証して同じobjectを返すunchanged zero-call stop routeである。stop routeは`minimum_index=1`を受理し、non-openai terminal providerとsucceeded predecessorのexact built-in `str output_text == ""`を許容するが、workflow_completeの最終terminal succeeded eventの`output_text` non-empty契約とpersisted-failure terminal semanticsは維持する。
+`workflow_complete`と`persisted_failure`もPhase 38の同じcompletion-disabled routeで再検証し、terminal state/historyとrequired Artifactを確認してから同じobjectを返すunchanged stop routeである。Artifact 不足時はstop resultも返さない。stop routeは`minimum_index=1`を受理し、non-openai terminal providerとsucceeded predecessorのexact built-in `str output_text == ""`を許容するが、workflow_completeの最終terminal succeeded eventの`output_text` non-empty契約とpersisted-failure terminal semanticsは維持する。
 
-Phase 145自身はprogression logicを重複実装しない。public Phase 137をexactly once呼ぶことで、明示的に認可された1回のprogression-to-preparation handoffを実行する。Phase 130/138/144のpublic route identifier、`._validate_`、`._top`、`._raise`は使用しない。Phase 145はPhase 138や他の後続phaseを直接呼ばず、provider、network、paid API、external tool、credential、transport、start-state persistence、retry、自動継続を実行しない。safe dependency error（Phase 137 error）はsuccessful compensation後もidentityを保持し、unexpected error、malformed return、target mutationはdetail-safeに分類して両targetを補償復元する。復元失敗は`dependency_rollback`、retryはない。Focused testsはinjected Phase 137 fakesのみを使用し、real provider、network、paid API、external tool、credential、transportを実行しない。
+Phase 145自身はprogression logicやArtifact gateを重複実装しない。canonical Phase 38にdecisionと既存Artifactの検証を委ね、その結果が一致した場合に限って承認済み preparation ownerへ進む。Artifact を作成しないため、通常経路のようなRun namespace writeはない。Phase 130/138/144の旧public route identifier、`._validate_`、`._top`、`._raise`は使用しない。Phase 145はprovider、network、paid API、external tool、credential、transport、start-state persistence、retry、自動継続を実行しない。unexpected error、malformed return、target mutationはdetail-safeに分類してstate/event targetsを補償復元する。復元失敗は`dependency_rollback`、retryはない。
 
 ```text
 canonical Phase 38
@@ -1465,12 +1478,13 @@ WorkflowProgressionDecision(prepare_next_step) | workflow_complete | persisted_f
     ↓
 Phase 145 progression-to-approved-preparation cycle handoff chain bridge outer-chain reentry continuation boundary
 prepare_next_step (current_step_index >= 1, canonical Phase 38 provenance; existing compatibility thresholds preserved)
-    → Phase 137 exactly once in canonical six-argument order
+    → Phase 38 completion-disabled validation; required Artifact must already be durable
+    → existing approved next-step preparation owner
     → exact PreparedWorkflowStep
 workflow_complete | persisted_failure
-    → unchanged zero-call stop
+    → Phase 38 completion-disabled validation → unchanged stop
     ↓
-Phase 138 (future explicit caller action; not called by Phase 145)
+later explicit approved continuation
 ```
 
 ## Phase 146: Prepared-Step Start Cycle Handoff Chain Bridge Outer-Chain Reentry Continuation Boundary
@@ -3650,11 +3664,14 @@ Persisted `ready` and `running` states are rejected by Phase 38's canonical
 Phase 37 classification before Phase 192. A persisted `running` state does not prove whether an
 external provider side effect completed before process death, so automatic
 replay could duplicate execution; explicit persisted-running boundaries
-remain separate. Phase 37, Phase 38, and Phase 31 are read-only owners.
-Once Phase 192 begins, Phase 192/190 and lower boundaries own later durable
-state/event changes. Phase 212 never restores the pre-resume snapshot after
-that ownership boundary, even when the lower dependency raises or returns a
-malformed result.
+remain separate. Phase 37 classification and Phase 31 decision derivation are
+read-only. Phase 38 can additionally persist a required Artifact from
+authoritative evidence when completion is explicitly enabled; read-only
+callers disable that completion and fail closed if the Artifact is missing.
+Phase 38 never mutates state/events. Once Phase 192 begins, Phase 192/190 and
+lower boundaries own later durable state/event changes. Phase 212 never
+restores the pre-resume snapshot after that ownership boundary, even when the
+lower dependency raises or returns a malformed result.
 
 The Phase-212 focused suite contains 14 focused tests and uses only
 deterministic synthetic transports. No context or approval generation,
@@ -3680,15 +3697,21 @@ CLI static/public request construction
   -> operator returns exact expected identity + fingerprint
   -> explicit approval construction
   -> start: Phase210 + ()
-  -> continue: read-only Phase38 canonical classification + routing, then Phase212 + (one context,)
+  -> continue preview: Phase38 canonical classification + routing (Artifact completion disabled)
+  -> continue execute: Phase38 canonical classification + Artifact completion, then Phase212 + (one context,)
   -> STOP
 ```
 
 Both commands require explicit `--state-path` and `--events-path`. Preview mode
 rebuilds the selected step from validated workflow and employee definitions and
-prints only deterministic, safe metadata. It writes no state or events, loads
-no `OPENAI_API_KEY`, creates no approval object, and calls no provider
-transport.
+prints only deterministic, safe metadata. A persisted continuation preview
+checks that required Artifacts already exist but cannot create them; if one is
+missing it fails closed. Preview writes no file in the Run namespace (including
+state, events, or Artifacts), loads no `OPENAI_API_KEY`, creates no approval
+object, and calls no provider transport. The `workflows result` command uses the
+same read-only Phase 38 mode and also fails closed when a required Artifact is
+missing. Normal continuation enables Artifact completion so the required
+durable record exists before preparation or progression is exposed.
 
 An execution route requires both preparation and paid-execution approvals,
 caller-supplied non-empty approval identity (`--approved-by` and
@@ -3702,8 +3725,9 @@ independently prevents execution after the persisted terminal route becomes
 stale between preview and execution.
 
 `start` constructs an `ApprovedWorkflowBootstrapContext` and calls Phase 210
-with the exact empty continuation tuple. `continue` first calls the narrowed
-read-only Phase 38 classification-and-routing boundary on every invocation.
+with the exact empty continuation tuple. `continue` first calls the canonical
+Phase 38 classification-and-routing boundary on every invocation, enabling
+Artifact completion only for normal execution and disabling it for preview.
 Terminal persisted failure and workflow completion stop without future approval,
 key, or transport;
 only `prepare_next_step` constructs one
@@ -3794,8 +3818,8 @@ classificationとprogression routingのcanonical composition ownerである。
 Phase38は1回のrouting invocationでstrict `load_workflow_execution_history`を
 一度だけ呼び、同じimmutableなloaded viewをPhase37-owned classification
 processingとPhase31-owned success progression processingで共有する。Phase31の
-public path-based boundaryは他のproduction caller向けに維持されるが、Phase38の
-shared-history compositionが既存public functionを必ず呼ぶという契約ではない。
+旧 public path-based boundaryは廃止され、Phase38 canonical routeだけがRun-bound
+persisted progressionを公開する。
 Phase31-owned internal processingがPhase25 delegationとdecision contractを所有し、
 Phase38からPhase25を直接呼ばない。result CLIはPhase37 outcomeを事前に構築せず、
 step数やcompleted listから`prepare_next_step` / `workflow_complete`を手動推論しない。
@@ -3925,9 +3949,14 @@ and before provider execution. No approval is refreshed and no retry, replay,
 or automatic continuation is introduced; state/events remain byte-for-byte
 unchanged on this rejection.
 
-Persisted `continue --preview-only` therefore exposes the deterministic facts
-and intentionally has a new fingerprint because the facts are now part of the
-approved request. Terminal post-completion facts and publication-readiness
+Persisted `continue --preview-only` exposes the deterministic facts and
+intentionally has a new fingerprint because the facts are now part of the
+approved request. Its canonical Phase 38 check is read-only across the complete
+Run namespace; if a required Artifact is missing, preview fails closed without
+creating it or returning progression. `workflows result` applies the same
+no-create gate and makes no Run-namespace mutation. Ordinary continuation may
+complete a missing Artifact from durable execution evidence before returning a
+progression decision. Terminal post-completion facts and publication-readiness
 assessment are implemented by Phase 261.
 
 ## Phase 261: Post-terminal facts and publication-readiness core
@@ -3959,10 +3988,12 @@ for `workflow_complete` is still `insufficient_evidence` with
 `insufficient_evidence` with `execution_not_workflow_complete`. No Phase 261
 path returns `ready`, because structured publication claims are deferred.
 Reason codes and both new models have deterministic canonical compact UTF-8
-JSON serializers/digests. No readiness event or sidecar is persisted, and the
-existing `workflows result` contract remains unchanged. Durable readiness
-audit and human-approved regeneration remain future work; the explicit
-structured claim contract is added by Phase 262 below.
+JSON serializers/digests. No readiness event or sidecar is persisted. The
+`workflows result` output shape remains unchanged, while the command now uses
+Phase 38's no-create Artifact gate: it does not mutate the Run namespace and
+fails closed if required Artifact evidence is missing. Durable readiness audit
+and human-approved regeneration remain future work; the explicit structured
+claim contract is added by Phase 262 below.
 
 ## Phase 262: Structured publication claim contract and verified readiness
 

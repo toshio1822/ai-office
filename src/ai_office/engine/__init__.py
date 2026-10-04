@@ -1,11 +1,5 @@
 """Deterministic workflow execution engine."""
 
-from ai_office.engine.approved_next_step_reentry import (
-    ApprovedNextStepReentryCompatibilityError,
-    ApprovedNextStepReentryError,
-    ApprovedNextStepReentryFailureDetail,
-    prepare_approved_next_step_reentry,
-)
 from ai_office.engine.approved_workflow_continuation_cycle import (
     ApprovedWorkflowContinuationCycleCompatibilityError,
     ApprovedWorkflowContinuationCycleError,
@@ -27,6 +21,21 @@ from ai_office.engine.approved_workflow_fresh_start import (
     FreshWorkflowBootstrapFailureDetail,
     InitialStepPreparationApproval,
     route_approved_workflow_fresh_start,
+)
+from ai_office.engine.artifact import (
+    WorkflowArtifact,
+    WorkflowArtifactConflictError,
+    WorkflowArtifactError,
+    WorkflowArtifactExportConflictError,
+    WorkflowArtifactExportError,
+    WorkflowArtifactExportReceipt,
+    WorkflowArtifactLoadError,
+    WorkflowArtifactPersistenceError,
+    export_run_artifact,
+    list_run_artifacts,
+    read_run_artifact,
+    workflow_artifact_canonical_bytes,
+    workflow_artifact_path,
 )
 from ai_office.engine.bounded_approved_workflow_runner import (
     ApprovedWorkflowContinuationContext,
@@ -383,7 +392,6 @@ from ai_office.engine.next_step_preparation import (
     NextStepPreparationError,
     NextStepPreparationFailureDetail,
     PreparedWorkflowStep,
-    prepare_approved_next_workflow_step,
 )
 from ai_office.engine.persisted_continuation_runtime_facts import (
     PersistedContinuationRuntimeFactsError,
@@ -408,17 +416,10 @@ from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_out
     PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail,
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.engine.persisted_success_preparation_routing_reentry import (
-    PersistedSuccessPreparationRoutingCompatibilityError,
-    PersistedSuccessPreparationRoutingError,
-    PersistedSuccessPreparationRoutingFailureDetail,
-    route_persisted_success_progression_reentry,
-)
 from ai_office.engine.persisted_success_progression import (
     PersistedSuccessProgressionCompatibilityError,
     PersistedSuccessProgressionError,
     PersistedSuccessProgressionFailureDetail,
-    decide_persisted_success_progression,
 )
 from ai_office.engine.persisted_terminal_workflow_bounded_runner import (
     PersistedTerminalWorkflowBoundedRunnerClassification,
@@ -484,12 +485,6 @@ from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError,
     PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail,
     route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-)
-from ai_office.engine.progression_preparation_routing_reentry import (
-    ProgressionPreparationRoutingCompatibilityError,
-    ProgressionPreparationRoutingError,
-    ProgressionPreparationRoutingFailureDetail,
-    route_progression_preparation_reentry,
 )
 from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (  # noqa: E501
     ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError,
@@ -776,10 +771,6 @@ __all__ = [
     "ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError",
     "ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationFailureDetail",
     "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
-    "ApprovedNextStepReentryCompatibilityError",
-    "ApprovedNextStepReentryError",
-    "ApprovedNextStepReentryFailureDetail",
-    "prepare_approved_next_step_reentry",
     "EmployeeDefinitionSnapshot",
     "ToolContractSnapshot",
     "ToolParameterSnapshot",
@@ -792,6 +783,19 @@ __all__ = [
     "WorkflowRunManifestPersistenceError",
     "WorkflowRunManifestStore",
     "WorkflowStepSnapshot",
+    "WorkflowArtifact",
+    "WorkflowArtifactConflictError",
+    "WorkflowArtifactError",
+    "WorkflowArtifactExportConflictError",
+    "WorkflowArtifactExportError",
+    "WorkflowArtifactExportReceipt",
+    "WorkflowArtifactLoadError",
+    "WorkflowArtifactPersistenceError",
+    "export_run_artifact",
+    "list_run_artifacts",
+    "read_run_artifact",
+    "workflow_artifact_canonical_bytes",
+    "workflow_artifact_path",
     "build_workflow_run_manifest",
     "create_workflow_run_manifest",
     "employee_definitions_from_run_manifest",
@@ -863,7 +867,6 @@ __all__ = [
     "NextStepPreparationError",
     "NextStepPreparationFailureDetail",
     "PreparedWorkflowStep",
-    "prepare_approved_next_workflow_step",
     "PreparedStepExecutionStart",
     "PreparedStepExecutionStartCompatibilityError",
     "PreparedStepExecutionStartError",
@@ -1316,15 +1319,6 @@ __all__ = [
     "PersistedSuccessProgressionCompatibilityError",
     "PersistedSuccessProgressionError",
     "PersistedSuccessProgressionFailureDetail",
-    "decide_persisted_success_progression",
-    "PersistedSuccessPreparationRoutingCompatibilityError",
-    "PersistedSuccessPreparationRoutingError",
-    "PersistedSuccessPreparationRoutingFailureDetail",
-    "route_persisted_success_progression_reentry",
-    "ProgressionPreparationRoutingCompatibilityError",
-    "ProgressionPreparationRoutingError",
-    "ProgressionPreparationRoutingFailureDetail",
-    "route_progression_preparation_reentry",
     "PersistedExecutionOutcome",
     "PersistedExecutionOutcomeCompatibilityError",
     "PersistedExecutionOutcomeError",
