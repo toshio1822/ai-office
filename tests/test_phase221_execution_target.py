@@ -11,6 +11,8 @@ from typer.testing import CliRunner
 import ai_office.cli as cli_module
 import ai_office.providers.openai.responses_transport as responses_transport
 from ai_office.cli import app
+from ai_office.definitions.employee import EmployeeDefinition
+from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.execution_target import (
     DIRECT_OPENAI_EXECUTION_TARGET,
     LOCAL_OMNIROUTE_EXECUTION_TARGET,
@@ -35,6 +37,7 @@ from ai_office.providers.openai import (
     load_api_key_for_execution_target,
     send_openai_responses_http_request,
 )
+from tests._execution_evidence_test_support import create_test_execution_evidence
 
 runner = CliRunner()
 
@@ -92,6 +95,46 @@ def omni_approval(
         approved_by="operator",
         approval_id="approval-omni",
         execution_target=LOCAL_OMNIROUTE_EXECUTION_TARGET,
+    )
+
+
+def execution_evidence_fixture(
+    tmp_path: Path,
+    invocation: ModelInvocationRequest,
+):
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "phase221-provider-workflow",
+            "name": "Provider Workflow",
+            "description": "Run-bound provider test.",
+            "steps": [
+                {
+                    "id": "provider-step",
+                    "name": "Provider Step",
+                    "employee": "provider-employee",
+                    "instructions": "Run provider test.",
+                    "business_approval_required": False,
+                }
+            ],
+        }
+    )
+    employee = EmployeeDefinition(
+        id="provider-employee",
+        name="Provider Employee",
+        role="Provider test",
+        instructions="Run provider test.",
+        model=invocation.model,
+        allowed_tools=[],
+    )
+    return create_test_execution_evidence(
+        tmp_path,
+        run_id="phase221-provider-run",
+        workflow=workflow,
+        employees=(employee,),
+        request=invocation,
+        resolved_tools=(),
+        step_id="provider-step",
+        target=LOCAL_OMNIROUTE_EXECUTION_TARGET,
     )
 
 
@@ -364,8 +407,10 @@ def test_remote_or_confusing_plaintext_http_is_rejected_before_connection(
     assert created is False
 
 
-def test_omniroute_execution_reuses_responses_stack_and_preserves_alias() -> None:
-    invocation = request("openClaw")
+def test_omniroute_execution_reuses_responses_stack_and_preserves_alias(
+    tmp_path: Path,
+) -> None:
+    fixture = execution_evidence_fixture(tmp_path, request("openClaw"))
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
 
     def transport(
@@ -375,11 +420,12 @@ def test_omniroute_execution_reuses_responses_stack_and_preserves_alias() -> Non
         return raw_response()
 
     result = execute_openai_model_invocation(
-        invocation,
+        fixture.request,
         (),
         api_key(),
-        omni_approval(invocation),
+        fixture.approval,
         transport=transport,
+        execution_evidence=fixture.context,
     )
 
     assert result.provider == "omniroute"  # type: ignore[union-attr]
@@ -390,14 +436,17 @@ def test_omniroute_execution_reuses_responses_stack_and_preserves_alias() -> Non
     assert "synthetic-omniroute-secret" not in repr(result)
 
 
-def test_omniroute_api_failure_keeps_truthful_provider_identity() -> None:
-    invocation = request()
+def test_omniroute_api_failure_keeps_truthful_provider_identity(
+    tmp_path: Path,
+) -> None:
+    fixture = execution_evidence_fixture(tmp_path, request())
     result = execute_openai_model_invocation(
-        invocation,
+        fixture.request,
         (),
         api_key(),
-        omni_approval(invocation),
+        fixture.approval,
         transport=lambda _: raw_response(500),
+        execution_evidence=fixture.context,
     )
 
     assert result.provider == "omniroute"  # type: ignore[union-attr]

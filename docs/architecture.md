@@ -109,7 +109,50 @@ approval value はこの gate を通過したことを下位 owner に伝える�
 および identity を分離して要求し、preview は Business Approval の要否、Run/step
 identity、Execution Approval の request fingerprint を表示する。`workflows
 approval-evidence` は Run-bound evidence を read-only に再構成する inspection path である。
-Provider attempt、raw response、artifact、Recovery execution はこの Milestone の対象外である。
+
+## Current provider execution evidence (Milestone 3)
+
+2026年10月3日時点で、Run-bound provider execution は同じ
+`WorkflowRunManifestStore` の namespace に、attempt、raw response、normalized result の
+immutable sidecar を保存する。ファイル名は次の identity-derived 形式である。
+
+```text
+<run-id>.execution-attempt.<attempt-id>.json
+<run-id>.execution-raw-response.<attempt-id>.json
+<run-id>.execution-normalized-result.<attempt-id>.json
+```
+
+Attempt claim は exact invocation、Run/Manifest、workflow/step/employee、provider と
+non-secret execution target、既存の Execution Approval ID/digest、system/task/tool/request
+の digest を束縛する。claim は認証前の request template から構築され、認証情報、API key、
+Authorization header/value は保存しない。既存 Milestone 2 Execution Approval evidence が
+provider authorization の唯一の durable authority であり、execution evidence はその ID と
+digest を参照するだけである。
+
+provider transport の callable に入る前に attempt sidecar を exclusive commit する。
+commit が失敗または結果が曖昧な場合は provider を呼ばず、既存 attempt がある場合は
+Recovery が導入されるまで同じ Run/step の再送を拒否する。transport が返した raw bytes は
+parse/normalize より前に base64、length、SHA-256、HTTP status、許可された safe headers と
+ともに保存する。通常の result/error/CLI inspection は raw body を表示せず、明示的な
+`workflows execution-evidence <run-id>` read-only command は digest、status、category、
+ambiguity、terminal linkage の safe metadata だけを返す。
+
+normalized result sidecar は exact attempt と raw-response digest（raw response がある場合）
+に束縛され、terminal `RuntimeStepEvent` は attempt、normalized result、raw response の
+各 digest を保存する。state/event persistence 後もこれらの linkage を検証できるため、
+最終 step outcome を exact provider attempt まで追跡できる。legacy Run や incomplete sidecar
+から過去の provider 実行を推測して evidence を作ることはしない。
+
+provider transport を所有する実行境界はRun-bound Execution Evidenceを必須とし、request、
+resolved tools、Execution Approval、targetが同じcontextに束縛されない場合はtransportへ
+進めない。request/payload生成などprovider-free処理自体はEvidenceを要求しない。normalized
+resultのprovenanceは作成時に固定され、後付けで別attemptへ変更するAPIは提供しない。
+Run-bound terminal persistenceは参照attempt/result/raw evidenceをauthoritative namespaceから
+再読込し、eventのsemantic outcomeまで一致する場合だけstate/eventを書き込む。forged、
+nonexistent、mismatched、cross-attempt linkageはterminal commitを拒否する。
+
+この Milestone では Recovery Approval、retry/new-attempt、Artifact、provider failover、
+generic event-sourcing framework は実装しない。
 
 
 ## Phase 59: classified persisted outcome routing phase bridge reentry

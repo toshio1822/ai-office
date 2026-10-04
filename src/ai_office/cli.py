@@ -51,6 +51,7 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.execution_evidence import inspect_run_execution_evidence
 from ai_office.execution_target import (
     ModelExecutionTarget,
     ModelExecutionTargetError,
@@ -833,6 +834,28 @@ def approval_evidence_workflow(
             "approvals": [asdict(item) for item in evidence],
             "manifest_digest": manifest.digest,
             "operation": "approval-evidence",
+            "run_id": manifest.run_id,
+        }
+    )
+
+
+@workflows_app.command("execution-evidence")
+def execution_evidence_workflow(
+    run_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Inspect safe, strict execution evidence for one Run without execution."""
+    store = _load_run_store_or_exit(run_store)
+    manifest = _load_run_manifest_or_exit(store, run_id)
+    try:
+        evidence = inspect_run_execution_evidence(store.root, run_id)
+    except Exception:
+        _workflow_cli_error("Run execution evidence is invalid or unavailable")
+    _emit_json(
+        {
+            "attempts": [asdict(item) for item in evidence],
+            "manifest_digest": manifest.digest,
+            "operation": "execution-evidence",
             "run_id": manifest.run_id,
         }
     )

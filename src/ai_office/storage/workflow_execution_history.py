@@ -57,6 +57,15 @@ _RUN_BINDING_KEYS = frozenset({"run_id", "manifest_digest"})
 _RESPONSE_DIAGNOSTICS_KEYS = frozenset(
     {"status_code", "content_type", "body_length", "body_kind"}
 )
+_EXECUTION_EVIDENCE_KEYS = frozenset(
+    {
+        "execution_attempt_id",
+        "execution_attempt_evidence_sha256",
+        "normalized_result_evidence_sha256",
+        "raw_response_evidence_sha256",
+        "raw_response_body_sha256",
+    }
+)
 _STATUSES = frozenset({"ready", "running", "succeeded", "failed"})
 _EVENT_TYPES = frozenset({"step_succeeded", "step_failed"})
 _FAILURE_CATEGORIES = frozenset(
@@ -229,6 +238,10 @@ def parse_runtime_step_event(
         _EVENT_KEYS | {"response_diagnostics"},
         binding_keys,
         binding_keys | {"response_diagnostics"},
+        _EVENT_KEYS | _EXECUTION_EVIDENCE_KEYS,
+        (_EVENT_KEYS | {"response_diagnostics"}) | _EXECUTION_EVIDENCE_KEYS,
+        binding_keys | _EXECUTION_EVIDENCE_KEYS,
+        (binding_keys | {"response_diagnostics"}) | _EXECUTION_EVIDENCE_KEYS,
     }:
         raise WorkflowExecutionDataError("events_parse")
     data = value
@@ -236,6 +249,7 @@ def parse_runtime_step_event(
     effective_binding = _require_expected_binding(
         persisted_binding, binding, "events_parse"
     )
+    execution_evidence = _parse_execution_evidence(data, effective_binding)
     event_type = _require_member(data["event_type"], _EVENT_TYPES, "events_parse")
     try:
         event = RuntimeStepEvent(
@@ -266,6 +280,7 @@ def parse_runtime_step_event(
             response_diagnostics=_parse_response_diagnostics(
                 data.get("response_diagnostics")
             ),
+            **execution_evidence,
             binding=effective_binding,
         )
     except (TypeError, ValueError):
@@ -426,6 +441,43 @@ def _parse_response_diagnostics(
         body_length=body_length,
         body_kind=body_kind,  # type: ignore[arg-type]
     )
+
+
+def _parse_execution_evidence(
+    data: dict[str, Any], binding: WorkflowRunBinding | None
+) -> dict[str, str | None]:
+    if not any(key in data for key in _EXECUTION_EVIDENCE_KEYS):
+        return {}
+    if binding is None:
+        raise WorkflowExecutionDataError("events_parse")
+    values = {
+        key: data[key]
+        for key in _EXECUTION_EVIDENCE_KEYS
+    }
+    required = (
+        "execution_attempt_id",
+        "execution_attempt_evidence_sha256",
+        "normalized_result_evidence_sha256",
+    )
+    if any(
+        not isinstance(values[key], str)
+        or len(values[key]) != 64
+        or any(character not in "0123456789abcdef" for character in values[key])
+        for key in required
+    ):
+        raise WorkflowExecutionDataError("events_parse")
+    raw_evidence = values["raw_response_evidence_sha256"]
+    raw_body = values["raw_response_body_sha256"]
+    if (raw_evidence is None) != (raw_body is None):
+        raise WorkflowExecutionDataError("events_parse")
+    for value in (raw_evidence, raw_body):
+        if value is not None and (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise WorkflowExecutionDataError("events_parse")
+    return values
 
 
 def _validate_history_consistency(

@@ -2,16 +2,19 @@
 
 import json
 from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 from typing import get_args
 
 import pytest
 from pydantic import SecretStr
 
+from ai_office.definitions.employee import EmployeeDefinition
+from ai_office.definitions.workflow import WorkflowDefinition
+from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import (
     ModelInvocationFailure,
     ModelInvocationRequest,
     ModelInvocationSuccess,
-    approve_model_invocation_execution,
 )
 from ai_office.planning import StepExecutionRequest
 from ai_office.providers.openai import (
@@ -28,6 +31,7 @@ from ai_office.runtime import (
     execute_openai_runtime_step,
 )
 from ai_office.tools import ToolDefinition, ToolParameterDefinition
+from tests._execution_evidence_test_support import create_test_execution_evidence
 
 
 def step_request(
@@ -64,7 +68,7 @@ def invocation_request(
     )
 
 
-def tool(name: str = "search") -> ToolDefinition:
+def tool(name: str = "web_search") -> ToolDefinition:
     return ToolDefinition(
         name=name,
         description=f"{name} description",
@@ -76,23 +80,75 @@ def tool(name: str = "search") -> ToolDefinition:
 
 def execution_input(
     *,
+    root: Path,
     step: StepExecutionRequest | None = None,
     invocation: ModelInvocationRequest | None = None,
     tools: tuple[ToolDefinition, ...] = (),
 ) -> StepRuntimeExecutionInput:
     value_step = step or step_request(allowed_tools=tuple(item.name for item in tools))
-    value_invocation = invocation or invocation_request(value_step)
+    tool_names = tuple(item.name for item in tools)
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "id": value_step.workflow_id,
+            "name": value_step.workflow_name,
+            "description": "runtime execution evidence fixture",
+            "steps": [
+                {
+                    "id": value_step.step_id,
+                    "name": value_step.step_name,
+                    "employee": value_step.employee_id,
+                    "instructions": value_step.step_instructions,
+                    "business_approval_required": False,
+                }
+            ],
+        }
+    )
+    employee = EmployeeDefinition(
+        id=value_step.employee_id,
+        name=value_step.employee_name,
+        role=value_step.employee_role,
+        instructions=value_step.employee_instructions,
+        model=value_step.model,
+        allowed_tools=list(dict.fromkeys(tool_names)),
+    )
+    source_request = ModelInvocationRequest(
+        model=value_step.model,
+        system_instructions=value_step.employee_instructions,
+        task_instructions=value_step.step_instructions,
+        allowed_tools=tool_names,
+    )
+    evidence = create_test_execution_evidence(
+        root,
+        run_id=f"runtime-execution-{root.name}",
+        workflow=workflow,
+        employees=(employee,),
+        request=source_request,
+        resolved_tools=tools,
+        step_id=value_step.step_id,
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+        approval_id=f"approval-{root.name}",
+    )
+    bound_step = value_step.model_copy(
+        update={
+            "run_id": evidence.request.run_id,
+            "manifest_digest": evidence.request.manifest_digest,
+        }
+    )
+    value_invocation = invocation or ModelInvocationRequest(
+        model=value_step.model,
+        system_instructions=value_step.employee_instructions,
+        task_instructions=value_step.step_instructions,
+        allowed_tools=value_step.allowed_tools,
+        run_id=evidence.request.run_id,
+        manifest_digest=evidence.request.manifest_digest,
+        run_input=evidence.request.run_input,
+    )
     return StepRuntimeExecutionInput(
-        step_request=value_step,
+        step_request=bound_step,
         invocation_request=value_invocation,
         resolved_tools=tools,
-        approval=approve_model_invocation_execution(
-            value_invocation,
-            tools,
-            provider="openai",
-            approved_by="reviewer",
-            approval_id="approval-123",
-        ),
+        approval=evidence.approval,
+        execution_evidence=evidence.context,
     )
 
 
@@ -118,7 +174,9 @@ def success_payload(content: object) -> dict[str, object]:
     }
 
 
-def test_runtime_models_are_immutable_and_preserve_exact_identity_and_result() -> None:
+def test_runtime_models_are_immutable_and_preserve_exact_identity_and_result(
+    tmp_path: Path,
+) -> None:
     result = ModelInvocationSuccess(
         provider="openai",
         response_id="response",
@@ -149,14 +207,17 @@ def test_runtime_models_are_immutable_and_preserve_exact_identity_and_result() -
     with pytest.raises(FrozenInstanceError):
         failure.employee_id = "other"  # type: ignore[misc]
 
-    value = execution_input()
+    value = execution_input(root=tmp_path)
     assert "api_key" not in value.__dataclass_fields__
     with pytest.raises(FrozenInstanceError):
         value.approval = value.approval  # type: ignore[misc]
 
 
-def test_success_and_empty_text_are_wrapped_without_mutating_inputs() -> None:
-    value = execution_input()
+def test_success_and_empty_text_are_wrapped_without_mutating_inputs(
+    tmp_path: Path,
+) -> None:
+    value = execution_input(root=tmp_path)
+    original_invocation = value.invocation_request
     calls = 0
 
     def transport(
@@ -175,11 +236,15 @@ def test_success_and_empty_text_are_wrapped_without_mutating_inputs() -> None:
     assert result.employee_id == "employee"
     assert result.invocation_result.text == ""
     assert calls == 1
-    assert value == execution_input()
+    assert value.invocation_request == original_invocation
 
 
-def test_duplicate_resolved_tools_preserve_order_through_one_transport_call() -> None:
-    value = execution_input(tools=(tool("search"), tool("search")))
+def test_duplicate_resolved_tools_preserve_order_through_one_transport_call(
+    tmp_path: Path,
+) -> None:
+    value = execution_input(
+        root=tmp_path, tools=(tool("web_search"), tool("web_search"))
+    )
     requests: list[OpenAIResponsesAuthenticatedHttpRequest] = []
 
     def transport(
@@ -192,8 +257,8 @@ def test_duplicate_resolved_tools_preserve_order_through_one_transport_call() ->
 
     assert isinstance(result, StepRuntimeExecutionSuccess)
     assert len(requests) == 1
-    assert requests[0].body.count('"name":"search"') == 2
-    assert value.resolved_tools == (tool("search"), tool("search"))
+    assert requests[0].body.count('"name":"web_search"') == 2
+    assert value.resolved_tools == (tool("web_search"), tool("web_search"))
 
 
 @pytest.mark.parametrize(
@@ -228,11 +293,12 @@ def test_duplicate_resolved_tools_preserve_order_through_one_transport_call() ->
     ],
 )
 def test_provider_failures_are_wrapped_without_reinterpretation(
+    tmp_path: Path,
     transport: object,
     category: str,
 ) -> None:
     result = execute_openai_runtime_step(
-        execution_input(),
+        execution_input(root=tmp_path),
         api_key(),
         transport=transport,  # type: ignore[arg-type]
     )
@@ -243,13 +309,15 @@ def test_provider_failures_are_wrapped_without_reinterpretation(
     assert result.step_index == 1
 
 
-def test_rejected_approval_and_resolved_tool_mismatch_preserve_provider_guards() -> (
-    None
-):
+def test_rejected_approval_and_resolved_tool_mismatch_preserve_provider_guards(
+    tmp_path: Path,
+) -> None:
+    valid = execution_input(root=tmp_path)
     approval_rejected = replace(
-        execution_input(), approval=replace(execution_input().approval, approved=False)
+        valid, approval=replace(valid.approval, approved=False)
     )
     mismatch = execution_input(
+        root=tmp_path / "mismatch",
         step=step_request(allowed_tools=("search",)),
         tools=(),
     )
@@ -290,9 +358,10 @@ def test_rejected_approval_and_resolved_tool_mismatch_preserve_provider_guards()
     ],
 )
 def test_cross_model_mismatch_is_safe_invalid_request_before_transport(
+    tmp_path: Path,
     invocation: ModelInvocationRequest,
 ) -> None:
-    value = execution_input(invocation=invocation)
+    value = execution_input(root=tmp_path, invocation=invocation)
     calls = 0
 
     def transport(
@@ -314,10 +383,22 @@ def test_cross_model_mismatch_is_safe_invalid_request_before_transport(
     assert calls == 0
 
 
-def test_arbitrary_transport_exception_is_not_swallowed() -> None:
-    with pytest.raises(RuntimeError, match="unexpected"):
-        execute_openai_runtime_step(
-            execution_input(),
-            api_key(),
-            transport=lambda _: (_ for _ in ()).throw(RuntimeError("unexpected")),
-        )
+def test_transport_uncertainty_is_recorded_and_not_retried(tmp_path: Path) -> None:
+    value = execution_input(root=tmp_path)
+    calls = 0
+
+    def transport(_: OpenAIResponsesAuthenticatedHttpRequest):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("unexpected")
+
+    result = execute_openai_runtime_step(value, api_key(), transport=transport)
+    assert isinstance(result, StepRuntimeExecutionFailure)
+    assert result.invocation_result.category == "transport_error"
+    assert calls == 1
+
+    from ai_office.execution_evidence import ExecutionAttemptAlreadyClaimedError
+
+    with pytest.raises(ExecutionAttemptAlreadyClaimedError):
+        execute_openai_runtime_step(value, api_key(), transport=transport)
+    assert calls == 1

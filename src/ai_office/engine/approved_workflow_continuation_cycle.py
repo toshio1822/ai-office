@@ -15,6 +15,7 @@ from typing import Literal, get_args
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
+from ai_office.execution_evidence import ExecutionEvidenceError
 from ai_office.execution_target import (
     ModelExecutionTargetError,
     execution_target_fingerprint,
@@ -170,7 +171,7 @@ ApprovedWorkflowContinuationCycleFailure = ApprovedWorkflowContinuationCycleErro
 _SAFE_PHASE145_ERRORS = (Phase145BoundaryError,)
 _SAFE_PHASE146_ERRORS = (Phase146BoundaryError,)
 _SAFE_PHASE147_ERRORS = (Phase147BoundaryError,)
-_SAFE_PHASE155_ERRORS = (Phase155BoundaryError,)
+_SAFE_PHASE155_ERRORS = (Phase155BoundaryError, ExecutionEvidenceError)
 # The runtime/progression owner may surface these nested safe errors, which
 # must remain safe to callers without becoming new public injection seams.
 _SAFE_PHASE172_ERRORS = (

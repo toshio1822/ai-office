@@ -25,6 +25,7 @@ from ai_office.engine.publication_regeneration_result import (
     persist_publication_regeneration_result,
     preflight_publication_regeneration_result_path,
 )
+from ai_office.execution_evidence import ExecutionEvidenceContext
 from ai_office.execution_target import ModelExecutionTarget
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
@@ -67,6 +68,7 @@ def execute_and_persist_approved_publication_regeneration(
     resolved_tools: tuple[ToolDefinition, ...],
     inner_approval: ModelInvocationExecutionApproval,
     execution_target: ModelExecutionTarget,
+    execution_evidence: ExecutionEvidenceContext,
     environment: Mapping[str, str] | None = None,
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
 ) -> PublicationRegenerationResultRecord:
@@ -88,6 +90,7 @@ def execute_and_persist_approved_publication_regeneration(
         resolved_tools=resolved_tools,
         inner_approval=inner_approval,
         execution_target=execution_target,
+        execution_evidence=execution_evidence,
         environment=environment,
         transport=transport,
     )

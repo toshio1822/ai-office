@@ -2,10 +2,18 @@
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
 
+from ai_office.definitions.employee import EmployeeDefinition
+from ai_office.definitions.workflow import WorkflowDefinition
+from ai_office.execution_evidence import (
+    ExecutionEvidenceError,
+    list_run_execution_evidence,
+)
+from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationRequest,
@@ -20,6 +28,7 @@ from ai_office.providers.openai import (
     execute_openai_model_invocation,
 )
 from ai_office.tools import ToolDefinition, ToolParameterDefinition
+from tests._execution_evidence_test_support import create_test_execution_evidence
 
 type FakeTransport = Callable[
     [OpenAIResponsesAuthenticatedHttpRequest], OpenAIResponsesRawHttpResponse
@@ -80,7 +89,51 @@ def success_payload(content: object) -> dict[str, object]:
     }
 
 
-def test_success_composes_boundaries_once_and_preserves_exact_output() -> None:
+def evidence_fixture(
+    tmp_path: Path,
+    invocation: ModelInvocationRequest | None = None,
+    resolved_tools: tuple[ToolDefinition, ...] = (),
+):
+    source = request() if invocation is None else invocation
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "provider-test-workflow",
+            "name": "Provider Test Workflow",
+            "description": "Run-bound provider test.",
+            "steps": [
+                {
+                    "id": "provider-step",
+                    "name": "Provider Step",
+                    "employee": "test-employee",
+                    "instructions": "Execute the provider test.",
+                    "business_approval_required": False,
+                }
+            ],
+        }
+    )
+    employee = EmployeeDefinition(
+        id="test-employee",
+        name="Test Employee",
+        role="Provider test",
+        instructions="Execute the provider test.",
+        model=source.model,
+        allowed_tools=list(dict.fromkeys(source.allowed_tools)),
+    )
+    return create_test_execution_evidence(
+        tmp_path,
+        run_id="provider-test-run",
+        workflow=workflow,
+        employees=(employee,),
+        request=source,
+        resolved_tools=resolved_tools,
+        step_id="provider-step",
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+
+
+def test_success_composes_boundaries_once_and_preserves_exact_output(
+    tmp_path: Path,
+) -> None:
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
 
     def transport(
@@ -97,14 +150,17 @@ def test_success_composes_boundaries_once_and_preserves_exact_output() -> None:
             ),
         )
 
-    invocation = request(("search", "search"))
-    resolved_tools = (tool("search"), tool("search"))
+    unbound_invocation = request(("web_search", "web_search"))
+    resolved_tools = (tool("web_search"), tool("web_search"))
+    fixture = evidence_fixture(tmp_path, unbound_invocation, resolved_tools)
+    invocation = fixture.request
     result = execute_openai_model_invocation(
         invocation,
         resolved_tools,
         api_key(),
-        approval(invocation, resolved_tools),
+        fixture.approval,
         transport=transport,
+        execution_evidence=fixture.context,
     )
 
     assert isinstance(result, ModelInvocationSuccess)
@@ -116,19 +172,20 @@ def test_success_composes_boundaries_once_and_preserves_exact_output() -> None:
     assert result.text == " first\n最後 😀"
     assert len(calls) == 1
     assert calls[0].headers[-1] == ("Authorization", "Bearer synthetic-key")
-    assert calls[0].body.count('"name":"search"') == 2
-    assert invocation.allowed_tools == ("search", "search")
-    assert resolved_tools == (tool("search"), tool("search"))
+    assert calls[0].body.count('"name":"web_search"') == 2
+    assert invocation.allowed_tools == ("web_search", "web_search")
+    assert resolved_tools == (tool("web_search"), tool("web_search"))
 
 
-def test_empty_supported_output_text_remains_success() -> None:
-    invocation = request()
+def test_empty_supported_output_text_remains_success(tmp_path: Path) -> None:
+    fixture = evidence_fixture(tmp_path)
     result = execute_openai_model_invocation(
-        invocation,
+        fixture.request,
         (),
         api_key(),
-        approval(invocation, ()),
+        fixture.approval,
         transport=lambda _: raw_response(200, success_payload([])),
+        execution_evidence=fixture.context,
     )
 
     assert isinstance(result, ModelInvocationSuccess)
@@ -136,13 +193,13 @@ def test_empty_supported_output_text_remains_success() -> None:
     assert result.text == ""
 
 
-def test_api_error_is_normalized_as_data() -> None:
-    invocation = request()
+def test_api_error_is_normalized_as_data(tmp_path: Path) -> None:
+    fixture = evidence_fixture(tmp_path)
     result = execute_openai_model_invocation(
-        invocation,
+        fixture.request,
         (),
         api_key(),
-        approval(invocation, ()),
+        fixture.approval,
         transport=lambda _: raw_response(
             429,
             {
@@ -154,6 +211,7 @@ def test_api_error_is_normalized_as_data() -> None:
                 }
             },
         ),
+        execution_evidence=fixture.context,
     )
 
     assert result.category == "api_error"  # type: ignore[union-attr]
@@ -187,17 +245,19 @@ def test_api_error_is_normalized_as_data() -> None:
     ],
 )
 def test_safe_errors_are_normalized(
+    tmp_path: Path,
     transport: FakeTransport,
     expected_category: str,
     expected_message: str,
 ) -> None:
-    invocation = request()
+    fixture = evidence_fixture(tmp_path)
     result = execute_openai_model_invocation(
-        invocation,
+        fixture.request,
         (),
         api_key(),
-        approval(invocation, ()),
+        fixture.approval,
         transport=transport,
+        execution_evidence=fixture.context,
     )
 
     assert result.category == expected_category  # type: ignore[union-attr]
@@ -216,6 +276,7 @@ def test_safe_errors_are_normalized(
     ],
 )
 def test_tool_mismatch_fails_before_transport(
+    tmp_path: Path,
     allowed_tools: tuple[str, ...],
     resolved_tools: tuple[ToolDefinition, ...],
 ) -> None:
@@ -229,12 +290,14 @@ def test_tool_mismatch_fails_before_transport(
         raise AssertionError("transport must not run")
 
     invocation = request(allowed_tools)
+    evidence = evidence_fixture(tmp_path)
     result = execute_openai_model_invocation(
         invocation,
         resolved_tools,
         api_key(),
         approval(invocation, resolved_tools),
         transport=transport,
+        execution_evidence=evidence.context,
     )
 
     assert result.category == "invalid_request"  # type: ignore[union-attr]
@@ -242,7 +305,43 @@ def test_tool_mismatch_fails_before_transport(
     assert calls == 0
 
 
-def test_rejected_approval_fails_before_transport() -> None:
+def test_execution_evidence_must_match_exact_approval_before_transport(
+    tmp_path: Path,
+) -> None:
+    fixture = evidence_fixture(tmp_path)
+    alternate_approval = approve_model_invocation_execution(
+        fixture.request,
+        (),
+        provider="openai",
+        approved_by="different-reviewer",
+        approval_id="different-approval",
+        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    calls = 0
+
+    def transport(
+        _: OpenAIResponsesAuthenticatedHttpRequest,
+    ) -> OpenAIResponsesRawHttpResponse:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("transport must not run")
+
+    with pytest.raises(ExecutionEvidenceError):
+        execute_openai_model_invocation(
+            fixture.request,
+            (),
+            api_key(),
+            alternate_approval,
+            transport=transport,
+            execution_evidence=fixture.context,
+        )
+    assert calls == 0
+    assert list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    ) == ()
+
+
+def test_rejected_approval_fails_before_transport(tmp_path: Path) -> None:
     invocation = request()
     calls = 0
 
@@ -259,6 +358,7 @@ def test_rejected_approval_fails_before_transport() -> None:
         api_key(),
         ModelInvocationExecutionApproval(False, "openai", "stale", "reviewer", "id"),
         transport=transport,
+        execution_evidence=evidence_fixture(tmp_path).context,
     )
 
     assert result.category == "approval_required"  # type: ignore[union-attr]
@@ -268,7 +368,7 @@ def test_rejected_approval_fails_before_transport() -> None:
     assert calls == 0
 
 
-def test_tool_mismatch_precedes_rejected_approval() -> None:
+def test_tool_mismatch_precedes_rejected_approval(tmp_path: Path) -> None:
     calls = 0
 
     def transport(
@@ -284,24 +384,28 @@ def test_tool_mismatch_precedes_rejected_approval() -> None:
         api_key(),
         ModelInvocationExecutionApproval(False, "openai", "stale", "reviewer", "id"),
         transport=transport,
+        execution_evidence=evidence_fixture(tmp_path).context,
     )
 
     assert result.category == "invalid_request"  # type: ignore[union-attr]
     assert calls == 0
 
 
-def test_arbitrary_transport_exception_is_not_swallowed() -> None:
+def test_arbitrary_transport_exception_is_conservatively_normalized(
+    tmp_path: Path,
+) -> None:
     def transport(
         _: OpenAIResponsesAuthenticatedHttpRequest,
     ) -> OpenAIResponsesRawHttpResponse:
         raise RuntimeError("unexpected")
 
-    with pytest.raises(RuntimeError, match="unexpected"):
-        invocation = request()
-        execute_openai_model_invocation(
-            invocation,
-            (),
-            api_key(),
-            approval(invocation, ()),
-            transport=transport,
-        )
+    fixture = evidence_fixture(tmp_path)
+    result = execute_openai_model_invocation(
+        fixture.request,
+        (),
+        api_key(),
+        fixture.approval,
+        transport=transport,
+        execution_evidence=fixture.context,
+    )
+    assert result.category == "transport_error"  # type: ignore[union-attr]

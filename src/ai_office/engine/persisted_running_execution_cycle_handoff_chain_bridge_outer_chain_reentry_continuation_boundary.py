@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
+from ai_office.execution_evidence import ExecutionEvidenceError
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
@@ -164,6 +165,9 @@ def route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_ree
             approval,
             transport=transport,
         )
+    except ExecutionEvidenceError:
+        _restore_if_changed(state_path, events_path, original)
+        raise
     except Exception:
         _compensate_dependency_error(state_path, events_path, original)
 

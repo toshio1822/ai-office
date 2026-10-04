@@ -27,12 +27,15 @@ from ai_office.engine import (
     WorkflowProgressionDecision,
     route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
-from ai_office.execution_target import LOCAL_OMNIROUTE_EXECUTION_TARGET
+from ai_office.execution_evidence import ExecutionAttemptAlreadyClaimedError
+from ai_office.execution_target import (
+    DIRECT_OPENAI_EXECUTION_TARGET,
+    LOCAL_OMNIROUTE_EXECUTION_TARGET,
+)
 from ai_office.invocation import (
     ModelInvocationFailure,
     ModelInvocationRequest,
     ModelInvocationSuccess,
-    approve_model_invocation_execution,
 )
 from ai_office.providers.openai import (
     OpenAIApiKey,
@@ -54,6 +57,8 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from ai_office.tools import ToolDefinition
+from tests._execution_evidence_test_support import create_test_execution_evidence
+from tests._run_test_support import TestRun as RunFixture
 
 _ERROR = PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError
 
@@ -85,7 +90,7 @@ def employee() -> EmployeeDefinition:
             "role": "Role",
             "instructions": "employee instructions",
             "model": "model",
-            "allowed_tools": ["tool"],
+            "allowed_tools": ["web_search"],
         }
     )
 
@@ -94,6 +99,7 @@ def success_event(
     definition: WorkflowDefinition,
     index: int,
     *,
+    binding: object | None = None,
     provider: object = "other",
     request_id: object = "request",
     output_text: object = "output",
@@ -113,6 +119,7 @@ def success_event(
         request_id,  # type: ignore[arg-type]
         output_text,  # type: ignore[arg-type]
         None,
+        binding=binding,  # type: ignore[arg-type]
     )
 
 
@@ -139,6 +146,7 @@ def write_running_history(
     tmp_path: Path,
     definition: WorkflowDefinition,
     *,
+    run: RunFixture,
     index: int,
     empty_positions: tuple[int, ...] = (),
     none_request_positions: tuple[int, ...] = (),
@@ -156,6 +164,7 @@ def write_running_history(
         step.employee,
         tuple(item.id for item in definition.steps[: index - 1]),
         None,
+        binding=run.binding,
     )
     events: list[RuntimeStepEvent] = []
     for position in range(1, index):
@@ -169,6 +178,7 @@ def write_running_history(
                 None if position in none_request_positions else f"request-{position}"
             ),
             output_text="" if position in empty_positions else f"output-{position}",
+            binding=run.binding,
         )
         if position in event_overrides:
             event = replace(event, **event_overrides[position])
@@ -177,9 +187,8 @@ def write_running_history(
     event_bytes = b"".join(
         serialize_runtime_step_event_jsonl(event).encode("utf-8") for event in events
     )
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    state_path = tmp_path / "state.json"
-    events_path = tmp_path / "events.jsonl"
+    state_path = run.state_path
+    events_path = run.events_path
     state_path.write_bytes(state_bytes)
     events_path.write_bytes(event_bytes)
     return state_path, events_path, state_bytes, event_bytes, state
@@ -197,44 +206,51 @@ def running_case(
     provider: str = "openai",
 ) -> dict[str, object]:
     definition = workflow(steps)
+    person = employee()
+    step = definition.steps[index - 1]
+    base_request = ModelInvocationRequest(
+        person.model,
+        person.instructions,
+        step.instructions,
+        tuple(person.allowed_tools),
+    )
+    tools = (ToolDefinition("web_search", "Tool", ()),)
+    target = (
+        LOCAL_OMNIROUTE_EXECUTION_TARGET
+        if provider == "omniroute"
+        else DIRECT_OPENAI_EXECUTION_TARGET
+    )
+    evidence = create_test_execution_evidence(
+        tmp_path / "run-store",
+        run_id=f"persisted-running-{tmp_path.name}",
+        workflow=definition,
+        employees=(person,),
+        request=base_request,
+        resolved_tools=tools,
+        step_id=step.id,
+        target=target,
+        approval_id=f"approval-{tmp_path.name}",
+    )
     state_path, events_path, state_bytes, event_bytes, state = write_running_history(
         tmp_path,
         definition,
+        run=evidence.run,
         index=index,
         empty_positions=empty_positions,
         none_request_positions=none_request_positions,
         provider_overrides=provider_overrides,
         event_overrides=event_overrides,
     )
-    person = employee()
-    step = definition.steps[index - 1]
-    request = ModelInvocationRequest(
-        person.model,
-        person.instructions,
-        step.instructions,
-        tuple(person.allowed_tools),
-    )
-    tools = (ToolDefinition("tool", "Tool", ()),)
-    approval = approve_model_invocation_execution(
-        request,
-        tools,
-        provider=provider,
-        approved_by="reviewer",
-        approval_id="approval-id",
-        execution_target=(
-            LOCAL_OMNIROUTE_EXECUTION_TARGET if provider == "omniroute" else None
-        ),
-    )
     return {
         "result": RunningStatePersistenceResult(len(state_bytes)),
-        "start": PreparedStepExecutionStart(request, state),
+        "start": PreparedStepExecutionStart(evidence.request, state),
         "workflow": definition,
         "employee": person,
         "state_path": state_path,
         "events_path": events_path,
         "resolved_tools": tools,
         "api_key": OpenAIApiKey(value=SecretStr("synthetic-key")),
-        "approval": approval,
+        "approval": evidence.approval,
         "transport": lambda _: None,
         "before": (state_bytes, event_bytes),
     }
@@ -663,13 +679,17 @@ def test_transport_exception_is_sanitized_without_retry_or_mutation(
     case["transport"] = transport
     before = case["before"]
 
-    with pytest.raises(_ERROR) as caught:
-        route(case)
+    result = route(case)
 
-    assert caught.value.detail.classification == "dependency_error"
-    assert "secret transport detail" not in str(caught.value)
+    assert type(result) is StepRuntimeExecutionFailure
+    assert result.invocation_result.category == "transport_error"
+    assert "secret transport detail" not in result.invocation_result.message
     assert calls == 1
     assert (case["state_path"].read_bytes(), case["events_path"].read_bytes()) == before  # type: ignore[union-attr]
+
+    with pytest.raises(ExecutionAttemptAlreadyClaimedError):
+        route(case)
+    assert calls == 1
 
 
 @pytest.mark.parametrize("mutation", ["state", "events", "both"])
