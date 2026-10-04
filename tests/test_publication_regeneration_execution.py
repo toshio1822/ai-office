@@ -12,6 +12,7 @@ import pytest
 
 import ai_office.engine.publication_regeneration as publication_regeneration_module
 import ai_office.providers.openai.responses_execution as responses_execution_module
+from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine.post_terminal_facts import (
     build_post_terminal_facts,
@@ -32,6 +33,7 @@ from ai_office.engine.publication_regeneration_execution import (
     PublicationRegenerationExecutionError,
     execute_approved_publication_regeneration,
 )
+from ai_office.execution_evidence import list_run_execution_evidence
 from ai_office.execution_target import (
     DIRECT_OPENAI_EXECUTION_TARGET,
     LOCAL_OMNIROUTE_EXECUTION_TARGET,
@@ -55,6 +57,7 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from ai_office.tools import ToolDefinition, ToolParameterDefinition
+from tests._execution_evidence_test_support import create_test_execution_evidence
 
 FakeTransport = Callable[
     [OpenAIResponsesAuthenticatedHttpRequest], OpenAIResponsesRawHttpResponse
@@ -148,7 +151,7 @@ def request() -> ModelInvocationRequest:
         model="future-model",
         system_instructions="SYSTEM SECRET INSTRUCTIONS",
         task_instructions="TASK SECRET INSTRUCTIONS",
-        allowed_tools=("search",),
+        allowed_tools=("web_search",),
         upstream_inputs=(
             UpstreamStepOutput(
                 workflow_id="upstream-workflow",
@@ -162,7 +165,7 @@ def request() -> ModelInvocationRequest:
     )
 
 
-def tool(name: str = "search") -> ToolDefinition:
+def tool(name: str = "web_search") -> ToolDefinition:
     return ToolDefinition(
         name=name,
         description="tool description",
@@ -220,8 +223,40 @@ class ExecutionFixture:
         self.ledger_directory = tmp_path / "ledger"
         self.ledger_directory.mkdir()
         self.history_targets = history_targets
-        self.request = request()
+        unbound_request = request()
         self.tools = (tool(),)
+        evidence = create_test_execution_evidence(
+            tmp_path / "run-store",
+            run_id="publication-regeneration-run",
+            workflow=workflow(),
+            employees=(
+                EmployeeDefinition(
+                    id="researcher",
+                    name="Researcher",
+                    role="Publication test",
+                    instructions="Research.",
+                    model="future-model",
+                    allowed_tools=[],
+                ),
+                EmployeeDefinition(
+                    id="editor",
+                    name="Editor",
+                    role="Publication test",
+                    instructions="Prepare.",
+                    model="future-model",
+                    allowed_tools=["web_search"],
+                ),
+            ),
+            request=unbound_request,
+            resolved_tools=self.tools,
+            step_id="publish",
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+            approved_by="inner-human",
+            approval_id="inner-approval-266",
+        )
+        self.run = evidence.run
+        self.request = evidence.request
+        self.execution_evidence = evidence.context
         self.plan = build_publication_regeneration_plan(
             audit,
             "regen-20260912-01",
@@ -234,13 +269,7 @@ class ExecutionFixture:
             approved_by="outer-human",
             approval_id="outer-approval-266",
         )
-        self.inner_approval = approve_model_invocation_execution(
-            self.request,
-            self.tools,
-            provider="openai",
-            approved_by="inner-human",
-            approval_id="inner-approval-266",
-        )
+        self.inner_approval = evidence.approval
         self.environment = {"OPENAI_API_KEY": "synthetic-key"}
 
     def execute(
@@ -269,6 +298,7 @@ class ExecutionFixture:
                 self.inner_approval if inner_approval is None else inner_approval
             ),
             execution_target=execution_target,
+            execution_evidence=self.execution_evidence,
             environment=(self.environment if environment is None else environment),
             transport=transport,
         )
@@ -289,6 +319,12 @@ def test_valid_inputs_claim_before_transport_and_return_existing_success(
             publication_regeneration_consumption_key(fixture.outer_approval),
         )
         assert marker.exists()
+        assert len(
+            list_run_execution_evidence(
+                fixture.run.store.root,
+                fixture.run.binding.run_id,
+            )
+        ) == 1
         loaded = load_publication_regeneration_attempt_claim(marker)
         assert loaded.approval_id == fixture.outer_approval.approval_id
         assert request_value.headers[-1][0] == "Authorization"
@@ -599,12 +635,16 @@ def test_ambiguous_claim_persistence_never_calls_transport_and_marker_consumes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = ExecutionFixture(tmp_path)
-    original_fsync = publication_regeneration_module.os.fsync
+    original_fsync = publication_regeneration_module._fsync_claim_directory
 
-    def fail_fsync(_descriptor: int) -> None:
+    def fail_fsync(_directory: Path) -> None:
         raise OSError("synthetic fsync failure")
 
-    monkeypatch.setattr(publication_regeneration_module.os, "fsync", fail_fsync)
+    monkeypatch.setattr(
+        publication_regeneration_module,
+        "_fsync_claim_directory",
+        fail_fsync,
+    )
     calls = 0
 
     def transport(
@@ -625,7 +665,11 @@ def test_ambiguous_claim_persistence_never_calls_transport_and_marker_consumes(
     assert marker.exists()
     assert marker.read_bytes()
 
-    monkeypatch.setattr(publication_regeneration_module.os, "fsync", original_fsync)
+    monkeypatch.setattr(
+        publication_regeneration_module,
+        "_fsync_claim_directory",
+        original_fsync,
+    )
     with pytest.raises(PublicationRegenerationAttemptAlreadyConsumedError):
         fixture.execute(transport)
     assert calls == 0

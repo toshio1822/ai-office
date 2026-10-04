@@ -275,12 +275,26 @@ def _validate_persistence_input(
             f"{next_binding.run_id}.events.jsonl"
         )
         if (
-            targets.state_path != expected_state
+            targets.state_path.parent != targets.events_path.parent
+            or targets.state_path != expected_state
             or targets.events_path != expected_events
         ):
             binding_is_invalid = True
     if paths_are_invalid or transition_is_invalid or binding_is_invalid:
         raise WorkflowExecutionPersistenceInputError(_INPUT_ERROR_MESSAGE) from None
+    if next_binding is not None:
+        try:
+            from ai_office.execution_evidence import _validate_run_terminal_event
+
+            _validate_run_terminal_event(
+                targets.state_path.parent,
+                next_binding,
+                event,
+            )
+        except Exception:
+            raise WorkflowExecutionPersistenceInputError(
+                _INPUT_ERROR_MESSAGE
+            ) from None
 
 
 def _serialize_json(value: dict[str, object]) -> str:

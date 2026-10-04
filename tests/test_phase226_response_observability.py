@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+from ai_office.definitions.employee import EmployeeDefinition
+from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.execution_target import (
     DIRECT_OPENAI_EXECUTION_TARGET,
     LOCAL_OMNIROUTE_EXECUTION_TARGET,
@@ -42,6 +44,7 @@ from ai_office.storage import (
     load_workflow_execution_history,
     persist_workflow_execution_transition,
 )
+from tests._execution_evidence_test_support import create_test_execution_evidence
 
 _SECRET = "synthetic-provider-secret"
 
@@ -268,6 +271,47 @@ def _invalid_transport(
     return transport, lambda: calls
 
 
+def _execution_evidence_fixture(
+    tmp_path: Path,
+    request: ModelInvocationRequest,
+    target: object,
+):
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "phase226-provider-workflow",
+            "name": "Provider Workflow",
+            "description": "Run-bound response observability test.",
+            "steps": [
+                {
+                    "id": "provider-step",
+                    "name": "Provider Step",
+                    "employee": "provider-employee",
+                    "instructions": "Run response test.",
+                    "business_approval_required": False,
+                }
+            ],
+        }
+    )
+    employee = EmployeeDefinition(
+        id="provider-employee",
+        name="Provider Employee",
+        role="Provider test",
+        instructions="Run response test.",
+        model=request.model,
+        allowed_tools=[],
+    )
+    return create_test_execution_evidence(
+        tmp_path,
+        run_id="phase226-provider-run",
+        workflow=workflow,
+        employees=(employee,),
+        request=request,
+        resolved_tools=(),
+        step_id="provider-step",
+        target=target,  # type: ignore[arg-type]
+    )
+
+
 @pytest.mark.parametrize(
     ("provider", "target"),
     [
@@ -276,6 +320,7 @@ def _invalid_transport(
     ],
 )
 def test_invalid_response_propagates_diagnostics_with_provider_identity_and_no_retry(
+    tmp_path: Path,
     provider: str,
     target: object,
 ) -> None:
@@ -283,14 +328,15 @@ def test_invalid_response_propagates_diagnostics_with_provider_identity_and_no_r
     transport, call_count = _invalid_transport(
         body, (("content-type", "text/plain"),)
     )
-    request = _request()
+    fixture = _execution_evidence_fixture(tmp_path, _request(), target)
 
     result = execute_openai_model_invocation(
-        request,
+        fixture.request,
         (),
         OpenAIApiKey(value=SecretStr("synthetic-api-key")),
-        _approval(request, provider, target),
+        fixture.approval,
         transport=transport,
+        execution_evidence=fixture.context,
     )
 
     assert isinstance(result, ModelInvocationFailure)
@@ -308,19 +354,24 @@ def test_invalid_response_propagates_diagnostics_with_provider_identity_and_no_r
     assert "Authorization" not in repr(result)
 
 
-def test_sse_remains_invalid_response_category_and_is_not_accepted() -> None:
-    request = _request()
+def test_sse_remains_invalid_response_category_and_is_not_accepted(
+    tmp_path: Path,
+) -> None:
+    fixture = _execution_evidence_fixture(
+        tmp_path, _request(), DIRECT_OPENAI_EXECUTION_TARGET
+    )
     result = execute_openai_model_invocation(
-        request,
+        fixture.request,
         (),
         OpenAIApiKey(value=SecretStr("synthetic-api-key")),
-        _approval(request, "openai", DIRECT_OPENAI_EXECUTION_TARGET),
+        fixture.approval,
         transport=lambda _: OpenAIResponsesRawHttpResponse(
             200,
             "synthetic",
             (("Content-Type", "text/event-stream"),),
             b"data: {\"type\":\"response.output_text.delta\"}\n\n",
         ),
+        execution_evidence=fixture.context,
     )
 
     assert isinstance(result, ModelInvocationFailure)

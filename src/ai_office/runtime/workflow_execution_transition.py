@@ -407,9 +407,7 @@ def _execution_evidence_kwargs(value: object) -> dict[str, str | None]:
         "execution_attempt_evidence_sha256": evidence[1],
         "normalized_result_evidence_sha256": evidence[2],
         "raw_response_evidence_sha256": evidence[3],
-        "raw_response_body_sha256": getattr(
-            value, "raw_response_body_sha256", None
-        ),
+        "raw_response_body_sha256": evidence[4],
     }
 
 

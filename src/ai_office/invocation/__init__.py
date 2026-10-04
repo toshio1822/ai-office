@@ -19,6 +19,7 @@ from ai_office.invocation.model_invocation_result import (
     ModelInvocationFailureDiagnostics,
     ModelInvocationResponseBodyKind,
     ModelInvocationResult,
+    ModelInvocationResultProvenance,
     ModelInvocationSuccess,
 )
 from ai_office.invocation.runtime_facts import (
@@ -40,6 +41,7 @@ __all__ = [
     "ModelInvocationFailureCategory",
     "ModelInvocationFailureDiagnostics",
     "ModelInvocationResponseBodyKind",
+    "ModelInvocationResultProvenance",
     "ModelInvocationExecutionApproval",
     "ModelInvocationExecutionApprovalError",
     "ModelInvocationRequest",

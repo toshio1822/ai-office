@@ -42,6 +42,7 @@ from ai_office.invocation import (
     ModelInvocationFailureDiagnostics,
     ModelInvocationRequest,
     ModelInvocationResult,
+    ModelInvocationResultProvenance,
     ModelInvocationSuccess,
     build_model_invocation_task_input,
     validate_model_invocation_execution_approval,
@@ -355,6 +356,13 @@ class NormalizedExecutionResultEvidence:
 
     @property
     def result(self) -> ModelInvocationResult:
+        provenance = ModelInvocationResultProvenance(
+            attempt_id=self.attempt_id,
+            attempt_evidence_sha256=self.attempt_evidence_sha256,
+            normalized_result_evidence_sha256=self.digest,
+            raw_response_evidence_sha256=self.raw_response_evidence_sha256,
+            raw_response_body_sha256=self.raw_response_body_sha256,
+        )
         if self.category == "success":
             assert self.response_id is not None
             assert self.status is not None
@@ -367,6 +375,7 @@ class NormalizedExecutionResultEvidence:
                 status=self.status,
                 text_parts=self.text_parts,
                 text=self.text,
+                _execution_evidence=provenance,
             )
         assert self.failure_category is not None
         assert self.failure_message is not None
@@ -379,6 +388,7 @@ class NormalizedExecutionResultEvidence:
             provider_error_type=self.provider_error_type,
             provider_error_code=self.provider_error_code,
             response_diagnostics=self.response_diagnostics,
+            _execution_evidence=provenance,
         )
 
 
@@ -548,75 +558,25 @@ def persist_normalized_result_evidence(
         context.store_root, record.run_id, record.attempt_id
     )
     _persist_idempotent(path, _canonical_json(_result_dict(record)))
-    attach_result_evidence(
-        result,
-        attempt_id=attempt.attempt_id,
-        attempt_evidence_sha256=attempt.digest,
-        normalized_result_evidence_sha256=record.digest,
-        raw_response_evidence_sha256=(
-            None if raw_response is None else raw_response.digest
-        ),
-        raw_response_body_sha256=(
-            None if raw_response is None else raw_response.body_sha256
-        ),
-    )
     return record
-
-
-def attach_result_evidence(
-    result: ModelInvocationResult,
-    *,
-    attempt_id: str,
-    attempt_evidence_sha256: str,
-    normalized_result_evidence_sha256: str,
-    raw_response_evidence_sha256: str | None,
-    raw_response_body_sha256: str | None,
-) -> None:
-    """Attach provenance metadata without changing normalized result semantics."""
-    _validate_sha256(attempt_id, "attempt")
-    _validate_sha256(attempt_evidence_sha256, "attempt_evidence")
-    _validate_sha256(normalized_result_evidence_sha256, "normalized_result")
-    if raw_response_evidence_sha256 is not None:
-        _validate_sha256(raw_response_evidence_sha256, "raw_response")
-    if raw_response_body_sha256 is not None:
-        _validate_sha256(raw_response_body_sha256, "raw_body")
-    object.__setattr__(result, "execution_attempt_id", attempt_id)
-    object.__setattr__(
-        result,
-        "execution_attempt_evidence_sha256",
-        attempt_evidence_sha256,
-    )
-    object.__setattr__(
-        result,
-        "normalized_result_evidence_sha256",
-        normalized_result_evidence_sha256,
-    )
-    object.__setattr__(
-        result,
-        "raw_response_evidence_sha256",
-        raw_response_evidence_sha256,
-    )
-    object.__setattr__(result, "raw_response_body_sha256", raw_response_body_sha256)
 
 
 def execution_evidence_of_result(
     result: object,
-) -> tuple[str, str, str, str | None] | None:
-    """Return safe result provenance, if the provider attached it."""
-    values = tuple(
-        getattr(result, name, None)
-        for name in (
-            "execution_attempt_id",
-            "execution_attempt_evidence_sha256",
-            "normalized_result_evidence_sha256",
-            "raw_response_evidence_sha256",
-        )
+) -> tuple[str, str, str, str | None, str | None] | None:
+    """Return immutable provenance from a result created from saved evidence."""
+    if type(result) not in (ModelInvocationSuccess, ModelInvocationFailure):
+        return None
+    provenance = result._execution_evidence
+    if type(provenance) is not ModelInvocationResultProvenance:
+        return None
+    return (
+        provenance.attempt_id,
+        provenance.attempt_evidence_sha256,
+        provenance.normalized_result_evidence_sha256,
+        provenance.raw_response_evidence_sha256,
+        provenance.raw_response_body_sha256,
     )
-    if not all(isinstance(value, str) for value in values[:3]):
-        return None
-    if values[3] is not None and not isinstance(values[3], str):
-        return None
-    return cast(tuple[str, str, str, str | None], values)
 
 
 # ---------------------------------------------------------------------------
@@ -843,6 +803,115 @@ def inspect_run_execution_evidence(
             )
         )
     return tuple(inspections)
+
+
+def _validate_run_terminal_event(root: Path, binding: object, event: object) -> None:
+    """Require a Run's terminal event to match its authoritative evidence."""
+    run_id = getattr(binding, "run_id", None)
+    manifest_digest = getattr(binding, "manifest_digest", None)
+    if type(run_id) is not str or type(manifest_digest) is not str:
+        _raise_load("terminal_binding")
+
+    linkage = tuple(
+        getattr(event, name, None)
+        for name in (
+            "execution_attempt_id",
+            "execution_attempt_evidence_sha256",
+            "normalized_result_evidence_sha256",
+            "raw_response_evidence_sha256",
+            "raw_response_body_sha256",
+        )
+    )
+    event_identity = (
+        getattr(event, "workflow_id", None),
+        getattr(event, "step_id", None),
+        getattr(event, "step_index", None),
+        getattr(event, "employee_id", None),
+    )
+
+    if not any(value is not None for value in linkage):
+        attempts = list_run_execution_evidence(root, run_id)
+        matching_attempt_exists = any(
+            (
+                attempt.workflow_id,
+                attempt.step_id,
+                attempt.step_index,
+                attempt.employee_id,
+            )
+            == event_identity
+            for attempt in attempts
+        )
+        requires_evidence = (
+            getattr(event, "event_type", None) == "step_succeeded"
+            or getattr(event, "failure_category", None)
+            in {"api_error", "transport_error", "invalid_response", "invalid_output"}
+        )
+        if requires_evidence or matching_attempt_exists:
+            _raise_load("terminal_evidence")
+        return
+
+    attempt_id, attempt_digest, result_digest, raw_digest, raw_body_digest = linkage
+    if (
+        any(type(value) is not str for value in linkage[:3])
+        or (raw_digest is None) != (raw_body_digest is None)
+    ):
+        _raise_load("terminal_evidence")
+
+    attempt = load_execution_attempt_evidence(root, run_id, cast(str, attempt_id))
+    if (
+        attempt.digest != attempt_digest
+        or attempt.manifest_digest != manifest_digest
+        or (
+            attempt.workflow_id,
+            attempt.step_id,
+            attempt.step_index,
+            attempt.employee_id,
+            attempt.provider,
+        )
+        != (*event_identity, getattr(event, "provider", None))
+    ):
+        _raise_load("terminal_attempt")
+
+    normalized = load_normalized_result_evidence(root, run_id, attempt.attempt_id)
+    if normalized.digest != result_digest:
+        _raise_load("terminal_result")
+
+    raw: RawProviderResponseEvidence | None = None
+    if normalized.raw_response_evidence_sha256 is not None:
+        raw = load_raw_response_evidence(root, run_id, attempt.attempt_id)
+    if (
+        (None if raw is None else raw.digest) != raw_digest
+        or (None if raw is None else raw.body_sha256) != raw_body_digest
+    ):
+        _raise_load("terminal_raw_response")
+
+    result = normalized.result
+    if type(result) is ModelInvocationSuccess:
+        matches_result = (
+            getattr(event, "event_type", None) == "step_succeeded"
+            and getattr(event, "next_status", None) == "succeeded"
+            and getattr(event, "failure_category", None) is None
+            and getattr(event, "response_id", None) == result.response_id
+            and getattr(event, "request_id", None) == result.request_id
+            and getattr(event, "output_text", None) == result.text
+            and getattr(event, "message", None) is None
+            and getattr(event, "response_diagnostics", None) is None
+        )
+    else:
+        assert type(result) is ModelInvocationFailure
+        matches_result = (
+            getattr(event, "event_type", None) == "step_failed"
+            and getattr(event, "next_status", None) == "failed"
+            and getattr(event, "failure_category", None) == result.category
+            and getattr(event, "response_id", None) is None
+            and getattr(event, "request_id", None) == result.request_id
+            and getattr(event, "output_text", None) is None
+            and getattr(event, "message", None) == result.message
+            and getattr(event, "response_diagnostics", None)
+            == result.response_diagnostics
+        )
+    if not matches_result:
+        _raise_load("terminal_outcome")
 
 
 # Discoverable aliases; they do not introduce another authority or storage type.
@@ -1123,15 +1192,18 @@ def _build_result_record(
         "text_parts": values["text_parts"],
         "workflow_id": context.workflow_id,
     }
-    base["normalized_result_sha256"] = _digest(
-        _canonical_json(
-            {
-                key: value
-                for key, value in base.items()
-                if key != "normalized_result_sha256"
-            }
+    digest_values = {
+        key: value
+        for key, value in base.items()
+        if key != "normalized_result_sha256"
+    }
+    diagnostics = values["response_diagnostics"]
+    if diagnostics is not None:
+        assert type(diagnostics) is ModelInvocationFailureDiagnostics
+        digest_values["response_diagnostics"] = _response_diagnostics_dict(
+            diagnostics
         )
-    )
+    base["normalized_result_sha256"] = _digest(_canonical_json(digest_values))
     return NormalizedExecutionResultEvidence(**base)  # type: ignore[arg-type]
 
 
@@ -1262,14 +1334,7 @@ def _result_dict(value: NormalizedExecutionResultEvidence) -> dict[str, object]:
         "raw_response_evidence_sha256": value.raw_response_evidence_sha256,
         "request_id": value.request_id,
         "response_diagnostics": (
-            None
-            if diagnostics is None
-            else {
-                "body_kind": diagnostics.body_kind,
-                "body_length": diagnostics.body_length,
-                "content_type": diagnostics.content_type,
-                "status_code": diagnostics.status_code,
-            }
+            None if diagnostics is None else _response_diagnostics_dict(diagnostics)
         ),
         "response_id": value.response_id,
         "run_id": value.run_id,
@@ -1280,6 +1345,17 @@ def _result_dict(value: NormalizedExecutionResultEvidence) -> dict[str, object]:
         "text": value.text,
         "text_parts": None if value.text_parts is None else list(value.text_parts),
         "workflow_id": value.workflow_id,
+    }
+
+
+def _response_diagnostics_dict(
+    diagnostics: ModelInvocationFailureDiagnostics,
+) -> dict[str, object]:
+    return {
+        "body_kind": diagnostics.body_kind,
+        "body_length": diagnostics.body_length,
+        "content_type": diagnostics.content_type,
+        "status_code": diagnostics.status_code,
     }
 
 
@@ -1936,7 +2012,6 @@ __all__ = [
     "ExecutionEvidencePersistenceError",
     "NormalizedExecutionResultEvidence",
     "RawProviderResponseEvidence",
-    "attach_result_evidence",
     "build_execution_evidence_context",
     "claim_execution_attempt",
     "ensure_no_execution_attempt",

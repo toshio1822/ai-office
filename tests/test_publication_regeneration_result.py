@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import ai_office.engine.publication_regeneration_result as result_module
+from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
     publication_regeneration_result_execution as result_execution_module,
@@ -68,7 +69,6 @@ from ai_office.invocation import (
     ModelInvocationSuccess,
     RuntimeFactsSnapshot,
     UpstreamStepOutput,
-    approve_model_invocation_execution,
 )
 from ai_office.providers.openai import (
     OpenAIResponsesAuthenticatedHttpRequest,
@@ -81,6 +81,7 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from ai_office.tools import ToolDefinition, ToolParameterDefinition
+from tests._execution_evidence_test_support import create_test_execution_evidence
 
 FakeTransport = Callable[
     [OpenAIResponsesAuthenticatedHttpRequest], OpenAIResponsesRawHttpResponse
@@ -190,7 +191,7 @@ def request() -> ModelInvocationRequest:
         model="future-model",
         system_instructions="SYSTEM SECRET INSTRUCTIONS",
         task_instructions="TASK SECRET INSTRUCTIONS",
-        allowed_tools=("search",),
+        allowed_tools=("web_search",),
         upstream_inputs=(
             UpstreamStepOutput(
                 workflow_id="upstream-workflow",
@@ -204,7 +205,7 @@ def request() -> ModelInvocationRequest:
     )
 
 
-def tool(name: str = "search") -> ToolDefinition:
+def tool(name: str = "web_search") -> ToolDefinition:
     return ToolDefinition(
         name=name,
         description="tool description",
@@ -278,8 +279,40 @@ class EvidenceFixture:
         self.result_directory = tmp_path / "results"
         self.result_directory.mkdir()
         self.history_targets = history_targets
-        self.request = request()
+        unbound_request = request()
         self.tools = (tool(),)
+        evidence = create_test_execution_evidence(
+            tmp_path / "run-store",
+            run_id="publication-regeneration-result-run",
+            workflow=workflow(),
+            employees=(
+                EmployeeDefinition(
+                    id="researcher",
+                    name="Researcher",
+                    role="Publication test",
+                    instructions="Research.",
+                    model="future-model",
+                    allowed_tools=[],
+                ),
+                EmployeeDefinition(
+                    id="editor",
+                    name="Editor",
+                    role="Publication test",
+                    instructions="Prepare.",
+                    model="future-model",
+                    allowed_tools=["web_search"],
+                ),
+            ),
+            request=unbound_request,
+            resolved_tools=self.tools,
+            step_id="publish",
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+            approved_by="inner-human",
+            approval_id="inner-approval-267",
+        )
+        self.run = evidence.run
+        self.request = evidence.request
+        self.execution_evidence = evidence.context
         self.plan = build_publication_regeneration_plan(
             audit,
             "regen-20260912-01",
@@ -292,13 +325,7 @@ class EvidenceFixture:
             approved_by="outer-human",
             approval_id="outer-approval-267",
         )
-        self.inner_approval = approve_model_invocation_execution(
-            self.request,
-            self.tools,
-            provider="openai",
-            approved_by="inner-human",
-            approval_id="inner-approval-267",
-        )
+        self.inner_approval = evidence.approval
         self.environment = {"OPENAI_API_KEY": "synthetic-key"}
 
     @property
@@ -332,6 +359,7 @@ class EvidenceFixture:
             resolved_tools=self.tools,
             inner_approval=self.inner_approval,
             execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+            execution_evidence=self.execution_evidence,
             environment=self.environment if environment is None else environment,
             transport=transport,
         )
@@ -429,21 +457,21 @@ def test_result_record_canonical_json_and_digest_are_exact(tmp_path: Path) -> No
         '"approved_by":"outer-human",'
         '"consumption_key":"096f77288c731bdeb3d6856c59cde50050112b16ad599ac588746fa3632cc74f",'
         '"execution_target_sha256":"f8d7bc1febd55eeb8cd53563b0348a87930836c688dcf930df4a50e3cef744e9",'
-        '"invocation_request_sha256":"aae76e2d1c9f33ca5dfc59d3adcea7e8ce5ffd28f359a5d5696e6db6579ba34b",'
+            '"invocation_request_sha256":"37b5370cdad02a4b2cf7044f23dc251671cff466737e8ed22e1cb62f40f2ada5",'
         '"provider":"openai",'
-        '"regeneration_approval_sha256":"bee3b3015f7065a029a1a1ea8643cd42144087e02113c403de16ecda44d6a3e2",'
+            '"regeneration_approval_sha256":"2a8de9e48b32f905e016b11e7023a4f8f078716508105156e0b363f6f238cb0c",'
         '"regeneration_id":"regen-20260912-01",'
-        '"regeneration_plan_sha256":"60eca3a91b575c6255d6c34f3e818c2169a875a2bd46983419618957989f01d1",'
+            '"regeneration_plan_sha256":"6d57bc580576d5afb30b83a02c206259e0d95d3465ef07e502954c32c8597a2a",'
         '"schema_version":"publication-regeneration-attempt.v1",'
         '"source_audit_sha256":"46a783b696550872a3eb8bc528875550fc9ff077419326988d8cc5d3e5dc2b59",'
         '"state":"claimed"},'
-        '"attempt_claim_sha256":"668cb9fa9d12d6eed126be5951dbb2acaa0d7085968d927e51916a485f6cf82d",'
+            '"attempt_claim_sha256":"202d7b4d54272df0ff77541600c6b36727659c1f1f6f9dcc92ff5aeff4bd0529",'
         '"business_output_sha256":"c89d03dd82e7a8996fbbbcb98b2627602d7b857db212f1a26ce4f03e59c2289f",'
         '"execution_target_sha256":"f8d7bc1febd55eeb8cd53563b0348a87930836c688dcf930df4a50e3cef744e9",'
-        '"invocation_request_sha256":"aae76e2d1c9f33ca5dfc59d3adcea7e8ce5ffd28f359a5d5696e6db6579ba34b",'
+            '"invocation_request_sha256":"37b5370cdad02a4b2cf7044f23dc251671cff466737e8ed22e1cb62f40f2ada5",'
         '"outcome":"success","provider":"openai",'
         '"regeneration_id":"regen-20260912-01",'
-        '"regeneration_plan_sha256":"60eca3a91b575c6255d6c34f3e818c2169a875a2bd46983419618957989f01d1",'
+            '"regeneration_plan_sha256":"6d57bc580576d5afb30b83a02c206259e0d95d3465ef07e502954c32c8597a2a",'
         '"result":{"kind":"success","provider":"openai",'
         '"request_id":"request-267","response_id":"response-267",'
         '"status":"completed","text":"part one最後 😀",'
@@ -459,7 +487,7 @@ def test_result_record_canonical_json_and_digest_are_exact(tmp_path: Path) -> No
         record
     ) == expected.encode("utf-8")
     assert publication_regeneration_result_record_digest(record) == (
-        "f234348ad249233ad627fd543bb0b208b19155e3e43fd91f2e109aecaca4615d"
+        "fca43c711d353fbbc292d3c2559114494f4db46fd2b395faaee1c0cec04d3c48"
     )
 
 

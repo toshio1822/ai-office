@@ -47,7 +47,7 @@ class StepRuntimeExecutionInput:
     invocation_request: ModelInvocationRequest
     resolved_tools: tuple[ToolDefinition, ...]
     approval: ModelInvocationExecutionApproval
-    execution_evidence: ExecutionEvidenceContext | None = None
+    execution_evidence: ExecutionEvidenceContext
 
 
 @dataclass(frozen=True, init=False)
@@ -248,9 +248,9 @@ def execute_openai_runtime_step(
         execution_target=execution_target,
         execution_evidence=execution_input.execution_evidence,
     )
-    if (
-        execution_input.execution_evidence is not None
-        and execution_evidence_of_result(invocation_result) is None
+    if execution_evidence_of_result(invocation_result) is None and (
+        type(invocation_result) is ModelInvocationSuccess
+        or invocation_result.category not in {"invalid_request", "approval_required"}
     ):
         raise ExecutionEvidenceError("normalized_result")
     result = _build_runtime_result(execution_input.step_request, invocation_result)
@@ -280,8 +280,10 @@ def _validate_execution_input(execution_input: StepRuntimeExecutionInput) -> Non
     ):
         raise StepRuntimeExecutionInputError(_INPUT_ERROR_MESSAGE)
     evidence = execution_input.execution_evidence
-    if evidence is not None and (
+    if type(evidence) is not ExecutionEvidenceContext or (
         evidence.request != invocation_request
+        or evidence.resolved_tools != execution_input.resolved_tools
+        or evidence.target != execution_input.approval.execution_target
         or evidence.workflow_id != step_request.workflow_id
         or evidence.step_id != step_request.step_id
         or evidence.step_index != step_request.step_index

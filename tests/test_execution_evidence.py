@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -21,6 +21,7 @@ from ai_office.engine.workflow_approval_evidence import (
 from ai_office.execution_evidence import (
     ExecutionAttemptAlreadyClaimedError,
     ExecutionEvidenceConflictError,
+    ExecutionEvidenceError,
     ExecutionEvidenceLoadError,
     ExecutionEvidencePersistenceError,
     build_execution_evidence_context,
@@ -49,11 +50,13 @@ from ai_office.providers.openai import (
     execute_openai_model_invocation,
 )
 from ai_office.runtime import (
+    RuntimeStepEvent,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
     transition_workflow_execution_from_step_result,
 )
 from ai_office.storage import (
+    WorkflowExecutionPersistenceInputError,
     WorkflowExecutionPersistenceTargets,
     parse_runtime_step_event,
     persist_workflow_execution_transition,
@@ -86,7 +89,14 @@ def _workflow() -> WorkflowDefinition:
                     "employee": "employee-1",
                     "instructions": "Return the safe result.",
                     "business_approval_required": False,
-                }
+                },
+                {
+                    "id": "step-2",
+                    "name": "Evidence Step Two",
+                    "employee": "employee-2",
+                    "instructions": "Return the second safe result.",
+                    "business_approval_required": False,
+                },
             ],
         }
     )
@@ -103,13 +113,24 @@ def _employee() -> EmployeeDefinition:
     )
 
 
+def _employee_two() -> EmployeeDefinition:
+    return EmployeeDefinition(
+        id="employee-2",
+        name="Evidence Employee Two",
+        role="Second evidence test employee",
+        instructions="Use the second evidence fixture instructions.",
+        model="evidence-model",
+        allowed_tools=[],
+    )
+
+
 def _fixture(root: Path, *, run_id: str = "run-evidence") -> EvidenceFixture:
     workflow = _workflow()
     run = create_test_run(
         root,
         run_id,
         workflow,
-        (_employee(),),
+        (_employee(), _employee_two()),
         with_business_approvals=False,
     )
     invocation = ModelInvocationRequest(
@@ -153,6 +174,128 @@ def _fixture(root: Path, *, run_id: str = "run-evidence") -> EvidenceFixture:
         target=DIRECT_OPENAI_EXECUTION_TARGET,
     )
     return EvidenceFixture(run, invocation, approval, context)
+
+
+def _second_step_execution(fixture: EvidenceFixture):
+    request = ModelInvocationRequest(
+        model="evidence-model",
+        system_instructions="Use the evidence fixture instructions.",
+        task_instructions="Return the second safe result.",
+        allowed_tools=(),
+        run_id=fixture.run.binding.run_id,
+        manifest_digest=fixture.run.binding.manifest_digest,
+        run_input="input-run-evidence",
+    )
+    approval = approve_model_invocation_execution(
+        request,
+        (),
+        provider="openai",
+        approved_by="evidence-reviewer",
+        approval_id="execution-evidence-approval-step-2",
+        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    approval_evidence = build_execution_approval_evidence_for_tools(
+        request,
+        (),
+        approval,
+        workflow_id="evidence-workflow",
+        step_id="step-2",
+        step_index=2,
+        employee_id="employee-2",
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    persist_execution_approval_evidence(fixture.run.store, approval_evidence)
+    context = build_execution_evidence_context(
+        store_root=fixture.run.store.root,
+        binding=fixture.run.binding,
+        workflow_id="evidence-workflow",
+        step_id="step-2",
+        step_index=2,
+        employee_id="employee-2",
+        request=request,
+        resolved_tools=(),
+        approval=approval,
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    return request, approval, context
+
+
+def _success_transition(fixture: EvidenceFixture, invocation_result):
+    runtime_result = StepRuntimeExecutionSuccess(
+        "evidence-workflow",
+        "step-1",
+        1,
+        "employee-1",
+        invocation_result,
+        binding=fixture.run.binding,
+    )
+    state = WorkflowExecutionState(
+        "evidence-workflow",
+        "running",
+        "step-1",
+        1,
+        "employee-1",
+        (),
+        None,
+        binding=fixture.run.binding,
+    )
+    return transition_workflow_execution_from_step_result(state, runtime_result)
+
+
+def _event_with_provenance(event, provenance):
+    return RuntimeStepEvent(
+        event_type=event.event_type,
+        workflow_id=event.workflow_id,
+        step_id=event.step_id,
+        step_index=event.step_index,
+        employee_id=event.employee_id,
+        previous_status=event.previous_status,
+        next_status=event.next_status,
+        provider=event.provider,
+        failure_category=event.failure_category,
+        response_id=event.response_id,
+        request_id=event.request_id,
+        output_text=event.output_text,
+        message=event.message,
+        response_diagnostics=event.response_diagnostics,
+        run_id=event.run_id,
+        manifest_digest=event.manifest_digest,
+        execution_attempt_id=provenance[0],
+        execution_attempt_evidence_sha256=provenance[1],
+        normalized_result_evidence_sha256=provenance[2],
+        raw_response_evidence_sha256=provenance[3],
+        raw_response_body_sha256=provenance[4],
+    )
+def _assert_persistence_rejected_without_writes(fixture, transition) -> None:
+    state_before = (
+        fixture.run.state_path.read_bytes()
+        if fixture.run.state_path.exists()
+        else None
+    )
+    events_before = (
+        fixture.run.events_path.read_bytes()
+        if fixture.run.events_path.exists()
+        else None
+    )
+    with pytest.raises(WorkflowExecutionPersistenceInputError):
+        persist_workflow_execution_transition(
+            transition,
+            WorkflowExecutionPersistenceTargets(
+                fixture.run.state_path,
+                fixture.run.events_path,
+                binding=fixture.run.binding,
+            ),
+        )
+    assert (
+        fixture.run.state_path.read_bytes()
+        if fixture.run.state_path.exists()
+        else None
+    ) == state_before
+    assert (
+        fixture.run.events_path.read_bytes()
+        if fixture.run.events_path.exists()
+        else None
+    ) == events_before
 
 
 def _success_response(
@@ -251,6 +394,7 @@ def test_claim_is_durable_before_transport_and_response_is_lossless_but_secret_f
         attempt.digest,
         normalized.digest,
         raw.digest,
+        raw.body_sha256,
     )
     evidence_bytes = b"".join(
         path.read_bytes()
@@ -295,6 +439,32 @@ def test_attempt_claim_persistence_failure_means_zero_transport_calls(
         list_run_execution_evidence(fixture.run.store.root, fixture.run.binding.run_id)
         == ()
     )
+
+
+def test_missing_execution_evidence_means_zero_transport_calls(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    calls = 0
+
+    def transport(
+        _: OpenAIResponsesAuthenticatedHttpRequest,
+    ) -> OpenAIResponsesRawHttpResponse:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("transport must not be entered")
+
+    with pytest.raises(ExecutionEvidenceError):
+        execute_openai_model_invocation(
+            fixture.request,
+            (),
+            _api_key(),
+            fixture.approval,
+            transport=transport,
+            execution_evidence=None,
+        )
+    assert calls == 0
+    assert list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    ) == ()
 
 
 def test_unresolved_transport_attempt_blocks_restart_replay(
@@ -438,25 +608,7 @@ def test_terminal_event_links_exact_attempt_and_normalized_result(
         execution_evidence=fixture.context,
     )
     assert isinstance(invocation_result, ModelInvocationSuccess)
-    runtime_result = StepRuntimeExecutionSuccess(
-        "evidence-workflow",
-        "step-1",
-        1,
-        "employee-1",
-        invocation_result,
-        binding=fixture.run.binding,
-    )
-    state = WorkflowExecutionState(
-        "evidence-workflow",
-        "running",
-        "step-1",
-        1,
-        "employee-1",
-        (),
-        None,
-        binding=fixture.run.binding,
-    )
-    transition = transition_workflow_execution_from_step_result(state, runtime_result)
+    transition = _success_transition(fixture, invocation_result)
     event = transition.event
     assert event.execution_attempt_id is not None
     assert event.normalized_result_evidence_sha256 is not None
@@ -477,6 +629,66 @@ def test_terminal_event_links_exact_attempt_and_normalized_result(
         fixture.run.store.root, fixture.run.binding.run_id
     )
     assert inspection[0].final_step_outcome_linked is True
+
+
+def test_forged_normalized_result_reference_cannot_commit_terminal_state(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    result = execute_openai_model_invocation(
+        fixture.request,
+        (),
+        _api_key(),
+        fixture.approval,
+        transport=lambda _: _success_response(),
+        execution_evidence=fixture.context,
+    )
+    transition = _success_transition(fixture, result)
+    provenance = execution_evidence_of_result(result)
+    assert provenance is not None
+    forged = (provenance[0], provenance[1], "f" * 64, provenance[3], provenance[4])
+    bad_transition = replace(
+        transition,
+        event=_event_with_provenance(transition.event, forged),
+    )
+    _assert_persistence_rejected_without_writes(fixture, bad_transition)
+
+
+def test_cross_attempt_result_provenance_cannot_commit_terminal_state(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    first_result = execute_openai_model_invocation(
+        fixture.request,
+        (),
+        _api_key(),
+        fixture.approval,
+        transport=lambda _: _success_response(),
+        execution_evidence=fixture.context,
+    )
+    second_request, second_approval, second_context = _second_step_execution(fixture)
+    second_result = execute_openai_model_invocation(
+        second_request,
+        (),
+        _api_key(),
+        second_approval,
+        transport=lambda _: _success_response(),
+        execution_evidence=second_context,
+    )
+    first_provenance = execution_evidence_of_result(first_result)
+    second_provenance = execution_evidence_of_result(second_result)
+    assert first_provenance is not None and second_provenance is not None
+
+    with pytest.raises(FrozenInstanceError):
+        first_result.execution_attempt_id = second_provenance[0]  # type: ignore[attr-defined]
+    assert execution_evidence_of_result(first_result) == first_provenance
+
+    transition = _success_transition(fixture, first_result)
+    bad_transition = replace(
+        transition,
+        event=_event_with_provenance(transition.event, second_provenance),
+    )
+    _assert_persistence_rejected_without_writes(fixture, bad_transition)
 
 
 def test_cli_inspection_is_read_only_and_does_not_emit_raw_body(

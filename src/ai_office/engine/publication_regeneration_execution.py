@@ -21,13 +21,17 @@ from ai_office.engine.post_terminal_facts import (
 )
 from ai_office.engine.publication_regeneration import (
     PublicationRegenerationApproval,
+    PublicationRegenerationAttemptAlreadyConsumedError,
     PublicationRegenerationAttemptClaim,
     PublicationRegenerationAttemptClaimError,
     PublicationRegenerationPlan,
     claim_publication_regeneration_attempt,
+    publication_regeneration_attempt_claim_path,
+    publication_regeneration_consumption_key,
     validate_publication_regeneration_approval,
     validate_publication_regeneration_plan,
 )
+from ai_office.execution_evidence import ExecutionEvidenceContext
 from ai_office.execution_target import (
     ModelExecutionTarget,
     ModelExecutionTargetError,
@@ -77,16 +81,17 @@ def execute_approved_publication_regeneration(
     resolved_tools: tuple[ToolDefinition, ...],
     inner_approval: ModelInvocationExecutionApproval,
     execution_target: ModelExecutionTarget,
+    execution_evidence: ExecutionEvidenceContext,
     environment: Mapping[str, str] | None = None,
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
 ) -> ModelInvocationResult:
     """Execute one exact, durably claimed publication regeneration attempt.
 
     The explicit argument order is the control contract: fresh audit reload,
-    plan revalidation, both approvals, target/credential preflight, and only
-    then the existing provider executor.  The wrapper passed to that executor
-    exclusively owns the final Phase 265 claim and delegates the supplied
-    transport at most once.
+    plan revalidation, both approvals, target/credential preflight, and the
+    outer-marker preflight precede the shared provider executor. Its Run-bound
+    attempt claim and this module's outer one-use claim are durable before
+    transport.
     """
     audit = _load_fresh_audit(audit_path)
     _validate_plan(plan, audit, request, resolved_tools, execution_target)
@@ -104,17 +109,22 @@ def execute_approved_publication_regeneration(
     if not callable(transport):
         _raise_execution("transport")
 
+    try:
+        marker_path = publication_regeneration_attempt_claim_path(
+            ledger_directory,
+            publication_regeneration_consumption_key(outer_approval),
+        )
+        if marker_path.exists() or marker_path.is_symlink():
+            raise PublicationRegenerationAttemptAlreadyConsumedError(
+                "already_consumed"
+            )
+    except PublicationRegenerationAttemptClaimError:
+        # Existing or corrupt markers fail closed before an attempt is claimed.
+        raise
+
     transport_entered = False
 
-    def guarded_transport(request_value):
-        nonlocal transport_entered
-        if transport_entered:
-            _raise_execution("transport_reuse")
-        transport_entered = True
-
-        # This is intentionally the only durable side effect in this module.
-        # It remains immediately adjacent to the actual external-side-effect
-        # dependency call and is never compensated after success.
+    def claim_outer_attempt() -> None:
         claim = claim_publication_regeneration_attempt(
             ledger_directory,
             plan,
@@ -122,6 +132,12 @@ def execute_approved_publication_regeneration(
         )
         if type(claim) is not PublicationRegenerationAttemptClaim:
             _raise_execution("claim")
+
+    def guarded_transport(request_value):
+        nonlocal transport_entered
+        if transport_entered:
+            _raise_execution("transport_reuse")
+        transport_entered = True
         return transport(request_value)
 
     try:
@@ -132,6 +148,8 @@ def execute_approved_publication_regeneration(
             inner_approval,
             transport=guarded_transport,
             execution_target=target,
+            execution_evidence=execution_evidence,
+            before_transport=claim_outer_attempt,
         )
     except PublicationRegenerationAttemptClaimError:
         # Phase 265 classifications, including already_consumed and

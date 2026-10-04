@@ -143,6 +143,14 @@ normalized result sidecar は exact attempt と raw-response digest（raw respon
 最終 step outcome を exact provider attempt まで追跡できる。legacy Run や incomplete sidecar
 から過去の provider 実行を推測して evidence を作ることはしない。
 
+provider transport を所有する実行境界はRun-bound Execution Evidenceを必須とし、request、
+resolved tools、Execution Approval、targetが同じcontextに束縛されない場合はtransportへ
+進めない。request/payload生成などprovider-free処理自体はEvidenceを要求しない。normalized
+resultのprovenanceは作成時に固定され、後付けで別attemptへ変更するAPIは提供しない。
+Run-bound terminal persistenceは参照attempt/result/raw evidenceをauthoritative namespaceから
+再読込し、eventのsemantic outcomeまで一致する場合だけstate/eventを書き込む。forged、
+nonexistent、mismatched、cross-attempt linkageはterminal commitを拒否する。
+
 この Milestone では Recovery Approval、retry/new-attempt、Artifact、provider failover、
 generic event-sourcing framework は実装しない。
 
