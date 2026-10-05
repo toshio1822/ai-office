@@ -172,14 +172,37 @@ def classify_loaded_persisted_execution_outcome(
     if type(workflow) is not WorkflowDefinition:
         _raise("workflow_definition")
     assert type(workflow) is WorkflowDefinition
-    _validate_history_type(history)
-    _validate_history_contents(history)
-    _validate_terminal_state(history.state)
-    _validate_workflow_identity(workflow, history.state)
-    _validate_event_history(workflow, history.state, history.events)
+    validate_loaded_persisted_execution_history(
+        workflow, history, require_terminal_state=True
+    )
+    assert type(history) is LoadedWorkflowExecutionHistory
     result = _build_result(history.state)
     _validate_result_contract(result, history.state)
     return result
+
+
+def validate_loaded_persisted_execution_history(
+    workflow: object,
+    history: object,
+    *,
+    require_terminal_state: bool = False,
+    allow_unstarted_running_current_step: bool = False,
+) -> None:
+    """Validate one loaded state and transcript against its pinned workflow."""
+    if type(workflow) is not WorkflowDefinition:
+        _raise("workflow_definition")
+    if type(history) is not LoadedWorkflowExecutionHistory:
+        _raise("history_data")
+    _validate_history_contents(history)
+    if require_terminal_state:
+        _validate_terminal_state(history.state)
+    _validate_workflow_identity(workflow, history.state)
+    _validate_event_history(
+        workflow,
+        history.state,
+        history.events,
+        allow_unstarted_running_current_step=allow_unstarted_running_current_step,
+    )
 
 
 def _validate_inputs(
@@ -246,11 +269,6 @@ def _reject_changed_targets(
         _raise("history_data")
 
 
-def _validate_history_type(history: object) -> None:
-    if type(history) is not LoadedWorkflowExecutionHistory:
-        _raise("history_data")
-
-
 def _validate_history_contents(history: LoadedWorkflowExecutionHistory) -> None:
     if (
         type(history.state) is not WorkflowExecutionState
@@ -309,8 +327,12 @@ def _validate_event_history(
     workflow: WorkflowDefinition,
     state: WorkflowExecutionState,
     events: tuple[RuntimeStepEvent, ...],
+    *,
+    allow_unstarted_running_current_step: bool = False,
 ) -> None:
-    if not events:
+    if not events and not (
+        state.status == "running" and allow_unstarted_running_current_step
+    ):
         _raise("event_history")
     positions = {step.id: index for index, step in enumerate(workflow.steps, 1)}
     groups: dict[int, list[RuntimeStepEvent]] = {}
@@ -342,6 +364,12 @@ def _validate_event_history(
     for index in range(1, state.current_step_index + 1):
         group = groups.get(index)
         if not group:
+            if (
+                index == state.current_step_index
+                and state.status == "running"
+                and allow_unstarted_running_current_step
+            ):
+                continue
             _raise("event_history")
         end_status: str | None = None
         for event in group:

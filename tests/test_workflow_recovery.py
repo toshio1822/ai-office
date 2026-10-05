@@ -712,6 +712,82 @@ def test_recovery_inspection_is_read_only_and_terminal_failure_needs_explicit_re
     assert artifacts[0].content == b"recovered output"
 
 
+@pytest.mark.parametrize(
+    "linkage_field",
+    (
+        "normalized_result_evidence_sha256",
+        "raw_response_evidence_sha256",
+    ),
+)
+def test_recovery_fails_closed_on_mismatched_terminal_evidence_linkage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    linkage_field: str,
+) -> None:
+    fixture = _fixture(tmp_path, f"run-corrupt-{linkage_field}")
+    result = execute_openai_model_invocation(
+        fixture.request,
+        (),
+        OpenAIApiKey(value=SecretStr("initial-key")),
+        fixture.approval,
+        transport=lambda _: _api_failure_response(),
+        execution_evidence=fixture.execution_context,
+    )
+    assert type(result) is ModelInvocationFailure
+    _persist_result(fixture, result)
+
+    events = [
+        json.loads(line)
+        for line in fixture.run.events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    terminal = next(event for event in events if event["event_type"] == "step_failed")
+    terminal[linkage_field] = "0" * 64
+    fixture.run.events_path.write_text(
+        "".join(
+            json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n"
+            for event in events
+        ),
+        encoding="utf-8",
+    )
+    before_recovery = _snapshot_run_namespace(fixture.run.store.root)
+    calls: list[object] = []
+    _prepare_new_transport(monkeypatch, calls)
+
+    inspection = _inspect(fixture)
+    assert inspection.exit_code != 0
+    recovery = runner.invoke(
+        app,
+        _recover_args(fixture, {"recovery_decision_sha256": "0" * 64}),
+    )
+
+    assert recovery.exit_code == 2
+    assert calls == []
+    assert _snapshot_run_namespace(fixture.run.store.root) == before_recovery
+
+
+def test_recovery_fails_closed_when_completed_predecessor_history_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _two_step_failed_fixture(tmp_path, "run-missing-predecessor-history")
+    event_lines = fixture.run.events_path.read_text(encoding="utf-8").splitlines()
+    assert len(event_lines) == 2
+    fixture.run.events_path.write_text(event_lines[1] + "\n", encoding="utf-8")
+    before_recovery = _snapshot_run_namespace(fixture.run.store.root)
+    calls: list[object] = []
+    _prepare_new_transport(monkeypatch, calls)
+
+    inspection = _inspect(fixture)
+    assert inspection.exit_code != 0
+    recovery = runner.invoke(
+        app,
+        _recover_args(fixture, {"recovery_decision_sha256": "0" * 64}),
+    )
+
+    assert recovery.exit_code == 2
+    assert calls == []
+    assert _snapshot_run_namespace(fixture.run.store.root) == before_recovery
+
+
 def test_recovery_preserves_completed_predecessor_and_pinned_run_meaning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

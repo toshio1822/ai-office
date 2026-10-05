@@ -8,6 +8,9 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
+from ai_office.engine.persisted_execution_outcome_reentry import (
+    validate_loaded_persisted_execution_history,
+)
 from ai_office.engine.workflow_approval_evidence import (
     RecoveryApprovalEvidence,
     load_recovery_approval_evidence,
@@ -16,9 +19,11 @@ from ai_office.engine.workflow_approval_evidence import (
 from ai_office.engine.workflow_run_manifest import (
     WorkflowRunManifestStore,
     load_workflow_run_manifest,
+    workflow_definition_from_run_manifest,
 )
 from ai_office.execution_evidence import (
     ExecutionAttemptEvidence,
+    _validate_run_terminal_event,
     execution_normalized_result_evidence_path,
     execution_raw_response_evidence_path,
     list_run_execution_evidence,
@@ -93,6 +98,19 @@ def assess_workflow_recovery(
             )
         )
         state = history.state
+        if state.status in {"running", "failed"}:
+            for event in history.events:
+                if event.event_type in {
+                    "step_succeeded",
+                    "step_failed",
+                    "step_recovery_started",
+                }:
+                    _validate_run_terminal_event(store.root, binding, event)
+            validate_loaded_persisted_execution_history(
+                workflow_definition_from_run_manifest(manifest),
+                history,
+                allow_unstarted_running_current_step=True,
+            )
         if (
             binding_of(state) != binding
             or state.workflow_id != manifest.workflow_id
