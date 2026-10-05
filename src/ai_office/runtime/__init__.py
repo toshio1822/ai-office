@@ -23,7 +23,6 @@ from ai_office.runtime.workflow_execution_transition import (
     WorkflowExecutionTransition,
     WorkflowExecutionTransitionInputError,
     build_running_workflow_execution_state,
-    transition_workflow_execution_for_recovery,
     transition_workflow_execution_from_step_result,
 )
 
@@ -44,7 +43,6 @@ __all__ = [
     "WorkflowExecutionTransition",
     "WorkflowExecutionTransitionInputError",
     "build_running_workflow_execution_state",
-    "transition_workflow_execution_for_recovery",
     "execute_openai_runtime_step",
     "is_valid_step_runtime_execution_result",
     "transition_workflow_execution_from_step_result",

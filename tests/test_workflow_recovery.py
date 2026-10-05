@@ -22,6 +22,12 @@ from ai_office.engine import (
     loaded_workflow_from_run_manifest,
     tool_catalog_from_run_manifest,
 )
+from ai_office.engine.persisted_continuation_runtime_facts import (
+    build_persisted_continuation_runtime_facts,
+)
+from ai_office.engine.upstream_step_output_handoff import (
+    build_immediate_predecessor_upstream_inputs,
+)
 from ai_office.engine.workflow_approval_evidence import (
     build_execution_approval_evidence_for_tools,
     build_recovery_approval_evidence,
@@ -47,6 +53,7 @@ from ai_office.execution_evidence import (
 )
 from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import (
+    EMPTY_RUNTIME_FACTS,
     ModelInvocationExecutionApproval,
     ModelInvocationFailure,
     ModelInvocationRequest,
@@ -70,7 +77,11 @@ from ai_office.runtime import (
 from ai_office.runtime.executed_step_transition_persistence import (
     persist_executed_step_transition,
 )
-from ai_office.storage import serialize_workflow_execution_state_json
+from ai_office.storage import (
+    WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history_with_source_digests,
+    serialize_workflow_execution_state_json,
+)
 from tests._run_test_support import TestRun as RunFixture
 from tests._run_test_support import create_test_run
 
@@ -192,6 +203,227 @@ def _fixture(tmp_path: Path, run_id: str) -> RecoveryFixture:
     return RecoveryFixture(
         run, workflow, employee, request, approval, execution_context
     )
+
+
+def _prepare_approved_step(
+    run: RunFixture,
+    workflow: WorkflowDefinition,
+    plan: object,
+    employees: list[object],
+    step_index: int,
+    run_input: str,
+    *,
+    approval_id: str,
+    upstream_inputs: tuple[object, ...] = (),
+    runtime_facts: object = EMPTY_RUNTIME_FACTS,
+) -> tuple[object, ModelInvocationRequest, ModelInvocationExecutionApproval, object]:
+    step_request = build_step_execution_request(
+        plan,
+        step_index,
+        employees,
+        run_id=run.binding.run_id,
+        manifest_digest=run.binding.manifest_digest,
+    )
+    request = build_model_invocation_request(
+        step_request,
+        upstream_inputs=upstream_inputs,
+        runtime_facts=runtime_facts,
+        run_input=run_input,
+    )
+    approval = approve_model_invocation_execution(
+        request,
+        (),
+        provider="openai",
+        approved_by="initial-operator",
+        approval_id=approval_id,
+        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    persist_execution_approval_evidence(
+        run.store,
+        build_execution_approval_evidence_for_tools(
+            request,
+            (),
+            approval,
+            workflow_id=workflow.id,
+            step_id=step_request.step_id,
+            step_index=step_index,
+            employee_id=step_request.employee_id,
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+        ),
+    )
+    context = build_execution_evidence_context(
+        store_root=run.store.root,
+        binding=run.binding,
+        workflow_id=workflow.id,
+        step_id=step_request.step_id,
+        step_index=step_index,
+        employee_id=step_request.employee_id,
+        request=request,
+        resolved_tools=(),
+        approval=approval,
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    return step_request, request, approval, context
+
+
+def _two_step_failed_fixture(tmp_path: Path, run_id: str) -> RecoveryFixture:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "two-step-recovery-workflow",
+            "name": "Two Step Recovery Workflow",
+            "description": "Keep completed predecessor meaning during recovery.",
+            "steps": [
+                {
+                    "id": "completed-step",
+                    "name": "Completed Step",
+                    "employee": "predecessor-employee",
+                    "instructions": "Produce the predecessor output.",
+                    "business_approval_required": False,
+                },
+                {
+                    "id": "recoverable-step",
+                    "name": "Recoverable Step",
+                    "employee": "recovery-employee",
+                    "instructions": "Use the completed predecessor output.",
+                    "business_approval_required": False,
+                    "artifact_content_type": "text/plain",
+                },
+            ],
+        }
+    )
+    predecessor_employee = EmployeeDefinition(
+        id="predecessor-employee",
+        name="Predecessor Employee",
+        role="Completed predecessor",
+        instructions="Return stable predecessor context.",
+        model="recovery-model",
+        allowed_tools=[],
+    )
+    employee = _employee()
+    run = create_test_run(
+        tmp_path / "runs",
+        run_id,
+        workflow,
+        (predecessor_employee, employee),
+        with_business_approvals=False,
+    )
+    manifest = load_workflow_run_manifest(run.store, run_id)
+    pinned_workflow = loaded_workflow_from_run_manifest(manifest)
+    pinned_employees = loaded_employees_from_run_manifest(manifest)
+    plan = build_execution_plan(pinned_workflow, pinned_employees)
+    (
+        predecessor_request,
+        predecessor_invocation,
+        predecessor_approval,
+        predecessor_context,
+    ) = _prepare_approved_step(
+        run,
+        workflow,
+        plan,
+        pinned_employees,
+        1,
+        manifest.run_input,
+        approval_id=f"predecessor-execution-{run_id}",
+    )
+    predecessor_state = WorkflowExecutionState(
+        workflow_id=workflow.id,
+        status="running",
+        current_step_id=predecessor_request.step_id,
+        current_step_index=1,
+        current_employee_id=predecessor_request.employee_id,
+        completed_step_ids=(),
+        last_failure_category=None,
+        binding=run.binding,
+    )
+    run.state_path.write_text(
+        serialize_workflow_execution_state_json(predecessor_state),
+        encoding="utf-8",
+    )
+    run.events_path.write_text("", encoding="utf-8")
+    predecessor_result = execute_openai_model_invocation(
+        predecessor_invocation,
+        (),
+        OpenAIApiKey(value=SecretStr("initial-key")),
+        predecessor_approval,
+        transport=lambda _: _success_response("predecessor output"),
+        execution_evidence=predecessor_context,
+    )
+    assert type(predecessor_result) is ModelInvocationSuccess
+    persist_executed_step_transition(
+        StepRuntimeExecutionSuccess(
+            workflow_id=workflow.id,
+            step_id=predecessor_request.step_id,
+            step_index=1,
+            employee_id=predecessor_request.employee_id,
+            invocation_result=predecessor_result,
+            binding=run.binding,
+        ),
+        run.state_path,
+        run.events_path,
+    )
+
+    history, state_digest, _ = load_workflow_execution_history_with_source_digests(
+        WorkflowExecutionPersistenceTargets(
+            run.state_path,
+            run.events_path,
+            binding=run.binding,
+        )
+    )
+    upstream_inputs = build_immediate_predecessor_upstream_inputs(
+        workflow.id, 2, history
+    )
+    runtime_facts = build_persisted_continuation_runtime_facts(
+        workflow.id,
+        2,
+        history,
+        state_source_sha256=state_digest,
+    )
+    step_request, request, approval, context = _prepare_approved_step(
+        run,
+        workflow,
+        plan,
+        pinned_employees,
+        2,
+        manifest.run_input,
+        approval_id=f"initial-step-two-execution-{run_id}",
+        upstream_inputs=upstream_inputs,
+        runtime_facts=runtime_facts,
+    )
+    running_state = WorkflowExecutionState(
+        workflow_id=workflow.id,
+        status="running",
+        current_step_id=step_request.step_id,
+        current_step_index=2,
+        current_employee_id=step_request.employee_id,
+        completed_step_ids=(predecessor_request.step_id,),
+        last_failure_category=None,
+        binding=run.binding,
+    )
+    run.state_path.write_text(
+        serialize_workflow_execution_state_json(running_state), encoding="utf-8"
+    )
+    failed_result = execute_openai_model_invocation(
+        request,
+        (),
+        OpenAIApiKey(value=SecretStr("initial-key")),
+        approval,
+        transport=lambda _: _api_failure_response(),
+        execution_evidence=context,
+    )
+    assert type(failed_result) is ModelInvocationFailure
+    persist_executed_step_transition(
+        StepRuntimeExecutionFailure(
+            workflow_id=workflow.id,
+            step_id=step_request.step_id,
+            step_index=2,
+            employee_id=step_request.employee_id,
+            invocation_result=failed_result,
+            binding=run.binding,
+        ),
+        run.state_path,
+        run.events_path,
+    )
+    return RecoveryFixture(run, workflow, employee, request, approval, context)
 
 
 def _success_response(text: str = "recovered output") -> OpenAIResponsesRawHttpResponse:
@@ -391,6 +623,8 @@ def test_recovery_inspection_is_read_only_and_terminal_failure_needs_explicit_re
     decision = json.loads(inspection.stdout)
     assert decision["eligible"] is True
     assert decision["action"] == "retry_failed"
+    assert "initial-key" not in inspection.stdout
+    assert '"body_base64"' not in inspection.stdout
     assert _snapshot_run_namespace(fixture.run.store.root) == before_inspection
 
     calls: list[object] = []
@@ -408,9 +642,36 @@ def test_recovery_inspection_is_read_only_and_terminal_failure_needs_explicit_re
     assert ordinary_continue.exit_code == 1
     assert calls == []
 
+    preview = runner.invoke(
+        app,
+        [
+            "workflows",
+            "continue",
+            fixture.run.binding.run_id,
+            "--run-store",
+            str(fixture.run.store.root),
+            "--preview-only",
+        ],
+    )
+    assert preview.exit_code == 0, preview.stdout + preview.stderr
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "result",
+            fixture.run.binding.run_id,
+            "--run-store",
+            str(fixture.run.store.root),
+        ],
+    )
+    assert result.exit_code == 1
+    assert calls == []
+    assert _snapshot_run_namespace(fixture.run.store.root) == before_inspection
+
     recovered = runner.invoke(app, _with_execution_approval(fixture, decision))
     assert recovered.exit_code == 0, recovered.stdout + recovered.stderr
     assert len(calls) == 1
+    assert "synthetic-recovery-key" not in recovered.stdout
     recovered_value = json.loads(recovered.stdout)
     assert recovered_value["status"] == "workflow_complete"
     assert fixture.run.events_path.read_bytes().startswith(old_events)
@@ -449,6 +710,74 @@ def test_recovery_inspection_is_read_only_and_terminal_failure_needs_explicit_re
     assert len(artifacts) == 1
     assert artifacts[0].execution_attempt_id == recovered_attempt.attempt_id
     assert artifacts[0].content == b"recovered output"
+
+
+def test_recovery_preserves_completed_predecessor_and_pinned_run_meaning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _two_step_failed_fixture(tmp_path, "run-two-step-recovery")
+    run_id = fixture.run.binding.run_id
+    manifest_path = fixture.run.store.manifest_path(run_id)
+    manifest_before = manifest_path.read_bytes()
+    events_before = fixture.run.events_path.read_bytes().splitlines()
+    predecessor_event = events_before[0]
+    attempts_before = list_run_execution_evidence(fixture.run.store.root, run_id)
+    predecessor_attempt = next(
+        attempt for attempt in attempts_before if attempt.step_id == "completed-step"
+    )
+    predecessor_attempt_path = execution_attempt_evidence_path(
+        fixture.run.store.root, run_id, predecessor_attempt.attempt_id
+    )
+    predecessor_attempt_bytes = predecessor_attempt_path.read_bytes()
+    decision = _inspect_value(fixture)
+    assert decision["action"] == "retry_failed"
+    assert decision["step_index"] == 2
+    assert decision["invocation_fingerprint"] == fixture.approval.request_fingerprint
+
+    calls: list[object] = []
+
+    def recover(request: object) -> OpenAIResponsesRawHttpResponse:
+        calls.append(request)
+        return _success_response("recovered step two")
+
+    monkeypatch.setattr(cli_module, "send_openai_responses_http_request", recover)
+    monkeypatch.setattr(
+        cli_module,
+        "load_openai_api_key_from_environment",
+        lambda: OpenAIApiKey(value=SecretStr("synthetic-recovery-key")),
+    )
+    result = runner.invoke(app, _with_execution_approval(fixture, decision))
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert len(calls) == 1
+    assert json.loads(result.stdout)["status"] == "workflow_complete"
+
+    manifest_after = load_workflow_run_manifest(fixture.run.store, run_id)
+    assert manifest_path.read_bytes() == manifest_before
+    assert manifest_after.run_input == f"input-{run_id}"
+    assert fixture.run.events_path.read_bytes().splitlines()[0] == predecessor_event
+    assert predecessor_attempt_path.read_bytes() == predecessor_attempt_bytes
+    final_history, _, _ = load_workflow_execution_history_with_source_digests(
+        WorkflowExecutionPersistenceTargets(
+            fixture.run.state_path,
+            fixture.run.events_path,
+            binding=fixture.run.binding,
+        )
+    )
+    assert final_history.state.completed_step_ids == (
+        "completed-step",
+        "recoverable-step",
+    )
+    recovered_attempt = next(
+        attempt
+        for attempt in list_run_execution_evidence(fixture.run.store.root, run_id)
+        if attempt.step_id == "recoverable-step"
+        and attempt.schema_version == "workflow-execution-attempt.v2"
+    )
+    artifacts = list_run_artifacts(fixture.run.store, run_id)
+    assert len(artifacts) == 1
+    assert artifacts[0].step_id == "recoverable-step"
+    assert artifacts[0].execution_attempt_id == recovered_attempt.attempt_id
+    assert artifacts[0].content == b"recovered step two"
 
 
 def test_durable_normalized_result_is_completed_without_provider_replay(

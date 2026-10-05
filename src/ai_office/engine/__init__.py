@@ -677,13 +677,6 @@ from ai_office.engine.workflow_progression import (
     WorkflowProgressionDecisionType,
     decide_workflow_progression,
 )
-from ai_office.engine.workflow_recovery import (
-    RecoveryAction,
-    WorkflowRecoveryAssessment,
-    WorkflowRecoveryError,
-    assess_workflow_recovery,
-    validate_workflow_recovery_authorization,
-)
 from ai_office.engine.workflow_run_manifest import (
     EmployeeDefinitionSnapshot,
     ToolContractSnapshot,
@@ -852,11 +845,6 @@ __all__ = [
     "validate_business_approval_evidence",
     "validate_execution_approval_evidence",
     "validate_recovery_approval_evidence",
-    "RecoveryAction",
-    "WorkflowRecoveryAssessment",
-    "WorkflowRecoveryError",
-    "assess_workflow_recovery",
-    "validate_workflow_recovery_authorization",
     "ExecutionAttemptAlreadyClaimedError",
     "ExecutionAttemptEvidence",
     "ExecutionEvidenceConflictError",
