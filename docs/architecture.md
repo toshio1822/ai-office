@@ -98,7 +98,7 @@ symlink、unknown/missing field、duplicate key、非 canonical bytes、cross-Ru
 Manifest mismatch は fail closed する。通常の inspect/load は provider、tool、network
 を呼ばず、evidence に credential、environment value、raw provider payload を保存しない。
 
-fresh start と bounded continuation は、required Business Approval evidence を step の
+fresh start と明示的な1-step continuation は、required Business Approval evidence を step の
 preparation/provider path に入る前に durable commit し、validated Execution Approval
 evidence を provider 呼出し前に durable commit する。永続化が失敗または曖昧な場合は
 provider を呼ばず、既存 Run の durable state/history を破壊しない。既存の preparation
@@ -174,7 +174,7 @@ Artifact は Run namespace 内の canonical immutable record で、Run/Manifest�
 
 recovered success の terminal persistence 後も `route_persisted_execution_outcome_reentry` が canonical routing owner となる。required Artifact は成功した recovered attempt の evidence に結び付けて確立され、その後にのみ progression が再開する。failed retry は Run を停止したまま両方の failure history を残す。通常の `start`、`continue`、restart、`continue --preview-only`、`result`、recovery inspection は provider retry を始めない。
 
-bounded continuation は過去 Phase の façade chain を通らず、persisted outcome route、純粋な next-step preparation / execution-start owner、state-only persistence owner、persisted-start execution owner を直接使う。terminal result は既存の persisted-history validator と executed-step transition persistence owner が検証・commitし、その後に canonical persisted route が progression を再開する。これらの owner が state/history、approval、provider call、terminal commit の意味を保ち、Phase-era façade の並び順や内部 call topology は Current Architecture の契約ではない。
+`workflows continue` は canonical persisted outcome route から状態を再構成し、terminal failure / workflow complete なら停止する。`prepare_next_step` の場合だけ、CLI が明示承認を構成して `route_approved_workflow_continuation_cycle` を1回呼び出す。この owner は durable history を再検証し、許可された次の1 stepだけを実行してその結果 route を返す。別のコマンドによる明示承認なしに次の step へ進まず、provider retry、fallback、自動継続を行わない。fresh start は `route_approved_workflow_fresh_start` を直接使い、step 1 の結果を返して停止する。
 
 
 ## Phase 59: classified persisted outcome routing phase bridge reentry
@@ -3475,6 +3475,8 @@ exactly 20 tests and uses synthetic transports exclusively.
 
 ## Phase 192: Bounded Explicit-Context Workflow Runner
 
+> **Historical record:** Issue #687 retired the Phase-192/210/212 bounded runner layer on 2026-10-06. The runner modules, `ApprovedWorkflowContinuationContext`, and the three bounded route APIs described below are no longer active architecture or public `ai_office.engine` contracts. Current CLI composition is documented in the Milestone sections above and the Phase-214 behavior summary below; this history records the former implementation only.
+
 Phase 192 adds the public bounded runner
 `route_bounded_approved_workflow_continuation` above Phase 190:
 
@@ -3700,17 +3702,18 @@ Literals, or source/AST shape a public contract.
 Phase 214 adds only the two operator-facing commands
 `ai-office workflows start WORKFLOW_ID` and
 `ai-office workflows continue WORKFLOW_ID`. The CLI performs static/public
-request construction and uses the existing Phase 210 / Phase 212 boundaries;
-it does not add a generic engine wrapper or alter those production contracts.
+request construction and directly uses the existing fresh-start and one-step
+continuation owners. Issue #687 removed the former Phase 210 / Phase 212
+bounded runner layer.
 
 ```text
 CLI static/public request construction
   -> operator preview
   -> operator returns exact expected identity + fingerprint
   -> explicit approval construction
-  -> start: Phase210 + ()
+  -> start: route_approved_workflow_fresh_start (one step)
   -> continue preview: Phase38 canonical classification + routing (Artifact completion disabled)
-  -> continue execute: Phase38 canonical classification + Artifact completion, then Phase212 + (one context,)
+  -> continue execute: persisted route + Artifact completion, then one route_approved_workflow_continuation_cycle call
   -> STOP
 ```
 
@@ -3732,23 +3735,21 @@ index, employee ID, and request fingerprint. The CLI rebuilds the preview and
 compares these values exactly before constructing either approval or loading
 the API key. A missing or mismatched value therefore cannot silently widen the
 operator's intent; it stops before credential or provider work. The CLI guard
-is separate from Phase 212's authoritative persisted-state revalidation, which
-independently prevents execution after the persisted terminal route becomes
-stale between preview and execution.
+is separate from the continuation owner's authoritative persisted-state
+revalidation, which independently prevents execution after the persisted
+terminal route becomes stale between preview and execution.
 
-`start` constructs an `ApprovedWorkflowBootstrapContext` and calls Phase 210
-with the exact empty continuation tuple. `continue` first calls the canonical
-Phase 38 classification-and-routing boundary on every invocation, enabling
-Artifact completion only for normal execution and disabling it for preview.
-Terminal persisted failure and workflow completion stop without future approval,
-key, or transport;
-only `prepare_next_step` constructs one
-`ApprovedWorkflowContinuationContext` and calls Phase 212 with the exact
-one-element tuple. Consequently one explicit CLI approval authorizes at most
-one provider step: there is no retry, automatic continuation, loop, or
-backoff. The API key is read only on an actual execution route, and result
-output contains safe state metadata rather than credentials or raw provider
-payloads.
+`start` constructs an `ApprovedWorkflowBootstrapContext` and calls
+`route_approved_workflow_fresh_start` once. `continue` first calls the canonical
+persisted outcome route on every invocation, enabling Artifact completion only
+for normal execution and disabling it for preview. Terminal persisted failure
+and workflow completion stop without future approval, key, or transport; only
+`prepare_next_step` constructs its approval values and calls
+`route_approved_workflow_continuation_cycle` once. Consequently one explicit
+CLI approval authorizes at most one provider step: there is no retry, automatic
+continuation, loop, or backoff. The API key is read only on an actual execution
+route, and result output contains safe state metadata rather than credentials
+or raw provider payloads.
 
 Persisted `ready` and `running` states are rejected rather than replayed. An
 in-progress state does not establish whether an external provider side effect

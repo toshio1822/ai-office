@@ -24,15 +24,10 @@ from ai_office.engine import (
     ApprovedWorkflowBootstrapContext,
     InitialStepPreparationApproval,
     route_approved_workflow_fresh_start,
-    route_bounded_approved_workflow_continuation,
 )
 from ai_office.engine.approved_workflow_fresh_start import (
     FreshWorkflowBootstrapCompatibilityError,
 )
-from ai_office.engine.bounded_approved_workflow_runner import (
-    ApprovedWorkflowContinuationContext,
-)
-from ai_office.engine.next_step_preparation import NextStepPreparationApproval
 from ai_office.engine.workflow_approval_evidence import (
     WorkflowApprovalEvidencePersistenceError,
     approve_business_step,
@@ -46,14 +41,13 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.invocation import (
     ModelInvocationRequest,
-    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesRawHttpResponse,
 )
-from ai_office.runtime import StepRuntimeExecutionSuccess, WorkflowRunBinding
+from ai_office.runtime import StepRuntimeExecutionSuccess
 from ai_office.runtime.persisted_start_execution import (
     PersistedStartExecutionCompatibilityError,
 )
@@ -66,7 +60,6 @@ from ai_office.storage import (
     serialize_workflow_execution_state_json,
 )
 from ai_office.tools import ToolDefinition
-from tests._phase260_test_support import synthetic_continuation_facts
 from tests._run_test_support import create_test_run
 
 
@@ -198,69 +191,6 @@ def failure_transport(calls: list[object]):
         )
 
     return transport
-
-
-def real_context_for(
-    wf: WorkflowDefinition,
-    index: int,
-    calls: list[object] | None = None,
-    *,
-    binding: WorkflowRunBinding | None = None,
-) -> ApprovedWorkflowContinuationContext:
-    """One Phase-192 context for a real bounded continuation run."""
-    emp = employee(index)
-    upstream = UpstreamStepOutput(
-        wf.id,
-        wf.steps[index - 2].id,
-        index - 1,
-        wf.steps[index - 2].employee,
-        "ok",
-    )
-    request = ModelInvocationRequest(
-        emp.model,
-        emp.instructions,
-        wf.steps[index - 1].instructions,
-        (),
-        (upstream,),
-        synthetic_continuation_facts(
-            workflow_id=wf.id,
-            predecessor_step_id=wf.steps[index - 2].id,
-            predecessor_step_index=index - 1,
-            predecessor_employee_id=wf.steps[index - 2].employee,
-            completed_step_ids=tuple(step.id for step in wf.steps[: index - 1]),
-            output_text="ok",
-            response_id="resp-1",
-            request_id="request-1",
-            next_step_index=index,
-            binding=binding,
-        ),
-        run_id=None if binding is None else binding.run_id,
-        manifest_digest=None if binding is None else binding.manifest_digest,
-        run_input=None if binding is None else f"input-{binding.run_id}",
-    )
-    approval_value = approve_model_invocation_execution(
-        request,
-        (),
-        provider="openai",
-        approved_by="reviewer",
-        approval_id=f"approval-{index}",
-    )
-    return ApprovedWorkflowContinuationContext(
-        NextStepPreparationApproval(
-            True,
-            wf.id,
-            wf.steps[index - 2].id,
-            index - 1,
-            wf.steps[index - 1].id,
-            index,
-            emp.id,
-        ),
-        emp,
-        (),
-        OpenAIApiKey(value=SecretStr("synthetic-key")),
-        approval_value,
-        success_transport(calls) if calls is not None else None,
-    )
 
 
 def classification(error: BaseException) -> str:
@@ -1313,9 +1243,7 @@ def test_14_phase172_errors_keep_post_invocation_bytes_without_outer_rollback(
     assert malformed_events.read_bytes() == b"phase172-malformed-events"
 
 
-def test_15_fresh_start_stops_before_explicit_phase192_continuation(
-    tmp_path: Path,
-) -> None:
+def test_15_fresh_start_stops_after_first_step(tmp_path: Path) -> None:
     wf = workflow(3)
     calls: list[object] = []
     state_path, events_path = (
@@ -1331,26 +1259,13 @@ def test_15_fresh_start_stops_before_explicit_phase192_continuation(
     )
     assert type(first) is WorkflowProgressionDecision
     assert first.decision == "prepare_next_step"
+    assert first.current_step_id == "step-1"
+    assert first.current_step_index == 1
+    assert first.next_step_id == "step-2"
+    assert first.next_step_index == 2
     assert calls == [1]
     assert load_workflow_execution_state(state_path).completed_step_ids == ("step-1",)
-
-    final = route_bounded_approved_workflow_continuation(
-        first,
-        wf,
-        state_path,
-        events_path,
-        (
-            real_context_for(wf, 2, calls, binding=bootstrap.binding),
-            real_context_for(wf, 3, calls, binding=bootstrap.binding),
-        ),
-    )
-    assert type(final) is WorkflowProgressionDecision
-    assert final.decision == "workflow_complete"
-    assert final.current_step_index == 3
-    assert calls == [1, 1, 1]
-    state = load_workflow_execution_state(state_path)
-    assert state.completed_step_ids == ("step-1", "step-2", "step-3")
     history = load_workflow_execution_history(
         WorkflowExecutionPersistenceTargets(state_path, events_path)
     )
-    assert len(history.events) == 3
+    assert len(history.events) == 1

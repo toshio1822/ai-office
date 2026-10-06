@@ -1,6 +1,6 @@
-"""Phase 208 explicit fresh workflow step-1 bootstrap boundary.
+"""Run-bound fresh workflow step-1 bootstrap boundary.
 
-This module implements the first authoritative public production owner for
+This module implements the authoritative public production owner for
 starting a brand-new workflow at step 1 exactly once from nonexistent durable
 targets.  Its public contract is limited to the workflow, state target, event
 target, and bootstrap context; the existing canonical lower owners are used
@@ -27,8 +27,8 @@ Stage order owned by this boundary::
         -> prepare_next_step(step2) | workflow_complete | persisted_failure
         -> STOP
 
-Phase 208 never calls Phase 190 or Phase 192 internally.  A later bounded
-Phase-192 continuation remains a separate caller action.
+Fresh start never prepares, starts, or executes a later step. A later
+continuation remains a separate explicit caller action.
 """
 
 # ruff: noqa: E501,E701,I001
@@ -230,9 +230,9 @@ def route_approved_workflow_fresh_start(
     explicit step-1 preparation approval and employee, builds the exact
     prepared step-1 models, persists the running state once, executes the
     persisted start exactly once through the current public execution owner,
-    and delegates the exact runtime result to Phase 172 exactly once.  The
-    exact Phase-172 outer result is returned by identity and the boundary
-    stops: Phase 190 / Phase 192 are never called here.
+    and delegates the exact runtime result to the canonical terminal
+    transition owner exactly once. The resulting route is returned and this
+    boundary stops before any later step.
     """
     _check_initial_inputs(
         workflow,

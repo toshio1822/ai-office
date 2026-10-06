@@ -3406,6 +3406,8 @@ synthetic transports exclusively.
 
 ## Phase 192: Bounded Explicit-Context Workflow Runner
 
+> **Historical record:** Issue #687 retired the Phase-192/210/212 bounded runner layer on 2026-10-06. The runner modules, `ApprovedWorkflowContinuationContext`, and the three bounded route APIs described below are no longer active architecture or public `ai_office.engine` contracts. The current CLI performs one explicit fresh start or one approved continuation directly through its semantic owner; this section records the former implementation only.
+
 Phase 192 exposes `route_bounded_approved_workflow_continuation`, a bounded
 runner over the public Phase-190 cycle. The caller supplies an exact built-in
 tuple of frozen `ApprovedWorkflowContinuationContext` values; each tuple
