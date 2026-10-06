@@ -24,6 +24,8 @@ from ai_office.storage.workflow_execution_persistence import (
     WorkflowExecutionPersistenceResult,
     WorkflowExecutionPersistenceTargets,
     persist_workflow_execution_transition,
+    serialize_runtime_step_event_jsonl,
+    serialize_workflow_execution_state_json,
 )
 
 ExecutedStepTransitionPersistenceClassification = Literal[
@@ -35,6 +37,7 @@ ExecutedStepTransitionPersistenceClassification = Literal[
     "event_target",
     "target_conflict",
     "transition_contract",
+    "persistence_contract",
 ]
 _ERROR_MESSAGE = "executed-step transition persistence inputs are incompatible"
 
@@ -82,7 +85,7 @@ def persist_executed_step_transition(
     _validate_result_identity(current_state, result)
     transition = transition_workflow_execution_from_step_result(current_state, result)
     _validate_transition_contract(transition, current_state, result)
-    return persist_workflow_execution_transition(
+    value = persist_workflow_execution_transition(
         transition,
         WorkflowExecutionPersistenceTargets(
             state_path,
@@ -90,6 +93,33 @@ def persist_executed_step_transition(
             binding=binding_of(current_state),
         ),
     )
+    _validate_persistence_result(value, transition, state_path, events_path)
+    return value
+
+
+def _validate_persistence_result(
+    value: object,
+    transition: WorkflowExecutionTransition,
+    state_path: Path,
+    events_path: Path,
+) -> None:
+    if type(value) is not WorkflowExecutionPersistenceResult:
+        _raise("persistence_contract")
+    expected_state_bytes = len(
+        serialize_workflow_execution_state_json(transition.next_state).encode("utf-8")
+    )
+    expected_event_bytes = len(
+        serialize_runtime_step_event_jsonl(transition.event).encode("utf-8")
+    )
+    if not (
+        value.state_path == state_path
+        and value.events_path == events_path
+        and type(value.state_bytes_written) is int
+        and value.state_bytes_written == expected_state_bytes
+        and type(value.event_bytes_appended) is int
+        and value.event_bytes_appended == expected_event_bytes
+    ):
+        _raise("persistence_contract")
 
 
 def _validate_explicit_inputs(

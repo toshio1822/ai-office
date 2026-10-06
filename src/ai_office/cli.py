@@ -2283,6 +2283,7 @@ def recover_workflow(
                 api_key,
                 execution_approval,
                 transport=send_openai_responses_http_request,
+                events_path=events_path,
                 recovery_assessment=assessment,
                 recovery_approval=recovery_evidence,
             )

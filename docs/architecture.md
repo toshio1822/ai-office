@@ -174,6 +174,8 @@ Artifact は Run namespace 内の canonical immutable record で、Run/Manifest�
 
 recovered success の terminal persistence 後も `route_persisted_execution_outcome_reentry` が canonical routing owner となる。required Artifact は成功した recovered attempt の evidence に結び付けて確立され、その後にのみ progression が再開する。failed retry は Run を停止したまま両方の failure history を残す。通常の `start`、`continue`、restart、`continue --preview-only`、`result`、recovery inspection は provider retry を始めない。
 
+bounded continuation は過去 Phase の façade chain を通らず、persisted outcome route、純粋な next-step preparation / execution-start owner、state-only persistence owner、persisted-start execution owner を直接使う。terminal result は既存の persisted-history validator と executed-step transition persistence owner が検証・commitし、その後に canonical persisted route が progression を再開する。これらの owner が state/history、approval、provider call、terminal commit の意味を保ち、Phase-era façade の並び順や内部 call topology は Current Architecture の契約ではない。
+
 
 ## Phase 59: classified persisted outcome routing phase bridge reentry
 

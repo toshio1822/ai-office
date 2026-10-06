@@ -76,9 +76,6 @@ from ai_office.engine.persisted_success_progression import (
     PersistedSuccessProgressionError,
 )
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161Error,
-)
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError as Phase172CompatibilityError,
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
@@ -108,6 +105,9 @@ from ai_office.runtime.persisted_start_execution import (
     PersistedStartExecutionError,
     execute_persisted_start_openai_step,
 )
+from ai_office.runtime.executed_step_transition_persistence import (
+    ExecutedStepTransitionPersistenceError,
+)
 from ai_office.storage import (
     RunningStatePersistenceError,
     RunningStatePersistenceInputError,
@@ -115,6 +115,7 @@ from ai_office.storage import (
     RunningStatePersistenceResult,
     WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
+    WorkflowExecutionPersistenceRollbackError,
     load_workflow_execution_history,
     load_workflow_execution_state,
     parse_runtime_step_event,
@@ -158,8 +159,9 @@ _SAFE_RUNNING_PERSISTENCE_ERRORS = (
 _SAFE_PHASE172_ERRORS = (
     Phase172Error,
     Phase172CompatibilityError,
-    Phase161Error,
+    ExecutedStepTransitionPersistenceError,
     WorkflowExecutionLoadError,
+    WorkflowExecutionPersistenceRollbackError,
     PersistedExecutionOutcomeRoutingError,
     PersistedExecutionOutcomeError,
     PersistedSuccessProgressionError,
@@ -339,6 +341,7 @@ def route_approved_workflow_fresh_start(
             context.api_key,
             context.execution_approval,
             transport=context.transport,
+            events_path=events_path,
         )
     except _SAFE_EXECUTION_ERRORS as error:
         _restore_or_fail(state_path, events_path, running_snapshot)

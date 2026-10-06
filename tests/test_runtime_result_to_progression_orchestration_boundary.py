@@ -1,11 +1,4 @@
-"""Observable post-commit orchestration behavior.
-
-Phase 161 owns runtime/provenance validation plus terminal durable persistence;
-Phase 172 owns the post-commit composition and committed-snapshot safety
-boundary to the canonical three-input persisted routing owner; Phase 38 owns
-classification and progression.  These tests deliberately avoid historical
-Phase-143/144 call topology and private compatibility flags.
-"""
+"""Observable terminal persistence and post-commit routing behavior."""
 
 # ruff: noqa: E501,E701,E702,F401,I001
 
@@ -16,7 +9,6 @@ import pytest
 
 import ai_office.engine.persisted_execution_outcome_routing_reentry as phase38_module
 import ai_office.engine.runtime_result_to_progression_orchestration_boundary as orchestration_module
-import ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary as phase161_module
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
     PersistedExecutionOutcome,
@@ -36,15 +28,15 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
     RuntimeResultToProgressionOrchestrationBoundaryError,
     RuntimeResultToProgressionOrchestrationBoundaryFailureDetail,
 )
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161Error,
-)
 from ai_office.invocation import ModelInvocationFailure, ModelInvocationSuccess
 from ai_office.runtime import (
     RuntimeStepEvent,
     StepRuntimeExecutionFailure,
     StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
+)
+from ai_office.runtime.executed_step_transition_persistence import (
+    ExecutedStepTransitionPersistenceError,
 )
 from ai_office.storage import (
     WorkflowExecutionPersistenceResult,
@@ -230,12 +222,12 @@ def _capture_committed_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     captured: dict[str, bytes],
 ) -> None:
-    real = orchestration_module.route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary
+    real = orchestration_module.persist_executed_step_transition
 
     def counted(*args: object, **kwargs: object) -> object:
         value = real(*args, **kwargs)
-        state_path = args[2]
-        events_path = args[3]
+        state_path = args[1]
+        events_path = args[2]
         assert isinstance(state_path, Path) and isinstance(events_path, Path)
         captured["state"] = state_path.read_bytes()
         captured["events"] = events_path.read_bytes()
@@ -243,7 +235,7 @@ def _capture_committed_snapshot(
 
     monkeypatch.setattr(
         orchestration_module,
-        "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
+        "persist_executed_step_transition",
         counted,
     )
 
@@ -348,7 +340,9 @@ def test_invalid_active_provenance_fails_before_durable_commit(tmp_path: Path) -
     state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
     events_before = events_path.read_bytes()
 
-    with pytest.raises(Phase161Error):
+    with pytest.raises(
+        (PersistedExecutionOutcomeError, ExecutedStepTransitionPersistenceError)
+    ):
         route_runtime_result_to_progression_orchestration_boundary(
             runtime_success(values["workflow"], 6),
             values["workflow"],
@@ -384,7 +378,7 @@ def test_invalid_active_provenance_fails_before_durable_commit(tmp_path: Path) -
     ],
     ids=["workflow_complete", "persisted_failure"],
 )
-def test_stop_inputs_fail_closed_before_phase161_or_phase38(
+def test_stop_inputs_fail_closed_before_terminal_persistence_or_routing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stop: WorkflowProgressionDecision | PersistedExecutionOutcome,
@@ -392,24 +386,24 @@ def test_stop_inputs_fail_closed_before_phase161_or_phase38(
     values = setup(tmp_path, steps=6, current=6)
     state_before = values["state_path"].read_bytes()  # type: ignore[union-attr]
     events_before = values["events_path"].read_bytes()  # type: ignore[union-attr]
-    phase161_calls = 0
+    persistence_calls = 0
     phase38_calls = 0
 
-    def phase161_must_not_run(*args: object, **kwargs: object) -> object:
-        nonlocal phase161_calls
-        phase161_calls += 1
-        raise AssertionError("Phase 161 must not run for a rejected stop input")
+    def persistence_must_not_run(*args: object, **kwargs: object) -> object:
+        nonlocal persistence_calls
+        persistence_calls += 1
+        raise AssertionError("terminal persistence must not run for a stop value")
 
     monkeypatch.setattr(
         orchestration_module,
-        "route_runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
-        phase161_must_not_run,
+        "persist_executed_step_transition",
+        persistence_must_not_run,
     )
 
     def phase38_must_not_run(*args: object, **kwargs: object) -> object:
         nonlocal phase38_calls
         phase38_calls += 1
-        raise AssertionError("Phase 38 must not run for a rejected stop input")
+        raise AssertionError("persisted routing must not run for a stop value")
 
     monkeypatch.setattr(
         orchestration_module,
@@ -428,13 +422,13 @@ def test_stop_inputs_fail_closed_before_phase161_or_phase38(
         )
 
     assert caught.value.detail.classification == "result_type"
-    assert phase161_calls == 0
+    assert persistence_calls == 0
     assert phase38_calls == 0
     assert values["state_path"].read_bytes() == state_before  # type: ignore[union-attr]
     assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
 
 
-def test_phase161_failure_owns_precommit_compensation_and_no_retry(
+def test_terminal_persistence_failure_restores_bytes_and_does_not_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -453,9 +447,9 @@ def test_phase161_failure_owns_precommit_compensation_and_no_retry(
         raise RuntimeError("secret persistence detail")
 
     monkeypatch.setattr(
-        phase161_module, "persist_executed_step_transition", failing_persistence
+        orchestration_module, "persist_executed_step_transition", failing_persistence
     )
-    with pytest.raises(Phase161Error):
+    with pytest.raises(RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError):
         route_runtime_result_to_progression_orchestration_boundary(
             runtime_success(values["workflow"], 6),
             values["workflow"],
@@ -465,67 +459,6 @@ def test_phase161_failure_owns_precommit_compensation_and_no_retry(
     assert calls == 1
     assert values["state_path"].read_bytes() == state_before  # type: ignore[union-attr]
     assert values["events_path"].read_bytes() == events_before  # type: ignore[union-attr]
-
-
-def test_phase161_rejects_malformed_persistence_evidence_before_phase38(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = setup(tmp_path)
-    state_path = values["state_path"]
-    events_path = values["events_path"]
-    assert isinstance(state_path, Path) and isinstance(events_path, Path)
-    malformed = WorkflowExecutionPersistenceResult(state_path, events_path, 0, 1)
-    phase38_calls = 0
-
-    def malformed_persistence(*args: object, **kwargs: object) -> object:
-        return malformed
-
-    def phase38(*args: object, **kwargs: object) -> object:
-        nonlocal phase38_calls
-        phase38_calls += 1
-        raise AssertionError("Phase 38 must not run after invalid Phase-161 evidence")
-
-    monkeypatch.setattr(
-        phase161_module, "persist_executed_step_transition", malformed_persistence
-    )
-    monkeypatch.setattr(
-        orchestration_module, "route_persisted_execution_outcome_reentry", phase38
-    )
-    with pytest.raises(Phase161Error):
-        route_runtime_result_to_progression_orchestration_boundary(
-            runtime_success(values["workflow"], 6),
-            values["workflow"],
-            state_path,
-            events_path,
-        )
-    assert phase38_calls == 0
-
-
-def test_phase38_success_path_uses_one_semantic_history_load(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    values = setup(tmp_path, steps=7, current=6)
-    real_loader = phase38_module.load_workflow_execution_history
-    calls = 0
-
-    def counted_loader(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        return real_loader(*args, **kwargs)
-
-    monkeypatch.setattr(
-        phase38_module, "load_workflow_execution_history", counted_loader
-    )
-    out = route_runtime_result_to_progression_orchestration_boundary(
-        runtime_success(values["workflow"], 6),
-        values["workflow"],
-        values["state_path"],
-        values["events_path"],
-    )
-    assert type(out) is WorkflowProgressionDecision
-    assert out.decision == "prepare_next_step"
-    assert calls == 1
 
 
 def test_post_commit_classification_error_preserves_committed_snapshot(
@@ -601,7 +534,7 @@ def test_post_commit_progression_error_preserves_committed_snapshot(
     assert values["events_path"].read_bytes() == committed["events"]  # type: ignore[union-attr]
 
 
-def test_malformed_phase38_route_result_fails_closed_after_commit(
+def test_malformed_persisted_route_result_fails_closed_after_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -621,13 +554,13 @@ def test_malformed_phase38_route_result_fails_closed_after_commit(
             values["state_path"],
             values["events_path"],
         )
-    assert caught.value.detail.classification == "phase38_contract"
+    assert caught.value.detail.classification == "routing_contract"
     history = _history(values)
     assert history.state.status == "succeeded"
     assert history.events[-1].event_type == "step_succeeded"
 
 
-def test_unexpected_phase38_error_is_safe_and_not_retried(
+def test_unexpected_persisted_route_error_is_safe_and_not_retried(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

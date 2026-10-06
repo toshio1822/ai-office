@@ -27,7 +27,10 @@ from ai_office.engine.bounded_approved_workflow_runner import (
     BoundedApprovedWorkflowRunnerError,
     route_bounded_approved_workflow_continuation,
 )
-from ai_office.engine.next_step_preparation import NextStepPreparationApproval
+from ai_office.engine.next_step_preparation import (
+    NextStepPreparationApproval,
+    NextStepPreparationError as PreparationError,
+)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
@@ -47,9 +50,6 @@ from ai_office.storage import (
     load_workflow_execution_state,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
-)
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145Error,
 )
 from tests._phase260_test_support import synthetic_continuation_facts
 from tests._run_test_support import create_test_run
@@ -818,7 +818,7 @@ def test_15_wrong_step_context_stops_before_provider_without_repair(
         wrong.execution_approval,
         synthetic_transport(calls),
     )
-    with pytest.raises(Phase145Error):
+    with pytest.raises(PreparationError):
         route_bounded_approved_workflow_continuation(
             preparation(wf, 9, binding=values["binding"]),
             wf,
@@ -931,7 +931,7 @@ def test_real_second_context_failures_preserve_owner_semantics(
                 second.execution_approval,
                 synthetic_transport(calls),
             )
-        with pytest.raises(Phase145Error if mode == "preparation" else Phase190Error):
+        with pytest.raises(PreparationError if mode == "preparation" else Phase190Error):
             route_bounded_approved_workflow_continuation(
                 preparation(wf, 9, binding=values["binding"]),
                 wf,
