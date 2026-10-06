@@ -44,9 +44,7 @@ from ai_office.engine import (
     route_bounded_approved_workflow_continuation,
     route_persisted_terminal_workflow_bounded,
 )
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationCompatibilityError as Phase145Error,
-)
+from ai_office.engine.next_step_preparation import NextStepPreparationError
 from ai_office.engine.approved_workflow_fresh_start import (
     ApprovedWorkflowBootstrapContext,
     InitialStepPreparationApproval,
@@ -846,7 +844,7 @@ def test_13_default_lower_safe_errors_and_read_only_targets_are_preserved(
     calls: list[str] = []
     state_path, events_path, run = _seed_two_step_prefix(tmp_path, workflow, calls)
     before = (state_path.read_bytes(), events_path.read_bytes())
-    with pytest.raises(Phase145Error):
+    with pytest.raises(NextStepPreparationError):
         route_persisted_terminal_workflow_bounded(
             workflow,
             state_path,

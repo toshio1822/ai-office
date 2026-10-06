@@ -54,6 +54,7 @@ PersistedStartExecutionClassification = Literal[
     "employee_identity",
     "employee_contract",
     "request_data",
+    "history",
     "recovery",
 ]
 _ERROR_MESSAGE = "persisted-start execution inputs are incompatible"
@@ -87,6 +88,7 @@ def execute_persisted_start_openai_step(
     api_key: object,
     approval: object,
     *,
+    events_path: object | None = None,
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
     recovery_assessment: object | None = None,
     recovery_approval: object | None = None,
@@ -103,6 +105,7 @@ def execute_persisted_start_openai_step(
         resolved_tools,
         api_key,
         approval,
+        events_path,
         transport,
     )
     # Narrowing follows the checked concrete contracts above.
@@ -141,6 +144,8 @@ def execute_persisted_start_openai_step(
             state_path.parent / f"{binding.run_id}.events.jsonl",
             binding=binding,
         )
+        if events_path is not None and events_path != targets.events_path:
+            _raise("recovery")
         try:
             history, state_digest, events_digest = (
                 load_workflow_execution_history_with_source_digests(targets)
@@ -189,6 +194,34 @@ def execute_persisted_start_openai_step(
         persisted_state = _load_running_state(state_path)
         if persisted_state != start.running_state:
             _raise("state_identity")
+        if events_path is None:
+            if binding_of(persisted_state) is not None:
+                _raise("history")
+        else:
+            from ai_office.engine.persisted_execution_outcome_reentry import (
+                validate_loaded_persisted_execution_history,
+            )
+
+            try:
+                history, _state_digest, _events_digest = (
+                    load_workflow_execution_history_with_source_digests(
+                        WorkflowExecutionPersistenceTargets(
+                            state_path,
+                            events_path,
+                            binding=binding_of(persisted_state),
+                        )
+                    )
+                )
+                validate_loaded_persisted_execution_history(
+                    workflow,
+                    history,
+                    allow_unstarted_running_current_step=True,
+                    require_execution_provenance=True,
+                )
+            except Exception:
+                _raise("history")
+            if history.state != persisted_state or history.state.status != "running":
+                _raise("history")
         attempt_claimed = None
     workflow_step = _validate_workflow_state(workflow, persisted_state)
     step_request = _build_step_request(
@@ -240,6 +273,7 @@ def _validate_in_memory_inputs(
     resolved_tools: object,
     api_key: object,
     approval: object,
+    events_path: object | None,
     transport: object,
 ) -> None:
     # Import lazily because engine models depend on runtime state models.
@@ -251,6 +285,10 @@ def _validate_in_memory_inputs(
         _raise("start_type")
     if not isinstance(state_path, Path):
         _raise("state_target")
+    if events_path is not None and (
+        not isinstance(events_path, Path) or events_path == state_path
+    ):
+        _raise("history")
     if not isinstance(workflow, WorkflowDefinition):
         _raise("workflow_definition")
     if not isinstance(start.request, ModelInvocationRequest):

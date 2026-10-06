@@ -187,11 +187,14 @@ def validate_loaded_persisted_execution_history(
     *,
     require_terminal_state: bool = False,
     allow_unstarted_running_current_step: bool = False,
+    require_execution_provenance: bool = False,
 ) -> None:
     """Validate one loaded state and transcript against its pinned workflow."""
     if type(workflow) is not WorkflowDefinition:
         _raise("workflow_definition")
     if type(history) is not LoadedWorkflowExecutionHistory:
+        _raise("history_data")
+    if type(require_execution_provenance) is not bool:
         _raise("history_data")
     _validate_history_contents(history)
     if require_terminal_state:
@@ -202,6 +205,7 @@ def validate_loaded_persisted_execution_history(
         history.state,
         history.events,
         allow_unstarted_running_current_step=allow_unstarted_running_current_step,
+        require_execution_provenance=require_execution_provenance,
     )
 
 
@@ -329,6 +333,7 @@ def _validate_event_history(
     events: tuple[RuntimeStepEvent, ...],
     *,
     allow_unstarted_running_current_step: bool = False,
+    require_execution_provenance: bool = False,
 ) -> None:
     if not events and not (
         state.status == "running" and allow_unstarted_running_current_step
@@ -347,6 +352,29 @@ def _validate_event_history(
             or event.step_index < previous_index
         ):
             _raise("event_history")
+        if require_execution_provenance and event.event_type != "step_recovery_started":
+            request_id_is_valid = event.request_id is not None or (
+                event.step_index >= 5
+                and (
+                    event.step_index == state.current_step_index
+                    or (
+                        state.current_step_index >= 6
+                        and event.step_index == state.current_step_index - 1
+                    )
+                    or (
+                        state.current_step_index >= 7
+                        and event.provider == "openai"
+                    )
+                )
+            )
+            if (
+                type(event.provider) is not str
+                or not event.provider
+                or type(event.request_id) not in (str, type(None))
+                or (event.request_id is not None and not event.request_id)
+                or not request_id_is_valid
+            ):
+                _raise("event_history")
         previous_index = event.step_index
         groups.setdefault(event.step_index, []).append(event)
 
@@ -394,6 +422,13 @@ def _validate_event_history(
                         or event.message is not None
                         or not isinstance(event.response_id, str)
                         or not isinstance(event.output_text, str)
+                        or (
+                            require_execution_provenance
+                            and (
+                                type(event.response_id) is not str
+                                or not event.response_id
+                            )
+                        )
                     ):
                         _raise("event_history")
                     end_status = "succeeded"
@@ -404,6 +439,10 @@ def _validate_event_history(
                         or event.message is None
                         or event.response_id is not None
                         or event.output_text is not None
+                        or (
+                            require_execution_provenance
+                            and (type(event.message) is not str or not event.message)
+                        )
                     ):
                         _raise("event_history")
                     end_status = "failed"

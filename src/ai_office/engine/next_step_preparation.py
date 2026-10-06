@@ -167,6 +167,8 @@ def _is_valid_next_identity(decision: WorkflowProgressionDecision) -> bool:
 def _validate_approval(
     decision: WorkflowProgressionDecision, approval: NextStepPreparationApproval
 ) -> None:
+    if type(approval) is not NextStepPreparationApproval:
+        _raise_approval_error("approval_identity")
     if approval.approved is not True:
         _raise_approval_error("approval_required")
     if not _has_valid_approval_values(approval):

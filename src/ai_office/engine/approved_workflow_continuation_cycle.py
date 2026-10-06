@@ -23,7 +23,9 @@ from ai_office.execution_target import (
 )
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
+    NextStepPreparationError,
     PreparedWorkflowStep,
+    _prepare_approved_next_workflow_step,
 )
 from ai_office.engine.workflow_approval_evidence import (
     build_execution_approval_evidence_for_tools,
@@ -41,40 +43,22 @@ from ai_office.engine.persisted_continuation_runtime_facts import (
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcomeError,
     PersistedExecutionOutcome,
-)
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155BoundaryError,
-)
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
+    validate_loaded_persisted_execution_history,
 )
 from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     PersistedExecutionOutcomeRoutingError,
+    route_persisted_execution_outcome_reentry,
 )
 from ai_office.engine.persisted_success_progression import (
     PersistedSuccessProgressionError,
 )
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147BoundaryError,
+from ai_office.engine.prepared_step_execution_start import (
+    PreparedStepExecutionStart,
+    PreparedStepExecutionStartError,
+    prepare_prepared_step_execution_start,
 )
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-)
-from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.upstream_step_output_handoff import (
     build_immediate_predecessor_upstream_inputs,
-)
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146BoundaryError,
-)
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
-)
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145BoundaryError,
-)
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary,
 )
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError as Phase172CompatibilityError,
@@ -82,9 +66,6 @@ from ai_office.engine.runtime_result_to_progression_orchestration_boundary impor
 )
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     route_runtime_result_to_progression_orchestration_boundary,
-)
-from ai_office.engine.runtime_result_transition_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    RuntimeResultTransitionPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase161ChainError,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.engine.workflow_run_manifest import (
@@ -106,14 +87,26 @@ from ai_office.runtime import (
     binding_of,
     is_valid_step_runtime_execution_result,
 )
+from ai_office.runtime.executed_step_transition_persistence import (
+    ExecutedStepTransitionPersistenceError,
+)
+from ai_office.runtime.persisted_start_execution import (
+    PersistedStartExecutionError,
+    execute_persisted_start_openai_step,
+)
 from ai_office.storage import (
     RunningStatePersistenceResult,
+    RunningStatePersistenceError,
+    RunningStatePersistenceInputError,
+    RunningStatePersistenceRollbackError,
     WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
+    WorkflowExecutionPersistenceRollbackError,
     load_workflow_execution_history,
     load_workflow_execution_history_with_source_digests,
     load_workflow_execution_state,
     parse_runtime_step_event,
+    persist_prepared_running_state,
     serialize_runtime_step_event_jsonl,
     serialize_workflow_execution_state_json,
 )
@@ -124,14 +117,14 @@ Classification = Literal[
     "state_target",
     "event_target",
     "target_conflict",
-    "phase145_contract",
-    "phase146_contract",
-    "phase147_contract",
-    "phase155_contract",
+    "preparation_contract",
+    "start_contract",
+    "running_persistence_contract",
+    "execution_contract",
     "approval_contract",
     "business_approval",
     "approval_evidence",
-    "phase172_contract",
+    "post_runtime_contract",
     "dependency_error",
     "committed_mutation",
     "rollback_failure",
@@ -168,17 +161,28 @@ ApprovedWorkflowContinuationCycleFailure = ApprovedWorkflowContinuationCycleErro
 
 # Preserve the current safe-error identity for the owners on the active route;
 # unexpected errors are sanitized as a Phase-190 dependency error.
-_SAFE_PHASE145_ERRORS = (Phase145BoundaryError,)
-_SAFE_PHASE146_ERRORS = (Phase146BoundaryError,)
-_SAFE_PHASE147_ERRORS = (Phase147BoundaryError,)
-_SAFE_PHASE155_ERRORS = (Phase155BoundaryError, ExecutionEvidenceError)
-# The runtime/progression owner may surface these nested safe errors, which
-# must remain safe to callers without becoming new public injection seams.
-_SAFE_PHASE172_ERRORS = (
+_SAFE_PREPARATION_ERRORS = (
+    NextStepPreparationError,
+    PersistedExecutionOutcomeRoutingError,
+    PersistedExecutionOutcomeError,
+    PersistedSuccessProgressionError,
+    WorkflowExecutionLoadError,
+)
+_SAFE_START_ERRORS = (PreparedStepExecutionStartError, WorkflowExecutionLoadError)
+_SAFE_RUNNING_PERSISTENCE_ERRORS = (
+    RunningStatePersistenceError,
+    RunningStatePersistenceInputError,
+    RunningStatePersistenceRollbackError,
+)
+_SAFE_EXECUTION_ERRORS = (PersistedStartExecutionError, ExecutionEvidenceError)
+# Post-commit errors retain their semantic owner; the continuation never
+# restores the running state after terminal persistence has begun.
+_SAFE_POST_RUNTIME_ERRORS = (
     Phase172BoundaryError,
     Phase172CompatibilityError,
-    Phase161ChainError,
+    ExecutedStepTransitionPersistenceError,
     WorkflowExecutionLoadError,
+    WorkflowExecutionPersistenceRollbackError,
     PersistedExecutionOutcomeRoutingError,
     PersistedExecutionOutcomeError,
     PersistedSuccessProgressionError,
@@ -239,15 +243,31 @@ def route_approved_workflow_continuation_cycle(
     original = _capture_targets(state_path, events_path)
 
     try:
-        prepared = route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            result,
+        authoritative_result = route_persisted_execution_outcome_reentry(
             workflow,
-            effective_preparation_approval,
-            employee,
             state_path,
             events_path,
+            allow_artifact_completion=False,
         )
-    except _SAFE_PHASE145_ERRORS as error:
+        if authoritative_result != result:
+            _fail("preparation_contract")
+        history, _state_digest, _events_digest = (
+            load_workflow_execution_history_with_source_digests(
+                WorkflowExecutionPersistenceTargets(
+                    state_path,
+                    events_path,
+                    binding=binding_of(result),
+                )
+            )
+        )
+        prepared = _prepare_approved_next_workflow_step(
+            workflow,
+            history,
+            result,
+            effective_preparation_approval,
+            employee,
+        )
+    except _SAFE_PREPARATION_ERRORS as error:
         _restore_or_fail(state_path, events_path, original)
         raise error
     except Exception:
@@ -256,20 +276,35 @@ def route_approved_workflow_continuation_cycle(
     prepared_valid = _valid_prepared(prepared, result, workflow, employee)
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
-        _fail("committed_mutation" if prepared_valid else "phase145_contract")
+        _fail("committed_mutation" if prepared_valid else "preparation_contract")
     if not prepared_valid:
-        _fail("phase145_contract")
+        _fail("preparation_contract")
     assert type(prepared) is PreparedWorkflowStep
 
     try:
-        prepared_start = route_prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            prepared,
-            workflow,
-            employee,
-            state_path,
-            events_path,
+        prepared_history, state_source_sha256, _events_source_sha256 = (
+            load_workflow_execution_history_with_source_digests(
+                WorkflowExecutionPersistenceTargets(
+                    state_path,
+                    events_path,
+                    binding=prepared.binding,
+                )
+            )
         )
-    except _SAFE_PHASE146_ERRORS as error:
+        validate_loaded_persisted_execution_history(
+            workflow,
+            prepared_history,
+            require_terminal_state=True,
+            require_execution_provenance=True,
+        )
+        run_input = _pinned_run_input(prepared, workflow, state_path)
+        prepared_start = prepare_prepared_step_execution_start(
+            prepared,
+            prepared_history,
+            state_source_sha256=state_source_sha256,
+            run_input=run_input,
+        )
+    except _SAFE_START_ERRORS as error:
         _restore_or_fail(state_path, events_path, original)
         raise error
     except Exception:
@@ -280,15 +315,16 @@ def route_approved_workflow_continuation_cycle(
     )
     if _changed(state_path, events_path, original):
         _restore_or_fail(state_path, events_path, original)
-        _fail("committed_mutation" if prepared_start_valid else "phase146_contract")
+        _fail("committed_mutation" if prepared_start_valid else "start_contract")
     if not prepared_start_valid:
-        _fail("phase146_contract")
+        _fail("start_contract")
     assert type(prepared_start) is PreparedStepExecutionStart
 
     guard_before = _capture_targets(state_path, events_path)
     try:
         effective_execution_approval = _check_authoritative_pre_persistence(
             prepared_start,
+            workflow,
             state_path,
             events_path,
             resolved_tools,
@@ -314,16 +350,23 @@ def route_approved_workflow_continuation_cycle(
 
     pre_persistence = _capture_targets(state_path, events_path)
     try:
-        persisted_running = route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
+        _check_authoritative_pre_persistence(
             prepared_start,
             workflow,
-            employee,
             state_path,
             events_path,
+            resolved_tools,
+            effective_execution_approval,
         )
-    except _SAFE_PHASE147_ERRORS as error:
+        persisted_running = persist_prepared_running_state(
+            prepared_start, state_path
+        )
+    except _SAFE_RUNNING_PERSISTENCE_ERRORS as error:
         _restore_or_fail(state_path, events_path, original)
         raise error
+    except ApprovedWorkflowContinuationCycleCompatibilityError:
+        _restore_or_fail(state_path, events_path, original)
+        raise
     except Exception:
         _restore_or_fail(state_path, events_path, original)
         _fail("dependency_error")
@@ -339,19 +382,18 @@ def route_approved_workflow_continuation_cycle(
     running_snapshot = _capture_targets(state_path, events_path)
 
     try:
-        runtime_result = route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary(
-            persisted_running,
+        runtime_result = execute_persisted_start_openai_step(
             prepared_start,
+            state_path,
             workflow,
             employee,
-            state_path,
-            events_path,
             resolved_tools,
             api_key,
             effective_execution_approval,
-            transport,
+            transport=transport,
+            events_path=events_path,
         )
-    except _SAFE_PHASE155_ERRORS as error:
+    except _SAFE_EXECUTION_ERRORS as error:
         _restore_or_fail(state_path, events_path, running_snapshot)
         raise error
     except Exception:
@@ -367,18 +409,17 @@ def route_approved_workflow_continuation_cycle(
         runtime_result_valid = False
     if _changed(state_path, events_path, running_snapshot):
         _restore_or_fail(state_path, events_path, running_snapshot)
-        _fail("committed_mutation" if runtime_result_valid else "phase155_contract")
+        _fail("committed_mutation" if runtime_result_valid else "execution_contract")
     if not runtime_result_valid:
-        _fail("phase155_contract")
+        _fail("execution_contract")
     assert type(runtime_result) in (
         StepRuntimeExecutionSuccess,
         StepRuntimeExecutionFailure,
     )
 
-    # Phase 161 owns terminal durable persistence.  Phase 172 owns the
-    # post-commit composition and committed-snapshot safety.  In particular,
-    # no outer restoration is permitted from this point onward, even if its
-    # result is malformed or the dependency raises.
+    # The transition owner commits the terminal result.  This outer route owns
+    # only post-commit routing and committed-snapshot safety.  No restoration
+    # to the running state is permitted from this point onward.
     try:
         progressed = route_runtime_result_to_progression_orchestration_boundary(
             runtime_result,
@@ -386,7 +427,7 @@ def route_approved_workflow_continuation_cycle(
             state_path,
             events_path,
         )
-    except _SAFE_PHASE172_ERRORS as error:
+    except _SAFE_POST_RUNTIME_ERRORS as error:
         raise error
     except Exception:
         _fail("dependency_error")
@@ -398,7 +439,7 @@ def route_approved_workflow_continuation_cycle(
         events_path,
         running_snapshot,
     ):
-        _fail("phase172_contract")
+        _fail("post_runtime_contract")
     return progressed
 
 
@@ -586,7 +627,7 @@ def _check_result_target_binding(
         # allowed to make this provider-owning boundary appear bound merely
         # because ``None == None``.
         if result_binding is None:
-            _fail("phase145_contract")
+            _fail("preparation_contract")
         store = WorkflowRunManifestStore(state_path.parent)
         manifest = load_workflow_run_manifest(store, result_binding.run_id)
         expected_state, expected_events = store.execution_paths(result_binding.run_id)
@@ -596,20 +637,20 @@ def _check_result_target_binding(
             or state_path != expected_state
             or events_path != expected_events
         ):
-            _fail("phase145_contract")
+            _fail("preparation_contract")
         targets = WorkflowExecutionPersistenceTargets(
             state_path, events_path, binding=result_binding
         )
         history = load_workflow_execution_history(targets)
     except Exception:
-        _fail("phase145_contract")
+        _fail("preparation_contract")
     target_binding = targets.binding
     if (
         target_binding != result_binding
         or binding_of(history.state) != result_binding
         or any(binding_of(event) != result_binding for event in history.events)
     ):
-        _fail("phase145_contract")
+        _fail("preparation_contract")
 
 
 def _check_regular_file(path: Path, classification: Classification) -> None:
@@ -694,6 +735,26 @@ def _check_prepare_decision(
         _fail("result_type")
 
 
+def _pinned_run_input(
+    prepared: PreparedWorkflowStep,
+    workflow: WorkflowDefinition,
+    state_path: Path,
+) -> str | None:
+    """Read Run Input from the Manifest named by the prepared step."""
+    binding = prepared.binding
+    if binding is None:
+        return None
+    try:
+        manifest = load_workflow_run_manifest(
+            WorkflowRunManifestStore(state_path.parent), binding.run_id
+        )
+    except Exception:
+        _fail("start_contract")
+    if manifest.workflow_id != workflow.id or manifest.digest != binding.manifest_digest:
+        _fail("start_contract")
+    return manifest.run_input
+
+
 def _valid_prepared(
     value: object,
     decision: WorkflowProgressionDecision,
@@ -717,10 +778,10 @@ def _check_prepared(
         type(value) is not PreparedWorkflowStep
         or type(employee) is not EmployeeDefinition
     ):
-        _fail("phase145_contract")
+        _fail("preparation_contract")
     assert type(value) is PreparedWorkflowStep and type(employee) is EmployeeDefinition
     if not _valid_employee(employee):
-        _fail("phase145_contract")
+        _fail("preparation_contract")
     step = workflow.steps[decision.next_step_index - 1]  # type: ignore[index]
     if not (
         _exact(value.workflow_id, workflow.id)
@@ -737,7 +798,7 @@ def _check_prepared(
         and value.allowed_tool_names == tuple(employee.allowed_tools)
         and value.binding == binding_of(decision)
     ):
-        _fail("phase145_contract")
+        _fail("preparation_contract")
 
 
 def _valid_prepared_start(
@@ -764,7 +825,7 @@ def _check_prepared_start(
         or type(employee) is not EmployeeDefinition
         or not _valid_employee(employee)
     ):
-        _fail("phase146_contract")
+        _fail("start_contract")
     assert (
         type(value) is PreparedStepExecutionStart
         and type(employee) is EmployeeDefinition
@@ -775,7 +836,7 @@ def _check_prepared_start(
         type(request) is not ModelInvocationRequest
         or type(running) is not WorkflowExecutionState
     ):
-        _fail("phase146_contract")
+        _fail("start_contract")
     expected_prefix = tuple(
         step.id for step in workflow.steps[: prepared.step_index - 1]
     )
@@ -810,11 +871,12 @@ def _check_prepared_start(
             for upstream in request.upstream_inputs
         )
     ):
-        _fail("phase146_contract")
+        _fail("start_contract")
 
 
 def _check_authoritative_pre_persistence(
     prepared_start: PreparedStepExecutionStart,
+    workflow: WorkflowDefinition,
     state_path: Path,
     events_path: Path,
     resolved_tools: object,
@@ -832,6 +894,11 @@ def _check_authoritative_pre_persistence(
                 )
             )
         )
+        validate_loaded_persisted_execution_history(
+            workflow,
+            history,
+            require_execution_provenance=True,
+        )
         authoritative_upstream = build_immediate_predecessor_upstream_inputs(
             prepared_start.running_state.workflow_id,
             prepared_start.running_state.current_step_index,
@@ -840,7 +907,7 @@ def _check_authoritative_pre_persistence(
     except Exception:
         _fail("approval_contract")
     if prepared_start.request.upstream_inputs != authoritative_upstream:
-        _fail("phase146_contract")
+        _fail("start_contract")
     try:
         authoritative_runtime_facts = build_persisted_continuation_runtime_facts(
             prepared_start.running_state.workflow_id,
@@ -865,9 +932,9 @@ def _check_authoritative_pre_persistence(
             run_input=prepared_start.request.run_input,
         )
     except (TypeError, ValueError):
-        _fail("phase146_contract")
+        _fail("start_contract")
     if prepared_start.request != authoritative_request:
-        _fail("phase146_contract")
+        _fail("start_contract")
     if type(resolved_tools) is not tuple:
         _fail("approval_contract")
     if type(execution_approval) is not ModelInvocationExecutionApproval:
@@ -905,14 +972,14 @@ def _check_persisted_running(
         event_bytes = events_path.read_bytes()
     except Exception:
         _restore_or_fail(state_path, events_path, original)
-        _fail("phase147_contract")
+        _fail("running_persistence_contract")
 
     # The state replacement is the one authorized mutation of this stage.
     # Anything other than that exact state-only write is an unauthorized
     # mutation and must be classified separately from a malformed return.
     if state_bytes != expected or event_bytes != original[1]:
         if (state_bytes, event_bytes) == pre_persistence:
-            _fail("phase147_contract")
+            _fail("running_persistence_contract")
         _restore_or_fail(state_path, events_path, original)
         _fail("committed_mutation")
     try:
@@ -921,7 +988,7 @@ def _check_persisted_running(
         )
     except Exception:
         _restore_or_fail(state_path, events_path, original)
-        _fail("phase147_contract")
+        _fail("running_persistence_contract")
     if not (
         type(value) is RunningStatePersistenceResult
         and type(value.state_bytes_written) is int
@@ -931,7 +998,7 @@ def _check_persisted_running(
         and loaded == prepared_start.running_state
     ):
         _restore_or_fail(state_path, events_path, original)
-        _fail("phase147_contract")
+        _fail("running_persistence_contract")
 
 
 def _valid_runtime_result(
@@ -952,7 +1019,7 @@ def _check_runtime_result(
     workflow: WorkflowDefinition,
 ) -> None:
     if type(value) not in (StepRuntimeExecutionSuccess, StepRuntimeExecutionFailure):
-        _fail("phase155_contract")
+        _fail("execution_contract")
     running = prepared_start.running_state
     try:
         valid = is_valid_step_runtime_execution_result(
@@ -967,7 +1034,7 @@ def _check_runtime_result(
     except Exception:
         valid = False
     if not valid:
-        _fail("phase155_contract")
+        _fail("execution_contract")
 
 
 def _valid_phase172_result(

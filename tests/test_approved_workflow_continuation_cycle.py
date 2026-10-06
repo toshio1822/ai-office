@@ -28,27 +28,17 @@ from ai_office.engine.approved_workflow_continuation_cycle import (
 )
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
+    NextStepPreparationError,
     PreparedWorkflowStep,
 )
 from ai_office.engine.persisted_continuation_runtime_facts import (
     build_persisted_continuation_runtime_facts,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
+    PersistedExecutionOutcomeError,
     PersistedExecutionOutcome,
 )
-from ai_office.engine.persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    PersistedRunningExecutionCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase155BoundaryError,
-)
-from ai_office.engine.prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    PreparedStartPersistenceCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase147BoundaryError,
-)
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
-from ai_office.engine.prepared_step_start_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    PreparedStepStartCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase146BoundaryError,
-)
-from ai_office.engine.progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary import (
-    ProgressionToApprovedPreparationCycleHandoffChainBridgeOuterChainReentryContinuationError as Phase145BoundaryError,
-)
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
 )
@@ -62,6 +52,7 @@ from ai_office.invocation import (
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
+from ai_office.runtime.persisted_start_execution import PersistedStartExecutionError
 from ai_office.runtime import (
     RuntimeStepEvent,
     StepRuntimeExecutionFailure,
@@ -72,6 +63,7 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     LoadedWorkflowExecutionHistory,
+    RunningStatePersistenceError,
     RunningStatePersistenceResult,
     load_workflow_execution_state,
     parse_runtime_step_event,
@@ -640,7 +632,7 @@ def test_runless_result_and_persisted_history_fail_before_provider_or_mutation(
             context["execution_approval"],
             transport(calls),
         )
-    assert caught.value.detail.classification == "phase145_contract"
+    assert caught.value.detail.classification == "preparation_contract"
     assert calls == []
     assert (state_path.read_bytes(), events_path.read_bytes()) == before
 
@@ -676,7 +668,7 @@ def test_cross_run_result_and_execution_paths_fail_before_provider(
             context["execution_approval"],
             transport(calls),
         )
-    assert caught.value.detail.classification == "phase145_contract"
+    assert caught.value.detail.classification == "preparation_contract"
     assert calls == []
     assert (other.state_path.read_bytes(), other.events_path.read_bytes()) == before
 
@@ -810,7 +802,7 @@ def test_invalid_preparation_approval_fails_before_persistence_and_provider(
     context = execution_context(wf, 10, binding=values["binding"])
     calls: list[object] = []
     before = values["before"]
-    with pytest.raises(Phase145BoundaryError):
+    with pytest.raises(NextStepPreparationError):
         phase190(
             decision(wf, 9, binding=values["binding"]),
             wf,
@@ -896,7 +888,9 @@ def test_authoritative_runtime_facts_mismatch_stops_before_running_or_provider(
         before = state_path.read_bytes(), events_path.read_bytes()
         context = execution_context(wf, 10, binding=values["binding"])
         calls: list[object] = []
-        with pytest.raises((Phase145BoundaryError, Phase190Error)) as caught:
+        with pytest.raises(
+            (NextStepPreparationError, PersistedExecutionOutcomeError, Phase190Error)
+        ) as caught:
             phase190(
                 decision(wf, 9, binding=values["binding"]),
                 wf,
@@ -912,7 +906,7 @@ def test_authoritative_runtime_facts_mismatch_stops_before_running_or_provider(
         if isinstance(caught.value, Phase190Error):
             assert caught.value.detail.classification in {
                 "approval_contract",
-                "phase145_contract",
+                "preparation_contract",
             }
         assert calls == []
         assert (state_path.read_bytes(), events_path.read_bytes()) == before
@@ -927,15 +921,15 @@ def test_running_persistence_safe_failure_restores_terminal_snapshot_without_ret
     assert isinstance(wf, WorkflowDefinition)
     before = values["before"]
     calls: list[object] = []
-    safe = Phase147BoundaryError("safe persistence failure")
+    safe = RunningStatePersistenceError("write")
     owner_calls = 0
 
     def persistence(*args: object, **kwargs: object) -> object:
         del kwargs
         nonlocal owner_calls
         owner_calls += 1
-        state_path = args[3]
-        events_path = args[4]
+        state_path = args[1]
+        events_path = values["events_path"]
         assert isinstance(state_path, Path) and isinstance(events_path, Path)
         state_path.write_text("partial-state", encoding="utf-8")
         events_path.write_text("partial-events", encoding="utf-8")
@@ -943,10 +937,10 @@ def test_running_persistence_safe_failure_restores_terminal_snapshot_without_ret
 
     monkeypatch.setattr(
         continuation_module,
-        "route_prepared_start_persistence_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
+        "persist_prepared_running_state",
         persistence,
     )
-    with pytest.raises(Phase147BoundaryError) as caught:
+    with pytest.raises(RunningStatePersistenceError) as caught:
         phase190(*valid_args(values))
     assert caught.value is safe
     assert owner_calls == 1
@@ -965,7 +959,7 @@ def test_post_running_execution_failure_keeps_durable_running_snapshot(
     wf = values["workflow"]
     assert isinstance(wf, WorkflowDefinition)
     context = execution_context(wf, 10, binding=values["binding"])
-    safe = Phase155BoundaryError("safe execution failure")
+    safe = PersistedStartExecutionError("safe execution failure")
     owner_calls = 0
 
     def execution(*args: object, **kwargs: object) -> object:
@@ -976,11 +970,11 @@ def test_post_running_execution_failure_keeps_durable_running_snapshot(
 
     monkeypatch.setattr(
         continuation_module,
-        "route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
+        "execute_persisted_start_openai_step",
         execution,
     )
     calls: list[object] = []
-    with pytest.raises(Phase155BoundaryError) as caught:
+    with pytest.raises(PersistedStartExecutionError) as caught:
         phase190(
             decision(wf, 9, binding=values["binding"]),
             wf,
@@ -1061,8 +1055,8 @@ def test_mutation_compensation_restores_running_snapshot_without_retry(
         del kwargs
         nonlocal owner_calls
         owner_calls += 1
-        state_path = args[4]
-        events_path = args[5]
+        state_path = args[1]
+        events_path = values["events_path"]
         assert isinstance(state_path, Path) and isinstance(events_path, Path)
         state_path.write_text("unexpected-state", encoding="utf-8")
         events_path.write_text("unexpected-events", encoding="utf-8")
@@ -1070,7 +1064,7 @@ def test_mutation_compensation_restores_running_snapshot_without_retry(
 
     monkeypatch.setattr(
         continuation_module,
-        "route_persisted_running_execution_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
+        "execute_persisted_start_openai_step",
         execution,
     )
     with pytest.raises(Phase190Error) as caught:
@@ -1108,8 +1102,8 @@ def test_rollback_failure_surfaces_safely_and_attempts_each_target_once(
 
     def prepare(*args: object, **kwargs: object) -> object:
         del kwargs
-        state = args[4]
-        events = args[5]
+        state = args[1]
+        events = args[2]
         assert isinstance(state, Path) and isinstance(events, Path)
         state.write_text("changed-state", encoding="utf-8")
         events.write_text("changed-events", encoding="utf-8")
@@ -1122,7 +1116,7 @@ def test_rollback_failure_surfaces_safely_and_attempts_each_target_once(
 
     monkeypatch.setattr(
         continuation_module,
-        "route_progression_to_approved_preparation_cycle_handoff_chain_bridge_outer_chain_reentry_continuation_boundary",
+        "route_persisted_execution_outcome_reentry",
         prepare,
     )
     monkeypatch.setattr(Path, "write_bytes", fail_write_bytes)

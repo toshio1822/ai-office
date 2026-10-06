@@ -150,6 +150,29 @@ def test_returns_the_canonical_persistence_result(tmp_path: Path) -> None:
     )
 
 
+def test_rejects_malformed_persistence_result_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value_targets = targets(tmp_path)
+    original = write_running_state(value_targets.state_path, running_state())
+    malformed = WorkflowExecutionPersistenceResult(
+        value_targets.state_path, value_targets.events_path, 0, 1
+    )
+    monkeypatch.setattr(
+        persistence_module,
+        "persist_workflow_execution_transition",
+        lambda *args, **kwargs: malformed,
+    )
+
+    with pytest.raises(ExecutedStepTransitionPersistenceCompatibilityError) as error:
+        persist_executed_step_transition(
+            success(), value_targets.state_path, value_targets.events_path
+        )
+    assert error.value.detail.classification == "persistence_contract"
+    assert value_targets.state_path.read_bytes() == original
+    assert not value_targets.events_path.exists()
+
+
 @pytest.mark.parametrize(
     "result",
     [
