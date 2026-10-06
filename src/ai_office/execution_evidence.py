@@ -58,13 +58,14 @@ _DEFINITION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _PATH_TYPE = type(Path())
 
 _ATTEMPT_SCHEMA = "workflow-execution-attempt.v1"
+_RECOVERY_ATTEMPT_SCHEMA = "workflow-execution-attempt.v2"
 _RAW_SCHEMA = "workflow-execution-raw-response.v1"
 _RESULT_SCHEMA = "workflow-execution-normalized-result.v1"
 _ATTEMPT_PREFIX = "execution-attempt"
 _RAW_PREFIX = "execution-raw-response"
 _RESULT_PREFIX = "execution-normalized-result"
 
-_ATTEMPT_KEYS = frozenset(
+_ATTEMPT_V1_KEYS = frozenset(
     {
         "approved_by",
         "attempt_id",
@@ -89,6 +90,15 @@ _ATTEMPT_KEYS = frozenset(
         "system_instruction_sha256",
         "task_input_sha256",
         "workflow_id",
+    }
+)
+_ATTEMPT_V2_KEYS = _ATTEMPT_V1_KEYS | frozenset(
+    {
+        "previous_attempt_evidence_sha256",
+        "previous_attempt_id",
+        "recovery_approval_evidence_sha256",
+        "recovery_approval_id",
+        "recovery_decision_sha256",
     }
 )
 _RAW_KEYS = frozenset(
@@ -234,6 +244,8 @@ class ExecutionEvidenceContext:
     resolved_tools: tuple[ToolDefinition, ...]
     approval: ModelInvocationExecutionApproval
     target: ModelExecutionTarget
+    recovery_assessment: object | None = None
+    recovery_approval: object | None = None
 
     def __post_init__(self) -> None:
         _validate_context(self)
@@ -243,7 +255,9 @@ class ExecutionEvidenceContext:
 class ExecutionAttemptEvidence:
     """The immutable write-ahead claim committed before transport."""
 
-    schema_version: Literal["workflow-execution-attempt.v1"]
+    schema_version: Literal[
+        "workflow-execution-attempt.v1", "workflow-execution-attempt.v2"
+    ]
     attempt_id: str
     run_id: str
     manifest_digest: str
@@ -266,6 +280,11 @@ class ExecutionAttemptEvidence:
     approved_by: str
     execution_approval_evidence_sha256: str
     state: Literal["claimed"]
+    recovery_decision_sha256: str | None = None
+    recovery_approval_id: str | None = None
+    recovery_approval_evidence_sha256: str | None = None
+    previous_attempt_id: str | None = None
+    previous_attempt_evidence_sha256: str | None = None
 
     def __post_init__(self) -> None:
         _validate_attempt(self)
@@ -415,6 +434,9 @@ class ExecutionEvidenceInspection:
     normalized_result_category: str | None
     ambiguous_or_unresolved: bool
     final_step_outcome_linked: bool
+    previous_attempt_id: str | None = None
+    recovery_approval_id: str | None = None
+    recovery_decision_sha256: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +455,8 @@ def build_execution_evidence_context(
     resolved_tools: tuple[ToolDefinition, ...],
     approval: ModelInvocationExecutionApproval,
     target: ModelExecutionTarget,
+    recovery_assessment: object | None = None,
+    recovery_approval: object | None = None,
 ) -> ExecutionEvidenceContext:
     """Build a provider-free exact context.  No durable/external effect occurs."""
     return ExecutionEvidenceContext(
@@ -446,6 +470,8 @@ def build_execution_evidence_context(
         resolved_tools=resolved_tools,
         approval=approval,
         target=target,
+        recovery_assessment=recovery_assessment,
+        recovery_approval=recovery_approval,
     )
 
 
@@ -457,11 +483,42 @@ def claim_execution_attempt(
     approval_evidence = _validate_context_and_approval(context)
     body = _validated_unauthenticated_request(context, http_request)
 
-    # A Run/step may have only one attempt until explicit Recovery exists.
-    for existing in list_run_execution_evidence(
-        context.store_root, context.binding.run_id
-    ):
-        if _same_step(existing, context):
+    existing = tuple(
+        attempt
+        for attempt in list_run_execution_evidence(
+            context.store_root, context.binding.run_id
+        )
+        if _same_step(attempt, context)
+    )
+    if context.recovery_assessment is None:
+        if existing:
+            raise ExecutionAttemptAlreadyClaimedError
+    else:
+        assessment = context.recovery_assessment
+        recovery_approval = context.recovery_approval
+        if (
+            getattr(assessment, "action", None)
+            not in {"retry_failed", "retry_ambiguous"}
+            or not existing
+            or not any(
+                attempt.attempt_id
+                == getattr(assessment, "previous_attempt_id", None)
+                and attempt.digest
+                == getattr(assessment, "previous_attempt_evidence_sha256", None)
+                for attempt in existing
+            )
+            or any(
+                attempt.recovery_approval_id
+                == getattr(recovery_approval, "approval_id", None)
+                for attempt in existing
+            )
+            or any(
+                attempt.execution_approval_id == approval_evidence.approval_id
+                or attempt.execution_approval_evidence_sha256
+                == approval_evidence.digest
+                for attempt in existing
+            )
+        ):
             raise ExecutionAttemptAlreadyClaimedError
 
     claim = _build_attempt(context, body, approval_evidence.digest)
@@ -606,7 +663,7 @@ def load_execution_attempt_evidence(
     manifest_digest = _validate_run_namespace(root, run_id)
     _validate_sha256(attempt_id, "attempt")
     path = execution_attempt_evidence_path(root, run_id, attempt_id)
-    value = _load_record(path, _ATTEMPT_KEYS, _parse_attempt)
+    value = _load_record(path, (_ATTEMPT_V1_KEYS, _ATTEMPT_V2_KEYS), _parse_attempt)
     assert type(value) is ExecutionAttemptEvidence
     if (
         value.run_id != run_id
@@ -694,7 +751,9 @@ def list_run_execution_evidence(
     for path in paths:
         suffix = path.name.removeprefix(marker).removesuffix(".json")
         _validate_sha256(suffix, "identity", load=True)
-        value = _load_record(path, _ATTEMPT_KEYS, _parse_attempt)
+        value = _load_record(
+            path, (_ATTEMPT_V1_KEYS, _ATTEMPT_V2_KEYS), _parse_attempt
+        )
         assert type(value) is ExecutionAttemptEvidence
         if (
             value.run_id != run_id
@@ -727,6 +786,7 @@ def list_run_execution_evidence(
         )
         if result_path.exists() or result_path.is_symlink():
             load_normalized_result_evidence(root, run_id, attempt.attempt_id)
+    _validate_attempt_lineage(values)
     return tuple(values)
 
 
@@ -800,6 +860,9 @@ def inspect_run_execution_evidence(
                 normalized_result_category=category,
                 ambiguous_or_unresolved=ambiguous,
                 final_step_outcome_linked=final_linked,
+                previous_attempt_id=attempt.previous_attempt_id,
+                recovery_approval_id=attempt.recovery_approval_id,
+                recovery_decision_sha256=attempt.recovery_decision_sha256,
             )
         )
     return tuple(inspections)
@@ -828,6 +891,30 @@ def _validate_run_terminal_event(root: Path, binding: object, event: object) -> 
         getattr(event, "step_index", None),
         getattr(event, "employee_id", None),
     )
+
+    if getattr(event, "event_type", None) == "step_recovery_started":
+        if (
+            type(linkage[0]) is not str
+            or type(linkage[1]) is not str
+            or any(value is not None for value in linkage[2:])
+        ):
+            _raise_load("recovery_event")
+        attempt = load_execution_attempt_evidence(root, run_id, linkage[0])
+        if (
+            attempt.schema_version != _RECOVERY_ATTEMPT_SCHEMA
+            or attempt.digest != linkage[1]
+            or attempt.manifest_digest != manifest_digest
+            or (
+                attempt.workflow_id,
+                attempt.step_id,
+                attempt.step_index,
+                attempt.employee_id,
+                attempt.provider,
+            )
+            != (*event_identity, getattr(event, "provider", None))
+        ):
+            _raise_load("recovery_event")
+        return
 
     if not any(value is not None for value in linkage):
         attempts = list_run_execution_evidence(root, run_id)
@@ -983,6 +1070,28 @@ def _validate_context(context: ExecutionEvidenceContext) -> None:
         != context.request.allowed_tools
     ):
         _raise_contract("tools")
+    if (context.recovery_assessment is None) != (context.recovery_approval is None):
+        _raise_contract("recovery")
+    if context.recovery_assessment is not None:
+        assessment = context.recovery_assessment
+        if (
+            getattr(assessment, "eligible", None) is not True
+            or getattr(assessment, "action", None)
+            not in {"retry_failed", "retry_ambiguous"}
+            or getattr(assessment, "run_id", None) != context.binding.run_id
+            or getattr(assessment, "manifest_digest", None)
+            != context.binding.manifest_digest
+            or getattr(assessment, "workflow_id", None) != context.workflow_id
+            or getattr(assessment, "step_id", None) != context.step_id
+            or getattr(assessment, "step_index", None) != context.step_index
+            or getattr(assessment, "employee_id", None) != context.employee_id
+            or getattr(assessment, "invocation_fingerprint", None)
+            != context.approval.request_fingerprint
+            or getattr(assessment, "provider", None) != context.target.provider
+            or getattr(assessment, "execution_target_fingerprint", None)
+            != execution_target_fingerprint(context.target)
+        ):
+            _raise_contract("recovery")
 
 
 def _validate_context_and_approval(context: ExecutionEvidenceContext):
@@ -1033,6 +1142,16 @@ def _validate_context_and_approval(context: ExecutionEvidenceContext):
             ),
             request_fingerprint=context.approval.request_fingerprint,
         )
+        if context.recovery_assessment is not None:
+            from ai_office.engine.workflow_recovery import (
+                validate_workflow_recovery_authorization,
+            )
+
+            validate_workflow_recovery_authorization(
+                context.store_root,
+                context.recovery_assessment,
+                context.recovery_approval,
+            )
         return evidence
     except ExecutionEvidenceError:
         raise
@@ -1093,6 +1212,8 @@ def _build_attempt(
         for tool in context.resolved_tools
     ]
     task_input = build_model_invocation_task_input(context.request).encode("utf-8")
+    recovery_assessment = context.recovery_assessment
+    recovery_approval = context.recovery_approval
     values: dict[str, object] = {
         "approved_by": context.approval.approved_by,
         "employee_id": context.employee_id,
@@ -1109,7 +1230,11 @@ def _build_attempt(
         "request_body_sha256": _digest(body.encode("utf-8")),
         "resolved_tools_sha256": _digest(_canonical_json(tool_value)),
         "run_id": context.binding.run_id,
-        "schema_version": _ATTEMPT_SCHEMA,
+        "schema_version": (
+            _ATTEMPT_SCHEMA
+            if recovery_assessment is None
+            else _RECOVERY_ATTEMPT_SCHEMA
+        ),
         "state": "claimed",
         "step_id": context.step_id,
         "step_index": context.step_index,
@@ -1119,6 +1244,18 @@ def _build_attempt(
         "task_input_sha256": _digest(task_input),
         "workflow_id": context.workflow_id,
     }
+    if recovery_assessment is not None and recovery_approval is not None:
+        values.update(
+            {
+                "previous_attempt_evidence_sha256": (
+                    recovery_assessment.previous_attempt_evidence_sha256
+                ),
+                "previous_attempt_id": recovery_assessment.previous_attempt_id,
+                "recovery_approval_evidence_sha256": recovery_approval.digest,
+                "recovery_approval_id": recovery_approval.approval_id,
+                "recovery_decision_sha256": recovery_assessment.digest,
+            }
+        )
     attempt_id = _digest(_canonical_json(values))
     return ExecutionAttemptEvidence(
         attempt_id=attempt_id,
@@ -1211,7 +1348,34 @@ def _validate_attempt_context(
     context: ExecutionEvidenceContext, attempt: ExecutionAttemptEvidence
 ) -> None:
     _validate_context(context)
-    if not _same_step(attempt, context) or attempt.provider != context.target.provider:
+    tool_value = [
+        {
+            "description": tool.description,
+            "name": tool.name,
+            "parameters": [
+                {
+                    "description": parameter.description,
+                    "name": parameter.name,
+                    "required": parameter.required,
+                    "type": parameter.type,
+                }
+                for parameter in tool.parameters
+            ],
+        }
+        for tool in context.resolved_tools
+    ]
+    if not (
+        _same_step(attempt, context)
+        and attempt.provider == context.target.provider
+        and attempt.invocation_fingerprint == context.approval.request_fingerprint
+        and attempt.execution_target_fingerprint
+        == execution_target_fingerprint(context.target)
+        and attempt.system_instruction_sha256
+        == _digest(context.request.system_instructions.encode("utf-8"))
+        and attempt.task_input_sha256
+        == _digest(build_model_invocation_task_input(context.request).encode("utf-8"))
+        and attempt.resolved_tools_sha256 == _digest(_canonical_json(tool_value))
+    ):
         _raise_contract("attempt_binding")
 
 
@@ -1268,7 +1432,7 @@ def _same_step(
 
 
 def _attempt_dict(value: ExecutionAttemptEvidence) -> dict[str, object]:
-    return {
+    record: dict[str, object] = {
         "approved_by": value.approved_by,
         "attempt_id": value.attempt_id,
         "employee_id": value.employee_id,
@@ -1295,6 +1459,21 @@ def _attempt_dict(value: ExecutionAttemptEvidence) -> dict[str, object]:
         "task_input_sha256": value.task_input_sha256,
         "workflow_id": value.workflow_id,
     }
+    if value.schema_version == _RECOVERY_ATTEMPT_SCHEMA:
+        record.update(
+            {
+                "previous_attempt_evidence_sha256": (
+                    value.previous_attempt_evidence_sha256
+                ),
+                "previous_attempt_id": value.previous_attempt_id,
+                "recovery_approval_evidence_sha256": (
+                    value.recovery_approval_evidence_sha256
+                ),
+                "recovery_approval_id": value.recovery_approval_id,
+                "recovery_decision_sha256": value.recovery_decision_sha256,
+            }
+        )
+    return record
 
 
 def _raw_dict(value: RawProviderResponseEvidence) -> dict[str, object]:
@@ -1410,7 +1589,11 @@ def _parse_result(value: Mapping[str, object]) -> NormalizedExecutionResultEvide
         _raise_load("result")
 
 
-def _load_record(path: Path, keys: frozenset[str], parser):
+def _load_record(
+    path: Path,
+    keys: frozenset[str] | tuple[frozenset[str], ...],
+    parser,
+):
     if type(path) is not _PATH_TYPE or path.is_symlink() or not path.is_file():
         _raise_load("target")
     try:
@@ -1422,7 +1605,8 @@ def _load_record(path: Path, keys: frozenset[str], parser):
         )
     except Exception:
         _raise_load("parse")
-    if type(value) is not dict or frozenset(value) != keys:
+    allowed = keys if isinstance(keys, tuple) else (keys,)
+    if type(value) is not dict or frozenset(value) not in allowed:
         _raise_load("fields")
     try:
         record = parser(value)
@@ -1576,7 +1760,10 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
     if type(value) is not ExecutionAttemptEvidence:
         fail("attempt")
     assert isinstance(value, ExecutionAttemptEvidence)
-    if value.schema_version != _ATTEMPT_SCHEMA or value.state != "claimed":
+    if (
+        value.schema_version not in {_ATTEMPT_SCHEMA, _RECOVERY_ATTEMPT_SCHEMA}
+        or value.state != "claimed"
+    ):
         fail("attempt")
     _validate_sha256(value.attempt_id, "attempt", load=load)
     _validate_run_id(value.run_id, load=load)
@@ -1623,6 +1810,33 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
         ("approval_evidence", value.execution_approval_evidence_sha256),
     ):
         _validate_sha256(item, field, load=load)
+    recovery_values = (
+        value.recovery_decision_sha256,
+        value.recovery_approval_id,
+        value.recovery_approval_evidence_sha256,
+        value.previous_attempt_id,
+        value.previous_attempt_evidence_sha256,
+    )
+    if value.schema_version == _ATTEMPT_SCHEMA:
+        if any(item is not None for item in recovery_values):
+            fail("attempt_lineage")
+    else:
+        if (
+            any(item is None for item in recovery_values)
+            or value.recovery_approval_id == value.execution_approval_id
+        ):
+            fail("attempt_lineage")
+        _validate_sha256(value.recovery_decision_sha256, "recovery_decision", load=load)
+        _validate_sha256(
+            value.recovery_approval_evidence_sha256,
+            "recovery_approval_evidence",
+            load=load,
+        )
+        _validate_sha256(
+            value.previous_attempt_evidence_sha256, "previous_attempt", load=load
+        )
+        _validate_sha256(value.previous_attempt_id, "previous_attempt", load=load)
+        _validate_text(value.recovery_approval_id, "recovery_approval", load=load)
     if (
         type(value.request_body_length) is not int
         or isinstance(value.request_body_length, bool)
@@ -1672,6 +1886,122 @@ def _validate_attempt_authority(root: Path, value: ExecutionAttemptEvidence) -> 
         and approval.approval_id == value.execution_approval_id
     ):
         _raise_load("approval_binding")
+    if value.schema_version == _RECOVERY_ATTEMPT_SCHEMA:
+        try:
+            from ai_office.engine.workflow_approval_evidence import (
+                load_recovery_approval_evidence,
+            )
+            from ai_office.engine.workflow_run_manifest import (
+                WorkflowRunManifestStore,
+            )
+
+            store = WorkflowRunManifestStore(root)
+            recovery_approval = load_recovery_approval_evidence(
+                store, value.run_id, cast(str, value.recovery_approval_id)
+            )
+            previous = load_execution_attempt_evidence(
+                root, value.run_id, cast(str, value.previous_attempt_id)
+            )
+        except Exception:
+            _raise_load("recovery_binding")
+        if not (
+            recovery_approval.digest == value.recovery_approval_evidence_sha256
+            and recovery_approval.run_id == value.run_id
+            and recovery_approval.manifest_digest == value.manifest_digest
+            and recovery_approval.workflow_id == value.workflow_id
+            and recovery_approval.step_id == value.step_id
+            and recovery_approval.step_index == value.step_index
+            and recovery_approval.employee_id == value.employee_id
+            and recovery_approval.recovery_action
+            in {"retry_failed", "retry_ambiguous"}
+            and recovery_approval.recovery_decision_sha256
+            == value.recovery_decision_sha256
+            and recovery_approval.previous_attempt_id == previous.attempt_id
+            and recovery_approval.previous_attempt_evidence_sha256 == previous.digest
+            and previous.attempt_id == value.previous_attempt_id
+            and previous.digest == value.previous_attempt_evidence_sha256
+            and previous.schema_version in {_ATTEMPT_SCHEMA, _RECOVERY_ATTEMPT_SCHEMA}
+            and (
+                previous.run_id,
+                previous.manifest_digest,
+                previous.workflow_id,
+                previous.step_id,
+                previous.step_index,
+                previous.employee_id,
+            )
+            == (
+                value.run_id,
+                value.manifest_digest,
+                value.workflow_id,
+                value.step_id,
+                value.step_index,
+                value.employee_id,
+            )
+            and previous.execution_approval_id != value.execution_approval_id
+            and previous.execution_approval_evidence_sha256
+            != value.execution_approval_evidence_sha256
+        ):
+            _raise_load("recovery_binding")
+
+
+def _validate_attempt_lineage(
+    attempts: list[ExecutionAttemptEvidence],
+) -> None:
+    """Require each same-step attempt set to be one immutable recovery chain."""
+    groups: dict[tuple[object, ...], list[ExecutionAttemptEvidence]] = {}
+    for attempt in attempts:
+        key = (
+            attempt.run_id,
+            attempt.manifest_digest,
+            attempt.workflow_id,
+            attempt.step_id,
+            attempt.step_index,
+            attempt.employee_id,
+        )
+        groups.setdefault(key, []).append(attempt)
+
+    for group in groups.values():
+        by_id = {attempt.attempt_id: attempt for attempt in group}
+        roots = [
+            attempt
+            for attempt in group
+            if attempt.schema_version == _ATTEMPT_SCHEMA
+            and attempt.previous_attempt_id is None
+        ]
+        if len(roots) != 1 or len(by_id) != len(group):
+            _raise_load("attempt_lineage")
+        children: dict[str, ExecutionAttemptEvidence] = {}
+        recovery_approval_ids: set[str] = set()
+        execution_approval_ids: set[str] = set()
+        for attempt in group:
+            if attempt.execution_approval_id in execution_approval_ids:
+                _raise_load("attempt_lineage")
+            execution_approval_ids.add(attempt.execution_approval_id)
+            if attempt.schema_version == _ATTEMPT_SCHEMA:
+                continue
+            parent_id = cast(str, attempt.previous_attempt_id)
+            if parent_id in children:
+                _raise_load("attempt_lineage")
+            parent = by_id.get(parent_id)
+            if (
+                parent is None
+                or parent.digest != attempt.previous_attempt_evidence_sha256
+                or attempt.recovery_approval_id in recovery_approval_ids
+            ):
+                _raise_load("attempt_lineage")
+            recovery_approval_ids.add(cast(str, attempt.recovery_approval_id))
+            children[parent_id] = attempt
+
+        visited: set[str] = set()
+        current = roots[0]
+        while current.attempt_id not in visited:
+            visited.add(current.attempt_id)
+            child = children.get(current.attempt_id)
+            if child is None:
+                break
+            current = child
+        if len(visited) != len(group):
+            _raise_load("attempt_lineage")
 
 
 def _validate_raw(value: object, *, load: bool = False) -> None:

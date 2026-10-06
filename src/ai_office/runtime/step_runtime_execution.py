@@ -1,8 +1,10 @@
 """Single-step runtime result wrapping for explicit OpenAI execution."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ai_office.execution_evidence import (
+    ExecutionAttemptEvidence,
     ExecutionEvidenceContext,
     ExecutionEvidenceError,
     execution_evidence_of_result,
@@ -48,6 +50,7 @@ class StepRuntimeExecutionInput:
     resolved_tools: tuple[ToolDefinition, ...]
     approval: ModelInvocationExecutionApproval
     execution_evidence: ExecutionEvidenceContext
+    attempt_claimed: Callable[[ExecutionAttemptEvidence], None] | None = None
 
 
 @dataclass(frozen=True, init=False)
@@ -247,6 +250,7 @@ def execute_openai_runtime_step(
         transport=transport,
         execution_target=execution_target,
         execution_evidence=execution_input.execution_evidence,
+        attempt_claimed=execution_input.attempt_claimed,
     )
     if execution_evidence_of_result(invocation_result) is None and (
         type(invocation_result) is ModelInvocationSuccess
@@ -288,6 +292,10 @@ def _validate_execution_input(execution_input: StepRuntimeExecutionInput) -> Non
         or evidence.step_id != step_request.step_id
         or evidence.step_index != step_request.step_index
         or evidence.employee_id != step_request.employee_id
+    ):
+        raise StepRuntimeExecutionInputError(_INPUT_ERROR_MESSAGE)
+    if execution_input.attempt_claimed is not None and not callable(
+        execution_input.attempt_claimed
     ):
         raise StepRuntimeExecutionInputError(_INPUT_ERROR_MESSAGE)
 

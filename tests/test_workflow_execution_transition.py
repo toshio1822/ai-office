@@ -108,7 +108,11 @@ def test_models_are_immutable_and_status_and_event_types_are_exported() -> None:
         "succeeded",
         "failed",
     }
-    assert set(get_args(RuntimeStepEventType)) == {"step_succeeded", "step_failed"}
+    assert set(get_args(RuntimeStepEventType)) == {
+        "step_succeeded",
+        "step_failed",
+        "step_recovery_started",
+    }
     assert set(state.__dataclass_fields__) == {
         "workflow_id",
         "status",

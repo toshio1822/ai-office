@@ -24,11 +24,19 @@ from ai_office.runtime.step_runtime_execution import (
     StepRuntimeExecutionResult,
     execute_openai_runtime_step,
 )
-from ai_office.runtime.workflow_execution_transition import WorkflowExecutionState
+from ai_office.runtime.workflow_execution_transition import (
+    WorkflowExecutionState,
+    transition_workflow_execution_for_recovery,
+)
 from ai_office.storage.workflow_execution_history import (
     WorkflowExecutionDataError,
     WorkflowExecutionLoadError,
+    load_workflow_execution_history_with_source_digests,
     load_workflow_execution_state,
+)
+from ai_office.storage.workflow_execution_persistence import (
+    WorkflowExecutionPersistenceTargets,
+    persist_workflow_execution_transition,
 )
 from ai_office.tools import ToolDefinition
 
@@ -46,6 +54,7 @@ PersistedStartExecutionClassification = Literal[
     "employee_identity",
     "employee_contract",
     "request_data",
+    "recovery",
 ]
 _ERROR_MESSAGE = "persisted-start execution inputs are incompatible"
 
@@ -79,6 +88,8 @@ def execute_persisted_start_openai_step(
     approval: object,
     *,
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
+    recovery_assessment: object | None = None,
+    recovery_approval: object | None = None,
 ) -> StepRuntimeExecutionResult:
     """Verify a persisted running state, then delegate exactly once to Phase 21.
 
@@ -107,9 +118,78 @@ def execute_persisted_start_openai_step(
     assert isinstance(api_key, OpenAIApiKey)
     assert isinstance(approval, ModelInvocationExecutionApproval)
 
-    persisted_state = _load_running_state(state_path)
-    if persisted_state != start.running_state:
-        _raise("state_identity")
+    recovering = recovery_assessment is not None or recovery_approval is not None
+    if (recovery_assessment is None) != (recovery_approval is None):
+        _raise("recovery")
+    if recovering:
+        from ai_office.engine.workflow_recovery import (
+            WorkflowRecoveryAssessment,
+            assess_workflow_recovery,
+            validate_workflow_recovery_authorization,
+        )
+
+        if (
+            type(recovery_assessment) is not WorkflowRecoveryAssessment
+            or recovery_assessment.action not in {"retry_failed", "retry_ambiguous"}
+        ):
+            _raise("recovery")
+        binding = binding_of(start.request)
+        if binding is None:
+            _raise("recovery")
+        targets = WorkflowExecutionPersistenceTargets(
+            state_path,
+            state_path.parent / f"{binding.run_id}.events.jsonl",
+            binding=binding,
+        )
+        try:
+            history, state_digest, events_digest = (
+                load_workflow_execution_history_with_source_digests(targets)
+            )
+            if (
+                assess_workflow_recovery(state_path.parent, binding.run_id)
+                != recovery_assessment
+                or (state_digest, events_digest)
+                != (
+                    recovery_assessment.state_sha256,
+                    recovery_assessment.events_sha256,
+                )
+                or not _same_recovery_step(history.state, start.running_state)
+            ):
+                _raise("recovery")
+            validate_workflow_recovery_authorization(
+                state_path.parent, recovery_assessment, recovery_approval
+            )
+        except PersistedStartExecutionError:
+            raise
+        except Exception:
+            _raise("recovery")
+        persisted_state = start.running_state
+
+        def record_claimed_recovery(attempt: object) -> None:
+            try:
+                current, current_state_digest, current_events_digest = (
+                    load_workflow_execution_history_with_source_digests(targets)
+                )
+                if (current_state_digest, current_events_digest) != (
+                    recovery_assessment.state_sha256,
+                    recovery_assessment.events_sha256,
+                ):
+                    _raise("recovery")
+                transition = transition_workflow_execution_for_recovery(
+                    current.state, attempt
+                )
+                persist_workflow_execution_transition(transition, targets)
+            except PersistedStartExecutionError:
+                raise
+            except Exception:
+                _raise("recovery")
+
+        attempt_claimed = record_claimed_recovery
+    else:
+        persisted_state = _load_running_state(state_path)
+        if persisted_state != start.running_state:
+            _raise("state_identity")
+        attempt_claimed = None
     workflow_step = _validate_workflow_state(workflow, persisted_state)
     step_request = _build_step_request(
         persisted_state, workflow, workflow_step, employee, start.request
@@ -133,6 +213,8 @@ def execute_persisted_start_openai_step(
                 resolved_tools=resolved_tools,
                 approval=approval,
                 target=target,
+                recovery_assessment=recovery_assessment,
+                recovery_approval=recovery_approval,
             )
         except Exception:
             _raise("request_data")
@@ -143,6 +225,7 @@ def execute_persisted_start_openai_step(
             resolved_tools=resolved_tools,
             approval=approval,
             execution_evidence=evidence_context,
+            attempt_claimed=attempt_claimed,
         ),
         api_key,
         transport=transport,
@@ -269,6 +352,21 @@ def _valid_running_state(value: object) -> bool:
         and value.current_step_index > 0
         and isinstance(value.completed_step_ids, tuple)
         and all(isinstance(item, str) for item in value.completed_step_ids)
+    )
+
+
+def _same_recovery_step(current: WorkflowExecutionState, prospective: object) -> bool:
+    return (
+        isinstance(prospective, WorkflowExecutionState)
+        and current.status in {"failed", "running"}
+        and current.workflow_id == prospective.workflow_id
+        and current.current_step_id == prospective.current_step_id
+        and current.current_step_index == prospective.current_step_index
+        and current.current_employee_id == prospective.current_employee_id
+        and current.completed_step_ids == prospective.completed_step_ids
+        and binding_of(current) == binding_of(prospective)
+        and prospective.status == "running"
+        and prospective.last_failure_category is None
     )
 
 

@@ -131,7 +131,7 @@ digest を参照するだけである。
 
 provider transport の callable に入る前に attempt sidecar を exclusive commit する。
 commit が失敗または結果が曖昧な場合は provider を呼ばず、既存 attempt がある場合は
-Recovery が導入されるまで同じ Run/step の再送を拒否する。transport が返した raw bytes は
+通常 continuation からの同じ Run/step の再送を拒否する。transport が返した raw bytes は
 parse/normalize より前に base64、length、SHA-256、HTTP status、許可された safe headers と
 ともに保存する。通常の result/error/CLI inspection は raw body を表示せず、明示的な
 `workflows execution-evidence <run-id>` read-only command は digest、status、category、
@@ -151,8 +151,8 @@ Run-bound terminal persistenceは参照attempt/result/raw evidenceをauthoritati
 再読込し、eventのsemantic outcomeまで一致する場合だけstate/eventを書き込む。forged、
 nonexistent、mismatched、cross-attempt linkageはterminal commitを拒否する。
 
-この Milestone では Recovery Approval、retry/new-attempt、Artifact、provider failover、
-generic event-sourcing framework は実装しない。
+Artifact、provider failover、generic event-sourcing framework はこの evidence owner に
+含めない。Recovery は次節の Run-bound explicit operation として統合する。
 
 ## Current workflow Artifacts (Milestone 4)
 
@@ -163,6 +163,16 @@ Artifact は Run namespace 内の canonical immutable record で、Run/Manifest�
 `route_persisted_execution_outcome_reentry` は persisted outcome から progression に入る唯一の canonical owner である。通常の execution/continuation は authoritative evidence から required Artifact を完成してから decision を返す。同じ route は `allow_artifact_completion=False` で既存 Artifact の検証だけを行い、required Artifact が欠けていれば progression を返さず fail closed する。`workflows continue --preview-only` と `workflows result` はこの no-create mode を使い、state/events を含む Run namespace に durable file を作成しない。読み取り時に Artifact が欠けていれば、これらの operation はエラーで停止する。従来の `decide_persisted_success_progression()`、`route_persisted_success_progression_reentry()`、`route_progression_preparation_reentry()` は本番 caller のない過去 Phase の public seam であり、Artifact gate を避けて progression/preparation できるため削除した。残る standalone preparation route も canonical route を通り、required Artifact 完了前に `WorkflowProgressionDecision` や `PreparedWorkflowStep` を返さない。Run binding のある execution に Manifest がない場合、または binding と Manifest digest が一致しない場合は、Artifact policy の有無にかかわらず continuation を拒否する。
 
 `workflows artifacts <run-id>` は検証済み Artifact metadata を一覧し、`workflows artifact <run-id> <artifact-id>` は指定された content を読み、`workflows artifact-export <run-id> <artifact-id> --output <path>` は exact bytes を新規 local file に出力する。既存 export destination は上書きしない。この provider-free local export は External Publication ではなく、Publication Approval の authority を持たない。Artifact、Model Output、Step Output、および既存 Publication は別の意味と authority を保つ。
+
+## Current workflow execution recovery (Milestone 5)
+
+`workflows recovery <run-id>` は Run Manifest、state/history、全 attempt と利用可能な raw/normalized result から、決定的な local completion、terminal failure の retry、または ambiguous attempt の retry のいずれかを read-only で評価する。出力には decision digest と安全な attempt/step identity のみを含め、credential、raw response body、Authorization header は含めない。eligible でない場合も inspection は状態と理由を返し、Run namespace を変更しない。
+
+`workflows recover <run-id>` は現在の decision digest に結び付いた新しい Recovery Approval を明示的に要求する。保存済み normalized result が terminal persistence 前に残っている場合は同じ attempt の result から terminal transition を完成する。raw response のみが残る場合は保存済み bytes を provider response parser で決定的に正規化してから同じ transition owner を通す。どちらも provider transport を呼ばない。新しい provider attempt が必要な場合は Recovery Approval に加えて、その再構成済み pinned invocation に対する新しい Execution Approval と operator が確認した step/request fingerprint を要求する。旧 Execution Approval、Business Approval、Publication Approval は Recovery Approval の代用にならない。
+
+最初の attempt は `workflow-execution-attempt.v1` のまま保持し、recovery attempt は `workflow-execution-attempt.v2` として直前 attempt ID/digest、Recovery Approval ID/digest、decision digest を immutable に束縛する。retry は `step_recovery_started` event を追加し、失敗 state を同じ step の running state に戻す。過去の terminal failure event と attempt/raw/result evidence は保持され、次の新規 attempt にも別の Recovery Approval と別の Execution Approval が必要である。Recovery は definition、Run Input、completed predecessor history、execution target、Business Approval を変更せず、provider/model fallback や自動 retry を行わない。
+
+recovered success の terminal persistence 後も `route_persisted_execution_outcome_reentry` が canonical routing owner となる。required Artifact は成功した recovered attempt の evidence に結び付けて確立され、その後にのみ progression が再開する。failed retry は Run を停止したまま両方の failure history を残す。通常の `start`、`continue`、restart、`continue --preview-only`、`result`、recovery inspection は provider retry を始めない。
 
 
 ## Phase 59: classified persisted outcome routing phase bridge reentry

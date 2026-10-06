@@ -172,14 +172,37 @@ def classify_loaded_persisted_execution_outcome(
     if type(workflow) is not WorkflowDefinition:
         _raise("workflow_definition")
     assert type(workflow) is WorkflowDefinition
-    _validate_history_type(history)
-    _validate_history_contents(history)
-    _validate_terminal_state(history.state)
-    _validate_workflow_identity(workflow, history.state)
-    _validate_event_history(workflow, history.state, history.events)
+    validate_loaded_persisted_execution_history(
+        workflow, history, require_terminal_state=True
+    )
+    assert type(history) is LoadedWorkflowExecutionHistory
     result = _build_result(history.state)
     _validate_result_contract(result, history.state)
     return result
+
+
+def validate_loaded_persisted_execution_history(
+    workflow: object,
+    history: object,
+    *,
+    require_terminal_state: bool = False,
+    allow_unstarted_running_current_step: bool = False,
+) -> None:
+    """Validate one loaded state and transcript against its pinned workflow."""
+    if type(workflow) is not WorkflowDefinition:
+        _raise("workflow_definition")
+    if type(history) is not LoadedWorkflowExecutionHistory:
+        _raise("history_data")
+    _validate_history_contents(history)
+    if require_terminal_state:
+        _validate_terminal_state(history.state)
+    _validate_workflow_identity(workflow, history.state)
+    _validate_event_history(
+        workflow,
+        history.state,
+        history.events,
+        allow_unstarted_running_current_step=allow_unstarted_running_current_step,
+    )
 
 
 def _validate_inputs(
@@ -246,11 +269,6 @@ def _reject_changed_targets(
         _raise("history_data")
 
 
-def _validate_history_type(history: object) -> None:
-    if type(history) is not LoadedWorkflowExecutionHistory:
-        _raise("history_data")
-
-
 def _validate_history_contents(history: LoadedWorkflowExecutionHistory) -> None:
     if (
         type(history.state) is not WorkflowExecutionState
@@ -309,63 +327,105 @@ def _validate_event_history(
     workflow: WorkflowDefinition,
     state: WorkflowExecutionState,
     events: tuple[RuntimeStepEvent, ...],
+    *,
+    allow_unstarted_running_current_step: bool = False,
 ) -> None:
-    if not events:
+    if not events and not (
+        state.status == "running" and allow_unstarted_running_current_step
+    ):
         _raise("event_history")
-    terminal, earlier = events[-1], events[:-1]
-    prior_completed = (
-        state.completed_step_ids[:-1]
-        if state.status == "succeeded"
-        else state.completed_step_ids
-    )
-    earlier_ids: list[str] = []
     positions = {step.id: index for index, step in enumerate(workflow.steps, 1)}
-    for event in earlier:
+    groups: dict[int, list[RuntimeStepEvent]] = {}
+    previous_index = 0
+    for event in events:
         if (
             event.workflow_id != state.workflow_id
             or event.step_id not in positions
             or event.step_index != positions[event.step_id]
             or event.employee_id != workflow.steps[event.step_index - 1].employee
-            or event.step_index >= state.current_step_index
-            or event.step_id == state.current_step_id
-            or event.event_type != "step_succeeded"
-            or event.previous_status != "running"
-            or event.next_status != "succeeded"
+            or event.step_index > state.current_step_index
+            or event.step_index < previous_index
         ):
             _raise("event_history")
-        earlier_ids.append(event.step_id)
-    if tuple(earlier_ids) != prior_completed:
-        _raise("event_history")
-    valid_terminal_identity = (
-        terminal.workflow_id == state.workflow_id
-        and terminal.step_id == state.current_step_id
-        and terminal.step_index == state.current_step_index
-        and terminal.employee_id == state.current_employee_id
-        and terminal.previous_status == "running"
+        previous_index = event.step_index
+        groups.setdefault(event.step_index, []).append(event)
+
+    completed_before = (
+        state.current_step_index
+        if state.status == "succeeded"
+        else state.current_step_index - 1
     )
-    if state.status == "succeeded":
-        valid_terminal = (
-            valid_terminal_identity
-            and terminal.event_type == "step_succeeded"
-            and terminal.next_status == "succeeded"
-            and state.last_failure_category is None
-            and terminal.failure_category is None
-            and terminal.message is None
-            and isinstance(terminal.response_id, str)
-            and isinstance(terminal.output_text, str)
-        )
-    else:
-        valid_terminal = (
-            valid_terminal_identity
-            and terminal.event_type == "step_failed"
-            and terminal.next_status == "failed"
-            and terminal.failure_category == state.last_failure_category
-            and terminal.failure_category is not None
-            and terminal.response_id is None
-            and terminal.output_text is None
-            and isinstance(terminal.message, str)
-        )
-    if not valid_terminal:
+    expected_completed = tuple(
+        step.id for step in workflow.steps[:completed_before]
+    )
+    if state.completed_step_ids != expected_completed:
+        _raise("event_history")
+
+    for index in range(1, state.current_step_index + 1):
+        group = groups.get(index)
+        if not group:
+            if (
+                index == state.current_step_index
+                and state.status == "running"
+                and allow_unstarted_running_current_step
+            ):
+                continue
+            _raise("event_history")
+        end_status: str | None = None
+        for event in group:
+            if event.event_type == "step_recovery_started":
+                if event.previous_status == "failed":
+                    valid = end_status == "failed"
+                else:
+                    valid = end_status in {None, "running"}
+                if not valid or event.next_status != "running":
+                    _raise("event_history")
+                end_status = "running"
+            else:
+                if event.previous_status != "running" or end_status not in {
+                    None,
+                    "running",
+                }:
+                    _raise("event_history")
+                if event.event_type == "step_succeeded":
+                    if (
+                        event.next_status != "succeeded"
+                        or event.failure_category is not None
+                        or event.message is not None
+                        or not isinstance(event.response_id, str)
+                        or not isinstance(event.output_text, str)
+                    ):
+                        _raise("event_history")
+                    end_status = "succeeded"
+                else:
+                    if (
+                        event.next_status != "failed"
+                        or event.failure_category is None
+                        or event.message is None
+                        or event.response_id is not None
+                        or event.output_text is not None
+                    ):
+                        _raise("event_history")
+                    end_status = "failed"
+        if index < state.current_step_index and end_status != "succeeded":
+            _raise("event_history")
+        if index == state.current_step_index:
+            if (
+                group[-1].step_id != state.current_step_id
+                or group[-1].step_index != state.current_step_index
+                or group[-1].employee_id != state.current_employee_id
+                or end_status != state.status
+                or (
+                    state.status == "succeeded"
+                    and state.last_failure_category is not None
+                )
+                or (
+                    state.status == "failed"
+                    and state.last_failure_category != group[-1].failure_category
+                )
+            ):
+                _raise("event_history")
+    if any(index > state.current_step_index for index in groups):
         _raise("event_history")
 
 

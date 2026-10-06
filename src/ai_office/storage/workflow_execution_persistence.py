@@ -150,23 +150,33 @@ def build_runtime_step_event_dict(event: RuntimeStepEvent) -> dict[str, object]:
         }
     execution_attempt_id = getattr(event, "execution_attempt_id", None)
     if execution_attempt_id is not None:
-        value.update(
-            {
-                "execution_attempt_id": execution_attempt_id,
-                "execution_attempt_evidence_sha256": getattr(
-                    event, "execution_attempt_evidence_sha256", None
-                ),
-                "normalized_result_evidence_sha256": getattr(
-                    event, "normalized_result_evidence_sha256", None
-                ),
-                "raw_response_evidence_sha256": getattr(
-                    event, "raw_response_evidence_sha256", None
-                ),
-                "raw_response_body_sha256": getattr(
-                    event, "raw_response_body_sha256", None
-                ),
-            }
-        )
+        if event.event_type == "step_recovery_started":
+            value.update(
+                {
+                    "execution_attempt_id": execution_attempt_id,
+                    "execution_attempt_evidence_sha256": getattr(
+                        event, "execution_attempt_evidence_sha256", None
+                    ),
+                }
+            )
+        else:
+            value.update(
+                {
+                    "execution_attempt_id": execution_attempt_id,
+                    "execution_attempt_evidence_sha256": getattr(
+                        event, "execution_attempt_evidence_sha256", None
+                    ),
+                    "normalized_result_evidence_sha256": getattr(
+                        event, "normalized_result_evidence_sha256", None
+                    ),
+                    "raw_response_evidence_sha256": getattr(
+                        event, "raw_response_evidence_sha256", None
+                    ),
+                    "raw_response_body_sha256": getattr(
+                        event, "raw_response_body_sha256", None
+                    ),
+                }
+            )
     return value
 
 
@@ -240,7 +250,7 @@ def _validate_persistence_input(
         or not targets.state_path.parent.is_dir()
         or not targets.events_path.parent.is_dir()
     )
-    transition_is_invalid = (
+    identity_is_invalid = (
         previous_state.workflow_id != next_state.workflow_id
         or event.workflow_id != next_state.workflow_id
         or previous_state.current_step_id != next_state.current_step_id
@@ -249,12 +259,28 @@ def _validate_persistence_input(
         or event.step_id != next_state.current_step_id
         or event.step_index != next_state.current_step_index
         or event.employee_id != next_state.current_employee_id
-        or previous_state.status != "running"
         or event.previous_status != previous_state.status
         or event.next_status != next_state.status
-        or (next_state.status == "succeeded" and event.event_type != "step_succeeded")
-        or (next_state.status == "failed" and event.event_type != "step_failed")
     )
+    if event.event_type == "step_recovery_started":
+        transition_is_invalid = (
+            identity_is_invalid
+            or previous_state.status not in {"failed", "running"}
+            or next_state.status != "running"
+            or next_state.last_failure_category is not None
+            or next_state.completed_step_ids != previous_state.completed_step_ids
+            or binding_of(previous_state) is None
+        )
+    else:
+        transition_is_invalid = (
+            identity_is_invalid
+            or previous_state.status != "running"
+            or (
+                next_state.status == "succeeded"
+                and event.event_type != "step_succeeded"
+            )
+            or (next_state.status == "failed" and event.event_type != "step_failed")
+        )
     previous_binding = binding_of(previous_state)
     next_binding = binding_of(next_state)
     event_binding = binding_of(event)

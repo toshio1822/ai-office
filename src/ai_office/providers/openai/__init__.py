@@ -23,6 +23,7 @@ from ai_office.providers.openai.responses_environment import (
 from ai_office.providers.openai.responses_execution import (
     OpenAIResponsesTransport,
     execute_openai_model_invocation,
+    normalize_openai_responses_raw_response,
 )
 from ai_office.providers.openai.responses_http import (
     OPENAI_RESPONSES_CONTENT_TYPE,
@@ -146,6 +147,7 @@ __all__ = [
     "extract_openai_responses_output_text",
     "extract_openai_responses_content_type",
     "execute_openai_model_invocation",
+    "normalize_openai_responses_raw_response",
     "load_api_key_for_execution_target",
     "load_openai_api_key_from_environment",
     "parse_openai_responses_http_response",

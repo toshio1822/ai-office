@@ -66,8 +66,13 @@ _EXECUTION_EVIDENCE_KEYS = frozenset(
         "raw_response_body_sha256",
     }
 )
+_RECOVERY_EVIDENCE_KEYS = frozenset(
+    {"execution_attempt_id", "execution_attempt_evidence_sha256"}
+)
 _STATUSES = frozenset({"ready", "running", "succeeded", "failed"})
-_EVENT_TYPES = frozenset({"step_succeeded", "step_failed"})
+_EVENT_TYPES = frozenset(
+    {"step_succeeded", "step_failed", "step_recovery_started"}
+)
 _FAILURE_CATEGORIES = frozenset(
     {
         "api_error",
@@ -146,6 +151,14 @@ def load_workflow_execution_history_with_source_digests(
     )
     events = _parse_runtime_step_events(event_bytes, binding=targets.binding)
     _validate_run_binding_consistency(state, events, targets.binding)
+    if targets.binding is not None:
+        from ai_office.execution_evidence import _validate_run_terminal_event
+
+        for event in events:
+            if event.event_type == "step_recovery_started":
+                _validate_run_terminal_event(
+                    targets.state_path.parent, targets.binding, event
+                )
     _validate_history_consistency(state, events)
     return (
         LoadedWorkflowExecutionHistory(state=state, events=events),
@@ -233,7 +246,7 @@ def parse_runtime_step_event(
         raise WorkflowExecutionDataError("events_parse")
     binding_keys = _EVENT_KEYS | _RUN_BINDING_KEYS
     event_keys = set(value)
-    if event_keys not in {
+    base_shapes = {
         _EVENT_KEYS,
         _EVENT_KEYS | {"response_diagnostics"},
         binding_keys,
@@ -242,7 +255,10 @@ def parse_runtime_step_event(
         (_EVENT_KEYS | {"response_diagnostics"}) | _EXECUTION_EVIDENCE_KEYS,
         binding_keys | _EXECUTION_EVIDENCE_KEYS,
         (binding_keys | {"response_diagnostics"}) | _EXECUTION_EVIDENCE_KEYS,
-    }:
+        _EVENT_KEYS | _RECOVERY_EVIDENCE_KEYS,
+        binding_keys | _RECOVERY_EVIDENCE_KEYS,
+    }
+    if event_keys not in base_shapes:
         raise WorkflowExecutionDataError("events_parse")
     data = value
     persisted_binding = _parse_run_binding(data, "events_parse")
@@ -376,9 +392,10 @@ def _parse_runtime_step_events(
 
 
 def _validate_event_semantics(event: RuntimeStepEvent) -> None:
-    valid = event.previous_status == "running" and (
+    valid = (
         (
-            event.event_type == "step_succeeded"
+            event.previous_status == "running"
+            and event.event_type == "step_succeeded"
             and event.next_status == "succeeded"
             and event.failure_category is None
             and event.message is None
@@ -387,7 +404,8 @@ def _validate_event_semantics(event: RuntimeStepEvent) -> None:
             and event.response_diagnostics is None
         )
         or (
-            event.event_type == "step_failed"
+            event.previous_status == "running"
+            and event.event_type == "step_failed"
             and event.next_status == "failed"
             and event.failure_category is not None
             and isinstance(event.message, str)
@@ -397,6 +415,18 @@ def _validate_event_semantics(event: RuntimeStepEvent) -> None:
                 event.response_diagnostics is None
                 or event.failure_category == "invalid_response"
             )
+        )
+        or (
+            event.event_type == "step_recovery_started"
+            and event.previous_status in {"failed", "running"}
+            and event.next_status == "running"
+            and event.failure_category is None
+            and event.response_id is None
+            and event.request_id is None
+            and event.output_text is None
+            and event.message is None
+            and event.response_diagnostics is None
+            and getattr(event, "execution_attempt_id", None) is not None
         )
     )
     if not valid:
@@ -446,19 +476,33 @@ def _parse_response_diagnostics(
 def _parse_execution_evidence(
     data: dict[str, Any], binding: WorkflowRunBinding | None
 ) -> dict[str, str | None]:
-    if not any(key in data for key in _EXECUTION_EVIDENCE_KEYS):
+    evidence_keys = set(data) & (_EXECUTION_EVIDENCE_KEYS | _RECOVERY_EVIDENCE_KEYS)
+    if not evidence_keys:
         return {}
     if binding is None:
         raise WorkflowExecutionDataError("events_parse")
-    values = {
-        key: data[key]
-        for key in _EXECUTION_EVIDENCE_KEYS
-    }
-    required = (
-        "execution_attempt_id",
-        "execution_attempt_evidence_sha256",
-        "normalized_result_evidence_sha256",
-    )
+    if data.get("event_type") == "step_recovery_started":
+        if evidence_keys != _RECOVERY_EVIDENCE_KEYS:
+            raise WorkflowExecutionDataError("events_parse")
+        values = {
+            "execution_attempt_id": data["execution_attempt_id"],
+            "execution_attempt_evidence_sha256": data[
+                "execution_attempt_evidence_sha256"
+            ],
+            "normalized_result_evidence_sha256": None,
+            "raw_response_evidence_sha256": None,
+            "raw_response_body_sha256": None,
+        }
+        required = ("execution_attempt_id", "execution_attempt_evidence_sha256")
+    else:
+        if evidence_keys != _EXECUTION_EVIDENCE_KEYS:
+            raise WorkflowExecutionDataError("events_parse")
+        values = {key: data[key] for key in _EXECUTION_EVIDENCE_KEYS}
+        required = (
+            "execution_attempt_id",
+            "execution_attempt_evidence_sha256",
+            "normalized_result_evidence_sha256",
+        )
     if any(
         not isinstance(values[key], str)
         or len(values[key]) != 64
@@ -493,6 +537,15 @@ def _validate_history_consistency(
                 and final.event_type == "step_succeeded"
                 and final.next_status == "succeeded"
                 and final.failure_category is None
+            )
+            or (
+                state.status == "running"
+                and final.event_type == "step_recovery_started"
+                and final.step_id == state.current_step_id
+                and final.step_index == state.current_step_index
+                and final.employee_id == state.current_employee_id
+                and final.next_status == "running"
+                and state.last_failure_category is None
             )
             or (
                 state.status == "succeeded"
