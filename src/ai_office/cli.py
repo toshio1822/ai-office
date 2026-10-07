@@ -19,7 +19,6 @@ from ai_office.definitions.workflow import (
 )
 from ai_office.engine import (
     ApprovedWorkflowBootstrapContext,
-    ApprovedWorkflowContinuationContext,
     InitialStepPreparationApproval,
     NextStepPreparationApproval,
     PublicationRegenerationExportError,
@@ -42,9 +41,9 @@ from ai_office.engine import (
     persist_workflow_run_manifest,
     project_publication_regeneration_output,
     publication_regeneration_export_reconciliation_digest,
-    route_approved_fresh_workflow_bounded,
+    route_approved_workflow_continuation_cycle,
+    route_approved_workflow_fresh_start,
     route_persisted_execution_outcome_reentry,
-    route_persisted_terminal_workflow_bounded,
     tool_catalog_from_run_manifest,
 )
 from ai_office.engine.artifact import (
@@ -66,6 +65,7 @@ from ai_office.execution_target import (
 )
 from ai_office.invocation import (
     EMPTY_RUNTIME_FACTS,
+    ModelInvocationExecutionApproval,
     ModelInvocationRequest,
     RuntimeFactsSnapshot,
     approve_model_invocation_execution,
@@ -1130,15 +1130,15 @@ def _build_start_context(
     )
 
 
-def _build_continuation_context(
+def _build_continuation_approvals(
     decision: WorkflowProgressionDecision,
     preview: _WorkflowStepPreview,
     business_approved_by: str | None,
     business_approval_id: str | None,
     execution_approved_by: str,
     execution_approval_id: str,
-) -> ApprovedWorkflowContinuationContext:
-    """Create one exact next-step context only after preview binding passes."""
+) -> tuple[NextStepPreparationApproval, OpenAIApiKey, ModelInvocationExecutionApproval]:
+    """Build approvals and credentials for this one explicitly previewed step."""
     try:
         business_approval_evidence = None
         if (
@@ -1186,15 +1186,7 @@ def _build_continuation_context(
         )
     except Exception:
         _workflow_cli_error("credential or approval configuration is invalid")
-    return ApprovedWorkflowContinuationContext(
-        preparation_approval=preparation_approval,
-        employee=preview.employee,
-        resolved_tools=preview.resolved_tools,
-        api_key=api_key,
-        execution_approval=execution_approval,
-        transport=send_openai_responses_http_request,
-        execution_target=preview.execution_target,
-    )
+    return preparation_approval, api_key, execution_approval
 
 
 def _durable_business_approval_exists(
@@ -1238,14 +1230,10 @@ def _run_fresh_workflow(
     events_path: Path,
     context: ApprovedWorkflowBootstrapContext,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Call the public Phase-210 composition with an exact empty tuple."""
+    """Start step 1 once through the existing fresh-start owner."""
     try:
-        return route_approved_fresh_workflow_bounded(
-            workflow,
-            state_path,
-            events_path,
-            context,
-            (),
+        return route_approved_workflow_fresh_start(
+            workflow, state_path, events_path, context
         )
     except Exception:
         _workflow_cli_error("workflow execution failed")
@@ -1418,24 +1406,6 @@ def _persisted_result_json(
         "workflow_id": routed.workflow_id,
         **binding_value,
     }
-
-
-def _run_persisted_workflow(
-    workflow: object,
-    state_path: Path,
-    events_path: Path,
-    context: ApprovedWorkflowContinuationContext,
-) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
-    """Call Phase-212 with exactly one built-in continuation context."""
-    try:
-        return route_persisted_terminal_workflow_bounded(
-            workflow,
-            state_path,
-            events_path,
-            (context,),
-        )
-    except Exception:
-        _workflow_cli_error("workflow continuation failed")
 
 
 @workflows_app.command("start")
@@ -1700,7 +1670,7 @@ def continue_workflow(
         expected_request_fingerprint,
     ):
         _workflow_cli_error("expected preview does not match current step")
-    context = _build_continuation_context(
+    preparation_approval, api_key, execution_approval = _build_continuation_approvals(
         routed,
         preview,
         business_approved_by,
@@ -1708,9 +1678,21 @@ def continue_workflow(
         execution_approved_by,
         execution_approval_id,
     )
-    result = _run_persisted_workflow(
-        workflow.definition, state_path, events_path, context
-    )
+    try:
+        result = route_approved_workflow_continuation_cycle(
+            routed,
+            workflow.definition,
+            preparation_approval,
+            preview.employee,
+            state_path,
+            events_path,
+            preview.resolved_tools,
+            api_key,
+            execution_approval,
+            send_openai_responses_http_request,
+        )
+    except Exception:
+        _workflow_cli_error("workflow continuation failed")
     _emit_json(
         _result_json("continue", "execute", result, run_input=manifest.run_input)
     )

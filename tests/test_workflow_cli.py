@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from typer.testing import CliRunner
 
 import ai_office.cli as cli_module
+import ai_office.engine as engine_module
 from ai_office.cli import app
 from ai_office.definitions.employee import load_employees
 from ai_office.definitions.workflow import load_workflows
@@ -666,12 +667,8 @@ def guard_result_execution_seams(
         "load_openai_api_key_from_environment",
         "approve_model_invocation_execution",
         "send_openai_responses_http_request",
-        "route_approved_fresh_workflow_bounded",
-        "route_persisted_terminal_workflow_bounded",
-        "_build_start_context",
-        "_build_continuation_context",
-        "_run_fresh_workflow",
-        "_run_persisted_workflow",
+        "route_approved_workflow_fresh_start",
+        "route_approved_workflow_continuation_cycle",
     )
 
     def trap(name: str):
@@ -3101,7 +3098,7 @@ def test_workflows_start_rejects_mismatched_expected_preview_before_key_or_trans
     assert not paths["events"].exists()
 
 
-def test_workflows_start_success_executes_step1_once_with_empty_continuation(
+def test_workflows_start_success_executes_step1_once_and_returns_next_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = workflow_command_paths(tmp_path)
@@ -3432,7 +3429,7 @@ def test_workflows_continue_stale_expected_preview_is_rejected_before_transport(
     assert key_calls == []
 
 
-def test_workflows_continue_preserves_phase212_revalidation_after_cli_preview(
+def test_workflows_continue_revalidates_persisted_route_after_cli_preview(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = workflow_command_paths(tmp_path)
@@ -3443,32 +3440,33 @@ def test_workflows_continue_preserves_phase212_revalidation_after_cli_preview(
     key_calls: list[int] = []
     patch_cli_execution_seams(monkeypatch, calls, key_calls)
     _, preview = preview_command("continue", "research-and-summarize", paths)
-    real_phase212 = cli_module.route_persisted_terminal_workflow_bounded
+    mutated_snapshot: list[tuple[bytes, bytes]] = []
 
-    def mutate_before_phase212(
-        workflow: object,
-        state_path: object,
-        events_path: object,
-        contexts: object,
-    ) -> object:
-        assert state_path == paths["state"]
-        assert events_path == paths["events"]
+    def mutate_during_credential_load() -> OpenAIApiKey:
+        key_calls.append(1)
         write_succeeded_prefix(paths, 2)
-        return real_phase212(workflow, state_path, events_path, contexts)
+        mutated_snapshot.append(
+            (paths["state"].read_bytes(), paths["events"].read_bytes())
+        )
+        return OpenAIApiKey(value=SecretStr("synthetic-api-key"))
 
     monkeypatch.setattr(
         cli_module,
-        "route_persisted_terminal_workflow_bounded",
-        mutate_before_phase212,
+        "load_openai_api_key_from_environment",
+        mutate_during_credential_load,
     )
     result = invoke_execution("continue", "research-and-summarize", paths, preview)
 
     assert result.exit_code == 2
     assert result.stdout == ""
     assert result.stderr == "Error: workflow continuation failed\n"
+    assert mutated_snapshot
+    assert (paths["state"].read_bytes(), paths["events"].read_bytes()) == (
+        mutated_snapshot[0]
+    )
+    assert load_workflow_execution_state(paths["state"]).current_step_index == 2
     assert calls == []
     assert key_calls == [1]
-    assert load_workflow_execution_state(paths["state"]).current_step_index == 2
 
 
 def test_workflows_continue_rejects_ready_and_running_without_transport(
@@ -3667,7 +3665,7 @@ def test_workflows_continue_changed_predecessor_rejects_old_fingerprint_before_k
     assert key_calls == []
 
 
-def test_workflows_continue_mutation_before_phase190_guard_rejects_before_running(
+def test_workflows_continue_rejects_history_changed_during_credential_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = workflow_command_paths(tmp_path)
@@ -3678,27 +3676,20 @@ def test_workflows_continue_mutation_before_phase190_guard_rejects_before_runnin
     key_calls: list[int] = []
     patch_cli_execution_seams(monkeypatch, calls, key_calls)
     _, preview = preview_command("continue", "research-and-summarize", paths)
-    real_phase212 = cli_module.route_persisted_terminal_workflow_bounded
     mutated_snapshot: list[tuple[bytes, bytes]] = []
 
-    def mutate_before_phase190(
-        workflow: object,
-        state_path: object,
-        events_path: object,
-        contexts: object,
-    ) -> object:
-        assert state_path == paths["state"]
-        assert events_path == paths["events"]
+    def mutate_during_credential_load() -> OpenAIApiKey:
+        key_calls.append(1)
         replace_last_output(paths, "mutated after CLI approval binding")
         mutated_snapshot.append(
             (paths["state"].read_bytes(), paths["events"].read_bytes())
         )
-        return real_phase212(workflow, state_path, events_path, contexts)
+        return OpenAIApiKey(value=SecretStr("synthetic-api-key"))
 
     monkeypatch.setattr(
         cli_module,
-        "route_persisted_terminal_workflow_bounded",
-        mutate_before_phase190,
+        "load_openai_api_key_from_environment",
+        mutate_during_credential_load,
     )
     result = invoke_execution("continue", "research-and-summarize", paths, preview)
 
@@ -3720,6 +3711,18 @@ def test_workflows_help_lists_result_command() -> None:
 
     assert result.exit_code == 0
     assert "result" in result.stdout
+
+
+def test_engine_public_surface_excludes_retired_bounded_runner_layer() -> None:
+    retired = (
+        "route_bounded_approved_workflow_continuation",
+        "route_approved_fresh_workflow_bounded",
+        "route_persisted_terminal_workflow_bounded",
+        "ApprovedWorkflowContinuationContext",
+    )
+
+    assert set(retired).isdisjoint(engine_module.__all__)
+    assert all(not hasattr(engine_module, name) for name in retired)
 
 
 def test_workflows_result_one_step_final_success_preserves_exact_output(
