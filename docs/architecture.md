@@ -3969,10 +3969,18 @@ Run namespace; if a required Artifact is missing, preview fails closed without
 creating it or returning progression. `workflows result` applies the same
 no-create gate and makes no Run-namespace mutation. Ordinary continuation may
 complete a missing Artifact from durable execution evidence before returning a
-progression decision. Terminal post-completion facts and publication-readiness
-assessment are implemented by Phase 261.
+progression decision. The historical Phase 261–263 post-terminal facts and
+publication-readiness subsystem described below was retired by Issue #697 and
+is not part of the current production architecture or public surface. Phase 260
+remains the current persisted-continuation runtime-facts boundary.
 
-## Phase 261: Post-terminal facts and publication-readiness core
+## Historical Phase 261: retired post-terminal facts and readiness core
+
+This historical implementation record does not define a supported current
+surface. Terminal truth remains with the current Run-bound Workflow Run
+Manifest, persisted state/events, Execution Evidence, Recovery, and first-class
+WorkflowArtifact surfaces. No replacement snapshot, readiness abstraction,
+facade, wrapper, or adapter was introduced when this subsystem was retired.
 
 Phase 260 remains the pre-step boundary for persisted runtime facts, source
 freshness, request fingerprints, and approval validation. Phase 261 is a
@@ -4008,7 +4016,7 @@ fails closed if required Artifact evidence is missing. Durable readiness audit
 and human-approved regeneration remain future work; the explicit structured
 claim contract is added by Phase 262 below.
 
-## Phase 262: Structured publication claim contract and verified readiness
+## Historical Phase 262: retired publication claim and verified readiness
 
 Phase 262 adds the explicit, frozen `PublicationClaimContract` boundary that
 Phase 261 deliberately deferred. Its fixed `publication-claims.v1` schema and
@@ -4040,7 +4048,7 @@ contract validation. Phase 262 still persists no readiness/claim sidecar or
 event, changes no state/events schema, and introduces no provider execution,
 retry, replay, continuation, regeneration, or workflow-result change.
 
-## Phase 263: Immutable publication-readiness audit sidecar
+## Historical Phase 263: retired publication-readiness audit sidecar
 
 Phase 263 persists one already-derived Phase 262 evaluation as a separate,
 frozen `PublicationReadinessAuditRecord`. The record binds the exact
@@ -4075,10 +4083,9 @@ first-class Artifact model. Post-terminal regeneration is not currently a
 separate product capability. If changed or new business output is required in
 the future, it must be designed for a concrete product use case against the
 current Run, Approval, Execution Evidence, Recovery, and Artifact architecture;
-these historical phases do not define that future mechanism. Phase 261–263
-`post_terminal_facts.py` responsibilities remain current pending a separate
-audit, and the Target Architecture invariant that Publication Approval remains
-separate from Business, Execution, and Recovery Approval is unchanged.
+these historical phases do not define that future mechanism. The Target
+Architecture invariant that Publication Approval remains separate from
+Business, Execution, and Recovery Approval is unchanged.
 
 ### Historical Phase 264: Human-approved publication regeneration control contract
 

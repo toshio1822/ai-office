@@ -3703,6 +3703,18 @@ recovery、repairを行わず、`OPENAI_API_KEY`も要求しません。provider
 request_id、response_id、failure event message、credential、approval、
 raw provider payloadはresult JSONへ出力しません。
 
+## Historical Phases 261–263: retired post-terminal facts / publication readiness
+
+Phase 261〜263のpost-terminal facts、publication claim contract、publication
+readiness assessment / audit sidecarはIssue #697でretireされました。現在の
+production architectureや`ai_office.engine` public surfaceには存在しません。
+terminal truthはWorkflow Run Manifest、persisted state/events、Execution Evidence、
+Recovery、first-class WorkflowArtifactという現在のRun-bound authorityに保持されます。
+将来post-terminal projectionが必要になった場合も、具体的なproduct use caseと
+destination contractに基づいて現在のauthorityから設計する必要があり、このhistorical
+subsystemを互換層として復活させるものではありません。Phase 260のpersisted
+continuation runtime factsは現在のpre-step boundaryとして維持されています。
+
 ## Historical Phases 264–277: retired Publication Regeneration experiment
 
 Publication Regenerationは現在のproduction architectureやpublic surfaceには存在しません。
@@ -3712,9 +3724,9 @@ lineageだったため、Issue #695でretireされました。post-terminal rege
 独立したproduct capabilityとして実装されていません。将来changed/new business outputが
 必要になった場合は、具体的なproduct use caseに基づいて現在のRun / Approval /
 Execution Evidence / Artifact architectureへ適合させて設計します。以下はimplementation
-historyとしてのみ残しており、将来機構の設計ではありません。Phase 261〜263の
-`post_terminal_facts.py`と、Target ArchitectureにおけるPublication ApprovalをBusiness /
-Execution / Recovery Approvalから分離する不変条件は維持します。
+historyとしてのみ残しており、将来機構の設計ではありません。Target Architectureに
+おけるPublication ApprovalをBusiness / Execution / Recovery Approvalから分離する
+不変条件は維持します。
 
 ### Historical Phase 271: publication-result の read-only projection inspection
 
