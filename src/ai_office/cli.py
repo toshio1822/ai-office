@@ -21,9 +21,6 @@ from ai_office.engine import (
     ApprovedWorkflowBootstrapContext,
     InitialStepPreparationApproval,
     NextStepPreparationApproval,
-    PublicationRegenerationExportError,
-    PublicationRegenerationExportReceipt,
-    PublicationRegenerationExportReconciliation,
     WorkflowRunManifestError,
     WorkflowRunManifestPersistenceError,
     WorkflowRunManifestStore,
@@ -31,16 +28,12 @@ from ai_office.engine import (
     build_immediate_predecessor_upstream_inputs,
     build_persisted_continuation_runtime_facts,
     build_workflow_run_manifest,
-    export_publication_regeneration_output,
     find_business_approval_evidence,
     list_run_approval_evidence,
-    load_publication_regeneration_export_reconciliation,
     load_workflow_run_manifest,
     loaded_employees_from_run_manifest,
     loaded_workflow_from_run_manifest,
     persist_workflow_run_manifest,
-    project_publication_regeneration_output,
-    publication_regeneration_export_reconciliation_digest,
     route_approved_workflow_continuation_cycle,
     route_approved_workflow_fresh_start,
     route_persisted_execution_outcome_reentry,
@@ -2284,133 +2277,6 @@ def recover_workflow(
         _result_json("recover", "execute", routed, run_input=manifest.run_input)
     )
     if type(routed) is PersistedExecutionOutcome:
-        raise typer.Exit(code=1)
-
-
-@workflows_app.command("publication-result")
-def publication_result_workflow(
-    readiness_record_path: Path = typer.Option(..., "--readiness-record-path"),
-    result_path: Path = typer.Option(..., "--result-path"),
-) -> None:
-    """Read the exact Phase 270 publication-regeneration projection."""
-    try:
-        projection = project_publication_regeneration_output(
-            readiness_record_path=readiness_record_path,
-            result_path=result_path,
-        )
-        value: dict[str, object] = {
-            "business_output_sha256": projection.business_output_sha256,
-            "business_output_text": projection.business_output_text,
-            "operation": "publication-result",
-            "publishable": projection.publishable,
-            "readiness": projection.readiness,
-            "readiness_record_sha256": projection.readiness_record_sha256,
-            "reason_codes": list(projection.reason_codes),
-            "regeneration_id": projection.regeneration_id,
-            "result_record_sha256": projection.result_record_sha256,
-            "source_audit_sha256": projection.source_audit_sha256,
-        }
-    except Exception:
-        _workflow_cli_error("publication regeneration evidence is invalid")
-
-    _emit_json(value)
-    if projection.publishable is not True:
-        raise typer.Exit(code=1)
-
-
-@workflows_app.command("publication-export")
-def publication_export_workflow(
-    readiness_record_path: Path = typer.Option(..., "--readiness-record-path"),
-    result_path: Path = typer.Option(..., "--result-path"),
-    output_path: Path = typer.Option(..., "--output-path"),
-) -> None:
-    """Durably export one ready Phase 272 publication projection."""
-    try:
-        receipt = export_publication_regeneration_output(
-            output_path=output_path,
-            readiness_record_path=readiness_record_path,
-            result_path=result_path,
-        )
-    except PublicationRegenerationExportError as error:
-        try:
-            classification = error.detail.classification
-        except Exception:
-            classification = None
-        if classification == "not_publishable":
-            _workflow_cli_error(
-                "publication regeneration output is not exportable", code=1
-            )
-        if classification == "ambiguous":
-            _workflow_cli_error(
-                "publication regeneration export outcome is ambiguous", code=2
-            )
-        _workflow_cli_error("publication regeneration export is invalid")
-    except Exception:
-        _workflow_cli_error("publication regeneration export is invalid")
-
-    if type(receipt) is not PublicationRegenerationExportReceipt:
-        _workflow_cli_error("publication regeneration export is invalid")
-
-    _emit_json(
-        {
-            "operation": "publication-export",
-            "schema_version": receipt.schema_version,
-            "regeneration_id": receipt.regeneration_id,
-            "projection_sha256": receipt.projection_sha256,
-            "readiness_record_sha256": receipt.readiness_record_sha256,
-            "result_record_sha256": receipt.result_record_sha256,
-            "source_audit_sha256": receipt.source_audit_sha256,
-            "business_output_sha256": receipt.business_output_sha256,
-            "output_byte_length": receipt.output_byte_length,
-        }
-    )
-
-
-@workflows_app.command("publication-reconciliation-evidence")
-def publication_reconciliation_evidence_workflow(
-    evidence_path: Path = typer.Option(..., "--evidence-path"),
-) -> None:
-    """Read one exact Phase 276 reconciliation-evidence sidecar."""
-    try:
-        reconciliation = load_publication_regeneration_export_reconciliation(
-            evidence_path
-        )
-        if type(reconciliation) is not PublicationRegenerationExportReconciliation:
-            raise TypeError
-        if reconciliation.status not in (
-            "matched",
-            "missing",
-            "content_mismatch",
-        ):
-            raise ValueError
-        evidence_sha256 = publication_regeneration_export_reconciliation_digest(
-            reconciliation
-        )
-        if type(evidence_sha256) is not str:
-            raise TypeError
-        value: dict[str, object] = {
-            "evidence_sha256": evidence_sha256,
-            "expected_business_output_sha256": (
-                reconciliation.expected_business_output_sha256
-            ),
-            "expected_output_byte_length": reconciliation.expected_output_byte_length,
-            "observed_business_output_sha256": (
-                reconciliation.observed_business_output_sha256
-            ),
-            "observed_output_byte_length": reconciliation.observed_output_byte_length,
-            "operation": "publication-reconciliation-evidence",
-            "receipt_sha256": reconciliation.receipt_sha256,
-            "regeneration_id": reconciliation.regeneration_id,
-            "schema_version": reconciliation.schema_version,
-            "status": reconciliation.status,
-        }
-    except Exception:
-        _workflow_cli_error(
-            "publication reconciliation evidence could not be read"
-        )
-
-    _emit_json(value)
-    if reconciliation.status != "matched":
         raise typer.Exit(code=1)
 
 

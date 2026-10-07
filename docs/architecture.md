@@ -4065,7 +4065,22 @@ is added, and no provider/network call, timestamp, claim-contract generation,
 publication action, or regeneration is introduced. Human-approved
 regeneration remains future work.
 
-## Phase 264: Human-approved publication regeneration control contract
+## Historical Phases 264–277: retired Publication Regeneration experiment
+
+Publication Regeneration is not part of the current production architecture or
+public surface. The Phase 264–277 implementation described below was retired by
+Issue #695 because it formed a parallel post-terminal provider-execution,
+approval, evidence, and export lineage beside the current Workflow Run and
+first-class Artifact model. Post-terminal regeneration is not currently a
+separate product capability. If changed or new business output is required in
+the future, it must be designed for a concrete product use case against the
+current Run, Approval, Execution Evidence, Recovery, and Artifact architecture;
+these historical phases do not define that future mechanism. Phase 261–263
+`post_terminal_facts.py` responsibilities remain current pending a separate
+audit, and the Target Architecture invariant that Publication Approval remains
+separate from Business, Execution, and Recovery Approval is unchanged.
+
+### Historical Phase 264: Human-approved publication regeneration control contract
 
 Phase 264 adds only a provider-free control plane for a future human-approved
 publication regeneration. A `PublicationRegenerationPlan` may be built only
@@ -4098,7 +4113,7 @@ is changed. A future execution boundary must consume or retire one approved
 plan for at most one external-side-effect attempt, including an ambiguous
 provider attempt; Phase 264 does not implement that durable one-use boundary.
 
-## Phase 265: Durable one-use publication-regeneration attempt claim
+### Historical Phase 265: Durable one-use publication-regeneration attempt claim
 
 Phase 265 keeps the Phase 264 `PublicationRegenerationApproval` fields and
 validation semantics unchanged, and adds only its canonical compact UTF-8 JSON
@@ -4142,7 +4157,7 @@ claim must leave the outer approval consumed with no automatic retry. Provider
 execution, regenerated output, state/events/business-output/audit-sidecar
 mutation, CLI execution, and reconciliation remain future work.
 
-## Phase 266: One-shot publication-regeneration provider execution
+### Historical Phase 266: One-shot publication-regeneration provider execution
 
 Phase 266 is the first provider-execution boundary for publication regeneration.
 It connects the Phase 263 audit, Phase 264 plan and outer approval, and Phase
@@ -4172,7 +4187,7 @@ surface, regenerated-output sidecar, execution-result sidecar, or automatic
 claim-contract generation. Tests use only explicit synthetic transports and do
 not call a real provider or network.
 
-## Phase 267: Immutable publication-regeneration result evidence
+### Historical Phase 267: Immutable publication-regeneration result evidence
 
 Phase 267 persists the exact normalized `ModelInvocationResult` returned by
 Phase 266 as a separate, immutable new-lineage result sidecar. It does not
@@ -4210,7 +4225,7 @@ conservatively unresolved until a future reconciliation phase. Phase 267 adds
 no publication-claim contract generation, readiness promotion, reconciliation
 API, CLI execution surface, retry, replay, fallback, or automatic continuation.
 
-## Phase 268: Read-only regeneration-result publication readiness projection
+### Historical Phase 268: Read-only regeneration-result publication readiness projection
 
 Phase 268 reconnects one durable Phase 267 result to publication readiness
 without executing a provider or changing either lineage. Its explicit inputs
@@ -4257,7 +4272,7 @@ boundary performs no writes, readiness-sidecar persistence, claim-ledger
 change, provider/model/network/environment/credential access, retry, replay,
 fallback, regeneration, or CLI change.
 
-## Phase 269: Immutable regeneration-readiness evidence sidecar
+### Historical Phase 269: Immutable regeneration-readiness evidence sidecar
 
 Phase 269 persists one exact Phase 268 `PublicationRegenerationReadinessAssessment`
 inside a separate frozen `PublicationRegenerationReadinessRecord`. The record
@@ -4293,7 +4308,7 @@ claim generation, regeneration, retry/replay/fallback, reconciliation, CLI,
 state/event/workflow-result change, or runtime event; original, Phase 263,
 Phase 265, and Phase 267 evidence remains byte-for-byte separate and unchanged.
 
-## Phase 270: Read-only projection of publishable regenerated output
+### Historical Phase 270: Read-only projection of publishable regenerated output
 
 Phase 270 adds one in-memory `PublicationRegenerationProjection` and one
 provider-free read boundary. The boundary loads an explicit Phase 269
@@ -4334,7 +4349,7 @@ Phase 267 result sidecar, Phase 269 readiness sidecar, Phase 263 audit sidecar,
 Phase 265 claim ledger, workflow state/events, and original business output
 remain byte-for-byte unchanged.
 
-## Phase 271: Provider-free publication-result CLI boundary
+### Historical Phase 271: Provider-free publication-result CLI boundary
 
 Phase 271 adds only the read-side command
 `ai-office workflows publication-result --readiness-record-path PATH
@@ -4361,7 +4376,7 @@ publication side effect. `workflows result` remains the original persisted
 workflow execution-lineage inspection command and is not redirected to this
 projection.
 
-## Phase 272: Explicit durable export of a ready projection
+### Historical Phase 272: Explicit durable export of a ready projection
 
 Phase 272 adds one provider-free engine boundary,
 `export_publication_regeneration_output(output_path=..., readiness_record_path=...,`
@@ -4399,7 +4414,7 @@ event/original-workflow artifacts remain byte-for-byte unchanged; Phase 272
 adds no runtime event, provider/network/environment access, credential lookup,
 regeneration, claim/readiness mutation, fallback, continuation, or manifest.
 
-## Phase 273: Provider-free publication-export CLI adapter
+### Historical Phase 273: Provider-free publication-export CLI adapter
 
 Phase 273 adds only the explicit command
 `ai-office workflows publication-export --readiness-record-path PATH
@@ -4426,7 +4441,7 @@ remains the sole owner of output preflight and durable write/fsync semantics.
 The existing `publication-result`, `result`, `start`, and `continue` command
 contracts remain unchanged.
 
-## Phase 274: Canonical durable publication export receipt evidence
+### Historical Phase 274: Canonical durable publication export receipt evidence
 
 Phase 274 adds one narrow provider-free receipt sidecar boundary:
 `serialize_publication_regeneration_export_receipt_canonical(...)`,
@@ -4473,7 +4488,7 @@ environment, credentials, clock, CLI, or runtime event is changed. Whether the
 exported business-output file still exists or matches the receipt remains the
 responsibility of a later explicit reconciliation phase.
 
-## Phase 275: Read-only publication-export receipt reconciliation
+### Historical Phase 275: Read-only publication-export receipt reconciliation
 
 Phase 275 adds the provider-free engine boundary
 `reconcile_publication_regeneration_export(receipt_path=..., output_path=...)` and
@@ -4502,7 +4517,7 @@ claim, result, readiness, projection, or original workflow artifacts. It adds no
 CLI command and no retry, fallback, repair, adoption, overwrite, re-export,
 publication, network, credential, clock, or automatic-continuation behavior.
 
-## Phase 276: Canonical durable publication-export reconciliation evidence
+### Historical Phase 276: Canonical durable publication-export reconciliation evidence
 
 Phase 276 persists an already-derived exact
 `PublicationRegenerationExportReconciliation` from Phase 275 through
@@ -4534,7 +4549,7 @@ mutation. No CLI command, runtime event, lineage mutation, receipt/output
 re-observation, repair, adoption, overwrite, retry, fallback, publication,
 network, credential, environment, or clock access is added.
 
-## Phase 277: Read-only publication reconciliation evidence CLI
+### Historical Phase 277: Read-only publication reconciliation evidence CLI
 
 Phase 277 adds exactly one provider-free command:
 `ai-office workflows publication-reconciliation-evidence --evidence-path PATH`.

@@ -3703,7 +3703,20 @@ recovery、repairを行わず、`OPENAI_API_KEY`も要求しません。provider
 request_id、response_id、failure event message、credential、approval、
 raw provider payloadはresult JSONへ出力しません。
 
-## Phase 271: publication-result の read-only projection inspection
+## Historical Phases 264–277: retired Publication Regeneration experiment
+
+Publication Regenerationは現在のproduction architectureやpublic surfaceには存在しません。
+Phase 264〜277の実装は、現在のWorkflow Run / Approval / Execution Evidence / Recovery /
+first-class Artifactと並行するpost-terminal provider execution・approval・evidence・export
+lineageだったため、Issue #695でretireされました。post-terminal regenerationは現在、
+独立したproduct capabilityとして実装されていません。将来changed/new business outputが
+必要になった場合は、具体的なproduct use caseに基づいて現在のRun / Approval /
+Execution Evidence / Artifact architectureへ適合させて設計します。以下はimplementation
+historyとしてのみ残しており、将来機構の設計ではありません。Phase 261〜263の
+`post_terminal_facts.py`と、Target ArchitectureにおけるPublication ApprovalをBusiness /
+Execution / Recovery Approvalから分離する不変条件は維持します。
+
+### Historical Phase 271: publication-result の read-only projection inspection
 
 Phase 270 が作成する再生成 publication projection を、provider-freeに確認
 するには、readiness recordとresult recordのパスを明示して次を実行します。
@@ -3727,7 +3740,7 @@ stderrへ出して終了コード2になります。既存の`workflows result`�
 execution lineageを読む契約のままで、再生成されたpublication outputへ切り替わり
 ません。どのケースでもprovider、network、credential、clock、書込みは行いません。
 
-## Phase 273: publication-export の provider-free CLI boundary
+### Historical Phase 273: publication-export の provider-free CLI boundary
 
 Phase 272のready projectionを、callerが指定した新しいファイルへ明示的に
 exportするには、次を使用します。
@@ -3753,7 +3766,7 @@ receipt/manifestは出力・永続化しません。not-publishableは固定stde
 予期しない依存失敗は固定invalidエラーと終了コード2になります。既存の
 `workflows publication-result`はread-only projection inspectionのまま変更されません。
 
-## Phase 274: publication export receipt のcanonical durable evidence
+### Historical Phase 274: publication export receipt のcanonical durable evidence
 
 Phase 272 がすでに返した正確な
 `PublicationRegenerationExportReceipt` を、callerが明示したreceipt sidecarへ
@@ -3790,7 +3803,7 @@ receipt sidecarはbusiness-output path/text、provider payload、credentials、
 timestamp、randomness、metadataを保存せず、export fileが後から存在するか・一致
 するかの証明は将来の明示reconciliation phaseに委譲します。
 
-## Phase 275: publication export receipt と明示 output file の read-only reconciliation
+### Historical Phase 275: publication export receipt と明示 output file の read-only reconciliation
 
 Phase 274 が永続化した canonical receipt sidecar と、callerが明示した output
 fileを比較するprovider-freeなengine boundaryを追加しています。
@@ -3810,7 +3823,7 @@ bytesがreceiptのSHA-256とbyte lengthの両方を満たす場合だけ`matched
 永続化しません。repair、adopt、overwrite、retry、fallback、re-export、CLI変更、
 workflow state/events等のlineage mutationはありません。
 
-## Phase 276: publication export reconciliation のcanonical durable evidence
+### Historical Phase 276: publication export reconciliation のcanonical durable evidence
 
 Phase 275がすでに導出した
 `PublicationRegenerationExportReconciliation`を、再reconciliationせず、Phase 274
@@ -3835,7 +3848,7 @@ key、非canonical JSON、Phase 275 modelの不正なstatus・digest・length・
 再計算、workflow state/events等のlineage mutation、provider/network/credential/
 clock accessはありません。
 
-## Phase 277: publication reconciliation evidence の read-only CLI
+### Historical Phase 277: publication reconciliation evidence の read-only CLI
 
 Phase 276が永続化したreconciliation-evidence sidecarを、明示されたpathから
 provider-freeにstrict loadして確認するread-only CLI commandを追加しています。
