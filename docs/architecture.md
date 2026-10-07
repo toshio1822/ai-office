@@ -5158,9 +5158,21 @@ claim paths or consumption keys, access sidecars directly, call a provider or
 transport outside Phase 285, inspect provider state, access credentials or
 environment, use clocks/randomness/UUID/socket/subprocess/network, retry,
 fallback, compensate, continue automatically, or change CLI/GUI behavior.
-After Phase 288, evaluate a durable higher-level operation/job lifecycle that
-records explicit operation state and can instruct a later resume without
-replaying fresh publication; do not implement that lifecycle in this phase.
+Phase 288 is the current supported endpoint for explicit operation selection.
+An ambiguous or incomplete fresh attempt is never replayed with the consumed
+authority; a caller may explicitly choose provider-free resume reconciliation,
+or execution stops for investigation or a future product decision.
+
+## Historical Phases 289–299: retired job/recovery lifecycle overlay
+
+Phases 289–299 below are retained only as implementation history. Their
+production modules and public `ai_office.engine` exports were retired by
+Issue #691 and are not part of the current architecture or supported public
+surface. The active External Publication experiment ends at the Phase 288
+fresh-versus-resume dispatcher and its lower planning, Publication Approval,
+one-use claim, execution evidence, and provider-free reconciliation owners.
+No durable job/recovery overlay, automatic retry, automatic resume, or fresh
+publication replay follows Phase 288.
 
 ## Phase 289: Durable explicit external-publication operation intent evidence
 
