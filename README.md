@@ -3869,7 +3869,17 @@ credential実行、publication permissionの推測を行いません。既存の
 `publication-result`、`publication-export`、`result`、`start`、`continue`の契約も
 変更しません。
 
-## Phase 278: matched reconciliation evidence からの external publication plan
+## Historical Phases 278–288: retired External Publication experiment
+
+External Publicationは現在未実装です。以下のPhase 278〜288はimplementation history
+としてのみ残し、production modulesとpublic `ai_office.engine` surfaceはIssue #693で
+retireされています。具体的なproduct use caseとdestination contractが決まった時点で
+future capabilityとして再設計します。その設計でもTarget Architectureの不変条件である、
+明示的なpublishable Artifact/Projection、他approvalと分離したPublication Approval、
+destinationに適したdurable side-effect authority、durable evidence/reconciliationを
+維持します。placeholder transport、framework、adapter、replacement APIは現在存在しません。
+
+### Historical Phase 278: matched reconciliation evidence からの external publication plan
 
 Phase 278は、将来のexternal publicationに向けたprovider-freeなplanning boundary
 だけを追加します。`ExternalPublicationTarget`は、exact schema version、明示された
@@ -3902,7 +3912,7 @@ retry、repair、fallback、automatic continuation、workflow state/events/audit
 result mutationを追加しません。既存のPhase 274/275/276/277のreceipt、reconciliation、
 evidence、CLI契約は変更されません。
 
-## Phase 279: exact external publication plan への human approval binding
+### Historical Phase 279: exact external publication plan への human approval binding
 
 Phase 279は、Phase 278がすでにcallerから受け取った exact
 `ExternalPublicationPlan` に対するprovider-freeなhuman approval boundaryだけを
@@ -3936,7 +3946,7 @@ command、workflow state/events/audit/readiness/result mutation、retry、repair
 automatic continuationを追加しません。Ready化、merge、Issue closeは後続の人間レビュー
 まで行いません。
 
-## Phase 280: external publication approval の durable one-use claim
+### Historical Phase 280: external publication approval の durable one-use claim
 
 Phase 280は、exactなPhase 278 `ExternalPublicationPlan`とPhase 279
 `ExternalPublicationApproval`から、将来のexternal executionに先行するprovider-freeな
@@ -3976,7 +3986,7 @@ workflow state/events/audit/readiness/result mutation、別approval file、retry
 automatic continuation、Ready化、merge、Issue closeを追加しません。次の明示phaseがclaim
 後のexternal executionを所有します。
 
-## Phase 281: durable claim 後の external publication execution
+### Historical Phase 281: durable claim 後の external publication execution
 
 Phase 281は、exactなPhase 278 `ExternalPublicationPlan`、Phase 279
 `ExternalPublicationApproval`、Phase 276 reconciliation evidence path、Phase 278の
@@ -4009,7 +4019,7 @@ automatic continuation、新しいclaimやapprovalの作成は行いません。
 このphaseではexecution result/receipt/evidenceを永続化せず、execution moduleでenvironmentや
 credentialをloadせず、CLI commandも追加・変更しません。testsはfake transportのみを使います。
 
-## Phase 282: external publication execution result の canonical durable evidence
+### Historical Phase 282: external publication execution result の canonical durable evidence
 
 Phase 282は、Phase 281で既に導出された exact な
 `ExternalPublicationExecutionResult`を、その11 fields自身としてcanonical durable
@@ -4048,7 +4058,7 @@ reconcileせず、workflow/audit/readiness/result lineageを変更せず、CLI c
 しません。execution-result evidenceは、このphaseの明示的なcaller callによってのみ作成され、
 後続phaseが明示的に組み合わせるまでcanonical durable recordに限定されます。
 
-## Phase 283: durable claim と execution evidence の read-only lineage reconciliation
+### Historical Phase 283: durable claim と execution evidence の read-only lineage reconciliation
 
 Phase 283は、既存のstrict durable recordを2つだけ読み込んで、同じpublication attempt
 lineageに属するかをprovider-freeに観測します。control sequenceは次のとおりです。
@@ -4082,7 +4092,7 @@ clock/random/UUID/socket access、filesystem mutation、output file read、workf
 CLI behaviorの変更を行いません。`lineage_mismatch`はvalidな観測であり、execution retryの
 signalではありません。
 
-## Phase 284: external publication execution reconciliation の canonical durable evidence
+### Historical Phase 284: external publication execution reconciliation の canonical durable evidence
 
 Phase 284は、Phase 283ですでに導出された exactな
 `ExternalPublicationExecutionReconciliation` だけを、同じ5 fields自身として
@@ -4132,7 +4142,7 @@ loaderはread-onlyで、repairやrewriteをしません。Phase 284はPhase 283 
 ありません。これによりexternal-publication audit chainはdurably closedとなり、次の作業は
 新しいlower-level publication evidence boundaryではなくhigher-level orchestrationへ移ります。
 
-## Phase 285: approved external publication の execution evidence orchestration
+### Historical Phase 285: approved external publication の execution evidence orchestration
 
 Phase 285は、Phase 284でlower audit chainが閉じた後の最初の上位
 external-publication orchestrationです。既存のpublic boundaryを再実装せず、Phase 282のfresh
@@ -4179,7 +4189,7 @@ fake transportによる呼び出しだけをtestsで検証します。CLI/GUIは
 新しいlower-level evidence modelを追加するのではなく、durable post-execution reconciliation
 closureを上位からcomposeすることが予定されます。
 
-## Phase 286: durable external publication reconciliation closure orchestration
+### Historical Phase 286: durable external publication reconciliation closure orchestration
 
 Phase 286は、Phase 283のread-only execution reconciliationとPhase 284のcanonical durable
 reconciliation evidence persistenceを組み合わせる、provider-freeなpost-execution closureです。
@@ -4233,7 +4243,7 @@ subprocessへアクセスしません。CLI/GUI変更もありません。Phase 
 job/workflow-facing orchestrationへ外側に進むかを評価します。このIssueでは次Phaseを自動開始
 しません。
 
-## Phase 287: durable approval lineage からの reconciliation closure resumable handoff
+### Historical Phase 287: durable approval lineage からの reconciliation closure resumable handoff
 
 Phase 287は、Phase 285のexternal side effectが成功した可能性がある一方で、後続の
 Phase 286 closureだけを再開する必要がある場合のprovider-freeなrecovery/handoff boundary
@@ -4280,7 +4290,7 @@ fallback、compensation、automatic continuationを追加しません。次の�
 execute + resumable closureを含むhigher-level operation/job-facing contractを評価しますが、
 このIssueから自動開始しません。
 
-## Phase 288: explicit fresh-vs-resume external publication operation dispatch
+### Historical Phase 288: explicit fresh-vs-resume external publication operation dispatch
 
 Phase 288は、job/workflow-facing callerが`fresh`と`resume`のどちらを実行するかを
 明示的に選ぶruntime dispatch contractです。durableなjob stateを実装したり、filesystemや

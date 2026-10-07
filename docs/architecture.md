@@ -4566,7 +4566,19 @@ result change, provider/runtime/network/credential execution, or publication
 authorization inference. Existing `publication-result`, `publication-export`,
 `result`, `start`, and `continue` contracts remain unchanged.
 
-## Phase 278: Exact external publication planning from matched evidence
+## Historical Phases 278–288: retired External Publication experiment
+
+External Publication is not currently implemented. The Phase 278–288 sections
+below are retained only as implementation history; their production modules
+and public `ai_office.engine` surface were retired by Issue #693. A future
+capability must be designed only when a concrete product use case and
+destination contract exist. That design must preserve the Target Architecture
+invariant: an explicit publishable Artifact/Projection, Publication Approval
+distinct from other approvals, destination-appropriate durable side-effect
+authority, and durable evidence/reconciliation. No placeholder transport,
+framework, adapter, or replacement API is active today.
+
+### Historical Phase 278: Exact external publication planning from matched evidence
 
 Phase 278 adds a provider-free planning boundary in
 `external_publication.py`. It introduces the frozen, secret-free
@@ -4616,7 +4628,7 @@ automatic continuation, environment/credential access, clock/randomness,
 workflow-state/event/audit/readiness/result mutation, or external side effect.
 Existing Phase 274, 275, 276, and 277 contracts remain unchanged.
 
-## Phase 279: Exact external-publication-plan human approval
+### Historical Phase 279: Exact external-publication-plan human approval
 
 Phase 279 adds only the provider-free human-approval boundary for one exact
 Phase 278 `ExternalPublicationPlan`. `ExternalPublicationApproval` is a frozen
@@ -4659,7 +4671,7 @@ workflow state/events/audit/readiness/results, add a CLI command, or add retry,
 repair, fallback, or automatic continuation. Later phases own durable claim
 and execution behavior.
 
-## Phase 280: Durable one-use claim for an external publication approval
+### Historical Phase 280: Durable one-use claim for an external publication approval
 
 Phase 280 adds only the provider-free durable claim boundary in
 `external_publication.py`. It accepts one exact Phase 278
@@ -4710,7 +4722,7 @@ randomness, or UUIDs, add a CLI command, publish externally, or mutate
 workflow state/events/audit/readiness/results. External execution remains a
 future explicit phase.
 
-## Phase 281: Execute one approved external publication behind the durable claim gate
+### Historical Phase 281: Execute one approved external publication behind the durable claim gate
 
 Phase 281 adds the first provider-neutral external publication execution
 boundary in `external_publication_execution.py`. Its control sequence is
@@ -4752,7 +4764,7 @@ detail-safe ambiguous error is raised. A valid exact
 `ExternalPublicationExecutionResult`; this phase persists no execution result,
 receipt, or evidence and adds or changes no CLI command.
 
-## Phase 282: Persist the Phase 281 execution result as canonical durable evidence
+### Historical Phase 282: Persist the Phase 281 execution result as canonical durable evidence
 
 Phase 282 is a persistence-only evidence boundary. It accepts an already
 derived exact `ExternalPublicationExecutionResult` from Phase 281 and stores
@@ -4805,7 +4817,7 @@ other lineage, adds or changes no CLI command, and makes no real provider or
 paid API call. A later explicit phase may compose Phase 281 execution with
 this evidence persistence or reconcile the durable result with external state.
 
-## Phase 283: Read-only lineage reconciliation of the durable claim and evidence
+### Historical Phase 283: Read-only lineage reconciliation of the durable claim and evidence
 
 Phase 283 adds one provider-free, read-only boundary that observes whether one
 strict Phase 280 durable attempt claim and one strict Phase 282 durable
@@ -4854,7 +4866,7 @@ clock/randomness/UUID/socket/network, mutate the filesystem or workflow
 state, persist its observation, retry, repair, fall back, continue
 automatically, or add/change CLI behavior.
 
-## Phase 284: Persist the Phase 283 reconciliation as canonical durable evidence
+### Historical Phase 284: Persist the Phase 283 reconciliation as canonical durable evidence
 
 Phase 284 is the final evidence-only boundary for the current
 external-publication lineage. It persists exactly one already-derived
@@ -4916,7 +4928,7 @@ external-publication audit chain is durably closed; the next planned work
 should move upward into orchestration rather than add another lower-level
 publication evidence boundary.
 
-## Phase 285: Orchestrate approved publication into durable execution evidence
+### Historical Phase 285: Orchestrate approved publication into durable execution evidence
 
 Phase 285 is the first higher-level external-publication orchestration after
 Phase 284 closed the lower audit chain. It composes the existing public Phase
@@ -4979,7 +4991,7 @@ CLI/GUI behavior. Tests use fake transports only. Phase 286 is expected to
 compose the durable post-execution reconciliation closure, rather than add
 another lower-level evidence model.
 
-## Phase 286: Orchestrate the durable external-publication reconciliation closure
+### Historical Phase 286: Orchestrate the durable external-publication reconciliation closure
 
 Phase 286 is a provider-free post-execution orchestration boundary. It
 composes the existing public Phase 283 read-only reconciliation with the
@@ -5046,7 +5058,7 @@ into one larger explicit operation versus moving outward toward
 job/workflow-facing orchestration; this Issue does not automatically start
 that next phase.
 
-## Phase 287: Resumable post-execution reconciliation handoff
+### Historical Phase 287: Resumable post-execution reconciliation handoff
 
 Phase 287 is the provider-free recovery boundary for the case where Phase 285
 may already have completed its one-use external side effect but the later
@@ -5097,7 +5109,7 @@ provider execution remains zero. After this boundary, evaluate a higher-level
 fresh execute + resumable closure operation/job-facing contract rather than
 starting one automatically. No Phase 287 CLI/GUI command is added.
 
-## Phase 288: Explicit fresh-vs-resume operation dispatch
+### Historical Phase 288: Explicit fresh-vs-resume operation dispatch
 
 Phase 288 is the explicit runtime job/workflow-facing dispatcher for the two
 already-safe external-publication operations. It does not implement durable
