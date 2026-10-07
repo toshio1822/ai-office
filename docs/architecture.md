@@ -6364,11 +6364,20 @@ nothing.
 Phase 299 calls no Phase 298, 297, 293, 291, or 290 orchestration and performs
 no execution, replay, retry, fallback, automatic continuation, scheduling,
 looping, or parallelization. It adds no CLI or GUI behavior. Real provider,
-network, credential, and paid API calls remain zero. A future Phase 300 may
-persist an explicit operator decision bound to the exact Phase 298 outcome
-digest, durable start digest, and current Phase 299 recovery kind, but it must
-preserve the Phase 298 authorization provenance and must not reuse the generic
-Phase 293 Phase 292-bound decision record as authority.
+network, credential, and paid API calls remain zero. A recovery-required route
+is the bounded lifecycle's safe stop: it requires operator investigation or a
+future product decision and does not authorize another recovery-resume cycle.
+
+## Historical Phases 300–308: retired second recovery-resume cycle
+
+Phases 300–308 below are retained only as implementation history. Their
+production modules and public `ai_office.engine` exports were retired by
+Issue #689 and are not part of the current architecture or supported public
+surface. The active External Publication lifecycle permits one explicit
+recovery decision and one recovery-resume attempt through Phases 293–299. A
+remaining recovery-required outcome is routed read-only and then stops. It
+does not automatically retry, resume, replay a provider call, or enter a
+second recovery cycle.
 
 ## Phase 300: Durable recovery-resume operator decision
 
