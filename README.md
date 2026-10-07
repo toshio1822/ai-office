@@ -4332,9 +4332,19 @@ valueはselected routeに影響しません。
 Phase 288はPhase 280〜284/286を直接呼ばず、claim path/consumption keyを導出せず、sidecarを
 直接open/read/writeせず、provider/transportをPhase 285以外から呼びません。retry、fallback、
 compensation、automatic continuation、provider state inference、credential/environment/
-clock/random/UUID/socket/subprocess/network access、CLI/GUI変更もありません。futureの
-higher-level durable job lifecycleがfresh attempt後に明示的なresumeを指示することは評価対象
-ですが、このIssueではそのlifecycleを実装せず、自動開始もしません。
+clock/random/UUID/socket/subprocess/network access、CLI/GUI変更もありません。Phase 288は
+現在のsupported operation endpointです。ambiguous/incompleteなfresh attemptはconsumed
+authorityでreplayせず、callerがprovider-free resume reconciliationを明示的に選ぶか、
+investigationまたは将来のproduct decisionまで安全に停止します。
+
+## Historical Phases 289–299: retired job/recovery lifecycle overlay
+
+以下のPhase 289〜299はimplementation historyとしてのみ残します。production modulesと
+public `ai_office.engine` exportsはIssue #691でretireされ、current architecture / supported
+public surfaceではありません。activeなExternal Publication experimentはPhase 288と、その
+下位のplanning、Publication Approval、one-use claim、execution evidence、provider-free
+reconciliationで終了します。Phase 288の後にdurable job/recovery overlay、automatic retry、
+automatic resume、fresh publication replayはありません。
 
 ## Phase 289: durable explicit external-publication operation intent evidence
 
