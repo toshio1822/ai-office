@@ -29,6 +29,9 @@ def extract_openai_responses_output_text(
     response: OpenAIResponsesSuccessResponse,
 ) -> OpenAIResponsesOutputText:
     """Extract supported output text in response and content order."""
+    if response.status != "completed":
+        _invalid_output_error()
+
     text_parts: list[str] = []
 
     for output_item in response.output:
