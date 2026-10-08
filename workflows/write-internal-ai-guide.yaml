@@ -1,0 +1,15 @@
+id: write-internal-ai-guide
+name: Write Internal Generative AI Guide
+description: Produces one review-ready Japanese internal guide from a per-Run brief.
+
+steps:
+  - id: draft-guide
+    name: Draft Guide
+    employee: japanese-document-writer
+    instructions: |
+      Turn the supplied business brief into an internal generative-AI usage guide.
+      Include the audience, purpose, permitted use, prohibited use, information-handling rules,
+      required human review, incident escalation, and an assumptions or open-items section.
+      Preserve requirements and terminology from the brief without adding external research.
+    business_approval_required: true
+    artifact_content_type: text/markdown
