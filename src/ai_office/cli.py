@@ -50,6 +50,10 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.execution_destination import (
+    ExecutionDestinationError,
+    load_execution_destination_registry,
+)
 from ai_office.execution_evidence import inspect_run_execution_evidence
 from ai_office.execution_target import (
     ModelExecutionTarget,
@@ -544,6 +548,8 @@ def _build_start_manifest_preview(
     run_input: str | None,
     workflows: list[object],
     employees: list[object],
+    execution_model: str | None = None,
+    execution_target: ModelExecutionTarget | None = None,
 ) -> tuple[object, WorkflowRunBinding, object, list[object], object]:
     """Freeze fresh Run meaning in memory before preview or durable creation."""
     if run_id is None or run_input is None:
@@ -556,6 +562,8 @@ def _build_start_manifest_preview(
             workflow,
             employees,
             tool_catalog=DEFAULT_TOOL_CATALOG,
+            execution_model=execution_model,
+            execution_target=execution_target,
         )
         binding = _run_binding_for_manifest(manifest)
         pinned_workflows, pinned_employees, catalog = _pinned_run_inputs(manifest)
@@ -642,12 +650,83 @@ def _build_workflow_step_preview(
     )
 
 
-def _resolve_execution_target(name: str) -> ModelExecutionTarget:
-    """Resolve the only operator-selectable target before credential work."""
+def _resolve_execution_target(
+    name: str, registry_path: Path | None = None
+) -> ModelExecutionTarget:
+    """Resolve a built-in or administrator-registered target before credentials."""
     try:
-        return execution_target_for_name(name)
-    except (ModelExecutionTargetError, TypeError):
+        if name in {"openai", "omniroute"}:
+            if registry_path is not None:
+                raise ExecutionDestinationError("built-in target needs no registry")
+            return execution_target_for_name(name)
+        if registry_path is None:
+            raise ExecutionDestinationError(
+                "execution destination registry is required"
+            )
+        return load_execution_destination_registry(registry_path).resolve(name).target
+    except (ExecutionDestinationError, ModelExecutionTargetError, TypeError):
         _workflow_cli_error("execution target is invalid")
+
+
+def _resolve_execution_model(
+    target: ModelExecutionTarget,
+    registry_path: Path | None,
+    model: str | None,
+) -> str | None:
+    """Validate an operator model against the selected registry policy."""
+    if target.provider in {"openai", "omniroute"}:
+        if model is not None:
+            _workflow_cli_error("--execution-model requires a configured destination")
+        return None
+    if registry_path is None or model is None:
+        _workflow_cli_error("configured destinations require --execution-model")
+    try:
+        return (
+            load_execution_destination_registry(registry_path)
+            .resolve(target.provider)
+            .select_model(model)
+        )
+    except ExecutionDestinationError:
+        _workflow_cli_error("execution model is invalid")
+
+
+def _validate_pinned_models_for_target(
+    target: ModelExecutionTarget,
+    registry_path: Path | None,
+    employees: list[object],
+) -> None:
+    """Require every manifest-pinned model to remain permitted."""
+    if target.provider in {"openai", "omniroute"}:
+        return
+    if registry_path is None:
+        _workflow_cli_error("execution target is invalid")
+    try:
+        destination = load_execution_destination_registry(registry_path).resolve(
+            target.provider
+        )
+        for employee in employees:
+            destination.select_model(employee.definition.model)
+    except (AttributeError, ExecutionDestinationError):
+        _workflow_cli_error("pinned execution model is no longer permitted")
+
+
+def _validate_manifest_execution_target(
+    manifest: object, target: ModelExecutionTarget
+) -> None:
+    """Prevent a configured Run from switching destination or configuration."""
+    destination = getattr(manifest, "execution_destination", None)
+    if destination is None:
+        if target.configuration_fingerprint is not None:
+            _workflow_cli_error(
+                "Run Manifest does not pin a configured execution destination"
+            )
+        return
+    try:
+        pinned_target = destination.target
+    except Exception:
+        _workflow_cli_error("Run Manifest execution destination is invalid")
+    if target != pinned_target:
+        _workflow_cli_error("execution target differs from the Run Manifest")
 
 
 def _load_api_key_for_target(target: ModelExecutionTarget) -> OpenAIApiKey:
@@ -1413,6 +1492,10 @@ def start_workflow(
     ),
     preview_only: bool = typer.Option(False, "--preview-only"),
     execution_target: str = typer.Option("openai", "--execution-target"),
+    execution_destinations: Path | None = typer.Option(
+        None, "--execution-destinations"
+    ),
+    execution_model: str | None = typer.Option(None, "--execution-model"),
     approve_business: bool = typer.Option(False, "--approve-business"),
     business_approved_by: str | None = typer.Option(None, "--business-approved-by"),
     business_approval_id: str | None = typer.Option(None, "--business-approval-id"),
@@ -1427,7 +1510,10 @@ def start_workflow(
     ),
 ) -> None:
     """Preview or execute exactly one fresh workflow step."""
-    target = _resolve_execution_target(execution_target)
+    target = _resolve_execution_target(execution_target, execution_destinations)
+    selected_model = _resolve_execution_model(
+        target, execution_destinations, execution_model
+    )
     if preview_only and _has_approval_fields(
         approve_business,
         business_approved_by,
@@ -1452,6 +1538,8 @@ def start_workflow(
             run_input,
             workflows,
             employees,
+            selected_model,
+            target if selected_model is not None else None,
         )
     )
     workflow, preview = _build_workflow_step_preview(
@@ -1526,6 +1614,9 @@ def continue_workflow(
     run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
     preview_only: bool = typer.Option(False, "--preview-only"),
     execution_target: str = typer.Option("openai", "--execution-target"),
+    execution_destinations: Path | None = typer.Option(
+        None, "--execution-destinations"
+    ),
     approve_business: bool = typer.Option(False, "--approve-business"),
     business_approved_by: str | None = typer.Option(None, "--business-approved-by"),
     business_approval_id: str | None = typer.Option(None, "--business-approval-id"),
@@ -1540,7 +1631,7 @@ def continue_workflow(
     ),
 ) -> None:
     """Preview or execute exactly one persisted next workflow step."""
-    target = _resolve_execution_target(execution_target)
+    target = _resolve_execution_target(execution_target, execution_destinations)
     if preview_only and _has_approval_fields(
         approve_business,
         business_approved_by,
@@ -1559,6 +1650,8 @@ def continue_workflow(
     manifest = _load_run_manifest_or_exit(store, run_id)
     binding = _run_binding_for_manifest(manifest)
     pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
+    _validate_manifest_execution_target(manifest, target)
+    _validate_pinned_models_for_target(target, execution_destinations, pinned_employees)
     workflow = _select_workflow_or_exit(pinned_workflows, manifest.workflow_id)
     state_path, events_path = store.execution_paths(binding.run_id)
     routed = _read_persisted_continue_route(
@@ -1769,6 +1862,7 @@ def _build_recovery_preview(
     pinned_employees: list[object],
     tool_catalog: object,
     assessment: object,
+    target: ModelExecutionTarget,
 ) -> tuple[object, _WorkflowStepPreview, object, str, str, object]:
     """Reconstruct the pinned request for the exact current recovery attempt."""
     from hashlib import sha256
@@ -1882,7 +1976,6 @@ def _build_recovery_preview(
                 state_source_sha256=sha256(prior_state_bytes).hexdigest(),
             )
 
-        target = execution_target_for_name(assessment.provider)
         if execution_target_fingerprint(target) != attempt.execution_target_fingerprint:
             _workflow_cli_error("recovery cannot change the pinned execution target")
         _workflow, preview = _build_workflow_step_preview(
@@ -2028,6 +2121,9 @@ def recover_workflow(
     recovery_approved_by: str | None = typer.Option(None, "--recovery-approved-by"),
     recovery_approval_id: str | None = typer.Option(None, "--recovery-approval-id"),
     execution_target: str = typer.Option("openai", "--execution-target"),
+    execution_destinations: Path | None = typer.Option(
+        None, "--execution-destinations"
+    ),
     approve_execution: bool = typer.Option(False, "--approve-execution"),
     execution_approved_by: str | None = typer.Option(None, "--execution-approved-by"),
     execution_approval_id: str | None = typer.Option(None, "--execution-approval-id"),
@@ -2061,7 +2157,7 @@ def recover_workflow(
     )
     from ai_office.providers.openai import (
         OpenAIResponsesRawHttpResponse,
-        normalize_openai_responses_raw_response,
+        normalize_openai_compatible_raw_response,
     )
     from ai_office.runtime import WorkflowExecutionState
     from ai_office.runtime.executed_step_transition_persistence import (
@@ -2090,6 +2186,15 @@ def recover_workflow(
     manifest = _load_run_manifest_or_exit(store, run_id)
     binding = _run_binding_for_manifest(manifest)
     pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
+    requested_target = _resolve_execution_target(
+        execution_target, execution_destinations
+    )
+    if requested_target.provider != assessment.provider:
+        _workflow_cli_error("recovery cannot change the pinned execution target")
+    _validate_manifest_execution_target(manifest, requested_target)
+    _validate_pinned_models_for_target(
+        requested_target, execution_destinations, pinned_employees
+    )
     state_path, events_path = store.execution_paths(run_id)
     workflow, preview, history, state_digest, events_digest, attempt = (
         _build_recovery_preview(
@@ -2100,6 +2205,7 @@ def recover_workflow(
             pinned_employees,
             tool_catalog,
             assessment,
+            requested_target,
         )
     )
     if (state_digest, events_digest) != (
@@ -2151,8 +2257,10 @@ def recover_workflow(
                     headers=raw.safe_headers,
                     body=raw.body,
                 )
-                outcome = normalize_openai_responses_raw_response(
-                    raw_response, provider=attempt.provider
+                outcome = normalize_openai_compatible_raw_response(
+                    raw_response,
+                    protocol=attempt.execution_target_protocol,
+                    provider=attempt.provider,
                 )
                 normalized = persist_normalized_result_evidence(
                     execution_evidence,
@@ -2204,7 +2312,6 @@ def recover_workflow(
                 ),
             ):
                 _workflow_cli_error("the step's durable Business Approval is required")
-        requested_target = _resolve_execution_target(execution_target)
         target = preview.execution_target
         if requested_target != target:
             _workflow_cli_error("recovery cannot change the pinned execution target")

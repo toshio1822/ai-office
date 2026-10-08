@@ -1,19 +1,30 @@
 """Immutable, secret-free execution targets for model invocations."""
 
 import json
+import re
 from dataclasses import dataclass
 from hashlib import sha256
 from urllib.parse import urlsplit, urlunsplit
 
-_SUPPORTED_PROTOCOL = "openai-responses"
+OPENAI_RESPONSES_PROTOCOL = "openai-responses"
+OPENAI_CHAT_COMPLETIONS_PROTOCOL = "openai-chat-completions"
+SUPPORTED_EXECUTION_PROTOCOLS = frozenset(
+    (OPENAI_RESPONSES_PROTOCOL, OPENAI_CHAT_COMPLETIONS_PROTOCOL)
+)
 _OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
 _OMNIROUTE_ENDPOINT = "http://127.0.0.1:20128/v1/responses"
 SUPPORTED_EXECUTION_PROVIDERS = frozenset(("openai", "omniroute"))
+_DESTINATION_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_ENVIRONMENT_VARIABLE_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def is_supported_execution_provider(value: object) -> bool:
     """Return whether a persisted provider identity is Phase-221 supported."""
-    return type(value) is str and value in SUPPORTED_EXECUTION_PROVIDERS
+    return type(value) is str and (
+        value in SUPPORTED_EXECUTION_PROVIDERS
+        or _DESTINATION_NAME_PATTERN.fullmatch(value) is not None
+    )
 
 
 class ModelExecutionTargetError(ValueError):
@@ -67,6 +78,7 @@ class ModelExecutionTarget:
     base_url: str
     credential_environment_variable: str
     allow_loopback_http: bool
+    configuration_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -80,16 +92,21 @@ class ModelExecutionTarget:
                 raise ModelExecutionTargetError(
                     "execution target contains an invalid field"
                 )
-        if self.protocol != _SUPPORTED_PROTOCOL:
-            raise ModelExecutionTargetError(
-                "execution target protocol is unsupported"
-            )
+        if self.protocol not in SUPPORTED_EXECUTION_PROTOCOLS:
+            raise ModelExecutionTargetError("execution target protocol is unsupported")
         if type(self.allow_loopback_http) is not bool:
             raise ModelExecutionTargetError(
                 "execution target loopback policy is invalid"
             )
         canonical = canonicalize_execution_target_url(self.base_url)
         object.__setattr__(self, "base_url", canonical)
+        if self.configuration_fingerprint is not None and (
+            type(self.configuration_fingerprint) is not str
+            or _SHA256_PATTERN.fullmatch(self.configuration_fingerprint) is None
+        ):
+            raise ModelExecutionTargetError(
+                "execution target configuration fingerprint is invalid"
+            )
 
     @property
     def endpoint(self) -> str:
@@ -98,26 +115,29 @@ class ModelExecutionTarget:
 
     def descriptor(self) -> dict[str, object]:
         """Return the safe descriptor suitable for preview output."""
-        return {
+        value: dict[str, object] = {
             "allow_loopback_http": self.allow_loopback_http,
             "provider": self.provider,
             "protocol": self.protocol,
             "endpoint": self.base_url,
             "credential_environment_variable": self.credential_environment_variable,
         }
+        if self.configuration_fingerprint is not None:
+            value["configuration_fingerprint"] = self.configuration_fingerprint
+        return value
 
 
 # These are values, not mutable configuration or credential holders.
 DIRECT_OPENAI_EXECUTION_TARGET = ModelExecutionTarget(
     provider="openai",
-    protocol=_SUPPORTED_PROTOCOL,
+    protocol=OPENAI_RESPONSES_PROTOCOL,
     base_url=_OPENAI_ENDPOINT,
     credential_environment_variable="OPENAI_API_KEY",
     allow_loopback_http=False,
 )
 LOCAL_OMNIROUTE_EXECUTION_TARGET = ModelExecutionTarget(
     provider="omniroute",
-    protocol=_SUPPORTED_PROTOCOL,
+    protocol=OPENAI_RESPONSES_PROTOCOL,
     base_url=_OMNIROUTE_ENDPOINT,
     credential_environment_variable="OMNIROUTE_API_KEY",
     allow_loopback_http=True,
@@ -171,12 +191,19 @@ def validate_model_execution_target(target: object) -> ModelExecutionTarget:
         type(target.provider) is not str
         or not target.provider
         or type(target.protocol) is not str
-        or target.protocol != _SUPPORTED_PROTOCOL
+        or target.protocol not in SUPPORTED_EXECUTION_PROTOCOLS
         or type(target.base_url) is not str
         or not target.base_url
         or type(target.credential_environment_variable) is not str
         or not target.credential_environment_variable
         or type(target.allow_loopback_http) is not bool
+        or (
+            target.configuration_fingerprint is not None
+            and (
+                type(target.configuration_fingerprint) is not str
+                or _SHA256_PATTERN.fullmatch(target.configuration_fingerprint) is None
+            )
+        )
     ):
         raise ModelExecutionTargetError("execution target is invalid")
     if canonicalize_execution_target_url(target.base_url) != target.base_url:
@@ -199,29 +226,41 @@ def validate_execution_target_for_provider(
     """
     value = validate_model_execution_target(target)
     expected_provider = value.provider if provider is None else provider
-    if (
-        type(expected_provider) is not str
-        or expected_provider not in SUPPORTED_EXECUTION_PROVIDERS
-        or value.provider != expected_provider
+    if type(expected_provider) is not str or value.provider != expected_provider:
+        raise ModelExecutionTargetError("execution target provider is unsupported")
+    if expected_provider in SUPPORTED_EXECUTION_PROVIDERS:
+        canonical = execution_target_for_name(expected_provider)
+        if value != canonical:
+            raise ModelExecutionTargetError("execution target is not canonical")
+    elif (
+        _DESTINATION_NAME_PATTERN.fullmatch(expected_provider) is None
+        or expected_provider in SUPPORTED_EXECUTION_PROVIDERS
+        or value.configuration_fingerprint is None
+        or value.allow_loopback_http
+        or not value.endpoint.startswith("https://")
+        or _ENVIRONMENT_VARIABLE_PATTERN.fullmatch(
+            value.credential_environment_variable
+        )
+        is None
     ):
         raise ModelExecutionTargetError("execution target provider is unsupported")
-    canonical = execution_target_for_name(expected_provider)
-    if value != canonical:
-        raise ModelExecutionTargetError("execution target is not canonical")
     return value
 
 
 def execution_target_fingerprint(target: ModelExecutionTarget) -> str:
     """Return a deterministic digest of the complete non-secret target."""
     target = validate_model_execution_target(target)
+    value: dict[str, object] = {
+        "allow_loopback_http": target.allow_loopback_http,
+        "base_url": target.base_url,
+        "credential_environment_variable": target.credential_environment_variable,
+        "protocol": target.protocol,
+        "provider": target.provider,
+    }
+    if target.configuration_fingerprint is not None:
+        value["configuration_fingerprint"] = target.configuration_fingerprint
     canonical = json.dumps(
-        {
-            "allow_loopback_http": target.allow_loopback_http,
-            "base_url": target.base_url,
-            "credential_environment_variable": target.credential_environment_variable,
-            "protocol": target.protocol,
-            "provider": target.provider,
-        },
+        value,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -236,6 +275,9 @@ __all__ = [
     "ModelExecutionTargetError",
     "OMNIROUTE_EXECUTION_TARGET",
     "OPENAI_EXECUTION_TARGET",
+    "OPENAI_CHAT_COMPLETIONS_PROTOCOL",
+    "OPENAI_RESPONSES_PROTOCOL",
+    "SUPPORTED_EXECUTION_PROTOCOLS",
     "SUPPORTED_EXECUTION_PROVIDERS",
     "canonicalize_execution_target_url",
     "direct_openai_execution_target",

@@ -1,6 +1,8 @@
 """One synchronous exchange for authenticated Responses-compatible requests."""
 
 import http.client
+import ipaddress
+import socket
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -60,7 +62,8 @@ def _create_https_connection(
     hostname: str,
     port: int | None,
 ) -> http.client.HTTPSConnection:
-    return http.client.HTTPSConnection(hostname, port=port)
+    address = _require_public_https_destination(hostname, port)
+    return _PinnedHTTPSConnection(hostname, address, port=port)
 
 
 def _create_http_connection(
@@ -152,3 +155,43 @@ def send_openai_responses_http_request(
                 connection.close()
             except Exception:
                 pass
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connect to one validated address while retaining hostname TLS checks."""
+
+    def __init__(self, hostname: str, address: str, *, port: int | None = None) -> None:
+        super().__init__(hostname, port=port)
+        self._validated_address = address
+
+    def connect(self) -> None:
+        if self._tunnel_host is not None:
+            raise OpenAIResponsesTransportError(
+                "OpenAI Responses HTTPS proxy tunneling is unsupported"
+            )
+        self.sock = socket.create_connection(
+            (self._validated_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+
+def _require_public_https_destination(hostname: str, port: int | None) -> str:
+    """Return one public address only when every DNS result is public."""
+    try:
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(
+                hostname, 443 if port is None else port, type=socket.SOCK_STREAM
+            )
+        }
+        if not addresses or any(
+            not ipaddress.ip_address(address).is_global for address in addresses
+        ):
+            raise ValueError
+    except (OSError, ValueError):
+        raise OpenAIResponsesTransportError(
+            "OpenAI Responses HTTPS destination is not public"
+        ) from None
+    return sorted(addresses)[0]

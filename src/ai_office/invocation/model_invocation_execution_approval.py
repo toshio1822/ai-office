@@ -115,7 +115,7 @@ def build_model_invocation_execution_fingerprint(
         )
     if execution_target is not None:
         execution_target = validate_execution_target_for_provider(execution_target)
-        value["execution_target"] = {
+        target_value: dict[str, object] = {
             "allow_loopback_http": execution_target.allow_loopback_http,
             "base_url": execution_target.base_url,
             "credential_environment_variable": (
@@ -124,6 +124,11 @@ def build_model_invocation_execution_fingerprint(
             "protocol": execution_target.protocol,
             "provider": execution_target.provider,
         }
+        if execution_target.configuration_fingerprint is not None:
+            target_value["configuration_fingerprint"] = (
+                execution_target.configuration_fingerprint
+            )
+        value["execution_target"] = target_value
     canonical_value = json.dumps(
         value,
         ensure_ascii=False,

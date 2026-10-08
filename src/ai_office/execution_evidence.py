@@ -30,9 +30,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from ai_office.execution_target import (
+    SUPPORTED_EXECUTION_PROTOCOLS,
+    SUPPORTED_EXECUTION_PROVIDERS,
     ModelExecutionTarget,
+    canonicalize_execution_target_url,
     execution_target_fingerprint,
     execution_target_for_name,
+    is_supported_execution_provider,
     validate_execution_target_for_provider,
 )
 from ai_office.invocation import (
@@ -1779,19 +1783,36 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
         ("approved_by", value.approved_by),
     ):
         _validate_text(item, field, load=load)
-    try:
-        target = validate_execution_target_for_provider(
-            execution_target_for_name(value.provider), provider=value.provider
-        )
-    except Exception:
-        fail("target")
-    if (
-        value.execution_target_endpoint != target.endpoint
-        or value.execution_target_protocol != target.protocol
-        or value.execution_target_allow_loopback_http != target.allow_loopback_http
-        or value.execution_target_fingerprint != execution_target_fingerprint(target)
-    ):
-        fail("target")
+    if value.provider in SUPPORTED_EXECUTION_PROVIDERS:
+        try:
+            target = validate_execution_target_for_provider(
+                execution_target_for_name(value.provider), provider=value.provider
+            )
+        except Exception:
+            fail("target")
+        if (
+            value.execution_target_endpoint != target.endpoint
+            or value.execution_target_protocol != target.protocol
+            or value.execution_target_allow_loopback_http != target.allow_loopback_http
+            or value.execution_target_fingerprint
+            != execution_target_fingerprint(target)
+        ):
+            fail("target")
+    else:
+        try:
+            canonical_endpoint = canonicalize_execution_target_url(
+                value.execution_target_endpoint
+            )
+        except Exception:
+            fail("target")
+        if (
+            not is_supported_execution_provider(value.provider)
+            or value.execution_target_protocol not in SUPPORTED_EXECUTION_PROTOCOLS
+            or value.execution_target_allow_loopback_http
+            or canonical_endpoint != value.execution_target_endpoint
+            or not canonical_endpoint.startswith("https://")
+        ):
+            fail("target")
     if (
         type(value.step_index) is not int
         or isinstance(value.step_index, bool)
