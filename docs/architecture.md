@@ -1390,7 +1390,14 @@ workflow_complete | persisted_failure
 Phase 133 (future explicit caller action)
 ```
 
-## Phase 140: Non-final Empty-success Terminal-history Compatibility Repair
+## Historical Phase 140: retired Terminal-history Compatibility Repair
+
+Phase 140 and `terminal_history_contract.py` were retired by Issue #699. They
+are not part of the current production dependency graph and do not provide a
+shared runtime authority. The description below is implementation history;
+current observable validation remains owned by the active fresh-start,
+continuation, persisted-outcome routing, progression, and Recovery paths. No
+replacement shared validator, wrapper, facade, or adapter was introduced.
 
 Phase 140は新しいorchestration boundaryではなく、共有`terminal_history_contract.py`の狭い互換・正確性修正である。Phase 139のprepared-start persistence default chainが、Phase 138/139で既に有効な非final succeeded historyを、Phase 132のfallbackだけでなくPhase 125、118、111、104へ実際に通せるようにする。
 
