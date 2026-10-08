@@ -53,23 +53,23 @@ model is frozen in the existing Run Manifest employee snapshot.
 A destination may declare an optional `headers` mapping for compatible
 services that require an identifying `User-Agent` and/or a stable session
 identifier, without adding any provider-specific execution branch. The policy
-is deliberately narrow and fail-closed:
+is a strict allowlist: exactly two header names are supported, and everything
+else is rejected.
 
-- Only a static string value or the single `{run_session}` substitution is
-  allowed. `{run_session}` resolves to a stable value derived solely from the
-  Run identity (`ai-office-run-<run-id>`), so it stays constant across steps,
-  continuation and recovery, and it does not masquerade as OpenCode or a
-  coding agent.
-- Authentication (`Authorization` / `Proxy-Authorization`), `Host`,
-  `Content-Type` / `Content-Length` / `Transfer-Encoding`, connection and
-  framing headers (`Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`),
-  cookies, hop-by-hop and forwarding/proxy headers are rejected. CR/LF,
-  control characters, duplicate names, surrounding whitespace, unsafe lengths,
-  and any unsupported `{...}` substitution are rejected before transport.
-- `Authorization: Bearer` and `Content-Type` remain under existing transport
-  control; configured headers can never override them.
-- Endpoint allowlisting, DNS pinning, redirect blocking, HTTPS and SSRF
-  safeguards are unchanged.
+- `User-Agent` accepts only a static, safe identifying string. It never
+  accepts `{run_session}` or any substitution.
+- `x-opencode-session` accepts only the single `{run_session}` marker, which
+  resolves to a stable value derived solely from the Run identity
+  (`ai-office-run-<run-id>`). It stays constant across steps, continuation and
+  recovery, and it does not masquerade as OpenCode or a coding agent.
+
+Because no arbitrary header name is allowed, there is no way to set a secret
+value (for example an `X-API-Key`) and have it persisted into the Run
+Manifest. CR/LF, control characters, duplicate names, surrounding whitespace,
+unsafe lengths, and any unsupported `{...}` substitution are still rejected
+before transport. `Authorization: Bearer` and `Content-Type` remain under
+existing transport control and cannot be overridden. Endpoint allowlisting,
+DNS pinning, redirect blocking, HTTPS and SSRF safeguards are unchanged.
 
 The effective header policy is part of the destination configuration
 fingerprint and the Run Manifest v4 snapshot. Changing the headers after a

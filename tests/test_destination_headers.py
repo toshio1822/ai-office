@@ -183,6 +183,12 @@ def test_two_destinations_can_declare_different_header_policies(tmp_path: Path) 
 @pytest.mark.parametrize(
     "name",
     [
+        # Arbitrary or secret-bearing names are never allowed.
+        "X-API-Key",
+        "X-Api-Key",
+        "Api-Key",
+        "X-Custom-Secret",
+        "X-Auth-Token",
         "Authorization",
         "Proxy-Authorization",
         "Host",
@@ -204,9 +210,30 @@ def test_two_destinations_can_declare_different_header_policies(tmp_path: Path) 
         "Upgrade",
     ],
 )
-def test_reserved_header_names_are_rejected(name: str) -> None:
+def test_disallowed_header_names_are_rejected(name: str) -> None:
     with pytest.raises(ConfiguredRequestHeaderError):
         parse_configured_request_headers({name: "value"})
+
+
+def test_user_agent_rejects_session_marker() -> None:
+    with pytest.raises(ConfiguredRequestHeaderError):
+        parse_configured_request_headers({"User-Agent": SESSION_MARKER})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "static-value",
+        "ai-office/1.0",
+        "{unknown}",
+        "{run_session}extra",
+        "x{run_session}",
+        "",
+    ],
+)
+def test_session_header_accepts_only_marker(value: str) -> None:
+    with pytest.raises(ConfiguredRequestHeaderError):
+        parse_configured_request_headers({"x-opencode-session": value})
 
 
 @pytest.mark.parametrize(
@@ -217,6 +244,7 @@ def test_reserved_header_names_are_rejected(name: str) -> None:
         "a\nb",
         "a\r\nb",
         "value with\tcontrol",
+        SESSION_MARKER,
         "{unknown}",
         "{run_session}extra",
         "x{run_session}",

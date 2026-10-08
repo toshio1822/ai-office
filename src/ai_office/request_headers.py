@@ -1,10 +1,15 @@
 """Safe administrator-configured HTTP request headers for destinations.
 
-Issue #708: named destinations may declare a small set of non-secret request
-headers (for example a static ``User-Agent`` and a Run-scoped
-``x-opencode-session``).  This module owns the strict policy: no arbitrary
-header injection, no credential/Host/framing/cookie/hop-by-hop override, and no
-unsupported substitution.  It contains no secret values and performs no I/O.
+Issue #708: named destinations may declare a strict allowlist of request
+headers required by compatible services.  Only two header names are supported:
+
+* ``User-Agent`` — a static, safe identifying string; and
+* ``x-opencode-session`` — the Run-scoped ``{run_session}`` marker.
+
+Every other header name is rejected.  ``User-Agent`` never accepts the session
+marker or any substitution, and ``x-opencode-session`` accepts only the marker,
+so no secret or arbitrary value can be persisted into the Run Manifest.  This
+module performs no I/O and contains no secret values.
 """
 
 from __future__ import annotations
@@ -18,44 +23,15 @@ from dataclasses import dataclass
 SESSION_MARKER = "{run_session}"
 _SESSION_VALUE_PREFIX = "ai-office-run-"
 
+_USER_AGENT_NAME = "user-agent"
+_SESSION_HEADER_NAME = "x-opencode-session"
+
+# The complete allowlist of permitted header names, compared lowercased.
+_ALLOWED_HEADER_NAMES = frozenset({_USER_AGENT_NAME, _SESSION_HEADER_NAME})
+
 _HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _HEADER_NAME_MAX_LENGTH = 128
 _HEADER_VALUE_MAX_LENGTH = 512
-
-# Names that must remain exclusively under transport/authentication control or
-# that could enable smuggling, proxy confusion, credential override, or cookie
-# tampering.  Comparison is case-insensitive.
-_RESERVED_HEADER_NAMES = frozenset(
-    {
-        "authorization",
-        "proxy-authorization",
-        "host",
-        "content-length",
-        "content-type",
-        "transfer-encoding",
-        "connection",
-        "proxy-connection",
-        "keep-alive",
-        "close",
-        "te",
-        "trailer",
-        "upgrade",
-        "cookie",
-        "cookie2",
-        "set-cookie",
-        "set-cookie2",
-        "forwarded",
-        "x-forwarded-for",
-        "x-forwarded-host",
-        "x-forwarded-proto",
-        "x-forwarded-port",
-        "x-forwarded-server",
-        "x-real-ip",
-        "via",
-        "expect",
-    }
-)
-_RESERVED_NAME_PREFIXES = ("proxy-", "x-forwarded-")
 
 
 class ConfiguredRequestHeaderError(ValueError):
@@ -66,8 +42,9 @@ class ConfiguredRequestHeaderError(ValueError):
 class ConfiguredRequestHeader:
     """One safe, non-secret request header from an administrator registry.
 
-    ``value`` is either a static string or :data:`SESSION_MARKER`, which is
-    resolved at request-build time from the Run identity.
+    ``value`` is either a static string (``User-Agent``) or
+    :data:`SESSION_MARKER` (``x-opencode-session``), which is resolved at
+    request-build time from the Run identity.
     """
 
     name: str
@@ -81,24 +58,8 @@ class ConfiguredRequestHeader:
         return self.value == SESSION_MARKER
 
 
-def validate_configured_request_header(header: object) -> None:
-    """Validate one header name/value pair without network or secrets."""
-    if type(header) is not ConfiguredRequestHeader:
-        raise ConfiguredRequestHeaderError("request header is invalid")
-    name = header.name
-    value = header.value
-    if (
-        type(name) is not str
-        or not name
-        or len(name) > _HEADER_NAME_MAX_LENGTH
-        or _HEADER_NAME_PATTERN.fullmatch(name) is None
-    ):
-        raise ConfiguredRequestHeaderError("request header name is invalid")
-    lowered = name.lower()
-    if lowered in _RESERVED_HEADER_NAMES or lowered.startswith(
-        _RESERVED_NAME_PREFIXES
-    ):
-        raise ConfiguredRequestHeaderError("request header name is reserved")
+def _validate_static_value(value: object) -> None:
+    """Validate a static, non-substituted, non-secret header value."""
     if type(value) is not str or not value or len(value) > _HEADER_VALUE_MAX_LENGTH:
         raise ConfiguredRequestHeaderError("request header value is invalid")
     if value != value.strip():
@@ -111,8 +72,38 @@ def validate_configured_request_header(header: object) -> None:
         raise ConfiguredRequestHeaderError(
             "request header value contains control characters"
         )
-    if value != SESSION_MARKER and ("{" in value or "}" in value):
-        raise ConfiguredRequestHeaderError("request header substitution is unsupported")
+    if "{" in value or "}" in value:
+        raise ConfiguredRequestHeaderError(
+            "request header substitution is unsupported"
+        )
+
+
+def validate_configured_request_header(header: object) -> None:
+    """Validate one header name/value pair against the strict allowlist."""
+    if type(header) is not ConfiguredRequestHeader:
+        raise ConfiguredRequestHeaderError("request header is invalid")
+    name = header.name
+    value = header.value
+    if (
+        type(name) is not str
+        or not name
+        or len(name) > _HEADER_NAME_MAX_LENGTH
+        or _HEADER_NAME_PATTERN.fullmatch(name) is None
+    ):
+        raise ConfiguredRequestHeaderError("request header name is invalid")
+    lowered = name.lower()
+    if lowered not in _ALLOWED_HEADER_NAMES:
+        raise ConfiguredRequestHeaderError("request header name is not allowed")
+
+    if lowered == _SESSION_HEADER_NAME:
+        if value != SESSION_MARKER:
+            raise ConfiguredRequestHeaderError(
+                "x-opencode-session must use the {run_session} marker"
+            )
+        return
+
+    # User-Agent: a static, safe identifying string only.
+    _validate_static_value(value)
 
 
 def validate_request_headers(value: object) -> None:
