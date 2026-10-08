@@ -10,9 +10,14 @@ from typer.testing import CliRunner
 
 import ai_office.cli as cli_module
 from ai_office.cli import app
+from ai_office.engine.workflow_recovery import assess_workflow_recovery
 from ai_office.execution_destination import (
     ExecutionDestinationError,
     load_execution_destination_registry,
+)
+from ai_office.execution_evidence import (
+    load_normalized_result_evidence,
+    load_raw_response_evidence,
 )
 from ai_office.invocation import ModelInvocationRequest
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
@@ -310,6 +315,127 @@ def test_chat_completions_api_error_is_normalized_without_vendor_fields() -> Non
     assert result.request_id == "request-429"
     assert result.provider_error_type == "rate_limit_error"
     assert result.provider_error_code == "rate_limit"
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "failure_message"),
+    (
+        (
+            "length",
+            "Chat Completions output was truncated before normal completion",
+        ),
+        (
+            "content_filter",
+            "Chat Completions output was stopped by content filtering",
+        ),
+        (
+            "tool_calls",
+            "Chat Completions returned an unsupported finish reason",
+        ),
+    ),
+)
+def test_non_normal_chat_completion_stops_without_artifact_and_requires_recovery(
+    tmp_path: Path,
+    monkeypatch,
+    finish_reason: str,
+    failure_message: str,
+) -> None:
+    registry = tmp_path / "destinations.yaml"
+    _write_registry(registry)
+    run_store = tmp_path / "runs"
+    run_id = f"chat-finish-{finish_reason}"
+    transport_calls: list[object] = []
+
+    monkeypatch.setattr(
+        cli_module,
+        "load_api_key_for_execution_target",
+        lambda target: OpenAIApiKey(value=SecretStr("offline-key")),
+    )
+
+    def fake_transport(request: object) -> OpenAIResponsesRawHttpResponse:
+        transport_calls.append(request)
+        return OpenAIResponsesRawHttpResponse(
+            200,
+            "synthetic",
+            (("x-request-id", f"request-{finish_reason}"),),
+            json.dumps(
+                {
+                    "id": f"chatcmpl-{finish_reason}",
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    None
+                                    if finish_reason == "content_filter"
+                                    else "# Incomplete output"
+                                ),
+                            },
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                }
+            ).encode("utf-8"),
+        )
+
+    monkeypatch.setattr(
+        cli_module, "send_openai_responses_http_request", fake_transport
+    )
+    args = _start_args(
+        run_store, registry, run_id, "example-chat", "test-chat-model"
+    )
+    preview_result = runner.invoke(app, args + ["--preview-only"])
+    assert preview_result.exit_code == 0, preview_result.stderr
+    preview = json.loads(preview_result.stdout)
+
+    result = runner.invoke(
+        app, args + _approval_args(preview, f"finish-{finish_reason}")
+    )
+    assert result.exit_code == 1, (result.stderr, result.stdout, result.exception)
+    result_value = json.loads(result.stdout)
+    assert result_value["status"] == "persisted_failure"
+    assert result_value["failure_category"] == "invalid_output"
+    assert "output" not in result_value
+
+    evidence_result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "execution-evidence",
+            run_id,
+            "--run-store",
+            str(run_store),
+        ],
+    )
+    assert evidence_result.exit_code == 0, evidence_result.stderr
+    attempt = json.loads(evidence_result.stdout)["attempts"][0]
+    assert attempt["normalized_result_category"] == "invalid_output"
+    assert attempt["final_step_outcome_linked"] is True
+    normalized = load_normalized_result_evidence(
+        run_store, run_id, attempt["attempt_id"]
+    )
+    assert normalized.failure_category == "invalid_output"
+    assert normalized.failure_message == failure_message
+    assert normalized.provider_error_type is None
+    assert normalized.provider_error_code is None
+    assert normalized.status_code is None
+    raw = load_raw_response_evidence(run_store, run_id, attempt["attempt_id"])
+    assert raw.status_code == 200
+    assert json.loads(raw.body)["choices"][0]["finish_reason"] == finish_reason
+
+    artifacts = runner.invoke(
+        app,
+        ["workflows", "artifacts", run_id, "--run-store", str(run_store)],
+    )
+    assert artifacts.exit_code == 0, artifacts.stderr
+    assert json.loads(artifacts.stdout)["artifacts"] == []
+    recovery = assess_workflow_recovery(run_store, run_id)
+    assert recovery.eligible is True
+    assert recovery.action == "retry_failed"
+    assert recovery.reason == "terminal_failure_requires_explicit_retry"
+    assert len(transport_calls) == 1
 
 
 def test_chat_completions_tools_are_rejected_before_serialization() -> None:

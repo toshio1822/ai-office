@@ -56,11 +56,14 @@ only and sends:
 - one `system` and one `user` message; and
 - `stream: false`.
 
-It accepts one `chat.completion` choice with an assistant string `content` and
-normalizes it into the existing provider-independent result/evidence/Artifact
-path. Both families accept the standard JSON `error` envelope. Streaming,
-multimodal content, tool calls, multiple choices, vendor extensions, and
-vendor-specific authentication are out of scope and fail closed.
+It accepts one `chat.completion` choice with an assistant string `content`.
+Only `finish_reason: stop` is a successful completion. `length` is recorded as
+an incomplete output, `content_filter` as a filtered output, and every other
+finish reason as unsupported. All three are durable `invalid_output` failures:
+the Run stops, no success Artifact is created, and an explicit failed-attempt
+Recovery is required. Both families accept the standard JSON `error` envelope.
+Streaming, multimodal content, tool calls, multiple choices, vendor extensions,
+and vendor-specific authentication are out of scope and fail closed.
 
 ## OpenCode Zen sample
 

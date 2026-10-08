@@ -88,12 +88,22 @@ def normalize_openai_chat_completions_raw_response(
     if (
         type(message) is not dict
         or message.get("role") != "assistant"
-        or type(message.get("content")) is not str
         or type(finish_reason) is not str
         or not finish_reason
     ):
         _raise_invalid(response)
-    text = message["content"]
+    content = message.get("content")
+    if finish_reason != "stop":
+        if content is not None and type(content) is not str:
+            _raise_invalid(response)
+        return _finish_reason_failure(
+            provider=provider,
+            request_id=request_id,
+            finish_reason=finish_reason,
+        )
+    if type(content) is not str:
+        _raise_invalid(response)
+    text = content
     return ModelInvocationSuccess(
         provider=provider,
         response_id=response_id,
@@ -101,6 +111,29 @@ def normalize_openai_chat_completions_raw_response(
         status=finish_reason,
         text_parts=(text,),
         text=text,
+    )
+
+
+def _finish_reason_failure(
+    *,
+    provider: str,
+    request_id: str | None,
+    finish_reason: str,
+) -> ModelInvocationFailure:
+    if finish_reason == "length":
+        message = "Chat Completions output was truncated before normal completion"
+    elif finish_reason == "content_filter":
+        message = "Chat Completions output was stopped by content filtering"
+    else:
+        message = "Chat Completions returned an unsupported finish reason"
+    return ModelInvocationFailure(
+        provider=provider,
+        category="invalid_output",
+        message=message,
+        request_id=request_id,
+        status_code=None,
+        provider_error_type=None,
+        provider_error_code=None,
     )
 
 
