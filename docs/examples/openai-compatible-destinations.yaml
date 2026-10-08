@@ -13,3 +13,17 @@ destinations:
     credential: INTERNAL_CHAT_GATEWAY_API_KEY
     models:
       - approved-chat-model
+
+  # Illustrative OpenCode Go destination. Go requires an identifying
+  # User-Agent and a stable per-Run session header; see
+  # docs/openai-compatible-destinations.md for the caveats and confirm
+  # acceptable use before any live canary.
+  opencode-go:
+    protocol: openai-responses
+    endpoint: https://opencode.ai/zen/go/v1/responses
+    credential: OPENCODE_API_KEY
+    models:
+      - gpt-6-luna
+    headers:
+      User-Agent: ai-office/1.0
+      x-opencode-session: "{run_session}"

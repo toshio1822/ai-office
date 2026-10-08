@@ -19,10 +19,15 @@ from ai_office.execution_target import (
     canonicalize_execution_target_url,
     validate_execution_target_for_provider,
 )
+from ai_office.request_headers import (
+    ConfiguredRequestHeaderError,
+    parse_configured_request_headers,
+)
 
 _NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _ENVIRONMENT_VARIABLE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _ENTRY_KEYS = frozenset({"endpoint", "protocol", "credential", "models"})
+_OPTIONAL_ENTRY_KEYS = frozenset({"headers"})
 _BLOCKED_HOSTS = frozenset(
     {
         "localhost",
@@ -99,13 +104,24 @@ def _parse_destination(name: object, entry: object) -> ExecutionDestination:
         or _NAME.fullmatch(name) is None
         or name in {"openai", "omniroute"}
         or type(entry) is not dict
-        or frozenset(entry) != _ENTRY_KEYS
+        or frozenset(entry) not in {_ENTRY_KEYS, _ENTRY_KEYS | _OPTIONAL_ENTRY_KEYS}
     ):
         raise ExecutionDestinationError("execution destination is invalid")
     endpoint = entry["endpoint"]
     protocol = entry["protocol"]
     credential = entry["credential"]
     raw_models = entry["models"]
+    raw_headers = entry.get("headers")
+    try:
+        request_headers = (
+            ()
+            if raw_headers is None
+            else parse_configured_request_headers(raw_headers)
+        )
+    except ConfiguredRequestHeaderError as error:
+        raise ExecutionDestinationError(
+            "execution destination is invalid"
+        ) from error
     if (
         type(endpoint) is not str
         or type(protocol) is not str
@@ -138,6 +154,10 @@ def _parse_destination(name: object, entry: object) -> ExecutionDestination:
         "name": name,
         "protocol": protocol,
     }
+    if request_headers:
+        canonical_value["headers"] = [
+            [header.name, header.value] for header in request_headers
+        ]
     fingerprint = sha256(
         json.dumps(
             canonical_value,
@@ -153,6 +173,7 @@ def _parse_destination(name: object, entry: object) -> ExecutionDestination:
         credential_environment_variable=credential,
         allow_loopback_http=False,
         configuration_fingerprint=fingerprint,
+        request_headers=request_headers,
     )
     validate_execution_target_for_provider(target, provider=name)
     return ExecutionDestination(target=target, models=tuple(raw_models))
