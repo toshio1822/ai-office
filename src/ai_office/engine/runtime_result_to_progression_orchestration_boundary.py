@@ -16,9 +16,6 @@ from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     PersistedExecutionOutcomeRoutingError,
     route_persisted_execution_outcome_reentry,
 )
-from ai_office.engine.persisted_success_progression import (
-    PersistedSuccessProgressionError,
-)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.runtime import (
     StepRuntimeExecutionFailure,
@@ -148,7 +145,6 @@ def route_runtime_result_to_progression_orchestration_boundary(
         WorkflowExecutionLoadError,
         PersistedExecutionOutcomeRoutingError,
         PersistedExecutionOutcomeError,
-        PersistedSuccessProgressionError,
     ) as error:
         _restore_if_changed(state_path, events_path, committed)
         raise error

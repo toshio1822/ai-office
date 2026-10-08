@@ -12,16 +12,14 @@ import ai_office.engine.runtime_result_to_progression_orchestration_boundary as 
 from ai_office.definitions.workflow import WorkflowDefinition
 from ai_office.engine import (
     PersistedExecutionOutcome,
+    PersistedExecutionOutcomeRoutingError,
+    WorkflowProgressionCompatibilityError,
     WorkflowProgressionDecision,
     route_runtime_result_to_progression_orchestration_boundary,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcomeCompatibilityError,
     PersistedExecutionOutcomeError,
-)
-from ai_office.engine.persisted_success_progression import (
-    PersistedSuccessProgressionCompatibilityError,
-    PersistedSuccessProgressionError,
 )
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError,
@@ -515,14 +513,14 @@ def test_post_commit_progression_error_preserves_committed_snapshot(
         assert isinstance(state_path, Path) and isinstance(events_path, Path)
         state_path.write_bytes(b"post-commit-progression-mutation")
         events_path.write_bytes(b"post-commit-progression-events")
-        raise PersistedSuccessProgressionCompatibilityError("decision_contract")
+        raise WorkflowProgressionCompatibilityError("current_step_identity")
 
     monkeypatch.setattr(
         phase38_module,
-        "_decide_loaded_persisted_success_progression",
+        "decide_workflow_progression",
         failing_progression,
     )
-    with pytest.raises(PersistedSuccessProgressionError):
+    with pytest.raises(PersistedExecutionOutcomeRoutingError):
         route_runtime_result_to_progression_orchestration_boundary(
             runtime_success(values["workflow"], 6),
             values["workflow"],

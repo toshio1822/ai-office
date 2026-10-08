@@ -49,9 +49,6 @@ from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     PersistedExecutionOutcomeRoutingError,
     route_persisted_execution_outcome_reentry,
 )
-from ai_office.engine.persisted_success_progression import (
-    PersistedSuccessProgressionError,
-)
 from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStart,
     PreparedStepExecutionStartError,
@@ -165,7 +162,6 @@ _SAFE_PREPARATION_ERRORS = (
     NextStepPreparationError,
     PersistedExecutionOutcomeRoutingError,
     PersistedExecutionOutcomeError,
-    PersistedSuccessProgressionError,
     WorkflowExecutionLoadError,
 )
 _SAFE_START_ERRORS = (PreparedStepExecutionStartError, WorkflowExecutionLoadError)
@@ -185,7 +181,6 @@ _SAFE_POST_RUNTIME_ERRORS = (
     WorkflowExecutionPersistenceRollbackError,
     PersistedExecutionOutcomeRoutingError,
     PersistedExecutionOutcomeError,
-    PersistedSuccessProgressionError,
 )
 
 

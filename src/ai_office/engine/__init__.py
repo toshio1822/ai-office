@@ -55,11 +55,6 @@ from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     PersistedExecutionOutcomeRoutingFailureDetail,
     route_persisted_execution_outcome_reentry,
 )
-from ai_office.engine.persisted_success_progression import (
-    PersistedSuccessProgressionCompatibilityError,
-    PersistedSuccessProgressionError,
-    PersistedSuccessProgressionFailureDetail,
-)
 from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStart,
     PreparedStepExecutionStartCompatibilityError,
@@ -310,9 +305,6 @@ __all__ = [
     "UpstreamStepOutputHandoffError",
     "UpstreamStepOutputHandoffFailureDetail",
     "build_immediate_predecessor_upstream_inputs",
-    "PersistedSuccessProgressionCompatibilityError",
-    "PersistedSuccessProgressionError",
-    "PersistedSuccessProgressionFailureDetail",
     "PersistedExecutionOutcome",
     "PersistedExecutionOutcomeCompatibilityError",
     "PersistedExecutionOutcomeError",
