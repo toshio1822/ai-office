@@ -55,7 +55,6 @@ def test_extracts_only_supported_output_text_in_order() -> None:
         ),
         response_id="resp_123",
         request_id=None,
-        status="in_progress",
     )
 
     result = extract_openai_responses_output_text(response)
@@ -63,7 +62,7 @@ def test_extracts_only_supported_output_text_in_order() -> None:
     assert result == OpenAIResponsesOutputText(
         response_id="resp_123",
         request_id=None,
-        status="in_progress",
+        status="completed",
         text_parts=(" first\n", "日本語 😀", ""),
         text=" first\n日本語 😀",
     )

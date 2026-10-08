@@ -290,6 +290,119 @@ def test_same_workflow_executes_both_protocols_offline(
     assert "differs from the Run Manifest" in switched.stderr
 
 
+@pytest.mark.parametrize(
+    ("response_status", "failure_category"),
+    (
+        ("incomplete", "invalid_output"),
+        ("failed", "invalid_output"),
+        ("in_progress", "invalid_output"),
+        (None, "invalid_response"),
+        ("unknown", "invalid_output"),
+    ),
+)
+def test_non_completed_responses_stop_without_artifact_and_require_recovery(
+    tmp_path: Path,
+    monkeypatch,
+    response_status: str | None,
+    failure_category: str,
+) -> None:
+    registry = tmp_path / "destinations.yaml"
+    _write_registry(registry)
+    run_store = tmp_path / "runs"
+    status_name = "missing" if response_status is None else response_status
+    run_id = f"responses-status-{status_name}"
+    transport_calls: list[object] = []
+
+    monkeypatch.setattr(
+        cli_module,
+        "load_api_key_for_execution_target",
+        lambda target: OpenAIApiKey(value=SecretStr("offline-key")),
+    )
+
+    def fake_transport(request: object) -> OpenAIResponsesRawHttpResponse:
+        transport_calls.append(request)
+        response: dict[str, object] = {
+            "id": f"response-{status_name}",
+            "object": "response",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "# Unfinished output"}
+                    ],
+                }
+            ],
+        }
+        if response_status is not None:
+            response["status"] = response_status
+        return OpenAIResponsesRawHttpResponse(
+            200,
+            "synthetic",
+            (("x-request-id", f"request-{status_name}"),),
+            json.dumps(response).encode("utf-8"),
+        )
+
+    monkeypatch.setattr(
+        cli_module, "send_openai_responses_http_request", fake_transport
+    )
+    args = _start_args(
+        run_store,
+        registry,
+        run_id,
+        "zen-responses",
+        "test-responses-model",
+    )
+    preview_result = runner.invoke(app, args + ["--preview-only"])
+    assert preview_result.exit_code == 0, preview_result.stderr
+    preview = json.loads(preview_result.stdout)
+
+    result = runner.invoke(
+        app, args + _approval_args(preview, f"responses-{status_name}")
+    )
+    assert result.exit_code == 1, (result.stderr, result.stdout, result.exception)
+    result_value = json.loads(result.stdout)
+    assert result_value["status"] == "persisted_failure"
+    assert result_value["failure_category"] == failure_category
+    assert "output" not in result_value
+
+    evidence_result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "execution-evidence",
+            run_id,
+            "--run-store",
+            str(run_store),
+        ],
+    )
+    assert evidence_result.exit_code == 0, evidence_result.stderr
+    attempt = json.loads(evidence_result.stdout)["attempts"][0]
+    assert attempt["normalized_result_category"] == failure_category
+    assert attempt["final_step_outcome_linked"] is True
+    normalized = load_normalized_result_evidence(
+        run_store, run_id, attempt["attempt_id"]
+    )
+    assert normalized.failure_category == failure_category
+    assert normalized.status_code is None
+    assert normalized.provider_error_type is None
+    assert normalized.provider_error_code is None
+    raw = load_raw_response_evidence(run_store, run_id, attempt["attempt_id"])
+    assert raw.status_code == 200
+    assert json.loads(raw.body).get("status") == response_status
+
+    artifacts = runner.invoke(
+        app,
+        ["workflows", "artifacts", run_id, "--run-store", str(run_store)],
+    )
+    assert artifacts.exit_code == 0, artifacts.stderr
+    assert json.loads(artifacts.stdout)["artifacts"] == []
+    recovery = assess_workflow_recovery(run_store, run_id)
+    assert recovery.eligible is True
+    assert recovery.action == "retry_failed"
+    assert recovery.reason == "terminal_failure_requires_explicit_retry"
+    assert len(transport_calls) == 1
+
+
 def test_chat_completions_api_error_is_normalized_without_vendor_fields() -> None:
     raw = OpenAIResponsesRawHttpResponse(
         429,
