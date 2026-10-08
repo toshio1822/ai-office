@@ -289,9 +289,15 @@ Phase 21 execution、Phase 22 transition、Phase 23 persistence、Phase 24 loadi
 
 `persist_executed_step_transition()`は、既存のPhase 21 runtime result、明示state target、明示runtime-event targetだけを受けます。stateを厳格にread-onlyで再読込し、`running` stateとruntime resultのidentityを検証してから、既存Phase 22 `transition_workflow_execution_from_step_result()`を一度だけ呼びます。互換性を確認したtransitionは既存Phase 23 `persist_workflow_execution_transition()`へ一度だけ渡され、最終stateと一つのeventを保存します。provider、credential、approval、tool、retry、次step選択・実行、自動継続、paid CLI、GUIは扱わず、Phase 23のcompensationをそのまま保持します。
 
-## Persisted-Success Progression Decision Boundary（Phase 31）
+## Historical Persisted-Success Progression Decision Boundary（Phase 31）
 
-`decide_persisted_success_progression()`は、検証済み`WorkflowDefinition`と明示state/event targetをread-onlyで受ける、他のproduction caller向けのPhase 31 public path-based boundaryです。`history_loader`やcaller-supplied `decision_function`のpublic dependency seamは持ちません。既存Phase 24 history loaderでpersisted successと最新success eventを厳格に照合し、Phase 31が既存Phase 25 `decide_workflow_progression()`への委譲とdecision contractを所有します。Phase 38のshared-history compositionでは、Phase 31-owned internal processingがPhase 37と同じloaded viewを消費するため、このpath-based public functionを呼ぶこと自体は必要としませんが、Phase 31のsemantic ownershipは維持されます。承認、準備、persistence、provider実行、retry、自動継続、paid CLI、GUIは扱いません。順序は `Phase 25 → Phase 26 → Phase 27 → Phase 28 → Phase 29 → Phase 30 → Phase 31 persisted success reload + one Phase 25 decision → later explicit human approval/preparation or completion handling` です。
+Phase 31のpublic path-based boundaryはIssue #681で削除され、残っていたprivate
+`persisted_success_progression.py` ownerとengine error exportsもIssue #702でretire
+されました。これはimplementation historyであり、現在のpublic surfaceやarchitecture
+ownerではありません。現在のcanonical persisted-outcome routeはstrict classificationと
+required Artifact gateの後、既存`workflow_progression.py`の
+`decide_workflow_progression()`を直接使用します。replacement wrapper、facade、adapter、
+generic validatorはありません。
 
 ## Approved Next-Step Reentry Boundary（Phase 32）
 
@@ -720,7 +726,7 @@ future explicit outcome routing
 
 ## Persisted Execution Outcome Routing Reentry Boundary（Phase 38）
 
-`route_persisted_execution_outcome_reentry()`は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryです。1回のrouting invocationでstrict historyを一度だけloadし、同じimmutableな`LoadedWorkflowExecutionHistory` viewをPhase 37のclassification processingと、Phase 31-owned persisted-success progression processingへ渡します。Phase 37がworkflow/current-step/employee、completed-step/event historyのlinkage、terminal status、failure-category整合性をclassification ownerとして検証し、Phase 31がsuccess progression、Phase 25への委譲、decision contractを所有します。Phase 31のpublic path-based boundaryは他のproduction caller向けに維持されますが、Phase 38はそのpublic functionを呼ぶことを契約にせず、Phase 31-owned internal processingで同じviewを扱います。Phase 38からPhase 25を直接呼びません。`persisted_failure`は値として正しいterminal stopを返し、progressionもstate/event writeも行いません。各処理後にtarget bytesの不変性を検証し、依存が改変した場合だけ既存の補償復元を行います。shared viewはこの呼出し内の重複loadをなくすだけで、atomicなcross-file snapshot、external writerの排除、locking/CAS/transactionなどのconcurrency保証は追加しません。CLI projection側の後続history reloadはこのboundaryの契約外です。caller supplied outcome、public loaded-history argument、旧4-input call shape、次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みはこのboundaryの契約ではありません。
+`route_persisted_execution_outcome_reentry()`は、`workflow`、`state_path`、`events_path`の3 business inputsだけを受けるread-only boundaryです。1回のrouting invocationでstrict historyを一度だけloadし、同じimmutableな`LoadedWorkflowExecutionHistory` viewをpersisted-outcome classificationとcanonical `decide_workflow_progression()`へ渡します。routerはclassification/routingとrequired Artifact gateを所有し、`workflow_progression.py`がprogression decisionを所有します。`persisted_failure`は値として正しいterminal stopを返し、progressionもstate/event writeも行いません。各処理後にtarget bytesの不変性を検証し、依存が改変した場合だけ既存の補償復元を行います。shared viewはこの呼出し内の重複loadをなくすだけで、atomicなcross-file snapshot、external writerの排除、locking/CAS/transactionなどのconcurrency保証は追加しません。CLI projection側の後続history reloadはこのboundaryの契約外です。caller supplied outcome、public loaded-history argument、旧4-input call shape、次step準備、completion persistence/finalization、retry/recovery、provider実行、データ書込みはこのboundaryの契約ではありません。
 
 ## Classified Persisted Outcome Routing Bridge（Phase 45）
 

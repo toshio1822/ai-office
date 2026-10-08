@@ -11,11 +11,11 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcomeError,
     classify_loaded_persisted_execution_outcome,
 )
-from ai_office.engine.persisted_success_progression import (
-    PersistedSuccessProgressionError,
-    _decide_loaded_persisted_success_progression,
+from ai_office.engine.workflow_progression import (
+    WorkflowProgressionDecision,
+    WorkflowProgressionDecisionError,
+    decide_workflow_progression,
 )
-from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.engine.workflow_run_manifest import (
     WorkflowRunManifestStore,
     load_workflow_run_manifest,
@@ -91,7 +91,15 @@ def route_persisted_execution_outcome_reentry(
     )
     if outcome.outcome == "persisted_failure":
         return outcome
-    decision = _call_progression(workflow, history, state_path, events_path, original)
+    try:
+        decision = decide_workflow_progression(workflow, history)
+    except WorkflowProgressionDecisionError:
+        _restore_changed(state_path, events_path, original)
+        _raise("progression_contract")
+    except Exception:
+        _restore_changed(state_path, events_path, original)
+        _raise("dependency_error")
+    _reject_changed(state_path, events_path, original)
     _validate_decision_route(decision)
     return decision
 
@@ -217,25 +225,6 @@ def _call_classification(
     if type(history) is not LoadedWorkflowExecutionHistory:
         _raise("classification_contract")
     return result, history
-
-
-def _call_progression(
-    workflow: WorkflowDefinition,
-    history: LoadedWorkflowExecutionHistory,
-    state_path: Path,
-    events_path: Path,
-    original: tuple[bytes, bytes],
-) -> object:
-    try:
-        result = _decide_loaded_persisted_success_progression(workflow, history)
-    except PersistedSuccessProgressionError:
-        _restore_changed(state_path, events_path, original)
-        raise
-    except Exception:
-        _restore_changed(state_path, events_path, original)
-        _raise("dependency_error")
-    _reject_changed(state_path, events_path, original)
-    return result
 
 
 def _restore_changed(

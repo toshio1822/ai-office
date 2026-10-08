@@ -72,9 +72,6 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
 from ai_office.engine.persisted_execution_outcome_routing_reentry import (
     PersistedExecutionOutcomeRoutingError,
 )
-from ai_office.engine.persisted_success_progression import (
-    PersistedSuccessProgressionError,
-)
 from ai_office.engine.prepared_step_execution_start import PreparedStepExecutionStart
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError as Phase172CompatibilityError,
@@ -164,7 +161,6 @@ _SAFE_PHASE172_ERRORS = (
     WorkflowExecutionPersistenceRollbackError,
     PersistedExecutionOutcomeRoutingError,
     PersistedExecutionOutcomeError,
-    PersistedSuccessProgressionError,
 )
 _READY_EMPTY_EVENTS = b""
 
