@@ -13,6 +13,7 @@ from ai_office.providers.openai.responses_json import (
     serialize_openai_responses_payload_from_invocation,
 )
 from ai_office.providers.openai.responses_payload import OpenAIResponsesPayload
+from ai_office.request_headers import resolve_configured_request_headers
 from ai_office.tools import ToolCatalog
 
 OPENAI_RESPONSES_HTTP_METHOD = "POST"
@@ -35,6 +36,7 @@ def build_openai_responses_http_request(
     *,
     execution_target: ModelExecutionTarget | None = None,
     target: ModelExecutionTarget | None = None,
+    run_id: str | None = None,
 ) -> OpenAIResponsesHttpRequest:
     """Place an unchanged JSON string in an unauthenticated request template."""
     if (
@@ -47,10 +49,15 @@ def build_openai_responses_http_request(
     if selected_target is None:
         selected_target = DIRECT_OPENAI_EXECUTION_TARGET
     selected_target = validate_execution_target_for_provider(selected_target)
+    headers = [("Content-Type", OPENAI_RESPONSES_CONTENT_TYPE)]
+    if selected_target.request_headers:
+        headers.extend(
+            resolve_configured_request_headers(selected_target.request_headers, run_id)
+        )
     return OpenAIResponsesHttpRequest(
         method=OPENAI_RESPONSES_HTTP_METHOD,
         url=selected_target.endpoint,
-        headers=(("Content-Type", OPENAI_RESPONSES_CONTENT_TYPE),),
+        headers=tuple(headers),
         body=body,
     )
 

@@ -30,6 +30,11 @@ from ai_office.execution_target import (
     execution_target_fingerprint,
     validate_execution_target_for_provider,
 )
+from ai_office.request_headers import (
+    ConfiguredRequestHeader,
+    ConfiguredRequestHeaderError,
+    request_headers_from_records,
+)
 from ai_office.tools import (
     DEFAULT_TOOL_CATALOG,
     ToolCatalog,
@@ -73,6 +78,7 @@ _EXECUTION_DESTINATION_KEYS = frozenset(
         "protocol",
     }
 )
+_OPTIONAL_EXECUTION_DESTINATION_KEYS = frozenset({"request_headers"})
 _WORKFLOW_KEYS = frozenset({"description", "id", "name", "steps"})
 _WORKFLOW_STEP_KEYS_V2 = frozenset(
     {"business_approval_required", "employee", "id", "instructions", "name"}
@@ -199,6 +205,7 @@ class ExecutionDestinationSnapshot:
     allow_loopback_http: bool
     configuration_fingerprint: str
     fingerprint: str
+    request_headers: tuple[ConfiguredRequestHeader, ...] = ()
 
     def __post_init__(self) -> None:
         target = self.target
@@ -218,6 +225,7 @@ class ExecutionDestinationSnapshot:
                     ),
                     allow_loopback_http=self.allow_loopback_http,
                     configuration_fingerprint=self.configuration_fingerprint,
+                    request_headers=self.request_headers,
                 ),
                 provider=self.provider,
             )
@@ -368,6 +376,7 @@ def build_workflow_run_manifest(
                 allow_loopback_http=execution_target.allow_loopback_http,
                 configuration_fingerprint=(execution_target.configuration_fingerprint),
                 fingerprint=execution_target_fingerprint(execution_target),
+                request_headers=execution_target.request_headers,
             )
         except Exception:
             _raise_manifest("execution_destination")
@@ -795,7 +804,7 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
     }
     if manifest.execution_destination is not None:
         destination = manifest.execution_destination
-        value["execution_destination"] = {
+        destination_value: dict[str, object] = {
             "allow_loopback_http": destination.allow_loopback_http,
             "configuration_fingerprint": destination.configuration_fingerprint,
             "credential_environment_variable": (
@@ -806,6 +815,11 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
             "protocol": destination.protocol,
             "provider": destination.provider,
         }
+        if destination.request_headers:
+            destination_value["request_headers"] = [
+                [header.name, header.value] for header in destination.request_headers
+            ]
+        value["execution_destination"] = destination_value
     return value
 
 
@@ -1187,9 +1201,22 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
             destination_value = value["execution_destination"]
             if (
                 type(destination_value) is not dict
-                or frozenset(destination_value) != _EXECUTION_DESTINATION_KEYS
+                or frozenset(destination_value)
+                not in {
+                    _EXECUTION_DESTINATION_KEYS,
+                    _EXECUTION_DESTINATION_KEYS
+                    | _OPTIONAL_EXECUTION_DESTINATION_KEYS,
+                }
             ):
                 _raise_load("execution_destination")
+            request_headers: tuple[ConfiguredRequestHeader, ...] = ()
+            if "request_headers" in destination_value:
+                try:
+                    request_headers = request_headers_from_records(
+                        destination_value["request_headers"]
+                    )
+                except ConfiguredRequestHeaderError:
+                    _raise_load("execution_destination")
             destination = ExecutionDestinationSnapshot(
                 provider=destination_value["provider"],
                 protocol=destination_value["protocol"],
@@ -1202,6 +1229,7 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
                     "configuration_fingerprint"
                 ],
                 fingerprint=destination_value["fingerprint"],
+                request_headers=request_headers,
             )
 
         return WorkflowRunManifest(

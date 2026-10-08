@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from hashlib import sha256
 from urllib.parse import urlsplit, urlunsplit
 
+from ai_office.request_headers import (
+    ConfiguredRequestHeader,
+    ConfiguredRequestHeaderError,
+    validate_request_headers,
+)
+
 OPENAI_RESPONSES_PROTOCOL = "openai-responses"
 OPENAI_CHAT_COMPLETIONS_PROTOCOL = "openai-chat-completions"
 SUPPORTED_EXECUTION_PROTOCOLS = frozenset(
@@ -79,6 +85,7 @@ class ModelExecutionTarget:
     credential_environment_variable: str
     allow_loopback_http: bool
     configuration_fingerprint: str | None = None
+    request_headers: tuple[ConfiguredRequestHeader, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -107,6 +114,12 @@ class ModelExecutionTarget:
             raise ModelExecutionTargetError(
                 "execution target configuration fingerprint is invalid"
             )
+        try:
+            validate_request_headers(self.request_headers)
+        except ConfiguredRequestHeaderError as error:
+            raise ModelExecutionTargetError(
+                "execution target request headers are invalid"
+            ) from error
 
     @property
     def endpoint(self) -> str:
@@ -124,6 +137,11 @@ class ModelExecutionTarget:
         }
         if self.configuration_fingerprint is not None:
             value["configuration_fingerprint"] = self.configuration_fingerprint
+        if self.request_headers:
+            value["request_headers"] = [
+                {"name": header.name, "value": header.value}
+                for header in self.request_headers
+            ]
         return value
 
 
@@ -208,6 +226,12 @@ def validate_model_execution_target(target: object) -> ModelExecutionTarget:
         raise ModelExecutionTargetError("execution target is invalid")
     if canonicalize_execution_target_url(target.base_url) != target.base_url:
         raise ModelExecutionTargetError("execution target is not canonical")
+    try:
+        validate_request_headers(target.request_headers)
+    except ConfiguredRequestHeaderError as error:
+        raise ModelExecutionTargetError(
+            "execution target request headers are invalid"
+        ) from error
     return target
 
 
@@ -259,6 +283,10 @@ def execution_target_fingerprint(target: ModelExecutionTarget) -> str:
     }
     if target.configuration_fingerprint is not None:
         value["configuration_fingerprint"] = target.configuration_fingerprint
+    if target.request_headers:
+        value["request_headers"] = [
+            [header.name, header.value] for header in target.request_headers
+        ]
     canonical = json.dumps(
         value,
         ensure_ascii=False,

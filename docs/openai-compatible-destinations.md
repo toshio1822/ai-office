@@ -7,12 +7,15 @@ compatibility subset, not a claim of universal OpenAI API compatibility.
 ## Administrator registration
 
 Start from [`examples/openai-compatible-destinations.yaml`](examples/openai-compatible-destinations.yaml).
-Each destination has exactly four administrator-owned fields:
+Each destination has four required administrator-owned fields:
 
 - `endpoint`: the exact HTTPS endpoint;
 - `protocol`: `openai-responses` or `openai-chat-completions`;
 - `credential`: the environment variable name, never the secret value; and
 - `models`: the exact operator-selectable model allowlist.
+
+An optional `headers` mapping can declare a small set of safe, non-secret
+request headers. See [Safe request headers](#safe-request-headers).
 
 Deploy the registry as a regular, non-symlink file and use operating-system
 ownership and permissions to restrict who can replace it or set the referenced
@@ -44,6 +47,64 @@ destination registry. A changed endpoint, protocol, credential reference, or
 model policy changes the configuration fingerprint and invalidates a stale
 preview/approval before credentials or transport are consulted. The selected
 model is frozen in the existing Run Manifest employee snapshot.
+
+## Safe request headers
+
+A destination may declare an optional `headers` mapping for compatible
+services that require an identifying `User-Agent` and/or a stable session
+identifier, without adding any provider-specific execution branch. The policy
+is deliberately narrow and fail-closed:
+
+- Only a static string value or the single `{run_session}` substitution is
+  allowed. `{run_session}` resolves to a stable value derived solely from the
+  Run identity (`ai-office-run-<run-id>`), so it stays constant across steps,
+  continuation and recovery, and it does not masquerade as OpenCode or a
+  coding agent.
+- Authentication (`Authorization` / `Proxy-Authorization`), `Host`,
+  `Content-Type` / `Content-Length` / `Transfer-Encoding`, connection and
+  framing headers (`Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`),
+  cookies, hop-by-hop and forwarding/proxy headers are rejected. CR/LF,
+  control characters, duplicate names, surrounding whitespace, unsafe lengths,
+  and any unsupported `{...}` substitution are rejected before transport.
+- `Authorization: Bearer` and `Content-Type` remain under existing transport
+  control; configured headers can never override them.
+- Endpoint allowlisting, DNS pinning, redirect blocking, HTTPS and SSRF
+  safeguards are unchanged.
+
+The effective header policy is part of the destination configuration
+fingerprint and the Run Manifest v4 snapshot. Changing the headers after a
+preview/approval invalidates the stale approval before credentials or
+network are consulted, and continuation/recovery cannot silently change
+headers or session identity. Historical v2/v3 Runs and built-in
+`openai` / `omniroute` targets remain readable without header requirements.
+
+Example (see `examples/openai-compatible-destinations.yaml`):
+
+```yaml
+destinations:
+  opencode-go:
+    protocol: openai-responses
+    endpoint: https://opencode.ai/zen/go/v1/responses
+    credential: OPENCODE_API_KEY
+    models:
+      - gpt-6-luna
+    headers:
+      User-Agent: ai-office/1.0
+      x-opencode-session: "{run_session}"
+```
+
+## OpenCode Go usage caveats
+
+The Go sample above only demonstrates the header mechanism. AI Office makes
+no claim that it is compatible with, or that general business-document
+traffic is permitted by, the OpenCode Go service. Go is positioned as a
+coding-agent subscription with per-model monthly usage limits and
+abuse monitoring. Before any live canary, an administrator must confirm the
+service's published scope and acceptable use, select only models documented
+for the Responses API, review each model's pricing/retention/training terms
+for the intended data, and verify that Zen overage/fallback billing is
+disabled. Technical wire compatibility and contractual permission are
+separate concerns.
 
 ## Supported compatibility subset
 
