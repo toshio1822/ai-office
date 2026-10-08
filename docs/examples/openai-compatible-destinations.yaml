@@ -1,0 +1,15 @@
+destinations:
+  opencode-zen:
+    protocol: openai-responses
+    endpoint: https://opencode.ai/zen/v1/responses
+    credential: OPENCODE_API_KEY
+    models:
+      # Replace with a currently documented Responses-compatible Zen model.
+      - replace-with-approved-responses-model
+
+  internal-chat-gateway:
+    protocol: openai-chat-completions
+    endpoint: https://ai-gateway.example.com/v1/chat/completions
+    credential: INTERNAL_CHAT_GATEWAY_API_KEY
+    models:
+      - approved-chat-model

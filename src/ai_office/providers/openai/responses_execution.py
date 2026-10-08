@@ -12,6 +12,8 @@ from ai_office.execution_evidence import (
     persist_raw_response_evidence,
 )
 from ai_office.execution_target import (
+    OPENAI_CHAT_COMPLETIONS_PROTOCOL,
+    OPENAI_RESPONSES_PROTOCOL,
     ModelExecutionTarget,
     ModelExecutionTargetError,
     validate_execution_target_for_provider,
@@ -22,6 +24,10 @@ from ai_office.invocation import (
     ModelInvocationRequest,
     ModelInvocationResult,
     validate_model_invocation_execution_approval,
+)
+from ai_office.providers.openai.chat_completions import (
+    normalize_openai_chat_completions_raw_response,
+    serialize_openai_chat_completions_request,
 )
 from ai_office.providers.openai.responses_auth import (
     OpenAIApiKey,
@@ -149,11 +155,19 @@ def execute_openai_model_invocation(
         raise ExecutionEvidenceError("context")
 
     try:
-        openai_request = build_openai_responses_request(request)
-        tools = build_openai_responses_tools(resolved_tools)
-        payload = build_openai_responses_payload(openai_request, tools)
-        payload_dict = build_openai_responses_payload_dict(payload)
-        body = serialize_openai_responses_payload_dict(payload_dict)
+        if selected_target.protocol == OPENAI_RESPONSES_PROTOCOL:
+            openai_request = build_openai_responses_request(request)
+            tools = build_openai_responses_tools(resolved_tools)
+            payload = build_openai_responses_payload(openai_request, tools)
+            payload_dict = build_openai_responses_payload_dict(payload)
+            body = serialize_openai_responses_payload_dict(payload_dict)
+        else:
+            try:
+                body = serialize_openai_chat_completions_request(request)
+            except ValueError as error:
+                return build_model_invocation_failure_from_openai_execution_input_error(
+                    OpenAIResponsesExecutionInputError(str(error)), provider=provider
+                )
         http_request = build_openai_responses_http_request(
             body,
             execution_target=selected_target,
@@ -179,8 +193,10 @@ def execute_openai_model_invocation(
                 attempt,
                 raw_response,
             )
-            result = normalize_openai_responses_raw_response(
-                raw_response, provider=provider
+            result = normalize_openai_compatible_raw_response(
+                raw_response,
+                protocol=selected_target.protocol,
+                provider=provider,
             )
         except OpenAIResponsesTransportError as error:
             result = build_model_invocation_failure_from_openai_transport_error(
@@ -249,6 +265,30 @@ def normalize_openai_responses_raw_response(
         return build_model_invocation_failure_from_openai_invalid_output_error(
             error, provider=provider
         )
+
+
+def normalize_openai_compatible_raw_response(
+    raw_response: OpenAIResponsesRawHttpResponse,
+    *,
+    protocol: str,
+    provider: str,
+) -> ModelInvocationResult:
+    """Normalize one saved response according to its approved API family."""
+    if protocol == OPENAI_RESPONSES_PROTOCOL:
+        return normalize_openai_responses_raw_response(raw_response, provider=provider)
+    if protocol == OPENAI_CHAT_COMPLETIONS_PROTOCOL:
+        try:
+            return normalize_openai_chat_completions_raw_response(
+                raw_response, provider=provider
+            )
+        except OpenAIResponsesInvalidResponseError as error:
+            return build_model_invocation_failure_from_openai_invalid_response_error(
+                error, provider=provider
+            )
+    return build_model_invocation_failure_from_openai_execution_input_error(
+        OpenAIResponsesExecutionInputError("execution target protocol is unsupported"),
+        provider=provider,
+    )
 
 
 def _validate_resolved_tools(

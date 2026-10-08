@@ -42,9 +42,7 @@ class FakeConnection:
         skip_host: bool,
         skip_accept_encoding: bool,
     ) -> None:
-        self.putrequest_calls.append(
-            (method, target, skip_host, skip_accept_encoding)
-        )
+        self.putrequest_calls.append((method, target, skip_host, skip_accept_encoding))
 
     def putheader(self, name: str, value: str) -> None:
         self.headers.append((name, value))
@@ -155,6 +153,27 @@ def test_completed_non_success_statuses_are_returned(
     assert response.status_code == status
     assert response.reason == "status"
     assert connection.closed is True
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.8", "169.254.169.254"])
+def test_https_connection_rejects_non_public_dns_results_before_connect(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    monkeypatch.setattr(
+        transport.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (
+                transport.socket.AF_INET,
+                transport.socket.SOCK_STREAM,
+                6,
+                "",
+                (address, 443),
+            )
+        ],
+    )
+    with pytest.raises(OpenAIResponsesTransportError):
+        transport._create_https_connection("configured.example", None)
 
 
 def test_empty_path_and_explicit_https_port_are_preserved(
