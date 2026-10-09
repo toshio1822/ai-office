@@ -3151,6 +3151,162 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
     assert key_calls == []
 
 
+def test_workflows_start_file_input_preserves_exact_text_and_preview_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+    exact_text = "First line\r\nSecond line\n\n"
+    input_file = tmp_path / "evidence package.md"
+    input_file.write_bytes(exact_text.encode("utf-8"))
+
+    direct_arguments = workflow_command_args(
+        "start", "research-and-summarize", paths
+    ) + ["--preview-only"]
+    direct_index = direct_arguments.index("--run-input")
+    direct_arguments[direct_index + 1] = exact_text
+    direct_result = runner.invoke(app, direct_arguments)
+
+    file_arguments = workflow_command_args(
+        "start", "research-and-summarize", paths
+    )
+    file_index = file_arguments.index("--run-input")
+    del file_arguments[file_index : file_index + 2]
+    file_arguments.extend(
+        ["--run-input-file", str(input_file), "--preview-only"]
+    )
+    file_result = runner.invoke(app, file_arguments)
+
+    assert direct_result.exit_code == file_result.exit_code == 0
+    direct_preview = json.loads(direct_result.stdout)
+    file_preview = json.loads(file_result.stdout)
+    assert direct_preview["run_input"] == exact_text
+    assert file_preview["run_input"] == exact_text
+    assert file_preview["request_fingerprint"] == direct_preview["request_fingerprint"]
+    assert file_preview["manifest_digest"] == direct_preview["manifest_digest"]
+    assert not paths["state"].exists()
+    assert not paths["events"].exists()
+    assert calls == []
+    assert key_calls == []
+
+
+@pytest.mark.parametrize(
+    ("file_bytes", "expected_error"),
+    [
+        (b"\xff", "Run input file is unavailable or invalid UTF-8"),
+        (
+            b"x" * (cli_module.MAX_RUN_INPUT_FILE_BYTES + 1),
+            "Run input file exceeds the size limit",
+        ),
+    ],
+)
+def test_workflows_start_rejects_invalid_or_oversized_input_file_safely(
+    tmp_path: Path, file_bytes: bytes, expected_error: str
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    input_file = tmp_path / "sensitive evidence package.md"
+    input_file.write_bytes(file_bytes)
+    arguments = workflow_command_args("start", "research-and-summarize", paths)
+    input_index = arguments.index("--run-input")
+    del arguments[input_index : input_index + 2]
+
+    result = runner.invoke(
+        app,
+        arguments + ["--run-input-file", str(input_file), "--preview-only"],
+    )
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert result.stderr == f"Error: {expected_error}\n"
+    assert str(input_file) not in result.stderr
+    assert not paths["state"].exists()
+    assert not paths["events"].exists()
+
+
+def test_workflows_start_accepts_input_file_at_size_limit(
+    tmp_path: Path,
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    input_file = tmp_path / "maximum-input.md"
+    input_file.write_bytes(b"x" * cli_module.MAX_RUN_INPUT_FILE_BYTES)
+    arguments = workflow_command_args("start", "research-and-summarize", paths)
+    input_index = arguments.index("--run-input")
+    del arguments[input_index : input_index + 2]
+
+    result = runner.invoke(
+        app,
+        arguments + ["--run-input-file", str(input_file), "--preview-only"],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout)["run_input"] == (
+        "x" * cli_module.MAX_RUN_INPUT_FILE_BYTES
+    )
+
+
+@pytest.mark.parametrize("input_mode", ["missing", "both"])
+def test_workflows_start_requires_exactly_one_run_input_source(
+    tmp_path: Path, input_mode: str
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    arguments = workflow_command_args("start", "research-and-summarize", paths)
+    input_index = arguments.index("--run-input")
+    del arguments[input_index : input_index + 2]
+    if input_mode == "both":
+        input_file = tmp_path / "input.md"
+        input_file.write_text("file input", encoding="utf-8")
+        arguments.extend(
+            ["--run-input", "direct input", "--run-input-file", str(input_file)]
+        )
+
+    result = runner.invoke(app, arguments + ["--preview-only"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == (
+        "Error: provide exactly one of --run-input or --run-input-file\n"
+    )
+    assert not paths["state"].exists()
+    assert not paths["events"].exists()
+
+
+@pytest.mark.parametrize("file_kind", ["missing", "directory"])
+def test_workflows_start_reports_unreadable_input_without_path_details(
+    tmp_path: Path, file_kind: str
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    input_file = tmp_path / "sensitive path" / "evidence.md"
+    if file_kind == "directory":
+        input_file.mkdir(parents=True)
+    arguments = workflow_command_args("start", "research-and-summarize", paths)
+    input_index = arguments.index("--run-input")
+    del arguments[input_index : input_index + 2]
+
+    result = runner.invoke(
+        app,
+        arguments + ["--run-input-file", str(input_file), "--preview-only"],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert result.stderr == "Error: Run input file is unavailable or invalid UTF-8\n"
+    assert str(input_file) not in result.stderr
+    assert not paths["state"].exists()
+    assert not paths["events"].exists()
+
+
 def test_workflows_start_rejects_ambiguous_or_incomplete_execution_approval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
