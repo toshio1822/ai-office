@@ -850,7 +850,24 @@ def collect_engineering_evidence_workflow(
     """Collect explicitly listed GitHub and public Web evidence using GET only."""
     if not token_environment_variable.isidentifier():
         _workflow_cli_error("GitHub token environment variable name is invalid")
+    directory_fd = None
     try:
+        directory_fd = os.open(
+            output.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        if os.fstat(directory_fd).st_mode & 0o077:
+            _workflow_cli_error(
+                "engineering evidence output directory must be private "
+                "(0700 or stricter)"
+            )
+        try:
+            os.stat(output.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            _workflow_cli_error("engineering evidence output already exists")
+
         request_bytes = request_file.read_bytes()
         if len(request_bytes) > 100_000:
             raise EngineeringEvidenceError("request exceeds the safe size limit")
@@ -860,8 +877,17 @@ def collect_engineering_evidence_workflow(
             allowed_web_hosts=allowed_web_host,
             github_token=os.environ.get(token_environment_variable),
         )
-        with output.open("x", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), 0o600)
+        file_fd = os.open(
+            output.name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        with os.fdopen(file_fd, "w", encoding="utf-8") as stream:
             stream.write(package)
     except (EngineeringEvidenceError, json.JSONDecodeError, UnicodeDecodeError):
         _workflow_cli_error("engineering evidence request is invalid")
@@ -869,6 +895,9 @@ def collect_engineering_evidence_workflow(
         _workflow_cli_error("engineering evidence output already exists")
     except OSError:
         _workflow_cli_error("engineering evidence could not be read or written")
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
 
     _emit_json(
         {

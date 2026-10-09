@@ -217,6 +217,14 @@ def collect_engineering_evidence(
             )
             if len(raw_source) != size:
                 raise _SourceUnavailable("source_size_mismatch")
+            git_blob_header = (
+                b"blob " + str(len(raw_source)).encode("ascii") + b"\0"
+            )
+            git_blob_sha = hashlib.sha1(
+                git_blob_header + raw_source, usedforsecurity=False
+            ).hexdigest()
+            if blob_sha.lower() != git_blob_sha:
+                raise _SourceUnavailable("blob_content_mismatch")
             source_text = raw_source.decode("utf-8")
             full_source_sha256 = _sha256(raw_source)
             lines = source_text.splitlines(keepends=True)

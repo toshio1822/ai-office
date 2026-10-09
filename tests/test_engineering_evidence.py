@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,8 +39,12 @@ def _github_response(value: object, status: int = 200) -> GitHubRawResponse:
 
 
 class FakeGitHub:
-    def __init__(self) -> None:
+    def __init__(self, *, blob_sha: str | None = None) -> None:
         self.requests = []
+        self.blob_sha = blob_sha or hashlib.sha1(
+            b"blob " + str(len(SOURCE)).encode("ascii") + b"\0" + SOURCE,
+            usedforsecurity=False,
+        ).hexdigest()
 
     def __call__(self, request):
         self.requests.append(request)
@@ -57,7 +62,7 @@ class FakeGitHub:
                 {
                     "path": "src/device.cpp",
                     "encoding": "base64",
-                    "sha": "e" * 40,
+                    "sha": self.blob_sha,
                     "size": len(SOURCE),
                     "content": base64.b64encode(SOURCE).decode("ascii"),
                 }
@@ -125,6 +130,7 @@ def test_collects_only_explicit_get_sources_and_emits_canonical_provenance() -> 
     assert source["source_url"].endswith("src/device.cpp#L2-L3")
     assert source["content"] == "line two\nline three\n"
     assert source["commit_sha"] == SHA
+    assert source["blob_sha"] == github.blob_sha
     assert source["source_sha256"] == hashlib.sha256(SOURCE).hexdigest()
     assert (
         source["content_sha256"]
@@ -186,6 +192,29 @@ def test_missing_issue_is_explicit_and_not_retried() -> None:
     assert source["reason"] == "http_404"
     assert unavailable == ("https://github.com/example/repo/issues/7",)
     assert len(calls) == 1
+
+
+def test_source_blob_sha_mismatch_is_unavailable_without_retry() -> None:
+    github = FakeGitHub(blob_sha="e" * 40)
+    request = {
+        "issues": [],
+        "source_files": _request()["source_files"],
+        "web_documents": [],
+    }
+    text, _digest, status, unavailable = collect_engineering_evidence(
+        request,
+        allowed_web_hosts=[],
+        github_transport=github,
+        clock=_fixed_clock,
+    )
+    source = json.loads(text)["sources"][0]
+
+    assert status == "partial"
+    assert source["status"] == "unavailable"
+    assert source["reason"] == "blob_content_mismatch"
+    assert source["content"] is None
+    assert unavailable == (source["source_url"],)
+    assert len(github.requests) == 1
 
 
 def test_oversized_issue_text_is_truncated_and_marks_package_partial() -> None:
@@ -279,6 +308,15 @@ def test_cli_writes_private_output_exclusively_and_workflow_preview_is_offline(
     request_file.write_text(json.dumps(_request()), encoding="utf-8")
     output = tmp_path / "evidence.json"
     github = FakeGitHub()
+    created_modes = []
+    original_open = os.open
+
+    def observe_open(path, flags, mode=0o777, *, dir_fd=None):
+        if path == output.name:
+            created_modes.append(mode)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(cli_module.os, "open", observe_open)
     monkeypatch.setattr(
         cli_module,
         "collect_engineering_evidence",
@@ -291,24 +329,30 @@ def test_cli_writes_private_output_exclusively_and_workflow_preview_is_offline(
             clock=_fixed_clock,
         ),
     )
-    collected = runner.invoke(
-        app,
-        [
-            "workflows",
-            "collect-engineering-evidence",
-            "--request",
-            str(request_file),
-            "--output",
-            str(output),
-            "--allowed-web-host",
-            "docs.example.test",
-        ],
-    )
+    previous_umask = os.umask(0)
+    try:
+        collected = runner.invoke(
+            app,
+            [
+                "workflows",
+                "collect-engineering-evidence",
+                "--request",
+                str(request_file),
+                "--output",
+                str(output),
+                "--allowed-web-host",
+                "docs.example.test",
+            ],
+        )
+    finally:
+        os.umask(previous_umask)
     assert collected.exit_code == 0, collected.stderr
     summary = json.loads(collected.stdout)
     assert summary["collection_status"] == "complete"
+    assert created_modes == [0o600]
     assert output.stat().st_mode & 0o777 == 0o600
     before = output.read_bytes()
+    previous_request_count = len(github.requests)
     duplicate = runner.invoke(
         app,
         [
@@ -324,6 +368,7 @@ def test_cli_writes_private_output_exclusively_and_workflow_preview_is_offline(
     )
     assert duplicate.exit_code != 0
     assert output.read_bytes() == before
+    assert len(github.requests) == previous_request_count
 
     def unexpected_provider_call():
         raise AssertionError("preview must not load a provider key")
@@ -357,6 +402,44 @@ def test_cli_writes_private_output_exclusively_and_workflow_preview_is_offline(
     assert preview_json["employee_id"] == "general-researcher"
     assert preview_json["run_input"] == before.decode("utf-8")
     assert not (tmp_path / "run-store").exists()
+
+
+def test_cli_rejects_public_output_directory_before_network(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(_request()), encoding="utf-8")
+    public_directory = tmp_path / "public"
+    public_directory.mkdir(mode=0o755)
+    public_directory.chmod(0o755)
+    output = public_directory / "evidence.json"
+    calls = []
+
+    def unexpected_collection(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("public output path must be rejected before collection")
+
+    monkeypatch.setattr(
+        cli_module, "collect_engineering_evidence", unexpected_collection
+    )
+    result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "collect-engineering-evidence",
+            "--request",
+            str(request_file),
+            "--output",
+            str(output),
+            "--allowed-web-host",
+            "docs.example.test",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "output directory must be private" in result.stderr
+    assert calls == []
+    assert not output.exists()
 
 
 def test_unsafe_private_address_is_rejected_before_connection(monkeypatch) -> None:

@@ -14,7 +14,7 @@
     {
       "repository": "openyellowos/oyo-calamares",
       "commit": "d38f36148385a4b3d16aa1540de292c576bd2398",
-      "path": "src/modules/partition/PartitionCoreModule.cpp",
+      "path": "src/modules/partition/core/PartitionCoreModule.cpp",
       "start_line": 266,
       "end_line": 285
     },

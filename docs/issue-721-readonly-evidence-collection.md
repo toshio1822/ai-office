@@ -26,8 +26,11 @@ working tree, execute source code, or invoke an AI provider.
    existing fixed-host GET transport; an optional `GITHUB_TOKEN` can increase
    public API rate limits. Web hosts must be explicitly allowlisted. DNS results
    are checked for public addresses and pinned for TLS connections; redirects are
-   not followed. The output file is created exclusively with mode `0600`. Keep the
-   containing directory private (`0700`). Do not use a shared or public location.
+   not followed. Before any collection request, the CLI verifies that the output
+   directory has no group/other permission bits (`0700` or stricter). It then
+   creates the output file exclusively with mode `0600` at creation time (so the
+   process umask cannot make the initial file broader). A shared or public output
+   directory is rejected; do not weaken its permissions while collection runs.
 3. Inspect the summary and package. `collection_status: complete` means every
    requested item was retrieved without truncation; `partial` means at least one
    item is unavailable or truncated. Partial output is still written for review,
@@ -43,11 +46,20 @@ working tree, execute source code, or invoke an AI provider.
 Each source record preserves source type, explicit URL, retrieval timestamp,
 retrieval context, status, content SHA-256, and raw response SHA-256 when available.
 Source records also retain Issue/repository or pinned commit/path/line metadata.
-The package has a deterministic JSON serialization; the CLI summary reports its
-SHA-256. GitHub and Web text is untrusted evidence, never instructions or
-authorization. Known credential patterns and a supplied GitHub token are redacted
-before text is included. The collector does not follow links or redirects, retry a
-failed read, fall back to another host, or run commands.
+For a GitHub source file, the decoded response bytes are checked against the Git
+blob object SHA returned by GitHub before content can be marked successful; a
+mismatch becomes an unavailable source and makes the package partial. The package
+has a deterministic JSON serialization; the CLI summary reports its SHA-256.
+GitHub and Web text is untrusted evidence, never instructions or authorization.
+Known credential patterns and a supplied GitHub token are redacted before text is
+included. The collector does not follow links or redirects, retry a failed read,
+fall back to another host, or run commands.
+
+The checked-in Issue #721 request pins `PartitionCoreModule.cpp` under
+`src/modules/partition/core/`. The earlier sample omitted the `core/` directory;
+at the pinned commit that incorrect path returned HTTP 404. A read-only Contents
+API directory listing confirmed the corrected path and its blob, and a direct GET
+at the corrected path succeeded.
 
 ## Limits and safety invariants
 
@@ -73,7 +85,7 @@ failed read, fall back to another host, or run commands.
 | Acceptance area | Status | Evidence / boundary |
 | --- | --- | --- |
 | Explicit GitHub Issue, fixed-commit source/config, and official Web inputs | verified (offline) | Synthetic transport tests assert each request is explicit, bounded, and GET-only; the checked-in request is a worked scope example. |
-| Bounded package, timestamps, source context, hashes, and visible partial results | verified (offline) | Offline tests cover canonical hashes, source metadata, truncation/unavailable records, and exclusive private output. |
+| Bounded package, timestamps, source context, hashes, and visible partial results | verified (offline) | Offline tests cover canonical hashes including Git blob integrity, source metadata, truncation/unavailable records, mode `0600` at creation under umask `0`, rejection of public output directories before collection, and exclusive output. |
 | Reuse of existing Workflow, employee, handoff, provenance, and Markdown Artifact | verified (offline) | Existing #719 Workflow is unchanged; its separate offline behavior tests already cover downstream handoff/Artifact. This feature only supplies its Run input. |
 | Live collection from the selected public sources | requires authorized live run | Operator may execute the explicit read-only GET collection command; external source availability/rate limits vary. No AI/provider call is involved. |
 | Technical root-cause determination, target-media safety, or reproduction | blocked | Evidence collection does not inspect a target device, run Calamares, or establish the exact shipped build/device state. Human review and, if needed, an explicitly disposable VM with throwaway disks remain necessary. |
