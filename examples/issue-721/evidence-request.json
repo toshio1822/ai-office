@@ -1,0 +1,40 @@
+{
+  "issues": [
+    "https://github.com/openyellowos/oyo-calamares/issues/7",
+    "https://github.com/openyellowos/oYo-Linux-Builder/issues/24"
+  ],
+  "source_files": [
+    {
+      "repository": "openyellowos/oyo-calamares",
+      "commit": "d38f36148385a4b3d16aa1540de292c576bd2398",
+      "path": "src/modules/partition/core/DeviceList.cpp",
+      "start_line": 29,
+      "end_line": 194
+    },
+    {
+      "repository": "openyellowos/oyo-calamares",
+      "commit": "d38f36148385a4b3d16aa1540de292c576bd2398",
+      "path": "src/modules/partition/core/PartitionCoreModule.cpp",
+      "start_line": 266,
+      "end_line": 285
+    },
+    {
+      "repository": "openyellowos/oYo-Linux-Builder",
+      "commit": "f11a50d1f1cedfac4b849489500a7a38f205290f",
+      "path": "config/10_common/overlay/etc/calamares/settings.conf",
+      "start_line": 42,
+      "end_line": 85
+    },
+    {
+      "repository": "openyellowos/oYo-Linux-Builder",
+      "commit": "f11a50d1f1cedfac4b849489500a7a38f205290f",
+      "path": "config/10_common/overlay/etc/calamares/modules/partition.conf",
+      "start_line": 67,
+      "end_line": 87
+    }
+  ],
+  "web_documents": [
+    "https://calamares.io/docs/partitions/",
+    "https://calamares.io/issues/"
+  ]
+}
