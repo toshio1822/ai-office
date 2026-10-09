@@ -1,0 +1,31 @@
+id: review-supplied-github-change
+name: Review Supplied GitHub Change
+description: Produces a traceable Japanese review report from supplied offline Issue, PR, and CI snapshots.
+
+steps:
+  - id: analyze-supplied-snapshots
+    name: Analyze Supplied Snapshots
+    employee: general-researcher
+    instructions: |
+      Analyze only the Issue, PR, and CI snapshot supplied as the Run input.
+      Organize source identifiers and references, requirements, described changes,
+      validation evidence, risks, and unknown or unverified items.
+      Clearly separate supplied source facts from inferred assessment and unknowns.
+      Do not claim live GitHub, repository, diff, or CI inspection.
+      Return structured findings for the next employee; do not write the final report.
+    business_approval_required: true
+
+  - id: write-japanese-review-report
+    name: Write Japanese Review Report
+    employee: japanese-document-writer
+    instructions: |
+      Write a Japanese Markdown review report using the actual structured findings
+      handed off by the immediately preceding step as the review basis.
+      Identify the supplied Issue and PR, then cover requirements, described changes,
+      validation evidence, inferred risks, and unknown or unverified items.
+      Preserve source references and label supplied facts, inferred assessment, and
+      unknowns distinctly. State that the report is based on offline supplied snapshots,
+      not live GitHub, repository, diff, CI, or provider inspection.
+      Do not independently invent or replace the predecessor findings.
+    business_approval_required: true
+    artifact_content_type: text/markdown
