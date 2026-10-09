@@ -52,6 +52,10 @@ from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.engineering_evidence import (
+    EngineeringEvidenceError,
+    collect_engineering_evidence,
+)
 from ai_office.execution_destination import (
     ExecutionDestinationError,
     load_execution_destination_registry,
@@ -831,6 +835,52 @@ def snapshot_github_change(
         }
     )
     if snapshot.collection_status != "complete":
+        raise typer.Exit(code=2)
+
+
+@workflows_app.command("collect-engineering-evidence")
+def collect_engineering_evidence_workflow(
+    request_file: Path = typer.Option(..., "--request"),
+    output: Path = typer.Option(..., "--output"),
+    allowed_web_host: list[str] = typer.Option([], "--allowed-web-host"),
+    token_environment_variable: str = typer.Option(
+        "GITHUB_TOKEN", "--token-environment-variable"
+    ),
+) -> None:
+    """Collect explicitly listed GitHub and public Web evidence using GET only."""
+    if not token_environment_variable.isidentifier():
+        _workflow_cli_error("GitHub token environment variable name is invalid")
+    try:
+        request_bytes = request_file.read_bytes()
+        if len(request_bytes) > 100_000:
+            raise EngineeringEvidenceError("request exceeds the safe size limit")
+        request = json.loads(request_bytes)
+        package, package_sha256, status, unavailable = collect_engineering_evidence(
+            request,
+            allowed_web_hosts=allowed_web_host,
+            github_token=os.environ.get(token_environment_variable),
+        )
+        with output.open("x", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(package)
+    except (EngineeringEvidenceError, json.JSONDecodeError, UnicodeDecodeError):
+        _workflow_cli_error("engineering evidence request is invalid")
+    except FileExistsError:
+        _workflow_cli_error("engineering evidence output already exists")
+    except OSError:
+        _workflow_cli_error("engineering evidence could not be read or written")
+
+    _emit_json(
+        {
+            "collection_status": status,
+            "operation": "collect-engineering-evidence",
+            "output": str(output),
+            "sha256": package_sha256,
+            "source_count": len(json.loads(package)["sources"]),
+            "unavailable_or_partial_source_count": len(unavailable),
+        }
+    )
+    if status != "complete":
         raise typer.Exit(code=2)
 
 
