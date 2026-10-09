@@ -1,7 +1,9 @@
 """Command-line interface for AI Office."""
 
 import json
+import os
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -59,6 +61,10 @@ from ai_office.execution_target import (
     ModelExecutionTarget,
     ModelExecutionTargetError,
     execution_target_for_name,
+)
+from ai_office.github_snapshot import (
+    GitHubSnapshotError,
+    collect_github_change_snapshot,
 )
 from ai_office.invocation import (
     EMPTY_RUNTIME_FACTS,
@@ -771,6 +777,61 @@ def _resolved_tools_json(
 def _emit_json(value: dict[str, object]) -> None:
     """Emit exactly one deterministic, secret-free JSON line."""
     typer.echo(json.dumps(value, ensure_ascii=False, sort_keys=True))
+
+
+@workflows_app.command("snapshot-github-change")
+def snapshot_github_change(
+    repository: str = typer.Option(..., "--repository"),
+    issue_number: int = typer.Option(..., "--issue"),
+    pull_number: int = typer.Option(..., "--pull"),
+    expected_head_sha: str = typer.Option(..., "--expected-head-sha"),
+    output: Path = typer.Option(..., "--output"),
+    observed_at: str | None = typer.Option(None, "--observed-at"),
+    token_environment_variable: str = typer.Option(
+        "GITHUB_TOKEN", "--token-environment-variable"
+    ),
+) -> None:
+    """Collect one revision-bound, read-only GitHub snapshot for workflow input."""
+    if not token_environment_variable.isidentifier():
+        _workflow_cli_error("GitHub token environment variable name is invalid")
+    observation_time = observed_at or datetime.now(UTC).isoformat(
+        timespec="seconds"
+    ).replace("+00:00", "Z")
+    try:
+        snapshot = collect_github_change_snapshot(
+            repository=repository,
+            issue_number=issue_number,
+            pull_number=pull_number,
+            expected_head_sha=expected_head_sha,
+            observed_at=observation_time,
+            token=os.environ.get(token_environment_variable),
+        )
+        with output.open("x", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(snapshot.markdown)
+    except GitHubSnapshotError as error:
+        _workflow_cli_error(str(error))
+    except FileExistsError:
+        _workflow_cli_error("GitHub snapshot output already exists")
+    except OSError:
+        _workflow_cli_error("GitHub snapshot output could not be written")
+
+    _emit_json(
+        {
+            "base_sha": snapshot.base_sha,
+            "collection_status": snapshot.collection_status,
+            "head_sha": snapshot.head_sha,
+            "issue_number": issue_number,
+            "operation": "snapshot-github-change",
+            "output": str(output),
+            "pull_number": pull_number,
+            "repository": repository,
+            "sha256": snapshot.sha256,
+            "unavailable_or_omitted_fields": list(snapshot.unavailable_fields),
+        }
+    )
+    if snapshot.collection_status != "complete":
+        raise typer.Exit(code=2)
 
 
 def _step_preview_json(
