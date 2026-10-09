@@ -353,26 +353,24 @@ def _validate_event_history(
         ):
             _raise("event_history")
         if require_execution_provenance and event.event_type != "step_recovery_started":
-            request_id_is_valid = event.request_id is not None or (
-                event.step_index >= 5
-                and (
-                    event.step_index == state.current_step_index
-                    or (
-                        state.current_step_index >= 6
-                        and event.step_index == state.current_step_index - 1
-                    )
-                    or (
-                        state.current_step_index >= 7
-                        and event.provider == "openai"
-                    )
-                )
+            has_run_bound_execution_evidence = (
+                binding_of(event) is not None
+                and getattr(event, "execution_attempt_id", None) is not None
+                and getattr(event, "execution_attempt_evidence_sha256", None)
+                is not None
+                and getattr(event, "normalized_result_evidence_sha256", None)
+                is not None
             )
             if (
                 type(event.provider) is not str
                 or not event.provider
                 or type(event.request_id) not in (str, type(None))
                 or (event.request_id is not None and not event.request_id)
-                or not request_id_is_valid
+                or (
+                    binding_of(event) is not None
+                    and not has_run_bound_execution_evidence
+                )
+                or (binding_of(event) is None and event.request_id is None)
             ):
                 _raise("event_history")
         previous_index = event.step_index

@@ -107,54 +107,7 @@ def setup(tmp_path: Path, steps: int = 6, current: int = 6) -> dict[str, object]
         if index == current - 1:
             events.append(
                 predecessor_event(
-                    wf.steps[index - 1].id, index, output_text="", request_id=None
-                )
-            )
-        elif index in (2, 3, 4):
-            events.append(
-                predecessor_event(wf.steps[index - 1].id, index, output_text="")
-            )
-        else:
-            events.append(predecessor_event(wf.steps[index - 1].id, index))
-    events_path.write_text(
-        "".join(serialize_runtime_step_event_jsonl(event) for event in events),
-        encoding="utf-8",
-    )
-    return {
-        "workflow": wf,
-        "state_path": state_path,
-        "events_path": events_path,
-        "state_before": state_path.read_bytes(),
-        "events_before": events_path.read_bytes(),
-    }
-
-
-def accumulated_setup(tmp_path: Path) -> dict[str, object]:
-    """Create the bounded accumulated aged-None provenance from Issue #383."""
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    state_path, events_path = tmp_path / "state", tmp_path / "events"
-    wf = workflow(8)
-    state = WorkflowExecutionState(
-        "w",
-        "running",
-        wf.steps[6].id,
-        7,
-        wf.steps[6].employee,
-        tuple(step.id for step in wf.steps[:6]),
-        None,
-    )
-    state_path.write_text(
-        serialize_workflow_execution_state_json(state), encoding="utf-8"
-    )
-    events = []
-    for index in range(1, 7):
-        if index in (5, 6):
-            events.append(
-                predecessor_event(
-                    wf.steps[index - 1].id,
-                    index,
-                    output_text="" if index == 5 else "output",
-                    request_id=None,
+                    wf.steps[index - 1].id, index, output_text=""
                 )
             )
         elif index in (2, 3, 4):
@@ -302,26 +255,6 @@ def test_runtime_failure_commits_once_and_stops_without_progression(
     assert history.state.last_failure_category == "api_error"
     assert history.events[-1].event_type == "step_failed"
     assert history.events[-1].message == "safe failure"
-
-
-def test_active_runtime_failure_preserves_bounded_aged_none_provenance(
-    tmp_path: Path,
-) -> None:
-    values = accumulated_setup(tmp_path)
-    result = runtime_failure(values["workflow"], 7)  # type: ignore[arg-type]
-
-    out = route_runtime_result_to_progression_orchestration_boundary(
-        result, values["workflow"], values["state_path"], values["events_path"]
-    )
-
-    assert type(out) is PersistedExecutionOutcome
-    assert out.outcome == "persisted_failure"
-    history = _history(values)
-    assert history.state.status == "failed"
-    assert history.state.current_step_index == 7
-    assert history.events[4].request_id is None
-    assert history.events[5].request_id is None
-    assert history.events[6].event_type == "step_failed"
 
 
 def test_invalid_active_provenance_fails_before_durable_commit(tmp_path: Path) -> None:

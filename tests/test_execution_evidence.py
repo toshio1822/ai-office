@@ -58,6 +58,7 @@ from ai_office.runtime import (
 from ai_office.storage import (
     WorkflowExecutionPersistenceInputError,
     WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     parse_runtime_step_event,
     persist_workflow_execution_transition,
     serialize_runtime_step_event_jsonl,
@@ -299,7 +300,10 @@ def _assert_persistence_rejected_without_writes(fixture, transition) -> None:
 
 
 def _success_response(
-    *, body_text: str = "safe response", response_id: str = "response-1"
+    *,
+    body_text: str = "safe response",
+    response_id: str = "response-1",
+    request_id: str | None = "request-1",
 ) -> OpenAIResponsesRawHttpResponse:
     payload = {
         "id": response_id,
@@ -312,14 +316,13 @@ def _success_response(
             }
         ],
     }
+    safe_headers: tuple[tuple[str, str], ...] = (("Content-Type", "application/json"),)
+    if request_id is not None:
+        safe_headers += (("X-Request-Id", request_id),)
     return OpenAIResponsesRawHttpResponse(
         status_code=200,
         reason="synthetic",
-        headers=(
-            ("Content-Type", "application/json"),
-            ("X-Request-Id", "request-1"),
-            ("Authorization", "Bearer response-secret"),
-        ),
+        headers=safe_headers + (("Authorization", "Bearer response-secret"),),
         body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
     )
 
@@ -629,6 +632,88 @@ def test_terminal_event_links_exact_attempt_and_normalized_result(
         fixture.run.store.root, fixture.run.binding.run_id
     )
     assert inspection[0].final_step_outcome_linked is True
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "missing-normalized-result",
+        "event-response-id",
+        "event-request-id",
+        "event-output",
+        "event-attempt-digest",
+        "event-linkage-removed",
+        "raw-response-body",
+    ],
+)
+def test_run_bound_missing_request_id_requires_intact_execution_evidence_before_reentry(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    fixture = _fixture(tmp_path)
+    result = execute_openai_model_invocation(
+        fixture.request,
+        (),
+        _api_key(),
+        fixture.approval,
+        transport=lambda _: _success_response(request_id=None),
+        execution_evidence=fixture.context,
+    )
+    assert isinstance(result, ModelInvocationSuccess)
+    assert result.request_id is None
+    transition = _success_transition(fixture, result)
+    targets = WorkflowExecutionPersistenceTargets(
+        fixture.run.state_path,
+        fixture.run.events_path,
+        binding=fixture.run.binding,
+    )
+    persist_workflow_execution_transition(transition, targets)
+    assert load_workflow_execution_history(targets).events[0].request_id is None
+
+    attempt = list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )[0]
+    if tamper == "missing-normalized-result":
+        execution_normalized_result_evidence_path(
+            fixture.run.store.root,
+            fixture.run.binding.run_id,
+            attempt.attempt_id,
+        ).unlink()
+    elif tamper == "raw-response-body":
+        raw_path = execution_raw_response_evidence_path(
+            fixture.run.store.root,
+            fixture.run.binding.run_id,
+            attempt.attempt_id,
+        )
+        raw = json.loads(raw_path.read_text(encoding="utf-8"))
+        raw["body_base64"] = "e30="
+        raw_path.write_text(json.dumps(raw), encoding="utf-8")
+    else:
+        event = json.loads(fixture.run.events_path.read_text(encoding="utf-8"))
+        if tamper == "event-response-id":
+            event["response_id"] = "forged-response"
+        elif tamper == "event-request-id":
+            event["request_id"] = "forged-request"
+        elif tamper == "event-output":
+            event["output_text"] = "forged output"
+        elif tamper == "event-linkage-removed":
+            for field in (
+                "execution_attempt_id",
+                "execution_attempt_evidence_sha256",
+                "normalized_result_evidence_sha256",
+                "raw_response_evidence_sha256",
+                "raw_response_body_sha256",
+            ):
+                event.pop(field)
+        else:
+            event["execution_attempt_evidence_sha256"] = "f" * 64
+        fixture.run.events_path.write_text(
+            json.dumps(event, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(ExecutionEvidenceError):
+        load_workflow_execution_history(targets)
 
 
 def test_forged_normalized_result_reference_cannot_commit_terminal_state(

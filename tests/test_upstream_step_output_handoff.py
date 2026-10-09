@@ -28,7 +28,13 @@ from ai_office.engine.next_step_preparation import (
 from ai_office.engine.persisted_continuation_runtime_facts import (
     build_persisted_continuation_runtime_facts,
 )
+from ai_office.engine.workflow_approval_evidence import (
+    build_execution_approval_evidence_for_tools,
+    persist_execution_approval_evidence,
+)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.execution_evidence import build_execution_evidence_context
+from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationExecutionApprovalError,
@@ -41,11 +47,17 @@ from ai_office.invocation import (
     validate_model_invocation_execution_approval,
 )
 from ai_office.planning.step_execution_request import StepExecutionRequest
-from ai_office.providers.openai import OpenAIApiKey
+from ai_office.providers.openai import (
+    OpenAIApiKey,
+    OpenAIResponsesRawHttpResponse,
+    execute_openai_model_invocation,
+)
 from ai_office.runtime import (
     RuntimeStepEvent,
+    StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
     WorkflowRunBinding,
+    transition_workflow_execution_from_step_result,
 )
 from ai_office.storage import (
     LoadedWorkflowExecutionHistory,
@@ -237,6 +249,100 @@ def _write_history(
     state_path = tmp_path / "state.json" if run is None else run.state_path
     events_path = tmp_path / "events.jsonl" if run is None else run.events_path
     history = _history(output_text, binding=None if run is None else run.binding)
+    if run is not None:
+        request = ModelInvocationRequest(
+            "model",
+            "system instructions",
+            "first task",
+            (),
+            binding=run.binding,
+            run_input=f"input-{run.binding.run_id}",
+        )
+        approval = approve_model_invocation_execution(
+            request,
+            (),
+            provider="openai",
+            approved_by="history-reviewer",
+            approval_id="history-approval",
+            execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        persist_execution_approval_evidence(
+            run.store,
+            build_execution_approval_evidence_for_tools(
+                request,
+                (),
+                approval,
+                workflow_id="workflow",
+                step_id="step-1",
+                step_index=1,
+                employee_id="employee-1",
+                target=DIRECT_OPENAI_EXECUTION_TARGET,
+            ),
+        )
+        evidence = build_execution_evidence_context(
+            store_root=run.store.root,
+            binding=run.binding,
+            workflow_id="workflow",
+            step_id="step-1",
+            step_index=1,
+            employee_id="employee-1",
+            request=request,
+            resolved_tools=(),
+            approval=approval,
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        body = json.dumps(
+            {
+                "id": "response-1",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": output_text}],
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        ).encode()
+        invocation = execute_openai_model_invocation(
+            request,
+            (),
+            OpenAIApiKey(value="test-key"),
+            approval,
+            transport=lambda _request: OpenAIResponsesRawHttpResponse(
+                200,
+                "synthetic",
+                (("x-request-id", "request-1"),),
+                body,
+            ),
+            execution_evidence=evidence,
+        )
+        history = LoadedWorkflowExecutionHistory(
+            state=history.state,
+            events=(
+                transition_workflow_execution_from_step_result(
+                    WorkflowExecutionState(
+                        "workflow",
+                        "running",
+                        "step-1",
+                        1,
+                        "employee-1",
+                        (),
+                        None,
+                        binding=run.binding,
+                    ),
+                    StepRuntimeExecutionSuccess(
+                        "workflow",
+                        "step-1",
+                        1,
+                        "employee-1",
+                        invocation,
+                        binding=run.binding,
+                    ),
+                ).event,
+            ),
+        )
     state_path.write_bytes(
         serialize_workflow_execution_state_json(history.state).encode("utf-8")
     )

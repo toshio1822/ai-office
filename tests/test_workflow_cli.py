@@ -24,15 +24,27 @@ from ai_office.engine import (
     load_workflow_run_manifest,
     persist_business_approval_evidence,
 )
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.engine.workflow_approval_evidence import (
+    build_execution_approval_evidence_for_tools,
+    persist_execution_approval_evidence,
+)
+from ai_office.execution_evidence import build_execution_evidence_context
+from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
+from ai_office.invocation import (
+    ModelInvocationRequest,
+    approve_model_invocation_execution,
+)
 from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesRawHttpResponse,
+    execute_openai_model_invocation,
 )
 from ai_office.runtime import (
     RuntimeStepEvent,
+    StepRuntimeExecutionSuccess,
     WorkflowExecutionState,
     WorkflowRunBinding,
+    transition_workflow_execution_from_step_result,
 )
 from ai_office.storage import (
     load_workflow_execution_state,
@@ -355,7 +367,13 @@ def invoke_execution_without_business(
     )
 
 
-def write_succeeded_prefix(paths: dict[str, Path], current: int) -> None:
+def write_succeeded_prefix(
+    paths: dict[str, Path],
+    current: int,
+    *,
+    authoritative: bool = False,
+    output_text: str = "synthetic output",
+) -> None:
     """Write a strict synthetic succeeded history through the requested step."""
     binding = ensure_run_manifest(paths)
     step_ids = ("research", "summarize", "review")
@@ -370,9 +388,11 @@ def write_succeeded_prefix(paths: dict[str, Path], current: int) -> None:
         last_failure_category=None,
         binding=binding,
     )
-    events = "".join(
-        serialize_runtime_step_event_jsonl(
-            RuntimeStepEvent(
+    events: list[RuntimeStepEvent] = []
+    for index in range(1, current + 1):
+        if not authoritative:
+            events.append(
+                RuntimeStepEvent(
                 event_type="step_succeeded",
                 workflow_id="research-and-summarize",
                 step_id=step_ids[index - 1],
@@ -384,18 +404,115 @@ def write_succeeded_prefix(paths: dict[str, Path], current: int) -> None:
                 failure_category=None,
                 response_id=f"synthetic-response-{index}",
                 request_id=f"synthetic-request-{index}",
-                output_text="synthetic output",
+                output_text=output_text,
                 message=None,
                 binding=binding,
+                )
             )
+            continue
+        request = ModelInvocationRequest(
+            "codex",
+            "Work on the assigned step.",
+            "Gather relevant information.",
+            (),
+            binding=binding,
+            run_input="test input",
         )
-        for index in range(1, current + 1)
-    )
+        approval = approve_model_invocation_execution(
+            request,
+            (),
+            provider="openai",
+            approved_by="test-reviewer",
+            approval_id=f"test-approval-{index}",
+            execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        store = WorkflowRunManifestStore(paths["run_store"])
+        persist_execution_approval_evidence(
+            store,
+            build_execution_approval_evidence_for_tools(
+                request,
+                (),
+                approval,
+                workflow_id="research-and-summarize",
+                step_id=step_ids[index - 1],
+                step_index=index,
+                employee_id="general-researcher",
+                target=DIRECT_OPENAI_EXECUTION_TARGET,
+            ),
+        )
+        evidence = build_execution_evidence_context(
+            store_root=store.root,
+            binding=binding,
+            workflow_id="research-and-summarize",
+            step_id=step_ids[index - 1],
+            step_index=index,
+            employee_id="general-researcher",
+            request=request,
+            resolved_tools=(),
+            approval=approval,
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        body = json.dumps(
+            {
+                "id": f"synthetic-response-{index}",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": output_text}
+                        ],
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        ).encode()
+        invocation = execute_openai_model_invocation(
+            request,
+            (),
+            OpenAIApiKey(value="test-key"),
+            approval,
+            transport=lambda _request, index=index, body=body: (
+                OpenAIResponsesRawHttpResponse(
+                    200,
+                    "synthetic",
+                    (("x-request-id", f"synthetic-request-{index}"),),
+                    body,
+                )
+            ),
+            execution_evidence=evidence,
+        )
+        events.append(
+            transition_workflow_execution_from_step_result(
+                WorkflowExecutionState(
+                    workflow_id="research-and-summarize",
+                    status="running",
+                    current_step_id=step_ids[index - 1],
+                    current_step_index=index,
+                    current_employee_id="general-researcher",
+                    completed_step_ids=step_ids[: index - 1],
+                    last_failure_category=None,
+                    binding=binding,
+                ),
+                StepRuntimeExecutionSuccess(
+                    "research-and-summarize",
+                    step_ids[index - 1],
+                    index,
+                    "general-researcher",
+                    invocation,
+                    binding=binding,
+                ),
+            ).event
+        )
     paths["state"].write_text(
         serialize_workflow_execution_state_json(state),
         encoding="utf-8",
     )
-    paths["events"].write_text(events, encoding="utf-8")
+    paths["events"].write_text(
+        "".join(serialize_runtime_step_event_jsonl(event) for event in events),
+        encoding="utf-8",
+    )
 
 
 def replace_last_output(paths: dict[str, Path], output_text: str) -> None:
@@ -3344,7 +3461,7 @@ def test_workflows_continue_success_executes_exactly_one_next_step_and_stops(
     calls: list[object] = []
     key_calls: list[int] = []
     patch_cli_execution_seams(monkeypatch, calls, key_calls)
-    write_succeeded_prefix(paths, 1)
+    write_succeeded_prefix(paths, 1, authoritative=True)
     _, preview = preview_command("continue", "research-and-summarize", paths)
 
     result = invoke_execution("continue", "research-and-summarize", paths, preview)
@@ -3370,7 +3487,7 @@ def test_workflows_continue_reuses_exact_durable_business_approval_after_restart
     paths = workflow_command_paths(tmp_path)
     write_three_step_workflow(paths["workflows"])
     write_valid_employee(paths["employees"])
-    write_succeeded_prefix(paths, 1)
+    write_succeeded_prefix(paths, 1, authoritative=True)
     binding = ensure_run_manifest(paths)
     persist_business_approval_evidence(
         WorkflowRunManifestStore(paths["run_store"]),
@@ -3609,9 +3726,13 @@ def test_workflows_continue_restart_style_execution_sends_exact_upstream_once_an
     paths = workflow_command_paths(tmp_path)
     write_three_step_workflow(paths["workflows"])
     write_valid_employee(paths["employees"])
-    write_succeeded_prefix(paths, 1)
     sentinel = "restart-safe sentinel\n日本語"
-    replace_last_output(paths, sentinel)
+    write_succeeded_prefix(
+        paths,
+        1,
+        authoritative=True,
+        output_text=sentinel,
+    )
     calls: list[object] = []
     key_calls: list[int] = []
     patch_cli_execution_seams(monkeypatch, calls, key_calls)

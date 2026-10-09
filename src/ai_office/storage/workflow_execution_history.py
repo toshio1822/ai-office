@@ -122,16 +122,23 @@ class WorkflowExecutionHistoryInconsistencyError(WorkflowExecutionLoadError):
 
 def load_workflow_execution_history(
     targets: WorkflowExecutionPersistenceTargets,
+    *,
+    require_terminal_evidence: bool = False,
 ) -> LoadedWorkflowExecutionHistory:
     """Read, strictly reconstruct, and cross-check one persisted history."""
     history, _state_source_sha256, _events_source_sha256 = (
-        load_workflow_execution_history_with_source_digests(targets)
+        load_workflow_execution_history_with_source_digests(
+            targets,
+            require_terminal_evidence=require_terminal_evidence,
+        )
     )
     return history
 
 
 def load_workflow_execution_history_with_source_digests(
     targets: WorkflowExecutionPersistenceTargets,
+    *,
+    require_terminal_evidence: bool = False,
 ) -> tuple[LoadedWorkflowExecutionHistory, str, str]:
     """Load history and return SHA-256 digests of the exact source bytes.
 
@@ -141,6 +148,8 @@ def load_workflow_execution_history_with_source_digests(
     access to ``LoadedWorkflowExecutionHistory``.
     """
     _validate_targets(targets)
+    if type(require_terminal_evidence) is not bool:
+        raise WorkflowExecutionDataError("terminal_evidence_policy")
     state_bytes = _read_bytes(targets.state_path, "state_read")
     event_bytes = _read_bytes(targets.events_path, "events_read")
     state = parse_workflow_execution_state(
@@ -152,10 +161,37 @@ def load_workflow_execution_history_with_source_digests(
     events = _parse_runtime_step_events(event_bytes, binding=targets.binding)
     _validate_run_binding_consistency(state, events, targets.binding)
     if targets.binding is not None:
-        from ai_office.execution_evidence import _validate_run_terminal_event
+        from ai_office.execution_evidence import (
+            _validate_run_terminal_event,
+            list_run_execution_evidence,
+        )
+
+        attempts = list_run_execution_evidence(
+            targets.state_path.parent, targets.binding.run_id
+        )
+        attempted_steps = {
+            (
+                attempt.workflow_id,
+                attempt.step_id,
+                attempt.step_index,
+                attempt.employee_id,
+            )
+            for attempt in attempts
+        }
 
         for event in events:
-            if event.event_type == "step_recovery_started":
+            if (
+                require_terminal_evidence
+                or event.event_type == "step_recovery_started"
+                or getattr(event, "execution_attempt_id", None) is not None
+                or (
+                    event.workflow_id,
+                    event.step_id,
+                    event.step_index,
+                    event.employee_id,
+                )
+                in attempted_steps
+            ):
                 _validate_run_terminal_event(
                     targets.state_path.parent, targets.binding, event
                 )
