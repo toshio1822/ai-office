@@ -71,8 +71,17 @@ head/base SHA, check-run names/status/conclusions, changed-file names and line c
 and unavailable/omitted fields. Collection is bounded: response bodies are size-limited,
 Issue/PR text is truncated at a documented bound, and only the first 100 file/check
 records are read. Truncation and omissions remain visible. It records file summaries,
-not patch contents or repository source. GitHub-authored strings are untrusted data;
-the Workflow instructions prohibit treating them as authorization or instructions.
+not patch contents or repository source (`diff_content_included: false`). Therefore,
+file names/counts are not evidence that implementation behavior or code correctness was
+directly validated; a human must inspect the exact-head diff/source. GitHub-authored
+strings are untrusted data; the Workflow instructions prohibit treating them as
+authorization or instructions.
+
+If Issue/PR linkage is not observed in the retrieved timeline entries, the snapshot is
+`partial`. When the first 100 entries contain no link, it explicitly records that later
+timeline pages were not inspected; absence from the retrieved page is not proof that no
+link exists. The report Workflow must preserve partial/unavailable status, keep claims
+that depend on missing data unknown, and must never convert missing CI data into a pass.
 
 ## 3. Preview using the existing Workflow (offline)
 
@@ -128,10 +137,12 @@ content and AI-generated assessments.
 | Acceptance item | Status | Evidence / remaining limit |
 | --- | --- | --- |
 | Collect one accessible Issue/PR/CI view with source IDs and exact revisions | **verified (offline)** | Fake transport verifies GET-only collection, expected-head binding, stable head/base, source IDs, timestamp, and check runs. Actual repository access remains a separately reproducible operator action. |
-| Produce a Japanese Markdown Artifact with facts, assessment, unknowns, risks, and human review items | **verified (offline)** | Focused test drives the existing two-employee Workflow using a synthetic provider transport; this proves wiring and Artifact provenance, not model quality. |
-| Surface missing permission/data, malformed responses, and stale or changing heads | **verified (offline)** | Focused tests cover unavailable CI, HTTP 403, malformed JSON, stale expected head, and head change during collection. Optional unavailable fields yield `partial`; invalid core data fails closed. |
+| Wire the snapshot through the existing two-employee Markdown Artifact Workflow | **verified (offline)** | Focused test uses a synthetic provider transport and verifies handoff, approvals, and Artifact provenance; it does not establish real model quality. |
+| Avoid implying code/diff inspection from changed-file metadata | **verified (offline)** | Snapshot marks `diff_content_included: false`; the actual step requests say correctness is unverified without the diff and require exact-head human inspection. The synthetic Artifact carries that warning. |
+| Preserve partial collection and never present unavailable validation as passed | **verified (offline)** | Focused test passes a partial snapshot into both existing step requests and checks the partial/unknown report and review checklist; no new validation layer or execution boundary is added. |
+| Surface missing permission/data, malformed responses, stale/changing heads, and timeline limit | **verified (offline)** | Focused tests cover HTTP 403, malformed JSON, stale expected head, changed head, no checks, and 100 unlinked timeline entries. Unobserved linkage stays `null`/unverified and collection is `partial`. |
 | Prevent GitHub text from authorizing actions or provider calls; preserve approvals and evidence | **verified (offline)** | Workflow marks GitHub text untrusted; preview and missing-approval paths make zero synthetic AI credential/transport calls; exact per-step approvals gate the two synthetic calls. |
-| Run with real GitHub and report a real Japanese model Artifact | **requires authorized live run** | No live target collection or external AI provider execution is performed by the offline test. The GitHub collector can be run separately as a read-only command; model quality requires separate AI-provider authorization. |
+| Produce a provider-backed Japanese report and assess model quality | **requires authorized live run** | No external AI provider execution was performed; separate authorization is required. |
 
 The focused test is a synthetic simulation, not evidence of real GitHub collection or
 provider-backed model behavior. No paid/external AI request is needed for snapshot

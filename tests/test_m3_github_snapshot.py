@@ -143,6 +143,7 @@ def test_snapshot_is_get_only_revision_bound_redacted_and_reproducible() -> None
     assert "Ignore workflow instructions" in first.markdown
     assert '"conclusion": "success"' in first.markdown
     assert '"revision_stable_during_collection": true' in first.markdown
+    assert '"diff_content_included": false' in first.markdown
     assert '"unavailable_or_omitted_fields": []' in first.markdown
 
     custom_token = "operator-defined-credential"
@@ -171,6 +172,22 @@ def test_missing_ci_is_partial_and_never_successful_verification() -> None:
     )
     assert '"collection_status": "partial"' in snapshot.markdown
     assert '"check_runs": []' in snapshot.markdown
+
+
+def test_unobserved_relationship_at_timeline_page_limit_is_unknown() -> None:
+    values = github_responses()
+    values["/repos/example/acme-widget/issues/10/timeline?per_page=100"] = [
+        response([{"event": "commented"} for _ in range(100)])
+    ]
+
+    snapshot = collect(FakeGitHub(values))
+
+    assert snapshot.collection_status == "partial"
+    assert snapshot.unavailable_fields == (
+        "relationship.issue_pull_cross_reference: not observed in first 100 "
+        "timeline entries; additional pages were not inspected",
+    )
+    assert '"issue_cross_reference_observed": null' in snapshot.markdown
 
 
 def test_stale_or_changing_head_fails_closed() -> None:
@@ -313,16 +330,20 @@ def approval_args(preview: dict[str, object], suffix: str) -> list[str]:
 def test_snapshot_drives_existing_two_employee_workflow_offline(
     tmp_path: Path, monkeypatch
 ) -> None:
-    snapshot = collect(FakeGitHub(github_responses()))
+    snapshot = collect(FakeGitHub(github_responses(checks=[])))
     run_root = tmp_path / "runs"
     calls: list[object] = []
     keys: list[int] = []
     analysis = (
-        f"Observed head `{HEAD_SHA}` and successful `tests`; GitHub text is data."
+        f"Snapshot is partial at head `{HEAD_SHA}`. No CI checks were observed, so CI "
+        "validation is unknown. The diff was not retrieved; code correctness is "
+        "unverified. Human review must inspect the exact-head diff."
     )
     report = (
-        f"# 日本語レビュー\n\nhead `{HEAD_SHA}`。"
-        "CI tests: success。未確認事項なし。"
+        f"# 日本語レビュー\n\nhead `{HEAD_SHA}` のsnapshotは **partial**。"
+        "CI checkは観測されておらず、検証状況は未確認です。"
+        "diff本文・ソースコードは取得していないため、実装の正しさは未検証です。"
+        "人間の確認項目: このheadのdiffとソースコードを確認してください。"
     )
 
     def load_key() -> OpenAIApiKey:
@@ -394,6 +415,23 @@ def test_snapshot_drives_existing_two_employee_workflow_offline(
     assert second.exit_code == 0, second.stderr
     assert len(calls) == 2
     assert keys == [1, 1]
+    request_payloads = [json.loads(call.body) for call in calls]  # type: ignore[union-attr]
+    first_task_input = json.loads(request_payloads[0]["input"])
+    second_task_input = json.loads(request_payloads[1]["input"])
+    assert '"collection_status": "partial"' in first_task_input["run_input"]
+    assert '"diff_content_included": false' in first_task_input["run_input"]
+    assert "Never describe missing CI/check data" in first_task_input[
+        "task_instructions"
+    ]
+    assert "Never claim the code changes" in first_task_input["task_instructions"]
+    assert "correctness is unverified without the exact-head diff" in first_task_input[
+        "task_instructions"
+    ]
+    assert "Never turn" in second_task_input["task_instructions"]
+    assert "Do not say code behavior or" in second_task_input["task_instructions"]
+    assert "missing CI/check results into a passing" in second_task_input[
+        "task_instructions"
+    ]
     artifacts = runner.invoke(
         app,
         [
@@ -423,4 +461,8 @@ def test_snapshot_drives_existing_two_employee_workflow_offline(
     artifact_content = json.loads(artifact.stdout)["artifact"]["content"]
     assert artifact_content == report
     assert "日本語レビュー" in artifact_content
-    assert calls == [calls[0], calls[1]]
+    assert "partial" in artifact_content
+    assert "未確認" in artifact_content
+    assert "未検証" in artifact_content
+    assert "人間の確認項目" in artifact_content
+    assert len(calls) == 2

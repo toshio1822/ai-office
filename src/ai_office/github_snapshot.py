@@ -220,10 +220,11 @@ def collect_github_change_snapshot(
             "body_truncated": pull_body_truncated,
             "changed_file_count_described": described_file_count,
             "changed_files": files,
+            "diff_content_included": False,
             "head_ref": _nested_text(pull_before, "head", "ref"),
             "head_sha": head_sha,
             "html_url": _required_text(pull_before, "html_url", "Pull Request"),
-            "issue_cross_reference_observed": linked,
+            "issue_cross_reference_observed": linked if linked else None,
             "number": pull_number,
             "revision_stable_during_collection": True,
             "state": _required_text(pull_before, "state", "Pull Request"),
@@ -424,15 +425,24 @@ def _normalize_checks(
 
 def _normalize_relationship(
     value: object | None, pull_number: int, unavailable: list[str]
-) -> bool:
+) -> bool | None:
     if value is None:
-        return False
+        return None
     if type(value) is not list:
         raise GitHubSnapshotError("Issue timeline response must be a list")
     linked = any(_timeline_links_pull(item, pull_number) for item in value)
     if not linked:
-        unavailable.append("relationship.issue_pull_cross_reference: not observed")
-    return linked
+        if len(value) >= 100:
+            unavailable.append(
+                "relationship.issue_pull_cross_reference: not observed in first "
+                "100 timeline entries; additional pages were not inspected"
+            )
+        else:
+            unavailable.append(
+                "relationship.issue_pull_cross_reference: not observed in "
+                "retrieved timeline entries"
+            )
+    return linked if linked else None
 
 
 def _timeline_links_pull(value: object, pull_number: int) -> bool:
