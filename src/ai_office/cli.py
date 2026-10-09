@@ -125,6 +125,8 @@ from ai_office.tools import (
     resolve_tool_names,
 )
 
+MAX_RUN_INPUT_FILE_BYTES = 1_048_576
+
 app = typer.Typer(
     name="ai-office",
     help="人間が定義したワークフローを扱う AI 業務基盤。",
@@ -580,6 +582,27 @@ def _build_start_manifest_preview(
         return manifest, binding, pinned_workflows, pinned_employees, catalog
     except (WorkflowSelectionError, WorkflowRunManifestError):
         _workflow_cli_error("fresh Run definition or input is invalid")
+
+
+def _resolve_run_input(
+    run_input: str | None, run_input_file: Path | None
+) -> str:
+    """Select one exact Run input without exposing file contents in argv."""
+    if (run_input is None) == (run_input_file is None):
+        _workflow_cli_error("provide exactly one of --run-input or --run-input-file")
+    if run_input_file is None:
+        assert run_input is not None
+        return run_input
+    try:
+        if not run_input_file.is_file():
+            _workflow_cli_error("Run input file is unavailable or invalid UTF-8")
+        with run_input_file.open("rb") as source:
+            content = source.read(MAX_RUN_INPUT_FILE_BYTES + 1)
+        if len(content) > MAX_RUN_INPUT_FILE_BYTES:
+            _workflow_cli_error("Run input file exceeds the size limit")
+        return content.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        _workflow_cli_error("Run input file is unavailable or invalid UTF-8")
 
 
 def _persist_start_manifest_or_exit(
@@ -1624,7 +1647,8 @@ def _persisted_result_json(
 def start_workflow(
     workflow_id: str,
     run_id: str = typer.Option(..., "--run-id"),
-    run_input: str = typer.Option(..., "--run-input"),
+    run_input: str | None = typer.Option(None, "--run-input"),
+    run_input_file: Path | None = typer.Option(None, "--run-input-file"),
     run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
     directory: Path = typer.Option(Path("workflows"), "--directory"),
     employees_directory: Path = typer.Option(
@@ -1671,11 +1695,12 @@ def start_workflow(
     workflows, employees = _load_workflow_command_inputs(
         directory, employees_directory
     )
+    selected_run_input = _resolve_run_input(run_input, run_input_file)
     manifest, binding, pinned_workflows, pinned_employees, tool_catalog = (
         _build_start_manifest_preview(
             workflow_id,
             run_id,
-            run_input,
+            selected_run_input,
             workflows,
             employees,
             selected_model,

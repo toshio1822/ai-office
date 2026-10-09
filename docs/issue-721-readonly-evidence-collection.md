@@ -35,11 +35,22 @@ working tree, execute source code, or invoke an AI provider.
    requested item was retrieved without truncation; `partial` means at least one
    item is unavailable or truncated. Partial output is still written for review,
    and the CLI exits with status 2. Do not describe it as complete.
-4. Only after human review, pass the package text as `--run-input` to the existing
-   `investigate-calamares-usb-destination` Workflow. Use its normal preview and
-   approval gates. Preview does not call a model; a live Workflow run is a separate
-   paid/external action requiring explicit Business and Execution Approvals bound
-   to the current Step preview.
+4. Only after human review, pass the package file directly to the existing
+   `investigate-calamares-usb-destination` Workflow. `--run-input-file` reads one
+   explicitly selected UTF-8 file (up to 1 MiB), preserving its exact text including
+   line endings and trailing newlines. For example:
+
+   ```bash
+   ai-office workflows start investigate-calamares-usb-destination \
+     --run-id calamares-preview-001 \
+     --run-input-file examples/issue-719/evidence-package.md \
+     --preview-only
+   ```
+
+   This creates only an in-memory preview and does not call a model. A live Workflow
+   run is a separate paid/external action requiring explicit Business and Execution
+   Approvals bound to the current Step preview. Existing `--run-input TEXT` remains
+   available for directly supplied text; choose exactly one input option.
 
 ## Package and trust boundary
 
