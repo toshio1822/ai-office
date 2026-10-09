@@ -36,14 +36,16 @@ working tree, execute source code, or invoke an AI provider.
    item is unavailable or truncated. Partial output is still written for review,
    and the CLI exits with status 2. Do not describe it as complete.
 4. Only after human review, pass the package file directly to the existing
-   `investigate-calamares-usb-destination` Workflow. `--run-input-file` reads one
-   explicitly selected UTF-8 file (up to 1 MiB), preserving its exact text including
-   line endings and trailing newlines. For example:
+   `investigate-calamares-usb-destination` Workflow. In the same shell session as
+   step 2, `--run-input-file` reads the collector output at
+   `$evidence_dir/evidence-package.json`. It accepts one explicitly selected UTF-8
+   file (up to 1 MiB), preserving exact text including line endings and trailing
+   newlines. For example:
 
    ```bash
    ai-office workflows start investigate-calamares-usb-destination \
      --run-id calamares-preview-001 \
-     --run-input-file examples/issue-719/evidence-package.md \
+     --run-input-file "$evidence_dir/evidence-package.json" \
      --preview-only
    ```
 
