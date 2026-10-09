@@ -11,6 +11,10 @@ from typer.testing import CliRunner
 
 import ai_office.cli as cli_module
 from ai_office.cli import app
+from ai_office.execution_evidence import (
+    list_run_execution_evidence,
+    load_normalized_result_evidence,
+)
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
 
 runner = CliRunner()
@@ -115,7 +119,9 @@ def _approval_args(preview: dict[str, object], suffix: str) -> list[str]:
     ]
 
 
-def _synthetic_response(response_id: str, request_id: str, output: str):
+def _synthetic_response(
+    response_id: str, request_id: str | None, output: str
+):
     body = json.dumps(
         {
             "id": response_id,
@@ -133,7 +139,7 @@ def _synthetic_response(response_id: str, request_id: str, output: str):
     return OpenAIResponsesRawHttpResponse(
         200,
         "synthetic",
-        (("x-request-id", request_id),),
+        () if request_id is None else (("x-request-id", request_id),),
         body,
     )
 
@@ -155,7 +161,7 @@ def test_m2_sample_hands_actual_analysis_to_writer_and_exports_report_offline(
         transport_calls.append(request)
         if len(transport_calls) == 1:
             return _synthetic_response(
-                "synthetic-analysis-response", "synthetic-analysis-request", ANALYSIS
+                "synthetic-analysis-response", None, ANALYSIS
             )
         if len(transport_calls) == 2:
             return _synthetic_response(
@@ -228,6 +234,14 @@ def test_m2_sample_hands_actual_analysis_to_writer_and_exports_report_offline(
     assert json.loads(started.stdout)["status"] == "prepare_next_step"
     assert len(transport_calls) == 1
     assert key_calls == [1]
+    attempts = {
+        attempt.step_id: attempt
+        for attempt in list_run_execution_evidence(run_root, run_id)
+    }
+    first_evidence = load_normalized_result_evidence(
+        run_root, run_id, attempts["analyze-supplied-snapshots"].attempt_id
+    )
+    assert first_evidence.request_id is None
 
     second_preview_result = _read_command(
         run_root, "continue", run_id, "--preview-only"
@@ -290,6 +304,14 @@ def test_m2_sample_hands_actual_analysis_to_writer_and_exports_report_offline(
     assert json.loads(result.stdout)["output"]["output_text"] == REPORT
     assert len(json.loads(approvals.stdout)["approvals"]) == 4
     assert len(json.loads(executions.stdout)["attempts"]) == 2
+    attempts = {
+        attempt.step_id: attempt
+        for attempt in list_run_execution_evidence(run_root, run_id)
+    }
+    second_evidence = load_normalized_result_evidence(
+        run_root, run_id, attempts["write-japanese-review-report"].attempt_id
+    )
+    assert second_evidence.request_id == "synthetic-report-request"
     artifact_values = json.loads(artifacts.stdout)["artifacts"]
     assert len(artifact_values) == 1
     assert artifact_values[0]["step_id"] == "write-japanese-review-report"

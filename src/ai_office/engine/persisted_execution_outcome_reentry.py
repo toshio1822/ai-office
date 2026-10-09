@@ -353,7 +353,15 @@ def _validate_event_history(
         ):
             _raise("event_history")
         if require_execution_provenance and event.event_type != "step_recovery_started":
-            request_id_is_valid = event.request_id is not None or (
+            has_run_bound_execution_evidence = (
+                binding_of(event) is not None
+                and getattr(event, "execution_attempt_id", None) is not None
+                and getattr(event, "execution_attempt_evidence_sha256", None)
+                is not None
+                and getattr(event, "normalized_result_evidence_sha256", None)
+                is not None
+            )
+            legacy_request_id_is_valid = event.request_id is not None or (
                 event.step_index >= 5
                 and (
                     event.step_index == state.current_step_index
@@ -372,7 +380,9 @@ def _validate_event_history(
                 or not event.provider
                 or type(event.request_id) not in (str, type(None))
                 or (event.request_id is not None and not event.request_id)
-                or not request_id_is_valid
+                or not (
+                    has_run_bound_execution_evidence or legacy_request_id_is_valid
+                )
             ):
                 _raise("event_history")
         previous_index = event.step_index

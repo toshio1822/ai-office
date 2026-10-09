@@ -152,10 +152,36 @@ def load_workflow_execution_history_with_source_digests(
     events = _parse_runtime_step_events(event_bytes, binding=targets.binding)
     _validate_run_binding_consistency(state, events, targets.binding)
     if targets.binding is not None:
-        from ai_office.execution_evidence import _validate_run_terminal_event
+        from ai_office.execution_evidence import (
+            _validate_run_terminal_event,
+            list_run_execution_evidence,
+        )
+
+        attempts = list_run_execution_evidence(
+            targets.state_path.parent, targets.binding.run_id
+        )
+        attempted_steps = {
+            (
+                attempt.workflow_id,
+                attempt.step_id,
+                attempt.step_index,
+                attempt.employee_id,
+            )
+            for attempt in attempts
+        }
 
         for event in events:
-            if event.event_type == "step_recovery_started":
+            if (
+                event.event_type == "step_recovery_started"
+                or getattr(event, "execution_attempt_id", None) is not None
+                or (
+                    event.workflow_id,
+                    event.step_id,
+                    event.step_index,
+                    event.employee_id,
+                )
+                in attempted_steps
+            ):
                 _validate_run_terminal_event(
                     targets.state_path.parent, targets.binding, event
                 )
