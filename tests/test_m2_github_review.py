@@ -6,12 +6,14 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
 import ai_office.cli as cli_module
 from ai_office.cli import app
 from ai_office.execution_evidence import (
+    execution_normalized_result_evidence_path,
     list_run_execution_evidence,
     load_normalized_result_evidence,
 )
@@ -376,6 +378,147 @@ def test_m2_sample_hands_actual_analysis_to_writer_and_exports_report_offline(
     _read_command(run_root, "artifact", run_id, artifact_id)
     assert len(transport_calls) == 2
     assert key_calls == [1, 1]
+
+
+@pytest.mark.parametrize("request_id", [None, "synthetic-analysis-request"])
+@pytest.mark.parametrize(
+    "tamper",
+    ["missing-result", "event-output", "event-request-id", "event-linkage"],
+)
+def test_m2_persisted_evidence_tampering_stops_before_successor_transport(
+    tmp_path: Path,
+    monkeypatch,
+    request_id: str | None,
+    tamper: str,
+) -> None:
+    run_root = tmp_path / f"tampered-{tamper}-{request_id or 'none'}"
+    run_id = "m2-tampered-evidence"
+    run_input = SNAPSHOT.read_text(encoding="utf-8")
+    transport_calls: list[object] = []
+    key_calls: list[int] = []
+
+    def load_synthetic_key() -> OpenAIApiKey:
+        key_calls.append(1)
+        return OpenAIApiKey(value=SecretStr("synthetic-offline-key"))
+
+    def first_step_only_transport(request: object) -> OpenAIResponsesRawHttpResponse:
+        transport_calls.append(request)
+        if len(transport_calls) != 1:
+            raise AssertionError("successor transport must not run")
+        return _synthetic_response(
+            "synthetic-analysis-response", request_id, ANALYSIS
+        )
+
+    monkeypatch.setattr(
+        cli_module, "load_openai_api_key_from_environment", load_synthetic_key
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "send_openai_responses_http_request",
+        first_step_only_transport,
+    )
+
+    first_preview = json.loads(
+        runner.invoke(
+            app, _start_args(run_root, run_id, run_input) + ["--preview-only"]
+        ).stdout
+    )
+    started = runner.invoke(
+        app,
+        _start_args(run_root, run_id, run_input)
+        + _approval_args(first_preview, "tampered-analysis"),
+    )
+    assert started.exit_code == 0, started.stderr
+    second_preview_result = _read_command(
+        run_root, "continue", run_id, "--preview-only"
+    )
+    assert second_preview_result.exit_code == 0, second_preview_result.stderr
+    second_preview = json.loads(second_preview_result.stdout)
+    attempts = {
+        attempt.step_id: attempt
+        for attempt in list_run_execution_evidence(run_root, run_id)
+    }
+    attempt = attempts["analyze-supplied-snapshots"]
+
+    if tamper == "missing-result":
+        execution_normalized_result_evidence_path(
+            run_root, run_id, attempt.attempt_id
+        ).unlink()
+    else:
+        events_path = run_root / f"{run_id}.events.jsonl"
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+        event = json.loads(lines[0])
+        if tamper == "event-output":
+            event["output_text"] = "forged analysis"
+        elif tamper == "event-request-id":
+            event["request_id"] = "forged-request"
+        else:
+            for field in (
+                "execution_attempt_id",
+                "execution_attempt_evidence_sha256",
+                "normalized_result_evidence_sha256",
+                "raw_response_evidence_sha256",
+                "raw_response_body_sha256",
+            ):
+                event.pop(field)
+        lines[0] = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    continued = runner.invoke(
+        app,
+        ["workflows", "continue", run_id, "--run-store", str(run_root)]
+        + _approval_args(second_preview, "tampered-report"),
+    )
+    assert continued.exit_code == 2
+    assert len(transport_calls) == 1
+    assert key_calls == [1]
+    assert json.loads(_read_command(run_root, "artifacts", run_id).stdout)[
+        "artifacts"
+    ] == []
+
+
+def test_m2_empty_provider_request_id_fails_without_successor_or_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_root = tmp_path / "empty-request-id"
+    run_id = "m2-empty-request-id"
+    run_input = SNAPSHOT.read_text(encoding="utf-8")
+    transport_calls: list[object] = []
+
+    monkeypatch.setattr(
+        cli_module,
+        "load_openai_api_key_from_environment",
+        lambda: OpenAIApiKey(value=SecretStr("synthetic-offline-key")),
+    )
+
+    def empty_request_id_transport(request: object) -> OpenAIResponsesRawHttpResponse:
+        transport_calls.append(request)
+        return _synthetic_response("synthetic-analysis-response", "", ANALYSIS)
+
+    monkeypatch.setattr(
+        cli_module,
+        "send_openai_responses_http_request",
+        empty_request_id_transport,
+    )
+    preview = json.loads(
+        runner.invoke(
+            app, _start_args(run_root, run_id, run_input) + ["--preview-only"]
+        ).stdout
+    )
+    started = runner.invoke(
+        app,
+        _start_args(run_root, run_id, run_input)
+        + _approval_args(preview, "empty-request-id"),
+    )
+
+    assert started.exit_code != 0
+    assert len(transport_calls) == 1
+    assert _read_command(run_root, "continue", run_id).exit_code != 0
+    assert len(transport_calls) == 1
+    assert json.loads(_read_command(run_root, "artifacts", run_id).stdout)[
+        "artifacts"
+    ] == []
 
 
 def test_m2_failed_first_step_cannot_continue_or_create_report_artifact(

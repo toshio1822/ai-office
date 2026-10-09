@@ -886,7 +886,8 @@ def _check_authoritative_pre_persistence(
                     state_path,
                     events_path,
                     binding=binding,
-                )
+                ),
+                require_terminal_evidence=True,
             )
         )
         validate_loaded_persisted_execution_history(

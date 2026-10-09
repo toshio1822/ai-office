@@ -209,7 +209,8 @@ def execute_persisted_start_openai_step(
                             state_path,
                             events_path,
                             binding=binding_of(persisted_state),
-                        )
+                        ),
+                        require_terminal_evidence=True,
                     )
                 )
                 validate_loaded_persisted_execution_history(

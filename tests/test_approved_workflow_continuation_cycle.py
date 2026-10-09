@@ -42,7 +42,13 @@ from ai_office.engine.prepared_step_execution_start import PreparedStepExecution
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (
     RuntimeResultToProgressionOrchestrationBoundaryError as Phase172Error,
 )
+from ai_office.engine.workflow_approval_evidence import (
+    build_execution_approval_evidence_for_tools,
+    persist_execution_approval_evidence,
+)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
+from ai_office.execution_evidence import build_execution_evidence_context
+from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import (
     EMPTY_RUNTIME_FACTS,
     ModelInvocationFailure,
@@ -51,7 +57,11 @@ from ai_office.invocation import (
     UpstreamStepOutput,
     approve_model_invocation_execution,
 )
-from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
+from ai_office.providers.openai import (
+    OpenAIApiKey,
+    OpenAIResponsesRawHttpResponse,
+    execute_openai_model_invocation,
+)
 from ai_office.runtime.persisted_start_execution import PersistedStartExecutionError
 from ai_office.runtime import (
     RuntimeStepEvent,
@@ -60,6 +70,7 @@ from ai_office.runtime import (
     WorkflowExecutionState,
     WorkflowRunBinding,
     binding_of,
+    transition_workflow_execution_from_step_result,
 )
 from ai_office.storage import (
     LoadedWorkflowExecutionHistory,
@@ -231,25 +242,113 @@ def _terminal_history_bytes(
     wf: WorkflowDefinition,
     current: int,
     *,
-    binding: WorkflowRunBinding | None = None,
+    run: object,
 ) -> bytes:
-    """Build deterministic terminal history accepted by real current owners."""
+    """Build deterministic terminal history through the real evidence path."""
+    binding = run.binding
     events = []
     for index in range(1, current + 1):
+        step = wf.steps[index - 1]
         if index == current:
-            events.append(
-                _history_event(wf, index, binding=binding, output_text="output")
-            )
+            output = "output"
         elif index == current - 1:
-            events.append(
-                _history_event(
-                    wf, index, binding=binding, output_text="", request_id=None
-                )
-            )
+            output = ""
         elif index in (2, 3, 4):
-            events.append(_history_event(wf, index, binding=binding, output_text=""))
+            output = ""
         else:
-            events.append(_history_event(wf, index, binding=binding))
+            output = f"output-{step.id}"
+        request = ModelInvocationRequest(
+            "model",
+            f"system-{index}",
+            f"task-{index}",
+            (),
+            run_id=binding.run_id,
+            manifest_digest=binding.manifest_digest,
+            run_input=f"input-{binding.run_id}",
+        )
+        approval = approve_model_invocation_execution(
+            request,
+            (),
+            provider="openai",
+            approved_by="reviewer",
+            approval_id=f"history-approval-{index}",
+            execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        approval_evidence = build_execution_approval_evidence_for_tools(
+            request,
+            (),
+            approval,
+            workflow_id=wf.id,
+            step_id=step.id,
+            step_index=index,
+            employee_id=step.employee,
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        persist_execution_approval_evidence(run.store, approval_evidence)
+        evidence = build_execution_evidence_context(
+            store_root=run.store.root,
+            binding=binding,
+            workflow_id=wf.id,
+            step_id=step.id,
+            step_index=index,
+            employee_id=step.employee,
+            request=request,
+            resolved_tools=(),
+            approval=approval,
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        body = json.dumps(
+            {
+                "id": f"response-{step.id}",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": output}],
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        ).encode()
+        invocation = execute_openai_model_invocation(
+            request,
+            (),
+            OpenAIApiKey(value="test-key"),
+            approval,
+            transport=lambda _request, index=index, body=body: (
+                OpenAIResponsesRawHttpResponse(
+                    200,
+                    "synthetic",
+                    (("x-request-id", f"request-{step.id}"),),
+                    body,
+                )
+            ),
+            execution_evidence=evidence,
+        )
+        runtime_result = StepRuntimeExecutionSuccess(
+            wf.id,
+            step.id,
+            index,
+            step.employee,
+            invocation,
+            binding=binding,
+        )
+        running_state = WorkflowExecutionState(
+            wf.id,
+            "running",
+            step.id,
+            index,
+            step.employee,
+            tuple(item.id for item in wf.steps[: index - 1]),
+            None,
+            binding=binding,
+        )
+        events.append(
+            transition_workflow_execution_from_step_result(
+                running_state, runtime_result
+            ).event
+        )
     return b"".join(
         serialize_runtime_step_event_jsonl(event).encode("utf-8") for event in events
     )
@@ -275,7 +374,7 @@ def setup(tmp_path: Path, *, current: int = 9, count: int = 11) -> dict[str, obj
     )
     state_path, events_path = run.state_path, run.events_path
     state_path.write_bytes(serialize_workflow_execution_state_json(state).encode())
-    events_path.write_bytes(_terminal_history_bytes(wf, current, binding=run.binding))
+    events_path.write_bytes(_terminal_history_bytes(wf, current, run=run))
     return {
         "workflow": wf,
         "state_path": state_path,
@@ -610,7 +709,10 @@ def test_runless_result_and_persisted_history_fail_before_provider_or_mutation(
         tuple(step.id for step in wf.steps[:9]),
         None,
     )
-    unbound_events = _terminal_history_bytes(wf, 9)
+    unbound_events = b"".join(
+        serialize_runtime_step_event_jsonl(_history_event(wf, index)).encode()
+        for index in range(1, 10)
+    )
     state_path.write_bytes(
         serialize_workflow_execution_state_json(unbound_state).encode()
     )

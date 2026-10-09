@@ -10,16 +10,8 @@ from ai_office.engine import (
     PersistedExecutionOutcomeCompatibilityError,
     classify_persisted_execution_outcome_reentry,
 )
-from ai_office.engine.persisted_execution_outcome_reentry import (
-    validate_loaded_persisted_execution_history,
-)
-from ai_office.runtime import (
-    RuntimeStepEvent,
-    WorkflowExecutionState,
-    WorkflowRunBinding,
-)
+from ai_office.runtime import RuntimeStepEvent, WorkflowExecutionState
 from ai_office.storage import (
-    LoadedWorkflowExecutionHistory,
     WorkflowExecutionLoadError,
     WorkflowExecutionPersistenceTargets,
     serialize_runtime_step_event_jsonl,
@@ -100,122 +92,6 @@ def write_history(
 
 def first_event() -> RuntimeStepEvent:
     return event(step_id="first", step_index=1, employee_id="one")
-
-
-def test_run_bound_evidence_allows_missing_request_id_for_any_provider() -> None:
-    binding = WorkflowRunBinding("run-request-id-none", "a" * 64)
-    current_state = WorkflowExecutionState(
-        "workflow",
-        "succeeded",
-        "first",
-        1,
-        "one",
-        ("first",),
-        None,
-        binding=binding,
-    )
-    terminal = RuntimeStepEvent(
-        "step_succeeded",
-        "workflow",
-        "first",
-        1,
-        "one",
-        "running",
-        "succeeded",
-        "compatible-destination",
-        None,
-        "response",
-        None,
-        "output",
-        None,
-        binding=binding,
-        execution_attempt_id="b" * 64,
-        execution_attempt_evidence_sha256="c" * 64,
-        normalized_result_evidence_sha256="d" * 64,
-        raw_response_evidence_sha256="e" * 64,
-        raw_response_body_sha256="f" * 64,
-    )
-
-    validate_loaded_persisted_execution_history(
-        workflow(),
-        LoadedWorkflowExecutionHistory(current_state, (terminal,)),
-        require_terminal_state=True,
-        require_execution_provenance=True,
-    )
-
-
-def test_run_bound_execution_evidence_rejects_empty_request_id() -> None:
-    binding = WorkflowRunBinding("run-empty-request-id", "a" * 64)
-    current_state = WorkflowExecutionState(
-        "workflow", "succeeded", "first", 1, "one", ("first",), None,
-        binding=binding,
-    )
-    terminal = RuntimeStepEvent(
-        "step_succeeded",
-        "workflow",
-        "first",
-        1,
-        "one",
-        "running",
-        "succeeded",
-        "compatible-destination",
-        None,
-        "response",
-        "",
-        "output",
-        None,
-        binding=binding,
-        execution_attempt_id="b" * 64,
-        execution_attempt_evidence_sha256="c" * 64,
-        normalized_result_evidence_sha256="d" * 64,
-        raw_response_evidence_sha256="e" * 64,
-        raw_response_body_sha256="f" * 64,
-    )
-
-    with pytest.raises(PersistedExecutionOutcomeCompatibilityError) as error:
-        validate_loaded_persisted_execution_history(
-            workflow(),
-            LoadedWorkflowExecutionHistory(current_state, (terminal,)),
-            require_terminal_state=True,
-            require_execution_provenance=True,
-        )
-    assert error.value.detail.classification == "event_history"
-
-
-def test_unbound_early_history_preserves_legacy_request_id_requirement() -> None:
-    current_state = state(
-        current_step_id="first",
-        current_step_index=1,
-        current_employee_id="one",
-        completed_step_ids=("first",),
-    )
-    history = LoadedWorkflowExecutionHistory(
-        current_state,
-        (RuntimeStepEvent(
-            "step_succeeded",
-            "workflow",
-            "first",
-            1,
-            "one",
-            "running",
-            "succeeded",
-            "openai",
-            None,
-            "response",
-            None,
-            "output",
-            None,
-        ),),
-    )
-
-    with pytest.raises(PersistedExecutionOutcomeCompatibilityError) as error:
-        validate_loaded_persisted_execution_history(
-            workflow(),
-            history,
-            require_terminal_state=True,
-            require_execution_provenance=True,
-        )
-    assert error.value.detail.classification == "event_history"
 
 
 def test_public_contract_removes_history_loader_seam(tmp_path: Path) -> None:
