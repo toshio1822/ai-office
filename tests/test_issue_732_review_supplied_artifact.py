@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
@@ -45,16 +46,17 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
         ),
         encoding="utf-8",
     )
+    artifact_content = (
+        "# Result\n\nMeasured value: 42. "
+        "Source: sensor-log.md, line 8.\n"
+    )
     run_input = {
         "requirements": ["The report states the measured value and its source."],
         "artifact": {
             "artifact_id": "fixture-artifact",
-            "sha256": "a" * 64,
+            "sha256": sha256(artifact_content.encode("utf-8")).hexdigest(),
             "content_type": "text/markdown",
-            "content": (
-                "# Result\n\nMeasured value: 42. "
-                "Source: sensor-log.md, line 8.\n"
-            ),
+            "content": artifact_content,
         },
         "evidence": [{"source_id": "sensor-log", "excerpt": "line 8: value=42"}],
     }
@@ -106,8 +108,8 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
                                 {
                                     "type": "output_text",
                                     "text": (
-                                        "# Review\n\n"
                                         "Verdict: PASS\n\n"
+                                        "# Review\n\n"
                                         "The supplied requirement is met.\n\n"
                                         "## Findings\n\n"
                                         "No actionable findings.\n"
@@ -216,7 +218,7 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
     )
     assert read.exit_code == 0, read.stderr
     content = json.loads(read.stdout)["artifact"]["content"]
-    assert "Verdict: PASS" in content
+    assert content.startswith("Verdict: PASS\n")
     assert "## Findings" in content
     assert "No actionable findings." in content
     assert len(requests) == 1
