@@ -52,6 +52,22 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
     )
     run_input = {
         "requirements": ["The report states the measured value and its source."],
+        "criterion_scope": {
+            "criteria": [
+                {
+                    "id": "CONTENT-1",
+                    "subject": "deliverable/content",
+                    "text": "Check the stated value and its source.",
+                },
+                {
+                    "id": "OPS-1",
+                    "subject": "operations",
+                    "text": (
+                        "Report whether the bounded run stopped without publication."
+                    ),
+                },
+            ]
+        },
         "artifact": {
             "artifact_id": "fixture-artifact",
             "sha256": sha256(artifact_content.encode("utf-8")).hexdigest(),
@@ -86,7 +102,12 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
     def fake_transport(request: object) -> OpenAIResponsesRawHttpResponse:
         requests.append(request)
         payload = json.loads(request.body)
+        serialized_payload = json.dumps(payload)
         assert payload["model"] == "offline-model"
+        for criterion in run_input["criterion_scope"]["criteria"]:
+            assert criterion["id"] in serialized_payload
+            assert criterion["subject"] in serialized_payload
+            assert criterion["text"] in serialized_payload
         # The provider-facing request is a fresh request, not a continuation
         # containing a creator response or conversation identifier.
         assert "previous_response_id" not in payload
@@ -222,3 +243,30 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
     assert "## Findings" in content
     assert "No actionable findings." in content
     assert len(requests) == 1
+
+
+def test_issue_726_scope_example_uses_documented_handoff_shape() -> None:
+    scope_example = json.loads(
+        (ROOT / "examples" / "review-scope-issue-726.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(scope_example) == {"criterion_scope"}
+    scope = scope_example["criterion_scope"]
+    criteria = {item["id"]: item for item in scope["criteria"]}
+    assert set(criteria) == {"AC1", "AC2", "AC3", "AC4"}
+    assert all(item["subject"] and item["text"] for item in criteria.values())
+    assert {
+        criterion_id: item["subject"] for criterion_id, item in criteria.items()
+    } == {
+        "AC1": "evaluation/reporting",
+        "AC2": "deliverable/content",
+        "AC3": "evaluation/reporting",
+        "AC4": "operations",
+    }
+    assert scope["source_artifact"]["artifact_sha256"] == (
+        "d286fe4ef7087626f55e135d4892dedc3d6dfc8a1659f015ada9d1ffb0ef5b0a"
+    )
+    assert scope["source_evidence_package"]["sha256"] == (
+        "f26bf9adbd71daeb9fdd5bc3af13abc53261a1d45219aafb2ff30803c4ada366"
+    )

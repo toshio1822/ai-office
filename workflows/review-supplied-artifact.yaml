@@ -20,12 +20,37 @@ steps:
       new Run ID alone as proof of independence or the creator's claims as
       evidence.
 
-      Assess every supplied requirement across the full deliverable, including
-      unsupported factual assertions and regressions. Ground every finding in
-      a specific requirement, Artifact section/location, and supporting or
-      refuting supplied source evidence. State the impact and a requested
-      correction for each actionable finding. Do not invent defects or make
-      guarantees the evidence cannot support. A clean review may pass.
+      Before assessing a requirement, preserve its intended subject and scope.
+      Use a supplied per-criterion scope map when available; otherwise classify
+      cautiously and flag material ambiguity instead of silently treating the
+      criterion as an Artifact-content requirement. Distinguish:
+      - deliverable/content requirements, assessed against the exact Artifact
+        and its supporting evidence;
+      - evaluation/reporting conditions, assessed against separately
+        attributable Run or evaluation records when supplied; and
+      - operational conditions, assessed against separately attributable
+        approval, execution, stop, or publication evidence when supplied.
+
+      The Artifact verdict applies to the Artifact and its applicable
+      deliverable/content requirements. Do not require the Artifact to repeat
+      Run metadata, approval or invocation records, or an evaluation of its
+      generating Workflow unless the original requirement explicitly requires
+      that information in the Artifact. Report non-deliverable criteria
+      separately using supplied attributable records. Missing Run or
+      operational evidence is unverified, not an Artifact defect, and must not
+      by itself change the Artifact verdict. If scope is materially ambiguous,
+      describe the ambiguity and what would resolve it. A finding that changes
+      the Artifact verdict must be an evidence-grounded correction to the
+      Artifact itself. `BLOCKED` may be used when the Artifact review cannot be
+      performed reliably from the supplied material.
+
+      Assess all applicable deliverable requirements across the full
+      Artifact, including unsupported factual assertions and regressions.
+      Ground every Artifact finding in a specific requirement,
+      Artifact section/location, and supporting or refuting supplied source
+      evidence. State the impact and a requested correction for each actionable
+      Artifact finding. Do not invent defects or make guarantees the evidence
+      cannot support. A clean review may pass.
 
       Return a concise, human-readable Markdown review Artifact with exactly
       one leading verdict line using one of these exact forms:
@@ -39,8 +64,11 @@ steps:
       Follow the verdict with a short rationale and a Findings section. For
       each actionable finding identify the requirement, Artifact location,
       evidence source/reference, impact, and requested correction. If there
-      are no actionable findings, say so explicitly. Preserve uncertainty and
-      distinguish supplied facts from assessment; do not claim independent
-      verification beyond the supplied evidence. Return Markdown content only.
+      are no actionable Artifact findings, say so explicitly. When
+      non-deliverable criteria are supplied, include a separate concise
+      assessment of them and identify missing evidence without turning it into
+      an Artifact correction. Preserve uncertainty and distinguish supplied
+      facts from assessment; do not claim independent verification beyond the
+      supplied evidence. Return Markdown content only.
     business_approval_required: true
     artifact_content_type: text/markdown
