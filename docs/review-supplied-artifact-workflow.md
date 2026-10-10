@@ -8,10 +8,39 @@ requirements, exact Artifact content and digest, and independently
 attributable evidence; reusable Workflow YAML contains no project-specific
 review data.
 
+## Separate requirement scope from Artifact verdict
+
+Keep the original Issue body and exact Artifact/evidence identities unchanged
+in the private Run Input. Add a `criterion_scope` map alongside them so each
+acceptance criterion names its subject and authoritative evidence location.
+The map is guidance for the existing reviewer prompt, not a new engine schema
+or validator. See [`review-scope-issue-726.json`](../examples/review-scope-issue-726.json)
+for the concrete classification of the original #726 criteria:
+
+- AC2 is the Japanese engineering-report content evaluated by the Artifact
+  verdict.
+- AC1 and AC3 are evaluation/reporting conditions. Check them against
+  separately attributable Run/evaluation records when supplied; do not require
+  the technical report to repeat its approvals or critique its own generating
+  Workflow.
+- AC4 is an operational condition. Check it against execution, stop, and
+  publication evidence, not against report sections.
+
+The example preserves the original criterion text and exact #726 Run, Artifact,
+and evidence-package identities, but intentionally omits the private full
+Artifact, evidence contents, and execution records. Merge its scope annotation
+into the original private review input without changing that input's original
+Issue body, Artifact bytes, or evidence package. If an evaluation/operational
+record is absent, report that criterion as unverified; do not turn that gap
+into an Artifact-content finding. Preserve ambiguous scope rather than
+retroactively rewriting the source Issue.
+
 ## Validate and preview the #731 input
 
-Use the exact private input prepared by #731; do not copy it into the
-repository or replace its original evidence. The following preview uses the
+Use a private copy of the exact input prepared by #731 with the scope
+annotation from the example merged as a new field. Keep the original Issue
+body, Artifact bytes, and evidence package exact; do not check the full input
+into the repository or replace its evidence. The following preview uses the
 existing sample destination registry and makes no credential read or provider
 request:
 
@@ -21,9 +50,9 @@ ai-office workflows validate
 ai-office workflows plan review-supplied-artifact
 ai-office workflows request review-supplied-artifact 1
 ai-office workflows start review-supplied-artifact \
-  --run-id issue-732-review-preview-20261010 \
-  --run-input-file /tmp/ai-office-issue731-review-preflight-20261010/review-input.json \
-  --run-store /tmp/ai-office-issue732-preview-runs \
+  --run-id issue-734-review-scope-preview-20261010 \
+  --run-input-file /tmp/ai-office-issue734-review-scope-20261010/review-input.json \
+  --run-store /tmp/ai-office-issue734-preview-runs \
   --execution-target opencode-go \
   --execution-destinations docs/examples/openai-compatible-destinations.yaml \
   --execution-model gpt-6-luna \
@@ -31,12 +60,20 @@ ai-office workflows start review-supplied-artifact \
 ```
 
 Check that the preview names the `review` step and `general-researcher`,
-retains the exact Run Input and its Artifact/evidence identifiers, and reports
+retains the exact augmented Run Input, the per-criterion scope map, and the
+original Artifact/evidence identifiers, and reports
 the selected destination/model, Business and Execution Approval requirements,
 and request fingerprint. The current preview JSON exposes
 `business_approval_required`; the existing execution path separately requires
 Execution Approval for this Step. A preview is not a review result and does
 not persist a Run or Artifact.
+
+The Artifact verdict applies to content requirements and evidence-grounded
+content defects. Evaluation/reporting and operational criteria belong in a
+separate assessment section, backed only by supplied attributable records.
+Missing run evidence is unverified, not a defect in the Artifact, and does not
+by itself change its verdict. `BLOCKED` is for cases where the Artifact review
+itself cannot be completed reliably from the supplied content/evidence.
 
 ## Isolation boundary
 

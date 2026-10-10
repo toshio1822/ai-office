@@ -1,0 +1,38 @@
+{
+  "source_issue": "https://github.com/toshio1822/ai-office/issues/726",
+  "source_artifact": {
+    "run_id": "issue-726-live-20261010-step1",
+    "workflow_id": "research-and-summarize",
+    "artifact_id": "983441c906b761c07f70ef21d888b370475b6cebff1ab3058983d198dd6d225f",
+    "artifact_sha256": "d286fe4ef7087626f55e135d4892dedc3d6dfc8a1659f015ada9d1ffb0ef5b0a",
+    "artifact_bytes": 8986,
+    "content_type": "text/markdown"
+  },
+  "source_evidence_package": {
+    "sha256": "f26bf9adbd71daeb9fdd5bc3af13abc53261a1d45219aafb2ff30803c4ada366",
+    "bytes": 21805
+  },
+  "criteria": [
+    {
+      "id": "AC1",
+      "subject": "evaluation/reporting",
+      "text": "Record exact evidence package digest, Workflow/employee identity, step previews, approvals, provider invocation count and status, and Artifact identity/digest."
+    },
+    {
+      "id": "AC2",
+      "subject": "deliverable/content",
+      "text": "Produce a Japanese technical report covering observed incident, cleanup/mount lifecycle and failure-path hypotheses, safe recovery boundaries, missing evidence, prioritized read-only investigation, and candidate fixes clearly labeled as proposals."
+    },
+    {
+      "id": "AC3",
+      "subject": "evaluation/reporting",
+      "text": "Assess report quality against the evidence, identifying unsupported claims and any limits of the generic Workflow."
+    },
+    {
+      "id": "AC4",
+      "subject": "operations",
+      "text": "Stop after the bounded approved run and report results for ChatGPT review; no automatic Issue close or publication to the oYo repository."
+    }
+  ],
+  "scope_note": "This is a scope annotation to merge into the exact private review input. Preserve its original Issue body, Artifact bytes, and evidence package unchanged. The example does not contain the private full input or execution records."
+}
