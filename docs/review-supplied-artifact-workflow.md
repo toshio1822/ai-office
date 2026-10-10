@@ -11,11 +11,12 @@ review data.
 ## Separate requirement scope from Artifact verdict
 
 Keep the original Issue body and exact Artifact/evidence identities unchanged
-in the private Run Input. Add a `criterion_scope` map alongside them so each
-acceptance criterion names its subject and authoritative evidence location.
-The map is guidance for the existing reviewer prompt, not a new engine schema
-or validator. See [`review-scope-issue-726.json`](../examples/review-scope-issue-726.json)
-for the concrete classification of the original #726 criteria:
+in the private Run Input. Merge the top-level `criterion_scope` property from
+[`review-scope-issue-726.json`](../examples/review-scope-issue-726.json)
+directly into that input; do not flatten its `criteria` array or rename the
+property. This is the same shape used by the offline handoff test. The map is
+guidance for the existing reviewer prompt, not a new engine schema or
+validator. The example classifies the original #726 criteria:
 
 - AC2 is the Japanese engineering-report content evaluated by the Artifact
   verdict.
@@ -28,21 +29,21 @@ for the concrete classification of the original #726 criteria:
 
 The example preserves the original criterion text and exact #726 Run, Artifact,
 and evidence-package identities, but intentionally omits the private full
-Artifact, evidence contents, and execution records. Merge its scope annotation
-into the original private review input without changing that input's original
-Issue body, Artifact bytes, or evidence package. If an evaluation/operational
-record is absent, report that criterion as unverified; do not turn that gap
-into an Artifact-content finding. Preserve ambiguous scope rather than
-retroactively rewriting the source Issue.
+Artifact, evidence contents, and execution records. Add its `criterion_scope`
+value to the original private review input without changing that input's
+original Issue body, Artifact bytes, or evidence package. If an
+evaluation/operational record is absent, report that criterion as unverified;
+do not turn that gap into an Artifact-content finding. Preserve ambiguous
+scope rather than retroactively rewriting the source Issue.
 
 ## Validate and preview the #731 input
 
-Use a private copy of the exact input prepared by #731 with the scope
-annotation from the example merged as a new field. Keep the original Issue
-body, Artifact bytes, and evidence package exact; do not check the full input
-into the repository or replace its evidence. The following preview uses the
-existing sample destination registry and makes no credential read or provider
-request:
+Use a private copy of the exact input prepared by #731 with the
+`criterion_scope` property from the example merged at the top level. Keep the
+original Issue body, Artifact bytes, and evidence package exact; do not check
+the full input into the repository or replace its evidence. The following
+preview uses the existing sample destination registry and makes no credential
+read or provider request:
 
 ```console
 ai-office employees validate

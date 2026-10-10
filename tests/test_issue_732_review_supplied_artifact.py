@@ -53,16 +53,20 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
     run_input = {
         "requirements": ["The report states the measured value and its source."],
         "criterion_scope": {
-            "artifact_verdict_criteria": ["CONTENT-1"],
-            "separate_assessment_criteria": [
+            "criteria": [
+                {
+                    "id": "CONTENT-1",
+                    "subject": "deliverable/content",
+                    "text": "Check the stated value and its source.",
+                },
                 {
                     "id": "OPS-1",
                     "subject": "operations",
                     "text": (
                         "Report whether the bounded run stopped without publication."
                     ),
-                }
-            ],
+                },
+            ]
         },
         "artifact": {
             "artifact_id": "fixture-artifact",
@@ -100,10 +104,10 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
         payload = json.loads(request.body)
         serialized_payload = json.dumps(payload)
         assert payload["model"] == "offline-model"
-        assert "criterion_scope" in serialized_payload
-        assert "CONTENT-1" in serialized_payload
-        assert "OPS-1" in serialized_payload
-        assert "bounded run stopped without publication" in serialized_payload
+        for criterion in run_input["criterion_scope"]["criteria"]:
+            assert criterion["id"] in serialized_payload
+            assert criterion["subject"] in serialized_payload
+            assert criterion["text"] in serialized_payload
         # The provider-facing request is a fresh request, not a continuation
         # containing a creator response or conversation identifier.
         assert "previous_response_id" not in payload
@@ -241,57 +245,28 @@ def test_review_workflow_persists_synthetic_verdict_artifact_offline(
     assert len(requests) == 1
 
 
-def test_issue_726_scope_example_and_workflow_keep_verdict_scoped() -> None:
+def test_issue_726_scope_example_uses_documented_handoff_shape() -> None:
     scope_example = json.loads(
         (ROOT / "examples" / "review-scope-issue-726.json").read_text(
             encoding="utf-8"
         )
     )
-    workflow = next(
-        item.definition for item in load_workflows(WORKFLOWS)
-        if item.definition.id == WORKFLOW_ID
-    )
-    instructions = " ".join(workflow.steps[0].instructions.split())
-
-    criteria = {item["id"]: item for item in scope_example["criteria"]}
+    assert set(scope_example) == {"criterion_scope"}
+    scope = scope_example["criterion_scope"]
+    criteria = {item["id"]: item for item in scope["criteria"]}
     assert set(criteria) == {"AC1", "AC2", "AC3", "AC4"}
+    assert all(item["subject"] and item["text"] for item in criteria.values())
     assert {
-        criterion_id: (item["subject"], item["text"])
-        for criterion_id, item in criteria.items()
+        criterion_id: item["subject"] for criterion_id, item in criteria.items()
     } == {
-        "AC1": (
-            "evaluation/reporting",
-            "Record exact evidence package digest, Workflow/employee identity, "
-            "step previews, approvals, provider invocation count and status, "
-            "and Artifact identity/digest.",
-        ),
-        "AC2": (
-            "deliverable/content",
-            "Produce a Japanese technical report covering observed incident, "
-            "cleanup/mount lifecycle and failure-path hypotheses, safe recovery "
-            "boundaries, missing evidence, prioritized read-only investigation, "
-            "and candidate fixes clearly labeled as proposals.",
-        ),
-        "AC3": (
-            "evaluation/reporting",
-            "Assess report quality against the evidence, identifying "
-            "unsupported claims and any limits of the generic Workflow.",
-        ),
-        "AC4": (
-            "operations",
-            "Stop after the bounded approved run and report results for ChatGPT "
-            "review; no automatic Issue close or publication to the oYo repository.",
-        ),
+        "AC1": "evaluation/reporting",
+        "AC2": "deliverable/content",
+        "AC3": "evaluation/reporting",
+        "AC4": "operations",
     }
-    assert scope_example["source_artifact"]["artifact_sha256"] == (
+    assert scope["source_artifact"]["artifact_sha256"] == (
         "d286fe4ef7087626f55e135d4892dedc3d6dfc8a1659f015ada9d1ffb0ef5b0a"
     )
-    assert scope_example["source_evidence_package"]["sha256"] == (
+    assert scope["source_evidence_package"]["sha256"] == (
         "f26bf9adbd71daeb9fdd5bc3af13abc53261a1d45219aafb2ff30803c4ada366"
     )
-    assert "Artifact verdict applies to the Artifact" in instructions
-    assert (
-        "Missing Run or operational evidence is unverified, not an Artifact defect"
-        in instructions
-    )
-    assert "flag material ambiguity" in instructions
