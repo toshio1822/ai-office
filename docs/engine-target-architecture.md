@@ -279,6 +279,20 @@ They may be identical, but need not be.
 
 Publication/export should eventually operate on explicit artifacts/projections rather than assuming every provider output is a publishable artifact.
 
+## Future capability: independent artifact review and revision
+
+The following describes a future controlled capability, not current implementation or a requirement to add a loop engine. A workflow may create an Artifact, have it reviewed against the original request and acceptance criteria, return evidenced findings for revision, and submit the resulting Artifact for independent re-review before human acceptance or stop. Managed handoffs should carry the exact work and feedback so an operator need not relay them manually.
+
+The creator and reviewer must use different AI sessions / conversation contexts. The creator's private conversation/session transcript and hidden reasoning must not be passed to or inherited by the reviewer. Its authoritative inputs are the original request and acceptance criteria, the exact immutable Artifact version under review, and relevant independently attributable evidence. Creator-declared explanations or provenance may be supplied as claims, but remain unverified until checked; creator self-assessment is not authority. Different models may be used, but are not required; session separation alone does not establish objectivity, so objective criteria and external evidence remain important.
+
+Each review is an attributable work product tied to the exact Artifact version. It records a verdict—such as `PASS`, `CHANGES_REQUIRED`, or `BLOCKED`—and, where applicable, findings that identify the affected requirement or location, supporting evidence, and requested correction. A verdict without reference to the criteria and evidence is not sufficient. These labels describe semantics, not a required internal schema.
+
+A revision is a new immutable Artifact/version linked to the reviewed predecessor and the findings it addresses; prior Artifacts, reviews, and applicable execution evidence remain available. Re-review checks both resolution of the cited findings and whether the full revised Artifact still satisfies the original criteria, including regressions. A reviewer `PASS` is not approval to publish, merge, or perform another external side effect.
+
+Progression is bounded by human-defined scope, iteration and budget limits, and explicit stop conditions. `BLOCKED`, unresolved or ambiguous execution, exceeded bounds, and unsupported operations stop for human decision. An explicitly authorized new revision action is distinct from retrying an ambiguous provider attempt. Existing Business, Execution, Publication, and Recovery Approvals remain separate; no provider request, retry, provider switch, external write, or merge is implicit. Any upfront authorization for multiple iterations would require a separate explicit design decision and must not silently change per-step approval contracts.
+
+Before adding a new subsystem or fixed execution structure, determine whether existing Workflow Runs, immutable Artifacts, evidence, and approvals can provide the required guarantees. This future capability does not change the initial non-goals in §26: in particular, it does not make generic loops, automatic retries, or automatic approvals part of the initial engine target.
+
 ## 16. State and Evidence have different authority
 
 Do not create two competing current-state authorities.
