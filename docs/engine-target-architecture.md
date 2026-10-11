@@ -289,9 +289,50 @@ Each review is an attributable work product tied to the exact Artifact version. 
 
 A revision is a new immutable Artifact/version linked to the reviewed predecessor and the findings it addresses; prior Artifacts, reviews, and applicable execution evidence remain available. Re-review checks both resolution of the cited findings and whether the full revised Artifact still satisfies the original criteria, including regressions. A reviewer `PASS` is not approval to publish, merge, or perform another external side effect.
 
-Progression is bounded by human-defined scope, iteration and budget limits, and explicit stop conditions. `BLOCKED`, unresolved or ambiguous execution, exceeded bounds, and unsupported operations stop for human decision. An explicitly authorized new revision action is distinct from retrying an ambiguous provider attempt. Existing Business, Execution, Publication, and Recovery Approvals remain separate; no provider request, retry, provider switch, external write, or merge is implicit. Any upfront authorization for multiple iterations would require a separate explicit design decision and must not silently change per-step approval contracts.
+Progression is bounded by human-defined scope, iteration and budget limits, and explicit stop conditions. `BLOCKED`, unresolved or ambiguous execution, exceeded bounds, and unsupported operations stop for human decision. An explicitly authorized new revision action is distinct from retrying an ambiguous provider attempt. Existing Business, Execution, Publication, and Recovery Approvals remain separate; no provider request, retry, provider switch, external write, or merge is implicit.
 
 Before adding a new subsystem or fixed execution structure, determine whether existing Workflow Runs, immutable Artifacts, evidence, and approvals can provide the required guarantees. This future capability does not change the initial non-goals in §26: in particular, it does not make generic loops, automatic retries, or automatic approvals part of the initial engine target.
+
+## Future capability: opt-in bounded autonomous Artifact job
+
+This is a high-priority product direction and a future target contract, not a description of current behavior. The current engine continues to require the existing per-invocation authorization and explicit step progression. A future opt-in job may let a person give one assignment and authorize a finite, auditable sequence of create → independent review → revise → re-review actions without coordinating each routine handoff. It must stop at a human-acceptance candidate or a reasoned safe stop; it does not grant final acceptance or publication authority.
+
+### Job envelope and upfront authority
+
+The human-defined job envelope identifies the original objective and applicable acceptance criteria; immutable input and evidence; eligible workflow and employee roles; allowed provider, model, and endpoint scope; maximum provider calls/attempts and revisions; resource and financial limits; validity and revocation conditions; and permitted effects. This document specifies no YAML/API schema or numerical defaults. The envelope and each eventual action must be durably attributable to the same job and pinned definition/input identities.
+
+Upfront authorization is an opt-in authorization model, not the absence of approval. Business authority to pursue the job and Execution authority to make provider calls are distinct grants. Publication authority and Recovery authority remain independently controlled and are not implied by either grant or by a quality verdict. The future design must bind the grants to the exact job, definitions, destinations, finite limits, validity/revocation state, and every eventual invocation, with deterministic checks before each external action. It must define how revocation and consumption are serialized against an in-flight action. The present per-step approvals bound to an exact request fingerprint remain unchanged; they must not be silently reinterpreted as reusable multi-step consent. This is a deliberate future security-design change, not implemented functionality.
+
+### Deterministic controller and bounded accounting
+
+The model may propose or assess content but is not the safety controller or source of authorization. Before each provider or other external action, deterministic system checks must enforce the remaining call/attempt and revision limits, eligible destination/model, current grant validity, and permitted effect. Consumption and limits must survive restart; restart does not reset a budget or authorize a replay. A `CHANGES_REQUIRED` review can authorize progression only to a distinct, bounded new revision action that creates a new immutable Artifact and lineage. It is never a transport retry or recovery decision.
+
+Resource accounting must be attributable to the job and its invocations. Until prices and usage can be verified, the system must not claim a hard currency-spend ceiling: unknown price, incomplete usage, or unverifiable limits fail closed before another action and escalate with the known accounting and uncertainty. A verifiable accounting source and conservative reservation/settlement behavior are required design gates before claiming a financial cap; no numerical defaults are set here.
+
+### Evidence-based quality, independent review, and stopping
+
+Each review evaluates the relevant complete Artifact against the original request and acceptance criteria using attributable evidence; an LLM `PASS` alone is not proof. Apply #734's distinction: deliverable requirements determine whether the Artifact is acceptable, while evaluation/reporting and operational criteria are assessed in their proper record and missing operational evidence is not silently converted into a defect in the Artifact body. Reviewers receive a fresh session/context and do not inherit creator-private transcripts or hidden reasoning. Session separation is an observable system guarantee, not proof of provider-internal isolation.
+
+Every created/revised Artifact and review remains immutable and linked to its Run, exact inputs/definitions, predecessor, findings, evidence, and decision. Re-review checks both cited finding resolution and regressions across the full original criteria. Preserve all partial work and attributable status/reason. Stop for human decision on `BLOCKED`, missing or contradictory evidence, quality stagnation, exhausted limits, failed or ambiguous provider actions, unexpected side effects, unknown cost, revoked/expired authority, or unsupported requests. Do not silently retry, fallback, switch provider/model, restart, recover, or replay; a normal authorized revision is a new action, while recovery from a failed/ambiguous attempt requires its separate explicit process and authority. PASS means candidate for human acceptance only.
+
+The bounded job does not authorize publication, export to an external destination, repository edits, git push/merge, destructive local operations, or other separately controlled effects. It does not imply general-purpose agent self-planning, arbitrary tool invocation, or self-amendment of workflow or approval policy. Human final acceptance and publication/merge authority remain outside the autonomous job.
+
+### Illustrative journey
+
+An operator assigns “prepare a concise report on X against criteria A–C” once, supplies the source snapshot, and opts into a finite envelope permitting specified roles/destinations, at most N provider calls and R revisions, and no publication. The system creates a versioned Artifact, obtains an independent evidence-based review, and—if required and within bounds—creates a linked revision and re-review. If criteria are met, it presents the attributable candidate Artifact and `PASS` for human acceptance. If evidence conflicts or a limit is exhausted, it stops with preserved Artifacts, the current status, and a reason for human decision. Neither outcome publishes or merges anything.
+
+### Design gates before implementation
+
+Before a separate implementation/evaluation Issue, resolve at least:
+
+- how upfront Business and Execution grants are issued, durably bound, consumed, revoked, expired, and checked for each action without weakening current fingerprint-bound per-invocation approvals;
+- the deterministic authorization/accounting owner, atomic limit consumption, concurrency and crash semantics, and how to prevent replay or reset across restart;
+- a verifiable provider usage/price source, reservation and settlement rules, and fail-closed behavior when total cost cannot be bounded;
+- objective quality/stagnation rules, evidence sufficiency, `PASS`/`CHANGES_REQUIRED`/`BLOCKED` semantics, and independent-session evidence limits;
+- how existing Run progression, approval, Artifact, evidence, and recovery ownership can provide these guarantees without a competing state authority or unnecessary generic loop/wrapper subsystem;
+- revocation races, already-in-flight side effects, partial work presentation, and the boundary between job completion, human acceptance, publication, and recovery.
+
+The §26 initial non-goals remain accurate for the **initial engine target**: generic workflow loops, automatic retry, automatic approval, and general-purpose autonomous planning are not core-engine completion requirements. This explicitly scoped, opt-in bounded Artifact job is a later product milestone and must not be used to imply that those mechanisms exist today.
 
 ## 16. State and Evidence have different authority
 
@@ -507,7 +548,7 @@ Restart does not guess missing facts.
 
 ## 26. Initial non-goals
 
-Do not make these requirements for core engine completion:
+Do not make these requirements for **initial** core engine completion:
 
 - conditional workflow branching
 - parallel execution
@@ -523,6 +564,8 @@ Do not make these requirements for core engine completion:
 - arbitrary general-purpose tool-execution loop
 - definition migration
 - dynamic workflow generation
+
+The explicitly scoped opt-in bounded Artifact job above is a later target capability, not an exception that makes these generic mechanisms part of the initial engine or current implementation.
 
 They may be designed later without weakening the core invariants.
 
