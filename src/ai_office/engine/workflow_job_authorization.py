@@ -8,11 +8,14 @@ Approval evidence and historical schemas are not rewritten or synthesized.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import stat
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -209,6 +212,7 @@ class WorkflowJobAuthorizationInspection:
     provider_response_recorded: bool
     expires_at_ns: int
     revoked: bool
+    lifecycle_order: str
     security_note: str = (
         "approved_by is an audit label, not authenticated human identity"
     )
@@ -490,46 +494,53 @@ def admit_job_dispatch(
         or not _digest(reservation_sha256)
     ):
         _raise("dispatch")
-    current = _reload_and_check_common(
-        authorization, authorization_binding(authorization), now_ns
-    )
-    try:
-        from ai_office.execution_evidence import load_execution_attempt_evidence
+    with _job_lifecycle_lock(authorization.store_root, authorization.envelope):
+        # This locked re-read is the shared linearization boundary with revoke.
+        # Expiry is checked here, not at the earlier reservation or Run claim.
+        current = _reload_and_check_common(
+            authorization, authorization_binding(authorization), now_ns
+        )
+        _validate_dispatch_not_consumed(current)
+        try:
+            from ai_office.execution_evidence import load_execution_attempt_evidence
 
-        attempt = load_execution_attempt_evidence(
-            current.store_root, current.envelope.run_id, attempt_id
+            attempt = load_execution_attempt_evidence(
+                current.store_root, current.envelope.run_id, attempt_id
+            )
+        except Exception:
+            _raise("attempt_missing")
+        if not (
+            attempt.digest == attempt_evidence_sha256
+            and attempt.authorization_source == "job_grant"
+            and attempt.job_id == current.envelope.job_id
+            and attempt.job_envelope_sha256 == current.envelope.digest
+            and attempt.job_business_grant_sha256 == current.business_grant.digest
+            and attempt.job_execution_grant_sha256 == current.execution_grant.digest
+            and attempt.invocation_fingerprint == current.envelope.request_fingerprint
+            and attempt.job_reservation_sha256 == reservation_sha256
+            and _read_regular(_reservation_path(current.store_root, current.envelope))
+            == _reservation_payload(
+                current, attempt.request_body_sha256, attempt.request_body_length
+            )
+        ):
+            _raise("attempt_binding")
+        # Re-read the clock and authority after the evidence work above. This
+        # is the expiry decision recorded as the durable admission event.
+        admitted_at_ns = time.time_ns() if now_ns is None else now_ns
+        current = _reload_and_check_common(
+            authorization,
+            authorization_binding(authorization),
+            admitted_at_ns,
         )
-    except Exception:
-        _raise("attempt_missing")
-    if not (
-        attempt.digest == attempt_evidence_sha256
-        and attempt.authorization_source == "job_grant"
-        and attempt.job_id == current.envelope.job_id
-        and attempt.job_envelope_sha256 == current.envelope.digest
-        and attempt.job_business_grant_sha256 == current.business_grant.digest
-        and attempt.job_execution_grant_sha256 == current.execution_grant.digest
-        and attempt.invocation_fingerprint == current.envelope.request_fingerprint
-        and attempt.job_reservation_sha256 == reservation_sha256
-        and _read_regular(_reservation_path(current.store_root, current.envelope))
-        == _reservation_payload(
-            current, attempt.request_body_sha256, attempt.request_body_length
+        path = _dispatch_path(current.store_root, current.envelope)
+        payload = _dispatch_payload(
+            current,
+            attempt_id=attempt_id,
+            attempt_evidence_sha256=attempt_evidence_sha256,
+            reservation_sha256=reservation_sha256,
+            admitted_at_ns=admitted_at_ns,
         )
-    ):
-        _raise("attempt_binding")
-    path = _dispatch_path(current.store_root, current.envelope)
-    payload = _canonical(
-        {
-            "attempt_evidence_sha256": attempt_evidence_sha256,
-            "attempt_id": attempt_id,
-            "business_grant_sha256": current.business_grant.digest,
-            "envelope_sha256": current.envelope.digest,
-            "execution_grant_sha256": current.execution_grant.digest,
-            "job_id": current.envelope.job_id,
-            "reservation_sha256": reservation_sha256,
-            "schema_version": _DISPATCH_SCHEMA,
-        }
-    )
-    _persist_immutable(path, payload)
+        _persist_immutable(path, payload)
 
 
 def validate_dispatch_admission(
@@ -543,19 +554,20 @@ def validate_dispatch_admission(
         WorkflowRunManifestStore(authorization.store_root), authorization.envelope
     )
     path = _dispatch_path(current.store_root, current.envelope)
-    expected = _canonical(
-        {
-            "attempt_evidence_sha256": attempt_evidence_sha256,
-            "attempt_id": attempt_id,
-            "business_grant_sha256": current.business_grant.digest,
-            "envelope_sha256": current.envelope.digest,
-            "execution_grant_sha256": current.execution_grant.digest,
-            "job_id": current.envelope.job_id,
-            "reservation_sha256": reservation_sha256,
-            "schema_version": _DISPATCH_SCHEMA,
-        }
+    actual = _read_regular(path)
+    try:
+        value = json.loads(actual.decode("utf-8"))
+        admitted_at_ns = value["admitted_at_ns"]
+    except Exception:
+        _raise("dispatch_evidence")
+    expected = _dispatch_payload(
+        current,
+        attempt_id=attempt_id,
+        attempt_evidence_sha256=attempt_evidence_sha256,
+        reservation_sha256=reservation_sha256,
+        admitted_at_ns=admitted_at_ns,
     )
-    if _read_regular(path) != expected:
+    if actual != expected:
         _raise("dispatch_evidence")
 
 
@@ -601,18 +613,31 @@ def job_dispatch_is_admitted(
 def revoke_workflow_job_authorization(
     authorization: WorkflowJobAuthorization, *, now_ns: int | None = None
 ) -> None:
-    current = load_workflow_job_authorization(
-        WorkflowRunManifestStore(authorization.store_root), authorization.envelope
-    )
-    payload = _canonical(
-        {
-            "envelope_sha256": current.envelope.digest,
-            "job_id": current.envelope.job_id,
-            "revoked_at_ns": time.time_ns() if now_ns is None else now_ns,
-            "schema_version": "workflow-job-authorization-revocation.v1",
-        }
-    )
-    _persist_immutable(_revocation_path(current.store_root, current.envelope), payload)
+    with _job_lifecycle_lock(authorization.store_root, authorization.envelope):
+        current = load_workflow_job_authorization(
+            WorkflowRunManifestStore(authorization.store_root), authorization.envelope
+        )
+        dispatch_path = _dispatch_path(current.store_root, current.envelope)
+        dispatch_digest: str | None = None
+        lifecycle_sequence = 1
+        if _path_exists_or_symlink(dispatch_path):
+            dispatch_value = _read_regular(dispatch_path)
+            _validate_dispatch_record(current, dispatch_value)
+            dispatch_digest = _sha(dispatch_value)
+            lifecycle_sequence = 2
+        payload = _canonical(
+            {
+                "dispatch_admission_sha256": dispatch_digest,
+                "envelope_sha256": current.envelope.digest,
+                "job_id": current.envelope.job_id,
+                "lifecycle_sequence": lifecycle_sequence,
+                "revoked_at_ns": time.time_ns() if now_ns is None else now_ns,
+                "schema_version": "workflow-job-authorization-revocation.v1",
+            }
+        )
+        _persist_immutable(
+            _revocation_path(current.store_root, current.envelope), payload
+        )
 
 
 def inspect_workflow_job_authorization(
@@ -658,12 +683,14 @@ def inspect_workflow_job_authorization(
         attempt = load_execution_attempt_evidence(
             current.store_root, current.envelope.run_id, attempt_id
         )
+        dispatch_admitted_bytes = _read_regular(dispatch)
         validate_dispatch_admission(
             current,
             attempt_id=attempt_id,
             attempt_evidence_sha256=attempt.digest,
             reservation_sha256=_sha(_read_regular(reservation)),
         )
+        _validate_dispatch_record(current, dispatch_admitted_bytes)
         dispatch_admitted = True
         raw_path = current.store_root / (
             f"{current.envelope.run_id}.execution-raw-response.{attempt_id}.json"
@@ -673,6 +700,29 @@ def inspect_workflow_job_authorization(
                 current.store_root, current.envelope.run_id, attempt_id
             )
             response_recorded = True
+    revocation = _revocation_path(current.store_root, current.envelope)
+    revoked = _path_exists_or_symlink(revocation)
+    lifecycle_order = "dispatch_admitted" if dispatch_admitted else "not_dispatched"
+    if revoked:
+        if revocation.is_symlink():
+            _raise("revocation_path")
+        revocation_bytes = _read_regular(revocation)
+        revocation_value = _load_revocation_record(current, revocation_bytes)
+        if dispatch_admitted:
+            if not (
+                revocation_value["lifecycle_sequence"] == 2
+                and revocation_value["dispatch_admission_sha256"]
+                == _sha(_read_regular(dispatch))
+            ):
+                _raise("revocation_order")
+            lifecycle_order = "dispatch_before_revocation"
+        else:
+            if not (
+                revocation_value["lifecycle_sequence"] == 1
+                and revocation_value["dispatch_admission_sha256"] is None
+            ):
+                _raise("revocation_order")
+            lifecycle_order = "revocation_before_dispatch"
     return WorkflowJobAuthorizationInspection(
         job_id=current.envelope.job_id,
         run_id=current.envelope.run_id,
@@ -685,8 +735,8 @@ def inspect_workflow_job_authorization(
         dispatch_admitted=dispatch_admitted,
         provider_response_recorded=response_recorded,
         expires_at_ns=current.envelope.expires_at_ns,
-        revoked=_revocation_path(current.store_root, current.envelope).exists()
-        or _revocation_path(current.store_root, current.envelope).is_symlink(),
+        revoked=revoked,
+        lifecycle_order=lifecycle_order,
     )
 
 
@@ -788,6 +838,136 @@ def _reservation_payload(
             "schema_version": _RESERVATION_SCHEMA,
         }
     )
+
+
+def _dispatch_payload(
+    authorization: WorkflowJobAuthorization,
+    *,
+    attempt_id: str,
+    attempt_evidence_sha256: str,
+    reservation_sha256: str,
+    admitted_at_ns: int,
+) -> bytes:
+    if (
+        type(admitted_at_ns) is not int
+        or admitted_at_ns >= authorization.envelope.expires_at_ns
+    ):
+        _raise("dispatch_expired")
+    return _canonical(
+        {
+            "admitted_at_ns": admitted_at_ns,
+            "attempt_evidence_sha256": attempt_evidence_sha256,
+            "attempt_id": attempt_id,
+            "business_grant_sha256": authorization.business_grant.digest,
+            "envelope_sha256": authorization.envelope.digest,
+            "execution_grant_sha256": authorization.execution_grant.digest,
+            "job_id": authorization.envelope.job_id,
+            "lifecycle_sequence": 1,
+            "reservation_sha256": reservation_sha256,
+            "schema_version": _DISPATCH_SCHEMA,
+        }
+    )
+
+
+def _validate_dispatch_record(
+    authorization: WorkflowJobAuthorization, payload: bytes
+) -> None:
+    try:
+        value = json.loads(payload.decode("utf-8"))
+        if not (
+            type(value) is dict
+            and value.get("schema_version") == _DISPATCH_SCHEMA
+            and type(value.get("lifecycle_sequence")) is int
+            and value.get("lifecycle_sequence") == 1
+            and type(value.get("admitted_at_ns")) is int
+            and value["admitted_at_ns"] < authorization.envelope.expires_at_ns
+        ):
+            _raise("dispatch_evidence")
+        expected = _dispatch_payload(
+            authorization,
+            attempt_id=value["attempt_id"],
+            attempt_evidence_sha256=value["attempt_evidence_sha256"],
+            reservation_sha256=value["reservation_sha256"],
+            admitted_at_ns=value["admitted_at_ns"],
+        )
+        if payload != expected:
+            _raise("dispatch_evidence")
+    except WorkflowJobAuthorizationError:
+        raise
+    except Exception:
+        _raise("dispatch_evidence")
+
+
+def _load_revocation_record(
+    authorization: WorkflowJobAuthorization, payload: bytes
+) -> dict[str, object]:
+    try:
+        value = json.loads(payload.decode("utf-8"))
+        if (
+            type(value) is not dict
+            or value.get("schema_version") != "workflow-job-authorization-revocation.v1"
+            or value.get("job_id") != authorization.envelope.job_id
+            or value.get("envelope_sha256") != authorization.envelope.digest
+            or type(value.get("lifecycle_sequence")) is not int
+            or value.get("lifecycle_sequence") not in {1, 2}
+        ):
+            _raise("revocation_evidence")
+        dispatch_sha = value.get("dispatch_admission_sha256")
+        if (value["lifecycle_sequence"] == 1 and dispatch_sha is not None) or (
+            value["lifecycle_sequence"] == 2 and not _digest(dispatch_sha)
+        ):
+            _raise("revocation_evidence")
+        if type(value.get("revoked_at_ns")) is not int:
+            _raise("revocation_evidence")
+        if payload != _canonical(value):
+            _raise("revocation_evidence")
+        return value
+    except WorkflowJobAuthorizationError:
+        raise
+    except Exception:
+        _raise("revocation_evidence")
+
+
+@contextmanager
+def _job_lifecycle_lock(
+    store_root: Path, envelope: WorkflowJobAuthorizationEnvelope
+) -> Iterator[None]:
+    """Serialize local revocation and dispatch decisions for one Job.
+
+    This relies on POSIX advisory locks on a local filesystem. Unsupported or
+    unsafe lock files fail closed; network/multi-host filesystems are outside
+    this offline authorization slice.
+    """
+    _check_store_permissions(store_root)
+    path = store_root / f"{envelope.run_id}.job-lifecycle-lock.{envelope.job_id}"
+    if path.is_symlink():
+        _raise("lifecycle_lock")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            _raise("lifecycle_lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    except WorkflowJobAuthorizationError:
+        raise
+    except Exception:
+        _raise("lifecycle_lock")
+    finally:
+        if descriptor >= 0:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
 
 def _revocation_path(root: Path, envelope: WorkflowJobAuthorizationEnvelope) -> Path:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
 from dataclasses import replace
 from hashlib import sha256
 from multiprocessing import get_context
@@ -12,6 +14,7 @@ import pytest
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
+import ai_office.engine.workflow_job_authorization as job_authorization_module
 from ai_office.cli import app
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
@@ -131,7 +134,12 @@ def _employee() -> EmployeeDefinition:
     )
 
 
-def _run_and_authorization(root: Path, run_id: str):
+def _run_and_authorization(
+    root: Path,
+    run_id: str,
+    *,
+    expires_at_ns: int = 9_999_999_999_999_999_999,
+):
     workflow = _workflow()
     employee = _employee()
     run = create_test_run(
@@ -166,7 +174,7 @@ def _run_and_authorization(root: Path, run_id: str):
         ),
         model=employee.model,
         request_fingerprint=fingerprint,
-        expires_at_ns=9_999_999_999_999_999_999,
+        expires_at_ns=expires_at_ns,
     )
     authorization = issue_workflow_job_authorization(
         run.store,
@@ -204,6 +212,24 @@ def _success_transport(calls: list[object], run, authorization):
         )
 
     return transport
+
+
+def _provider_evidence_context(workflow, employee, run, request, authorization):
+    from ai_office.execution_evidence import build_execution_evidence_context
+
+    return build_execution_evidence_context(
+        store_root=run.store.root,
+        binding=run.binding,
+        workflow_id=workflow.id,
+        step_id="draft",
+        step_index=1,
+        employee_id=employee.id,
+        request=request,
+        resolved_tools=(),
+        approval=None,
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+        job_authorization=authorization,
+    )
 
 
 def test_fresh_start_job_authority_uses_shared_provider_evidence_and_artifact(
@@ -418,6 +444,226 @@ def test_revocation_after_attempt_claim_blocks_dispatch_and_keeps_slot_consumed(
         )
     assert caught_repeat.value.classification == "job_reservation"
     assert calls == []
+
+
+def test_concurrent_revocation_wins_before_dispatch_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflow, employee, run, request, authorization = _run_and_authorization(
+        tmp_path / "store", "job-run-revoke-race"
+    )
+    from ai_office.providers.openai import execute_openai_model_invocation
+
+    context = _provider_evidence_context(
+        workflow, employee, run, request, authorization
+    )
+    calls: list[object] = []
+    original_lock = job_authorization_module._job_lifecycle_lock
+    original_persist = job_authorization_module._persist_immutable
+    revocation_write_waiting = threading.Event()
+    revocation_committed = threading.Event()
+    release_revoker = threading.Event()
+    provider_lock_attempted = threading.Event()
+    provider_result: list[object] = []
+    revoke_errors: list[BaseException] = []
+    revoke_path = run.store.root / (
+        f"{run.binding.run_id}.job-revoked.{authorization.envelope.job_id}.json"
+    )
+
+    @contextmanager
+    def observe_lock(store_root, envelope):
+        if threading.current_thread().name == "provider":
+            provider_lock_attempted.set()
+        with original_lock(store_root, envelope):
+            yield
+
+    def hold_revocation_commit(path, payload):
+        if path == revoke_path:
+            revocation_write_waiting.set()
+            assert release_revoker.wait(timeout=5)
+        original_persist(path, payload)
+        if path == revoke_path:
+            revocation_committed.set()
+
+    def revoke():
+        try:
+            revoke_workflow_job_authorization(authorization, now_ns=20)
+        except BaseException as error:
+            revoke_errors.append(error)
+
+    def invoke():
+        try:
+            provider_result.append(
+                execute_openai_model_invocation(
+                    request,
+                    (),
+                    OpenAIApiKey(value=SecretStr("synthetic-test-only")),
+                    None,
+                    transport=lambda value: calls.append(value),
+                    execution_evidence=context,
+                )
+            )
+        except BaseException as error:
+            provider_result.append(error)
+
+    monkeypatch.setattr(job_authorization_module, "_job_lifecycle_lock", observe_lock)
+    monkeypatch.setattr(
+        job_authorization_module, "_persist_immutable", hold_revocation_commit
+    )
+    revoker = threading.Thread(target=revoke, name="revoker")
+    revoker.start()
+    assert revocation_write_waiting.wait(timeout=5)
+    provider = threading.Thread(target=invoke, name="provider")
+    provider.start()
+    assert provider_lock_attempted.wait(timeout=5)
+    assert calls == []
+    release_revoker.set()
+    revoker.join(timeout=5)
+    provider.join(timeout=5)
+
+    assert not revoker.is_alive() and not provider.is_alive()
+    assert revocation_committed.is_set()
+    assert revoke_errors == []
+    assert len(provider_result) == 1
+    assert isinstance(provider_result[0], ExecutionEvidenceError)
+    assert calls == []
+    inspection = inspect_workflow_job_authorization(authorization)
+    assert inspection.revoked is True
+    assert inspection.dispatch_admitted is False
+    assert inspection.lifecycle_order == "revocation_before_dispatch"
+    assert inspection.attempts_reserved == 1
+
+
+def test_concurrent_dispatch_admission_wins_and_is_durably_ordered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflow, employee, run, request, authorization = _run_and_authorization(
+        tmp_path / "store", "job-run-dispatch-race"
+    )
+    from ai_office.providers.openai import execute_openai_model_invocation
+
+    context = _provider_evidence_context(
+        workflow, employee, run, request, authorization
+    )
+    calls: list[object] = []
+    original_lock = job_authorization_module._job_lifecycle_lock
+    original_persist = job_authorization_module._persist_immutable
+    dispatch_write_waiting = threading.Event()
+    release_dispatch_write = threading.Event()
+    revoke_lock_attempted = threading.Event()
+    revoke_done = threading.Event()
+    provider_result: list[object] = []
+    revoke_errors: list[BaseException] = []
+    dispatch_path = run.store.root / (
+        f"{run.binding.run_id}.job-dispatch.{authorization.envelope.job_id}.json"
+    )
+
+    @contextmanager
+    def observe_lock(store_root, envelope):
+        if threading.current_thread().name == "revoker":
+            revoke_lock_attempted.set()
+        with original_lock(store_root, envelope):
+            yield
+
+    def hold_dispatch_commit(path, payload):
+        if path == dispatch_path:
+            dispatch_write_waiting.set()
+            assert release_dispatch_write.wait(timeout=5)
+        original_persist(path, payload)
+
+    def invoke():
+        try:
+            provider_result.append(
+                execute_openai_model_invocation(
+                    request,
+                    (),
+                    OpenAIApiKey(value=SecretStr("synthetic-test-only")),
+                    None,
+                    transport=_success_transport(calls, run, authorization),
+                    execution_evidence=context,
+                )
+            )
+        except BaseException as error:
+            provider_result.append(error)
+
+    def revoke():
+        try:
+            revoke_workflow_job_authorization(authorization, now_ns=30)
+        except BaseException as error:
+            revoke_errors.append(error)
+        finally:
+            revoke_done.set()
+
+    monkeypatch.setattr(job_authorization_module, "_job_lifecycle_lock", observe_lock)
+    monkeypatch.setattr(
+        job_authorization_module, "_persist_immutable", hold_dispatch_commit
+    )
+    provider = threading.Thread(target=invoke, name="provider")
+    provider.start()
+    assert dispatch_write_waiting.wait(timeout=5)
+    revoker = threading.Thread(target=revoke, name="revoker")
+    revoker.start()
+    assert revoke_lock_attempted.wait(timeout=5)
+    assert not revoke_done.wait(timeout=0.05)
+    assert calls == []
+    release_dispatch_write.set()
+    provider.join(timeout=5)
+    revoker.join(timeout=5)
+
+    assert not provider.is_alive() and not revoker.is_alive()
+    assert revoke_errors == []
+    assert len(provider_result) == 1
+    assert not isinstance(provider_result[0], BaseException)
+    assert len(calls) == 1
+    inspection = inspect_workflow_job_authorization(authorization)
+    assert inspection.dispatch_admitted is True
+    assert inspection.revoked is True
+    assert inspection.lifecycle_order == "dispatch_before_revocation"
+
+
+def test_expiry_at_locked_dispatch_admission_blocks_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [149]
+    monkeypatch.setattr(job_authorization_module.time, "time_ns", lambda: clock[0])
+    workflow, employee, run, request, authorization = _run_and_authorization(
+        tmp_path / "store", "job-run-expiry-boundary", expires_at_ns=150
+    )
+    from ai_office.providers.openai import execute_openai_model_invocation
+
+    context = _provider_evidence_context(
+        workflow, employee, run, request, authorization
+    )
+    import ai_office.execution_evidence as execution_evidence_module
+
+    load_attempt = execution_evidence_module.load_execution_attempt_evidence
+
+    def cross_expiry_during_attempt_reload(*args, **kwargs):
+        attempt = load_attempt(*args, **kwargs)
+        clock[0] = 150
+        return attempt
+
+    monkeypatch.setattr(
+        execution_evidence_module,
+        "load_execution_attempt_evidence",
+        cross_expiry_during_attempt_reload,
+    )
+    calls: list[object] = []
+    with pytest.raises(ExecutionEvidenceError) as caught:
+        execute_openai_model_invocation(
+            request,
+            (),
+            OpenAIApiKey(value=SecretStr("synthetic-test-only")),
+            None,
+            transport=lambda value: calls.append(value),
+            execution_evidence=context,
+        )
+    assert caught.value.classification == "job_expired_revoked_or_binding"
+    assert calls == []
+    inspection = inspect_workflow_job_authorization(authorization)
+    assert inspection.attempts_reserved == 1
+    assert inspection.dispatch_admitted is False
+    assert inspection.lifecycle_order == "not_dispatched"
 
 
 def test_granted_request_cannot_be_changed_at_provider_boundary(tmp_path: Path) -> None:
