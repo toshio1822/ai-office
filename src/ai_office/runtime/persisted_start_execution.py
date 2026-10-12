@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING, Literal
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.execution_evidence import build_execution_evidence_context
-from ai_office.execution_target import validate_execution_target_for_provider
+from ai_office.execution_target import (
+    ModelExecutionTarget,
+    validate_execution_target_for_provider,
+)
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationRequest,
@@ -86,12 +89,14 @@ def execute_persisted_start_openai_step(
     employee: object,
     resolved_tools: object,
     api_key: object,
-    approval: object,
+    approval: object | None,
     *,
     events_path: object | None = None,
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
     recovery_assessment: object | None = None,
     recovery_approval: object | None = None,
+    job_authorization: object | None = None,
+    execution_target: ModelExecutionTarget | None = None,
 ) -> StepRuntimeExecutionResult:
     """Verify a persisted running state, then delegate exactly once to Phase 21.
 
@@ -107,6 +112,8 @@ def execute_persisted_start_openai_step(
         approval,
         events_path,
         transport,
+        job_authorization,
+        execution_target,
     )
     # Narrowing follows the checked concrete contracts above.
     from ai_office.engine.prepared_step_execution_start import (
@@ -119,7 +126,14 @@ def execute_persisted_start_openai_step(
     assert isinstance(employee, EmployeeDefinition)
     assert isinstance(resolved_tools, tuple)
     assert isinstance(api_key, OpenAIApiKey)
-    assert isinstance(approval, ModelInvocationExecutionApproval)
+    if approval is not None:
+        assert isinstance(approval, ModelInvocationExecutionApproval)
+        target = approval.execution_target
+    else:
+        assert job_authorization is not None and execution_target is not None
+        target = execution_target
+        if recovery_assessment is not None or recovery_approval is not None:
+            _raise("recovery")
 
     recovering = recovery_assessment is not None or recovery_approval is not None
     if (recovery_assessment is None) != (recovery_approval is None):
@@ -131,10 +145,12 @@ def execute_persisted_start_openai_step(
             validate_workflow_recovery_authorization,
         )
 
-        if (
-            type(recovery_assessment) is not WorkflowRecoveryAssessment
-            or recovery_assessment.action not in {"retry_failed", "retry_ambiguous"}
-        ):
+        if type(
+            recovery_assessment
+        ) is not WorkflowRecoveryAssessment or recovery_assessment.action not in {
+            "retry_failed",
+            "retry_ambiguous",
+        }:
             _raise("recovery")
         binding = binding_of(start.request)
         if binding is None:
@@ -233,8 +249,10 @@ def execute_persisted_start_openai_step(
     if binding is not None:
         try:
             target = validate_execution_target_for_provider(
-                approval.execution_target,
-                provider=approval.provider,
+                target,
+                provider=(
+                    approval.provider if approval is not None else target.provider
+                ),
             )
             evidence_context = build_execution_evidence_context(
                 store_root=state_path.parent,
@@ -247,6 +265,7 @@ def execute_persisted_start_openai_step(
                 resolved_tools=resolved_tools,
                 approval=approval,
                 target=target,
+                job_authorization=job_authorization,
                 recovery_assessment=recovery_assessment,
                 recovery_approval=recovery_approval,
             )
@@ -273,9 +292,11 @@ def _validate_in_memory_inputs(
     employee: object,
     resolved_tools: object,
     api_key: object,
-    approval: object,
+    approval: object | None,
     events_path: object | None,
     transport: object,
+    job_authorization: object | None,
+    execution_target: object | None,
 ) -> None:
     # Import lazily because engine models depend on runtime state models.
     from ai_office.engine.prepared_step_execution_start import (
@@ -302,9 +323,21 @@ def _validate_in_memory_inputs(
         isinstance(tool, ToolDefinition) for tool in resolved_tools
     ):
         _raise("request_data")
-    if not isinstance(api_key, OpenAIApiKey) or not isinstance(
-        approval, ModelInvocationExecutionApproval
-    ) or not callable(transport):
+    ordinary_authority = (
+        isinstance(approval, ModelInvocationExecutionApproval)
+        and job_authorization is None
+        and execution_target is None
+    )
+    job_authority = (
+        approval is None
+        and job_authorization is not None
+        and isinstance(execution_target, ModelExecutionTarget)
+    )
+    if (
+        not isinstance(api_key, OpenAIApiKey)
+        or not (ordinary_authority or job_authority)
+        or not callable(transport)
+    ):
         _raise("request_data")
 
 
@@ -365,10 +398,7 @@ def _validate_workflow_state(
     if state.current_step_index > len(workflow.steps):
         _raise("workflow_identity")
     step = workflow.steps[state.current_step_index - 1]
-    if (
-        step.id != state.current_step_id
-        or step.employee != state.current_employee_id
-    ):
+    if step.id != state.current_step_id or step.employee != state.current_employee_id:
         _raise("workflow_identity")
     return step
 

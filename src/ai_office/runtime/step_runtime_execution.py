@@ -48,7 +48,7 @@ class StepRuntimeExecutionInput:
     step_request: StepExecutionRequest
     invocation_request: ModelInvocationRequest
     resolved_tools: tuple[ToolDefinition, ...]
-    approval: ModelInvocationExecutionApproval
+    approval: ModelInvocationExecutionApproval | None
     execution_evidence: ExecutionEvidenceContext
     attempt_claimed: Callable[[ExecutionAttemptEvidence], None] | None = None
 
@@ -231,10 +231,18 @@ def execute_openai_runtime_step(
         )
 
     try:
-        execution_target = validate_execution_target_for_provider(
-            execution_input.approval.execution_target,
-            provider=execution_input.approval.provider,
-        )
+        if execution_input.approval is None:
+            if execution_input.execution_evidence.job_authorization is None:
+                raise ModelExecutionTargetError
+            execution_target = validate_execution_target_for_provider(
+                execution_input.execution_evidence.target,
+                provider=execution_input.execution_evidence.target.provider,
+            )
+        else:
+            execution_target = validate_execution_target_for_provider(
+                execution_input.approval.execution_target,
+                provider=execution_input.approval.provider,
+            )
     except (AttributeError, ModelExecutionTargetError, TypeError, ValueError):
         return _build_input_failure(
             execution_input.step_request,
@@ -287,7 +295,12 @@ def _validate_execution_input(execution_input: StepRuntimeExecutionInput) -> Non
     if type(evidence) is not ExecutionEvidenceContext or (
         evidence.request != invocation_request
         or evidence.resolved_tools != execution_input.resolved_tools
-        or evidence.target != execution_input.approval.execution_target
+        or evidence.target
+        != (
+            execution_input.approval.execution_target
+            if execution_input.approval is not None
+            else evidence.target
+        )
         or evidence.workflow_id != step_request.workflow_id
         or evidence.step_id != step_request.step_id
         or evidence.step_index != step_request.step_index
