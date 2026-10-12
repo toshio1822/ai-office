@@ -363,6 +363,23 @@ def validate_job_business_authority(
     now_ns: int | None = None,
 ) -> WorkflowJobAuthorization:
     """Validate the business grant against pinned Run and current input."""
+    from ai_office.engine.workflow_bounded_job import (
+        BoundedJobActionAuthorization,
+        validate_bounded_job_business_authority,
+    )
+
+    if type(authorization) is BoundedJobActionAuthorization:
+        validate_bounded_job_business_authority(
+            authorization,
+            binding=binding,
+            workflow_id=workflow_id,
+            step_id=step_id,
+            step_index=step_index,
+            employee_id=employee_id,
+            run_input=run_input,
+            now_ns=now_ns,
+        )
+        return authorization  # type: ignore[return-value]
     current = _reload_and_check_common(authorization, binding, now_ns)
     envelope = current.envelope
     if not (
@@ -390,6 +407,25 @@ def validate_job_execution_authority(
     now_ns: int | None = None,
 ) -> WorkflowJobAuthorization:
     """Validate exact request/target scope before a single shared dispatch."""
+    from ai_office.engine.workflow_bounded_job import (
+        BoundedJobActionAuthorization,
+        validate_bounded_job_authority,
+    )
+
+    if type(authorization) is BoundedJobActionAuthorization:
+        validate_bounded_job_authority(
+            authorization,
+            binding=binding,
+            workflow_id=workflow_id,
+            step_id=step_id,
+            step_index=step_index,
+            employee_id=employee_id,
+            request=request,
+            resolved_tools=resolved_tools,
+            target=target,
+            now_ns=now_ns,
+        )
+        return authorization  # type: ignore[return-value]
     current = validate_job_business_authority(
         authorization,
         binding=binding,
@@ -768,6 +804,30 @@ def _reload_and_check_common(
     binding: WorkflowRunBinding,
     now_ns: int | None,
 ) -> WorkflowJobAuthorization:
+    from ai_office.engine.workflow_bounded_job import (
+        BoundedJobActionAuthorization,
+        load_bounded_workflow_job_scope,
+    )
+    from ai_office.engine.workflow_bounded_job import (
+        _revocation_path as bounded_revocation_path,
+    )
+
+    if type(authorization) is BoundedJobActionAuthorization:
+        current_scope = load_bounded_workflow_job_scope(
+            WorkflowRunManifestStore(authorization.store_root), authorization.job_id
+        )
+        now = time.time_ns() if now_ns is None else now_ns
+        if not (
+            current_scope == authorization.scope
+            and authorization.run_id == binding.run_id
+            and authorization.manifest_digest == binding.manifest_digest
+            and now < current_scope.expires_at_ns
+            and not _path_exists_or_symlink(
+                bounded_revocation_path(authorization.store_root, authorization.job_id)
+            )
+        ):
+            _raise("expired_revoked_or_binding")
+        return authorization  # type: ignore[return-value]
     if type(authorization) is not WorkflowJobAuthorization:
         _raise("authorization")
     current = load_workflow_job_authorization(
@@ -799,6 +859,8 @@ def _path_exists_or_symlink(path: Path) -> bool:
 def authorization_binding(
     authorization: WorkflowJobAuthorization,
 ) -> WorkflowRunBinding:
+    if hasattr(authorization, "manifest_digest") and hasattr(authorization, "run_id"):
+        return WorkflowRunBinding(authorization.run_id, authorization.manifest_digest)
     return WorkflowRunBinding(
         authorization.envelope.run_id, authorization.envelope.manifest_digest
     )

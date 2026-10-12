@@ -190,24 +190,47 @@ def execute_openai_model_invocation(
         if execution_evidence.job_authorization is not None:
             from ai_office.engine.workflow_job_authorization import (
                 WorkflowJobAuthorizationError,
-                reserve_job_attempt,
             )
 
             body_bytes = http_request.body.encode("utf-8")
             try:
-                reservation_sha256 = reserve_job_attempt(
-                    execution_evidence.job_authorization,
-                    binding=execution_evidence.binding,
-                    workflow_id=execution_evidence.workflow_id,
-                    step_id=execution_evidence.step_id,
-                    step_index=execution_evidence.step_index,
-                    employee_id=execution_evidence.employee_id,
-                    request=request,
-                    resolved_tools=resolved_tools,
-                    target=selected_target,
-                    request_body_sha256=sha256(body_bytes).hexdigest(),
-                    request_body_length=len(body_bytes),
+                from ai_office.engine.workflow_bounded_job import (
+                    BoundedJobActionAuthorization,
+                    reserve_bounded_job_attempt,
                 )
+                from ai_office.engine.workflow_job_authorization import (
+                    WorkflowJobAuthorization,
+                    reserve_job_attempt,
+                )
+
+                if (
+                    type(execution_evidence.job_authorization)
+                    is BoundedJobActionAuthorization
+                ):
+                    reservation_sha256 = reserve_bounded_job_attempt(
+                        execution_evidence.job_authorization,
+                        request_body_sha256=sha256(body_bytes).hexdigest(),
+                        request_body_length=len(body_bytes),
+                    )
+                elif (
+                    type(execution_evidence.job_authorization)
+                    is WorkflowJobAuthorization
+                ):
+                    reservation_sha256 = reserve_job_attempt(
+                        execution_evidence.job_authorization,
+                        binding=execution_evidence.binding,
+                        workflow_id=execution_evidence.workflow_id,
+                        step_id=execution_evidence.step_id,
+                        step_index=execution_evidence.step_index,
+                        employee_id=execution_evidence.employee_id,
+                        request=request,
+                        resolved_tools=resolved_tools,
+                        target=selected_target,
+                        request_body_sha256=sha256(body_bytes).hexdigest(),
+                        request_body_length=len(body_bytes),
+                    )
+                else:
+                    raise WorkflowJobAuthorizationError("authorization")
             except WorkflowJobAuthorizationError:
                 raise ExecutionEvidenceError("job_reservation") from None
             execution_evidence = replace(
@@ -224,9 +247,28 @@ def execute_openai_model_invocation(
         if before_transport is not None:
             before_transport()
         if execution_evidence.job_authorization is not None:
+            from ai_office.engine.workflow_bounded_job import (
+                BoundedJobActionAuthorization,
+                admit_bounded_job_dispatch,
+            )
             from ai_office.execution_evidence import admit_job_execution_dispatch
 
-            admit_job_execution_dispatch(execution_evidence, attempt)
+            if (
+                type(execution_evidence.job_authorization)
+                is BoundedJobActionAuthorization
+            ):
+                try:
+                    admit_bounded_job_dispatch(
+                        execution_evidence.job_authorization,
+                        attempt=attempt,
+                        reservation_sha256=attempt.job_reservation_sha256,
+                    )
+                except WorkflowJobAuthorizationError as error:
+                    raise ExecutionEvidenceError(
+                        "job_" + error.classification
+                    ) from None
+            else:
+                admit_job_execution_dispatch(execution_evidence, attempt)
         raw_evidence: RawProviderResponseEvidence | None = None
         try:
             raw_response = transport(authenticated_request)

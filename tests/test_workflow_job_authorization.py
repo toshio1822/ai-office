@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from hashlib import sha256
 from multiprocessing import get_context
 from pathlib import Path
@@ -16,8 +16,16 @@ from typer.testing import CliRunner
 
 import ai_office.engine.workflow_job_authorization as job_authorization_module
 from ai_office.cli import app
-from ai_office.definitions.employee import EmployeeDefinition
-from ai_office.definitions.workflow import WorkflowDefinition
+from ai_office.definitions.employee import (
+    EmployeeDefinition,
+    LoadedEmployee,
+    load_employee_file,
+)
+from ai_office.definitions.workflow import (
+    LoadedWorkflow,
+    WorkflowDefinition,
+    load_workflow_file,
+)
 from ai_office.engine.approved_workflow_continuation_cycle import (
     route_approved_workflow_continuation_cycle,
 )
@@ -44,6 +52,13 @@ from ai_office.engine.workflow_approval_evidence import (
     persist_business_approval_evidence,
     persist_execution_approval_evidence,
 )
+from ai_office.engine.workflow_bounded_job import (
+    BoundedJobActionSlot,
+    derive_bounded_job_action_authorization,
+    issue_bounded_workflow_job_scope,
+    load_bounded_workflow_job_scope,
+    run_bounded_document_job,
+)
 from ai_office.engine.workflow_job_authorization import (
     WorkflowJobAuthorizationEnvelope,
     WorkflowJobAuthorizationError,
@@ -54,7 +69,11 @@ from ai_office.engine.workflow_job_authorization import (
     revoke_workflow_job_authorization,
 )
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
-from ai_office.engine.workflow_run_manifest import load_workflow_run_manifest
+from ai_office.engine.workflow_run_manifest import (
+    WorkflowRunManifestStore,
+    create_workflow_run_manifest,
+    load_workflow_run_manifest,
+)
 from ai_office.execution_evidence import (
     ExecutionAttemptAlreadyClaimedError,
     ExecutionEvidenceError,
@@ -100,6 +119,22 @@ def _competing_reservation_worker(
             target=DIRECT_OPENAI_EXECUTION_TARGET,
             request_body_sha256="0" * 64,
             request_body_length=0,
+        )
+    except WorkflowJobAuthorizationError as error:
+        results.put(error.classification)
+    else:
+        results.put("reserved")
+
+
+def _competing_bounded_reservation_worker(authorization, gate, results) -> None:
+    from ai_office.engine.workflow_bounded_job import reserve_bounded_job_attempt
+
+    gate.wait()
+    try:
+        reserve_bounded_job_attempt(
+            authorization,
+            request_body_sha256="1" * 64,
+            request_body_length=1,
         )
     except WorkflowJobAuthorizationError as error:
         results.put(error.classification)
@@ -375,6 +410,325 @@ def test_fresh_start_job_authority_uses_shared_provider_evidence_and_artifact(
     assert (
         inspect_workflow_job_authorization(persisted).provider_response_recorded is True
     )
+
+
+def test_one_root_job_grant_authorizes_two_distinct_runs_through_shared_provider(
+    tmp_path: Path,
+) -> None:
+    """The root grant is fixed; actions derive from durable lineage."""
+    store_root = tmp_path / "bounded-job-store"
+    workflow = _workflow()
+    employee = _employee()
+    first = create_test_run(
+        store_root,
+        "bounded-job-run-1",
+        workflow,
+        (employee,),
+        with_business_approvals=False,
+    )
+    first.store.root.chmod(0o700)
+    first_manifest = load_workflow_run_manifest(first.store, first.binding.run_id)
+    workflow_snapshot_sha = sha256(
+        json.dumps(
+            asdict(first_manifest.workflow_snapshot),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    employee_snapshot = first_manifest.employee_snapshots[0]
+    employee_snapshot_sha = sha256(
+        json.dumps(
+            asdict(employee_snapshot),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    slot = BoundedJobActionSlot(
+        ordinal=0,
+        workflow_id=workflow.id,
+        step_id=workflow.steps[0].id,
+        step_index=1,
+        employee_id=employee.id,
+        workflow_snapshot_sha256=workflow_snapshot_sha,
+        employee_snapshot_sha256=employee_snapshot_sha,
+        provider=DIRECT_OPENAI_EXECUTION_TARGET.provider,
+        execution_target_fingerprint=execution_target_fingerprint(
+            DIRECT_OPENAI_EXECUTION_TARGET
+        ),
+        model=employee.model,
+        input_source="assignment",
+    )
+    second_slot = replace(slot, ordinal=1, input_source="previous_artifact")
+    third_slot = replace(slot, ordinal=2, input_source="previous_artifact")
+    initial_input_sha = sha256(first_manifest.run_input.encode()).hexdigest()
+    root_scope = issue_bounded_workflow_job_scope(
+        first.store,
+        job_id="bounded-job-two-runs",
+        initial_run_id=first.binding.run_id,
+        assignment_sha256=initial_input_sha,
+        initial_input_sha256=initial_input_sha,
+        actions=(slot, second_slot, third_slot),
+        max_provider_attempts=3,
+        max_revisions=0,
+        expires_at_ns=9_999_999_999_999_999_999,
+        business_approved_by="offline-operator-audit-label",
+        business_grant_id="bounded-job-business",
+        execution_approved_by="offline-operator-audit-label",
+        execution_grant_id="bounded-job-execution",
+        now_ns=1,
+    )
+    with pytest.raises(WorkflowJobAuthorizationError):
+        derive_bounded_job_action_authorization(
+            first.store,
+            root_scope,
+            ordinal=0,
+            run_id=first.binding.run_id,
+            request_fingerprint="f" * 64,
+            now_ns=root_scope.expires_at_ns,
+        )
+    alternative_workflow = WorkflowDefinition.model_validate(
+        {
+            **workflow.model_dump(mode="python"),
+            "id": "alternative-job-workflow",
+            "steps": [
+                {
+                    **workflow.steps[0].model_dump(mode="python"),
+                    "id": "alternative-step",
+                }
+            ],
+        }
+    )
+    alternative_run = create_test_run(
+        store_root,
+        "bounded-job-alternative-run",
+        alternative_workflow,
+        (employee,),
+        with_business_approvals=False,
+    )
+    with pytest.raises(WorkflowJobAuthorizationError):
+        derive_bounded_job_action_authorization(
+            first.store,
+            root_scope,
+            ordinal=0,
+            run_id=alternative_run.binding.run_id,
+            request_fingerprint="f" * 64,
+            now_ns=2,
+        )
+    transport_calls: list[str] = []
+
+    def execute_action(run, ordinal: int, predecessor=None):
+        manifest = load_workflow_run_manifest(run.store, run.binding.run_id)
+        request = ModelInvocationRequest(
+            model=employee.model,
+            system_instructions=employee.instructions,
+            task_instructions=workflow.steps[0].instructions,
+            allowed_tools=(),
+            run_id=run.binding.run_id,
+            manifest_digest=manifest.digest,
+            run_input=manifest.run_input,
+        )
+        action_authorization = derive_bounded_job_action_authorization(
+            run.store,
+            root_scope,
+            ordinal=ordinal,
+            run_id=run.binding.run_id,
+            request_fingerprint=build_model_invocation_execution_fingerprint(
+                request, (), DIRECT_OPENAI_EXECUTION_TARGET
+            ),
+            now_ns=2 + ordinal,
+            predecessor=predecessor,
+        )
+        context = ApprovedWorkflowBootstrapContext(
+            preparation_approval=InitialStepPreparationApproval(
+                approved=False,
+                workflow_id=workflow.id,
+                step_id="draft",
+                step_index=1,
+                employee_id=employee.id,
+            ),
+            employee=employee,
+            resolved_tools=(),
+            api_key=OpenAIApiKey(value=SecretStr("synthetic-test-only")),
+            execution_approval=None,
+            transport=lambda _value: (
+                transport_calls.append(run.binding.run_id)
+                or OpenAIResponsesRawHttpResponse(
+                    200,
+                    "synthetic",
+                    (),
+                    b'{"id":"bounded-two-run-response","object":"response",'
+                    b'"status":"completed","output":[{"type":"message",'
+                    b'"content":[{"type":"output_text","text":"# Durable handoff"}]}]}',
+                )
+            ),
+            binding=run.binding,
+            manifest_store=run.store,
+            job_authorization=action_authorization,
+            execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        outcome = route_approved_workflow_fresh_start(
+            workflow, run.state_path, run.events_path, context
+        )
+        assert type(outcome) is WorkflowProgressionDecision
+        assert outcome.decision == "workflow_complete"
+        attempts = list_run_execution_evidence(run.store.root, run.binding.run_id)
+        assert len(attempts) == 1
+        attempt = attempts[0]
+        assert attempt.authorization_source == "job_action"
+        assert attempt.job_id == root_scope.job_id
+        assert attempt.job_action_ordinal == ordinal
+        assert attempt.execution_approval_id is None
+        assert (
+            load_raw_response_evidence(
+                run.store.root, run.binding.run_id, attempt.attempt_id
+            ).status_code
+            == 200
+        )
+        assert (
+            load_normalized_result_evidence(
+                run.store.root, run.binding.run_id, attempt.attempt_id
+            ).category
+            == "success"
+        )
+        return (
+            request,
+            action_authorization,
+            attempt,
+            list_run_artifacts(run.store, run.binding.run_id)[0],
+        )
+
+    _request_one, _action_one, attempt_one, artifact_one = execute_action(first, 0)
+    second_run_id = "bounded-job-run-2"
+    second_input = artifact_one.content.decode("utf-8")
+    second_manifest = create_workflow_run_manifest(
+        first.store,
+        second_run_id,
+        second_input,
+        LoadedWorkflow(tmp_path / "workflow.yaml", workflow),
+        (LoadedEmployee(tmp_path / "writer.yaml", employee),),
+    )
+    second_state, second_events = first.store.execution_paths(second_run_id)
+    from tests._run_test_support import TestRun
+
+    second = TestRun(
+        first.store,
+        type(first.binding)(second_run_id, second_manifest.digest),
+        second_state,
+        second_events,
+    )
+    with pytest.raises(WorkflowJobAuthorizationError):
+        derive_bounded_job_action_authorization(
+            first.store,
+            root_scope,
+            ordinal=1,
+            run_id=second_run_id,
+            request_fingerprint="e" * 64,
+            predecessor=(
+                first.binding.run_id,
+                "f" * 64,
+                artifact_one.content_sha256,
+            ),
+            now_ns=3,
+        )
+    _, action_two, attempt_two, artifact_two = execute_action(
+        second,
+        1,
+        (
+            first.binding.run_id,
+            artifact_one.artifact_id,
+            artifact_one.content_sha256,
+        ),
+    )
+    assert attempt_one.attempt_id != attempt_two.attempt_id
+    assert attempt_one.run_id != attempt_two.run_id
+    assert transport_calls == [first.binding.run_id, second_run_id]
+    assert artifact_two.run_id == second_run_id
+    assert load_bounded_workflow_job_scope(first.store, root_scope.job_id) == root_scope
+
+    third_run_id = "bounded-job-run-concurrent"
+    third_manifest = create_workflow_run_manifest(
+        first.store,
+        third_run_id,
+        artifact_two.content.decode("utf-8"),
+        LoadedWorkflow(tmp_path / "workflow.yaml", workflow),
+        (LoadedEmployee(tmp_path / "writer.yaml", employee),),
+    )
+    third_state, third_events = first.store.execution_paths(third_run_id)
+    TestRun(
+        first.store,
+        type(first.binding)(third_run_id, third_manifest.digest),
+        third_state,
+        third_events,
+    )
+    third_request = ModelInvocationRequest(
+        model=employee.model,
+        system_instructions=employee.instructions,
+        task_instructions=workflow.steps[0].instructions,
+        allowed_tools=(),
+        run_id=third_run_id,
+        manifest_digest=third_manifest.digest,
+        run_input=third_manifest.run_input,
+    )
+    third_authorization = derive_bounded_job_action_authorization(
+        first.store,
+        root_scope,
+        ordinal=2,
+        run_id=third_run_id,
+        request_fingerprint=build_model_invocation_execution_fingerprint(
+            third_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+        ),
+        now_ns=4,
+        predecessor=(
+            second_run_id,
+            artifact_two.artifact_id,
+            artifact_two.content_sha256,
+        ),
+    )
+    mp_context = get_context("fork")
+    start = mp_context.Barrier(2)
+    results = mp_context.Queue()
+    workers = [
+        mp_context.Process(
+            target=_competing_bounded_reservation_worker,
+            args=(third_authorization, start, results),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+    if any(worker.is_alive() for worker in workers):
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=2)
+    assert all(worker.exitcode == 0 for worker in workers)
+    race_results = [results.get(timeout=2) for _ in workers]
+    assert race_results.count("reserved") == 1
+    assert transport_calls == [first.binding.run_id, second_run_id]
+
+    from ai_office.engine.workflow_bounded_job import (
+        reserve_bounded_job_attempt,
+        revoke_bounded_workflow_job_scope,
+    )
+
+    with pytest.raises(WorkflowJobAuthorizationError):
+        reserve_bounded_job_attempt(
+            action_two,
+            request_body_sha256="0" * 64,
+            request_body_length=0,
+        )
+    revoke_bounded_workflow_job_scope(first.store, root_scope.job_id, now_ns=4)
+    with pytest.raises(WorkflowJobAuthorizationError):
+        derive_bounded_job_action_authorization(
+            first.store,
+            root_scope,
+            ordinal=0,
+            run_id=first.binding.run_id,
+            request_fingerprint="f" * 64,
+            now_ns=5,
+        )
 
 
 def test_job_authority_mismatch_expiry_and_revocation_fail_before_transport(
@@ -1179,3 +1533,603 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
     assert job_attempts[0].step_id == "second"
     assert job_attempts[0].execution_approval_id is None
     assert len(list_run_artifacts(run.store, run.binding.run_id)) == 1
+
+
+def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
+    tmp_path: Path,
+) -> None:
+    workflow = WorkflowDefinition.model_validate(
+        {
+            "id": "bounded-two-step",
+            "name": "Bounded two-step",
+            "description": "A fixed creator workflow.",
+            "steps": [
+                {
+                    "id": "research",
+                    "name": "Research",
+                    "employee": "researcher",
+                    "instructions": "Return a short source note.",
+                    "business_approval_required": True,
+                },
+                {
+                    "id": "summarize",
+                    "name": "Summarize",
+                    "employee": "writer",
+                    "instructions": "Write a Markdown report from the note.",
+                    "business_approval_required": True,
+                    "artifact_content_type": "text/markdown",
+                },
+            ],
+        }
+    )
+    employees = (
+        EmployeeDefinition(
+            id="researcher",
+            name="Researcher",
+            role="Research",
+            instructions="Analyze the supplied evidence.",
+            model="job-test-model",
+            allowed_tools=[],
+        ),
+        EmployeeDefinition(
+            id="writer",
+            name="Writer",
+            role="Writer",
+            instructions="Write the report.",
+            model="job-test-model",
+            allowed_tools=[],
+        ),
+    )
+    run = create_test_run(
+        tmp_path / "bounded-two-step",
+        "bounded-two-step-run",
+        workflow,
+        employees,
+        with_business_approvals=False,
+    )
+    run.store.root.chmod(0o700)
+    manifest = load_workflow_run_manifest(run.store, run.binding.run_id)
+    workflow_sha = sha256(
+        json.dumps(
+            asdict(manifest.workflow_snapshot), sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    slots = []
+    for ordinal, step_index in enumerate((1, 2)):
+        employee_snapshot = next(
+            item
+            for item in manifest.employee_snapshots
+            if item.id == workflow.steps[step_index - 1].employee
+        )
+        slots.append(
+            BoundedJobActionSlot(
+                ordinal=ordinal,
+                workflow_id=workflow.id,
+                step_id=workflow.steps[step_index - 1].id,
+                step_index=step_index,
+                employee_id=employee_snapshot.id,
+                workflow_snapshot_sha256=workflow_sha,
+                employee_snapshot_sha256=sha256(
+                    json.dumps(
+                        asdict(employee_snapshot), sort_keys=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest(),
+                provider=DIRECT_OPENAI_EXECUTION_TARGET.provider,
+                execution_target_fingerprint=execution_target_fingerprint(
+                    DIRECT_OPENAI_EXECUTION_TARGET
+                ),
+                model=employee_snapshot.model,
+                input_source="assignment" if ordinal == 0 else "previous_step",
+            )
+        )
+    scope = issue_bounded_workflow_job_scope(
+        run.store,
+        job_id="bounded-two-step-job",
+        initial_run_id=run.binding.run_id,
+        assignment_sha256=sha256(manifest.run_input.encode()).hexdigest(),
+        initial_input_sha256=sha256(manifest.run_input.encode()).hexdigest(),
+        actions=tuple(slots),
+        max_provider_attempts=2,
+        max_revisions=0,
+        expires_at_ns=9_999_999_999_999_999_999,
+        business_approved_by="offline-audit-label",
+        business_grant_id="bounded-two-step-business",
+        execution_approved_by="offline-audit-label",
+        execution_grant_id="bounded-two-step-execution",
+        now_ns=1,
+    )
+    calls: list[str] = []
+
+    def transport(label: str):
+        def invoke(_request):
+            calls.append(label)
+            body = "# Final\n\nBounded." if label == "summary" else "source note"
+            response = json.dumps(
+                {
+                    "id": label,
+                    "object": "response",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": body,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ).encode()
+            return OpenAIResponsesRawHttpResponse(200, "synthetic", (), response)
+
+        return invoke
+
+    first_employee = employees[0]
+    first_request = ModelInvocationRequest(
+        model=first_employee.model,
+        system_instructions=first_employee.instructions,
+        task_instructions=workflow.steps[0].instructions,
+        allowed_tools=(),
+        run_id=manifest.run_id,
+        manifest_digest=manifest.digest,
+        run_input=manifest.run_input,
+    )
+    first_auth = derive_bounded_job_action_authorization(
+        run.store,
+        scope,
+        ordinal=0,
+        run_id=manifest.run_id,
+        request_fingerprint=build_model_invocation_execution_fingerprint(
+            first_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+        ),
+        now_ns=2,
+    )
+    first_outcome = route_approved_workflow_fresh_start(
+        workflow,
+        run.state_path,
+        run.events_path,
+        ApprovedWorkflowBootstrapContext(
+            preparation_approval=InitialStepPreparationApproval(
+                False, workflow.id, "research", 1, first_employee.id
+            ),
+            employee=first_employee,
+            resolved_tools=(),
+            api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
+            execution_approval=None,
+            transport=transport("research"),
+            binding=run.binding,
+            manifest_store=run.store,
+            job_authorization=first_auth,
+            execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        ),
+    )
+    assert type(first_outcome) is WorkflowProgressionDecision
+    assert first_outcome.decision == "prepare_next_step"
+    history, state_sha, _ = load_workflow_execution_history_with_source_digests(
+        WorkflowExecutionPersistenceTargets(
+            run.state_path, run.events_path, binding=run.binding
+        )
+    )
+    validate_loaded_persisted_execution_history(
+        workflow, history, require_execution_provenance=True
+    )
+    preparation = NextStepPreparationApproval(
+        False, workflow.id, "research", 1, "summarize", 2, "writer"
+    )
+    prepared = _prepare_approved_next_workflow_step(
+        workflow,
+        history,
+        first_outcome,
+        replace(preparation, approved=True),
+        employees[1],
+    )
+    prepared_start = prepare_prepared_step_execution_start(
+        prepared,
+        history,
+        state_source_sha256=state_sha,
+        run_input=manifest.run_input,
+    )
+    second_auth = derive_bounded_job_action_authorization(
+        run.store,
+        scope,
+        ordinal=1,
+        run_id=manifest.run_id,
+        request_fingerprint=build_model_invocation_execution_fingerprint(
+            prepared_start.request, (), DIRECT_OPENAI_EXECUTION_TARGET
+        ),
+        now_ns=3,
+    )
+    final = route_approved_workflow_continuation_cycle(
+        first_outcome,
+        workflow,
+        preparation,
+        employees[1],
+        run.state_path,
+        run.events_path,
+        (),
+        OpenAIApiKey(value=SecretStr("synthetic-only")),
+        None,
+        transport("summary"),
+        job_authorization=second_auth,
+        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    assert type(final) is WorkflowProgressionDecision
+    assert final.decision == "workflow_complete"
+    assert calls == ["research", "summary"]
+    assert len(list_run_artifacts(run.store, run.binding.run_id)) == 1
+    evidence = list_run_execution_evidence(run.store.root, run.binding.run_id)
+    assert len(evidence) == 2
+    assert sorted(item.job_action_ordinal for item in evidence) == [0, 1]
+    assert all(item.authorization_source == "job_action" for item in evidence)
+
+
+@pytest.mark.parametrize(
+    (
+        "first_verdict",
+        "expected_calls",
+        "expected_status",
+        "max_revisions",
+        "expected_reason",
+        "final_verdict",
+    ),
+    [
+        ("PASS", 3, "candidate", 1, None, "PASS"),
+        ("CHANGES_REQUIRED", 5, "reviewed", 1, None, "PASS"),
+        (
+            "CHANGES_REQUIRED",
+            5,
+            "stopped",
+            1,
+            "document_job_final_review_not_pass",
+            "CHANGES_REQUIRED",
+        ),
+        ("BLOCKED", 3, "stopped", 1, "document_job_review_blocked", "PASS"),
+        ("MALFORMED", 3, "stopped", 1, "document_job_invalid_verdict", "PASS"),
+        ("NONACTIONABLE", 3, "stopped", 1, "document_job_unverified_finding", "PASS"),
+        (
+            "CHANGES_REQUIRED",
+            3,
+            "stopped",
+            0,
+            "document_job_revision_budget_exhausted",
+            "PASS",
+        ),
+    ],
+)
+def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
+    tmp_path: Path,
+    first_verdict: str,
+    expected_calls: int,
+    expected_status: str,
+    max_revisions: int,
+    expected_reason: str | None,
+    final_verdict: str,
+) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    workflow_names = (
+        "research-and-summarize",
+        "review-supplied-artifact",
+        "revise-reviewed-artifact",
+    )
+    workflows: dict[str, LoadedWorkflow] = {
+        name: load_workflow_file(repository / "workflows" / f"{name}.yaml")
+        for name in workflow_names
+    }
+    employees: dict[str, LoadedEmployee] = {
+        name: load_employee_file(repository / "employees" / f"{name}.yaml")
+        for name in ("general-researcher", "japanese-document-writer")
+    }
+    store_root = tmp_path / "fixed-document-job"
+    store_root.mkdir(mode=0o700, parents=True)
+    store = WorkflowRunManifestStore(store_root)
+    assignment = (
+        "Requirements: summarize only the supplied evidence.\n"
+        "Evidence: synthetic offline fixture."
+    )
+    initial_run_id = "bounded-document-initial"
+    initial = create_workflow_run_manifest(
+        store,
+        initial_run_id,
+        assignment,
+        workflows["research-and-summarize"],
+        tuple(
+            employees[employee]
+            for employee in ("general-researcher", "japanese-document-writer")
+        ),
+    )
+    snapshots: dict[str, object] = {initial.workflow_id: initial}
+    for name in workflow_names[1:]:
+        snapshots[name] = create_workflow_run_manifest(
+            store,
+            f"snapshot-{name}",
+            assignment,
+            workflows[name],
+            (
+                employees[
+                    "general-researcher"
+                    if name == "review-supplied-artifact"
+                    else "japanese-document-writer"
+                ],
+            ),
+        )
+    plan = (
+        ("research-and-summarize", "research", 1, "general-researcher", "assignment"),
+        (
+            "research-and-summarize",
+            "summarize",
+            2,
+            "japanese-document-writer",
+            "previous_step",
+        ),
+        ("review-supplied-artifact", "review", 1, "general-researcher", "review_input"),
+        (
+            "revise-reviewed-artifact",
+            "revise",
+            1,
+            "japanese-document-writer",
+            "revision_input",
+        ),
+        (
+            "review-supplied-artifact",
+            "review",
+            1,
+            "general-researcher",
+            "re_review_input",
+        ),
+    )
+    slots = []
+    for ordinal, (
+        workflow_id,
+        step_id,
+        step_index,
+        employee_id,
+        input_source,
+    ) in enumerate(plan):
+        snapshot_manifest = snapshots[workflow_id]
+        employee_snapshot = next(
+            item
+            for item in snapshot_manifest.employee_snapshots
+            if item.id == employee_id
+        )
+        slots.append(
+            BoundedJobActionSlot(
+                ordinal=ordinal,
+                workflow_id=workflow_id,
+                step_id=step_id,
+                step_index=step_index,
+                employee_id=employee_id,
+                workflow_snapshot_sha256=sha256(
+                    json.dumps(
+                        asdict(snapshot_manifest.workflow_snapshot),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
+                employee_snapshot_sha256=sha256(
+                    json.dumps(
+                        asdict(employee_snapshot),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
+                provider=DIRECT_OPENAI_EXECUTION_TARGET.provider,
+                execution_target_fingerprint=execution_target_fingerprint(
+                    DIRECT_OPENAI_EXECUTION_TARGET
+                ),
+                model=employee_snapshot.model,
+                input_source=input_source,
+            )
+        )
+    assignment_sha = sha256(assignment.encode()).hexdigest()
+    scope = issue_bounded_workflow_job_scope(
+        store,
+        job_id="fixed-bounded-document-job",
+        initial_run_id=initial_run_id,
+        assignment_sha256=assignment_sha,
+        initial_input_sha256=assignment_sha,
+        actions=tuple(slots),
+        max_provider_attempts=3 + (2 * max_revisions),
+        max_revisions=max_revisions,
+        expires_at_ns=9_999_999_999_999_999_999,
+        business_approved_by="offline-audit-label",
+        business_grant_id="fixed-document-business",
+        execution_approved_by="offline-audit-label",
+        execution_grant_id="fixed-document-execution",
+        now_ns=1,
+    )
+    call_labels: list[str] = []
+
+    def fake_transport(request):
+        index = len(call_labels)
+        if index == 0:
+            label, text = "research", "Synthetic source-supported note."
+        elif index == 1:
+            label, text = "summary", "# Report\n\nSynthetic report with limits."
+        elif index == 2:
+            label = "review-1"
+            if first_verdict == "PASS":
+                text = "Verdict: PASS\n\nNo actionable findings."
+            elif first_verdict == "BLOCKED":
+                text = "Verdict: BLOCKED\n\nEvidence is insufficient."
+            elif first_verdict == "MALFORMED":
+                text = "The report is not ready."
+            else:
+                evidence_reference = (
+                    "unavailable phantom reference"
+                    if first_verdict == "NONACTIONABLE"
+                    else "Synthetic report with limits"
+                )
+                text = (
+                    "Verdict: CHANGES_REQUIRED\n\n"
+                    "Requirement: preserve the stated limit.\n"
+                    "Artifact location: Conclusion.\n"
+                    f"Evidence source/reference: {evidence_reference}.\n"
+                    "Impact: unsupported certainty.\n"
+                    "Requested correction: retain the limitation."
+                )
+        elif index == 3:
+            label, text = (
+                "revision",
+                "# Revised report\n\nSynthetic report with limits.",
+            )
+        else:
+            label = "review-2"
+            text = (
+                "Verdict: CHANGES_REQUIRED\n\n"
+                "Requirement: preserve the stated limit.\n"
+                "Artifact location: Conclusion.\n"
+                "Evidence source/reference: Synthetic report with limits.\n"
+                "Impact: unsupported certainty.\n"
+                "Requested correction: retain the limitation."
+                if final_verdict == "CHANGES_REQUIRED"
+                else "Verdict: PASS\n\nNo actionable findings."
+            )
+        call_labels.append(label)
+        raw = json.dumps(
+            {
+                "id": label,
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": text,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ).encode()
+        return OpenAIResponsesRawHttpResponse(200, "synthetic", (), raw)
+
+    outcome = run_bounded_document_job(
+        store,
+        scope,
+        initial_run_id=initial_run_id,
+        assignment=assignment,
+        workflows=workflows,
+        employees=employees,
+        api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
+        transport=fake_transport,
+        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    assert outcome.status == expected_status
+    assert outcome.stop_reason == expected_reason
+    assert len(call_labels) == expected_calls
+    assert call_labels[:2] == ["research", "summary"]
+    assert call_labels[2] == "review-1"
+    final_manifest = load_workflow_run_manifest(store, outcome.final_artifact_run_id)
+    final_artifact = read_run_artifact(
+        store, outcome.final_artifact_run_id, outcome.final_artifact_id
+    )
+    first_review_run_id = (
+        "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-2"
+    )
+    review_manifest = load_workflow_run_manifest(store, first_review_run_id)
+    review_input_value = json.loads(review_manifest.run_input)
+    assert review_manifest.run_id != initial_run_id
+    assert (
+        final_artifact.run_id == final_manifest.run_id == outcome.final_artifact_run_id
+    )
+    assert review_input_value["assignment"] == assignment
+    source_artifact = list_run_artifacts(store, initial_run_id)[0]
+    assert review_input_value["source_artifact"] == {
+        "artifact_id": source_artifact.artifact_id,
+        "content": source_artifact.content.decode("utf-8"),
+        "content_length": source_artifact.content_length,
+        "content_sha256": source_artifact.content_sha256,
+        "run_id": source_artifact.run_id,
+    }
+    assert final_manifest.run_id == outcome.final_artifact_run_id
+    if expected_status == "reviewed":
+        assert call_labels[3:] == ["revision", "review-2"]
+        assert outcome.revisions_used == 1
+        assert outcome.review_artifact_run_id == (
+            "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-4"
+        )
+        assert outcome.review_artifact_run_id != first_review_run_id
+        revision_input_value = json.loads(
+            load_workflow_run_manifest(
+                store,
+                "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-3",
+            ).run_input
+        )
+        first_review_artifact = list_run_artifacts(store, review_manifest.run_id)[0]
+        assert revision_input_value["review_artifact"]["artifact_id"] == (
+            first_review_artifact.artifact_id
+        )
+        final_review_input = json.loads(
+            load_workflow_run_manifest(
+                store,
+                "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-4",
+            ).run_input
+        )
+        assert final_review_input["revision_artifact"]["artifact_id"] == (
+            outcome.final_artifact_id
+        )
+    else:
+        assert outcome.revisions_used == (1 if expected_calls == 5 else 0)
+        assert outcome.review_artifact_run_id is not None
+    from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
+
+    inspection = inspect_bounded_document_job(store, scope.job_id)
+    assert inspection["assignment"] == assignment
+    assert inspection["consumed_provider_attempts"] == expected_calls
+    assert inspection["remaining_provider_attempts"] == (
+        scope.max_provider_attempts - expected_calls
+    )
+    assert inspection["status"] == expected_status
+    assert inspection["stop_reason"] == expected_reason
+    assert len(inspection["dispatch_order"]) == expected_calls
+    replay = run_bounded_document_job(
+        store,
+        scope,
+        initial_run_id=initial_run_id,
+        assignment=assignment,
+        workflows=workflows,
+        employees=employees,
+        api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
+        transport=fake_transport,
+        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    assert replay == outcome
+    assert len(call_labels) == expected_calls
+    before_cli = sorted(path.name for path in store.root.iterdir())
+    cli_result = CliRunner().invoke(
+        app,
+        [
+            "workflows",
+            "bounded-job",
+            scope.job_id,
+            "--run-store",
+            str(store.root),
+        ],
+    )
+    assert cli_result.exit_code == 0, cli_result.stderr
+    cli_value = json.loads(cli_result.stdout)
+    assert cli_value["operation"] == "bounded-job"
+    assert cli_value["assignment"] == assignment
+    assert cli_value["status"] == expected_status
+    assert cli_value["stop_reason"] == expected_reason
+    assert cli_value["consumed_provider_attempts"] == expected_calls
+    assert sorted(path.name for path in store.root.iterdir()) == before_cli
+    assert (
+        sum(
+            len(list_run_execution_evidence(store.root, run_id))
+            for run_id in (
+                initial_run_id,
+                "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-2",
+                "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-3",
+                "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-4",
+            )
+            if store.manifest_path(run_id).exists()
+        )
+        == expected_calls
+    )

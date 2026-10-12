@@ -1131,6 +1131,22 @@ def job_authorization_workflow(
     )
 
 
+@workflows_app.command("bounded-job")
+def bounded_document_job_workflow(
+    job_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Inspect a fixed bounded document Job and its immutable stop record."""
+    from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
+
+    store = _load_run_store_or_exit(run_store)
+    try:
+        inspection = inspect_bounded_document_job(store, job_id)
+    except Exception:
+        _workflow_cli_error("Bounded document Job evidence is invalid or unavailable")
+    _emit_json({**inspection, "operation": "bounded-job"})
+
+
 def _artifact_metadata_json(artifact: WorkflowArtifact) -> dict[str, object]:
     return {
         "artifact_id": artifact.artifact_id,
