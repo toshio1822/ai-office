@@ -40,7 +40,9 @@ from ai_office.engine.prepared_step_execution_start import (
 )
 from ai_office.engine.workflow_approval_evidence import (
     approve_business_step,
+    build_execution_approval_evidence_for_tools,
     persist_business_approval_evidence,
+    persist_execution_approval_evidence,
 )
 from ai_office.engine.workflow_job_authorization import (
     WorkflowJobAuthorizationEnvelope,
@@ -54,7 +56,9 @@ from ai_office.engine.workflow_job_authorization import (
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.engine.workflow_run_manifest import load_workflow_run_manifest
 from ai_office.execution_evidence import (
+    ExecutionAttemptAlreadyClaimedError,
     ExecutionEvidenceError,
+    build_execution_evidence_context,
     list_run_execution_evidence,
     load_normalized_result_evidence,
     load_raw_response_evidence,
@@ -101,6 +105,54 @@ def _competing_reservation_worker(
         results.put(error.classification)
     else:
         results.put("reserved")
+
+
+def _competing_provider_worker(
+    evidence_context,
+    request,
+    approval,
+    start_gate,
+    transport_calls,
+    results,
+) -> None:
+    from ai_office.execution_evidence import ExecutionAttemptAlreadyClaimedError
+    from ai_office.providers.openai import (
+        OpenAIApiKey,
+        OpenAIResponsesRawHttpResponse,
+        execute_openai_model_invocation,
+    )
+
+    start_gate.wait()
+
+    def transport(_request_value):
+        with transport_calls.get_lock():
+            transport_calls.value += 1
+        return OpenAIResponsesRawHttpResponse(
+            200,
+            "synthetic",
+            (),
+            b'{"id":"authority-race-response","object":"response",'
+            b'"status":"completed","output":[{"type":"message",'
+            b'"content":[{"type":"output_text","text":"offline"}]}]}',
+        )
+
+    try:
+        execute_openai_model_invocation(
+            request,
+            (),
+            OpenAIApiKey(value=SecretStr("synthetic-test-only")),
+            approval,
+            transport=transport,
+            execution_evidence=evidence_context,
+        )
+    except ExecutionAttemptAlreadyClaimedError:
+        results.put("claim_rejected")
+    except ExecutionEvidenceError as error:
+        results.put(f"evidence_error:{error.classification}")
+    except BaseException as error:
+        results.put(f"unexpected:{type(error).__name__}")
+    else:
+        results.put("transport_completed")
 
 
 def _workflow() -> WorkflowDefinition:
@@ -189,6 +241,41 @@ def _run_and_authorization(
         now_ns=1,
     )
     return workflow, employee, run, request, authorization
+
+
+def _additional_job_authorization(workflow, employee, run, request, job_id: str):
+    manifest = load_workflow_run_manifest(run.store, run.binding.run_id)
+    envelope = WorkflowJobAuthorizationEnvelope(
+        job_id=job_id,
+        run_id=run.binding.run_id,
+        manifest_digest=manifest.digest,
+        workflow_id=workflow.id,
+        step_id=workflow.steps[0].id,
+        step_index=1,
+        employee_id=employee.id,
+        run_input_sha256=sha256(manifest.run_input.encode()).hexdigest(),
+        provider=DIRECT_OPENAI_EXECUTION_TARGET.provider,
+        execution_target_fingerprint=execution_target_fingerprint(
+            DIRECT_OPENAI_EXECUTION_TARGET
+        ),
+        model=employee.model,
+        request_fingerprint=build_model_invocation_execution_fingerprint(
+            request, (), DIRECT_OPENAI_EXECUTION_TARGET
+        ),
+        expires_at_ns=9_999_999_999_999_999_999,
+    )
+    return issue_workflow_job_authorization(
+        run.store,
+        envelope,
+        request=request,
+        resolved_tools=(),
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+        business_approved_by="local-operator-label",
+        business_grant_id=f"business-{job_id}",
+        execution_approved_by="local-operator-label",
+        execution_grant_id=f"execution-{job_id}",
+        now_ns=1,
+    )
 
 
 def _success_transport(calls: list[object], run, authorization):
@@ -348,6 +435,148 @@ def test_competing_processes_consume_only_one_job_attempt_slot(tmp_path: Path) -
     inspection = inspect_workflow_job_authorization(authorization)
     assert inspection.attempts_reserved == 1
     assert inspection.dispatch_admitted is False
+
+
+@pytest.mark.parametrize("competition", ["job_job", "job_run_approval"])
+def test_run_step_attempt_claim_is_single_winner_across_authorities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    competition: str,
+) -> None:
+    workflow, employee, run, request, first_job = _run_and_authorization(
+        tmp_path / competition, f"job-run-authority-race-{competition}"
+    )
+    import ai_office.execution_evidence as execution_evidence_module
+
+    first_job_context = _provider_evidence_context(
+        workflow, employee, run, request, first_job
+    )
+    authorities = [(first_job_context, None, first_job)]
+    if competition == "job_job":
+        second_job = _additional_job_authorization(
+            workflow,
+            employee,
+            run,
+            request,
+            f"job-{competition}-second",
+        )
+        authorities.append(
+            (
+                _provider_evidence_context(
+                    workflow, employee, run, request, second_job
+                ),
+                None,
+                second_job,
+            )
+        )
+    else:
+        approval = approve_model_invocation_execution(
+            request,
+            (),
+            provider="openai",
+            approved_by="run-operator-label",
+            approval_id=f"execution-{competition}-normal",
+            execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        approval_evidence = build_execution_approval_evidence_for_tools(
+            request,
+            (),
+            approval,
+            workflow_id=workflow.id,
+            step_id=workflow.steps[0].id,
+            step_index=1,
+            employee_id=employee.id,
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        persist_execution_approval_evidence(run.store, approval_evidence)
+        normal_context = build_execution_evidence_context(
+            store_root=run.store.root,
+            binding=run.binding,
+            workflow_id=workflow.id,
+            step_id=workflow.steps[0].id,
+            step_index=1,
+            employee_id=employee.id,
+            request=request,
+            resolved_tools=(),
+            approval=approval,
+            target=DIRECT_OPENAI_EXECUTION_TARGET,
+        )
+        authorities.append((normal_context, approval, None))
+
+    # Force two processes to reach the same Run/Step claim boundary together.
+    # The lock then orders the evidence scan + durable exclusive claim.
+    original_lock = execution_evidence_module._run_step_attempt_claim_lock
+    mp_context = get_context("fork")
+    claim_boundary = mp_context.Barrier(2)
+
+    @contextmanager
+    def synchronized_claim(context):
+        claim_boundary.wait(timeout=5)
+        with original_lock(context):
+            yield
+
+    monkeypatch.setattr(
+        execution_evidence_module,
+        "_run_step_attempt_claim_lock",
+        synchronized_claim,
+    )
+    start = mp_context.Barrier(2)
+    calls = mp_context.Value("i", 0)
+    results = mp_context.Queue()
+    workers = [
+        mp_context.Process(
+            target=_competing_provider_worker,
+            args=(context, request, approval, start, calls, results),
+        )
+        for context, approval, _authorization in authorities
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+
+    assert all(worker.exitcode == 0 for worker in workers)
+    outcomes = sorted(results.get(timeout=2) for _ in workers)
+    assert outcomes == ["claim_rejected", "transport_completed"]
+    assert calls.value == 1
+    attempts = list_run_execution_evidence(run.store.root, run.binding.run_id)
+    assert len(attempts) == 1
+    assert attempts[0].step_id == workflow.steps[0].id
+    assert attempts[0].step_index == 1
+    if competition == "job_job":
+        assert attempts[0].authorization_source == "job_grant"
+        assert attempts[0].job_id in {
+            authorization.envelope.job_id for _, _, authorization in authorities
+        }
+    else:
+        assert attempts[0].authorization_source in {"job_grant", "run_approval"}
+
+    # A restart/replay under the losing authority cannot create a second
+    # attempt identity or reach transport, even when its own Job slot remains.
+    monkeypatch.setattr(
+        execution_evidence_module,
+        "_run_step_attempt_claim_lock",
+        original_lock,
+    )
+    from ai_office.providers.openai import execute_openai_model_invocation
+
+    def forbidden_transport(_value):
+        raise AssertionError("a replay must not enter provider transport")
+
+    for replay_context, replay_approval, _authorization in authorities:
+        with pytest.raises(
+            (ExecutionAttemptAlreadyClaimedError, ExecutionEvidenceError)
+        ):
+            execute_openai_model_invocation(
+                request,
+                (),
+                OpenAIApiKey(value=SecretStr("synthetic-test-only")),
+                replay_approval,
+                transport=forbidden_transport,
+                execution_evidence=replay_context,
+            )
+    assert calls.value == 1
+    assert len(list_run_execution_evidence(run.store.root, run.binding.run_id)) == 1
 
 
 def test_reservation_before_run_claim_is_not_refunded_after_interruption(

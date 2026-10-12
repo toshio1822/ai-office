@@ -19,9 +19,11 @@ from __future__ import annotations
 import base64
 import binascii
 import errno
+import fcntl
 import json
 import os
 import re
+import stat
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -529,57 +531,65 @@ def claim_execution_attempt(
     context: ExecutionEvidenceContext,
     http_request: object,
 ) -> ExecutionAttemptEvidence:
-    """Commit the exact attempt claim before the transport callable is entered."""
+    """Commit one Run/Step attempt claim before entering the transport.
+
+    Authorization-specific attempt IDs intentionally differ, so the immutable
+    per-attempt filename alone cannot serialize different authorities for one
+    Run/Step. A shared local lock makes the prior-attempt check and durable
+    claim one linearized operation across those authority variants.
+    """
     approval_evidence = _validate_context_and_approval(context)
     body = _validated_unauthenticated_request(context, http_request)
-
-    existing = tuple(
-        attempt
-        for attempt in list_run_execution_evidence(
-            context.store_root, context.binding.run_id
+    with _run_step_attempt_claim_lock(context):
+        existing = tuple(
+            attempt
+            for attempt in list_run_execution_evidence(
+                context.store_root, context.binding.run_id
+            )
+            if _same_step(attempt, context)
         )
-        if _same_step(attempt, context)
-    )
-    if context.recovery_assessment is None:
-        if existing:
-            raise ExecutionAttemptAlreadyClaimedError
-    else:
-        assessment = context.recovery_assessment
-        recovery_approval = context.recovery_approval
-        if (
-            getattr(assessment, "action", None)
-            not in {"retry_failed", "retry_ambiguous"}
-            or not existing
-            or not any(
-                attempt.attempt_id == getattr(assessment, "previous_attempt_id", None)
-                and attempt.digest
-                == getattr(assessment, "previous_attempt_evidence_sha256", None)
-                for attempt in existing
-            )
-            or any(
-                attempt.recovery_approval_id
-                == getattr(recovery_approval, "approval_id", None)
-                for attempt in existing
-            )
-            or any(
-                attempt.execution_approval_id == approval_evidence.approval_id
-                or attempt.execution_approval_evidence_sha256
-                == approval_evidence.digest
-                for attempt in existing
-            )
-        ):
-            raise ExecutionAttemptAlreadyClaimedError
+        if context.recovery_assessment is None:
+            if existing:
+                raise ExecutionAttemptAlreadyClaimedError
+        else:
+            assessment = context.recovery_assessment
+            recovery_approval = context.recovery_approval
+            previous_attempt_id = getattr(assessment, "previous_attempt_id", None)
+            if (
+                getattr(assessment, "action", None)
+                not in {"retry_failed", "retry_ambiguous"}
+                or not existing
+                or not any(
+                    attempt.attempt_id == previous_attempt_id
+                    and attempt.digest
+                    == getattr(assessment, "previous_attempt_evidence_sha256", None)
+                    for attempt in existing
+                )
+                or any(
+                    attempt.recovery_approval_id
+                    == getattr(recovery_approval, "approval_id", None)
+                    or attempt.previous_attempt_id == previous_attempt_id
+                    for attempt in existing
+                )
+                or any(
+                    attempt.execution_approval_id == approval_evidence.approval_id
+                    or attempt.execution_approval_evidence_sha256
+                    == approval_evidence.digest
+                    for attempt in existing
+                )
+            ):
+                raise ExecutionAttemptAlreadyClaimedError
 
-    claim = _build_attempt(
-        context,
-        body,
-        None if approval_evidence is None else approval_evidence.digest,
-    )
-    path = execution_attempt_evidence_path(
-        context.store_root, claim.run_id, claim.attempt_id
-    )
-    _persist_attempt(path, _canonical_json(_attempt_dict(claim)))
-    return claim
+        claim = _build_attempt(
+            context,
+            body,
+            None if approval_evidence is None else approval_evidence.digest,
+        )
+        path = execution_attempt_evidence_path(
+            context.store_root, claim.run_id, claim.attempt_id
+        )
+        _persist_attempt(path, _canonical_json(_attempt_dict(claim)))
+        return claim
 
 
 def ensure_no_execution_attempt(context: ExecutionEvidenceContext) -> None:
@@ -1901,6 +1911,63 @@ def _persist_attempt(path: Path, contents: bytes) -> None:
     except Exception:
         _raise_persistence("create")
     _persist_new(handle, path.parent, contents)
+
+
+@contextmanager
+def _run_step_attempt_claim_lock(
+    context: ExecutionEvidenceContext,
+) -> Iterator[None]:
+    """Serialize the Run/Step scan-and-claim across all authority sources.
+
+    This uses an owner-only POSIX advisory lock in the local Run store. The
+    immutable attempt record remains the durable claim; the lock only makes
+    its existence check and exclusive creation a single-winner operation.
+    """
+    root = context.store_root
+    run_id = context.binding.run_id
+    _validate_run_namespace(root, run_id)
+    identity = _digest(
+        _canonical_json(
+            {
+                "step_id": context.step_id,
+                "step_index": context.step_index,
+                "workflow_id": context.workflow_id,
+            }
+        )
+    )
+    path = root / f"{run_id}.execution-step-claim.{identity}.lock"
+    if path.is_symlink():
+        _raise_persistence("claim_lock")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            _raise_persistence("claim_lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except ExecutionEvidencePersistenceError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        _raise_persistence("claim_lock")
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def _persist_idempotent(path: Path, contents: bytes) -> None:
