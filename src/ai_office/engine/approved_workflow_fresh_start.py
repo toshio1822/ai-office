@@ -65,6 +65,12 @@ from ai_office.engine.workflow_approval_evidence import (
     validate_execution_approval_evidence,
 )
 from ai_office.execution_target import execution_target_fingerprint
+from ai_office.engine.workflow_job_authorization import (
+    WorkflowJobAuthorization,
+    WorkflowJobAuthorizationError,
+    validate_job_business_authority,
+    validate_job_execution_authority,
+)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcomeError,
     PersistedExecutionOutcome,
@@ -185,11 +191,12 @@ class ApprovedWorkflowBootstrapContext:
     employee: EmployeeDefinition
     resolved_tools: tuple[ToolDefinition, ...]
     api_key: OpenAIApiKey
-    execution_approval: ModelInvocationExecutionApproval
+    execution_approval: ModelInvocationExecutionApproval | None
     transport: object
     execution_target: ModelExecutionTarget = DIRECT_OPENAI_EXECUTION_TARGET
     binding: WorkflowRunBinding | None = None
     manifest_store: WorkflowRunManifestStore | None = None
+    job_authorization: WorkflowJobAuthorization | None = None
 
 
 @dataclass(frozen=True)
@@ -338,6 +345,10 @@ def route_approved_workflow_fresh_start(
             context.execution_approval,
             transport=context.transport,
             events_path=events_path,
+            job_authorization=context.job_authorization,
+            execution_target=(
+                target if context.job_authorization is not None else None
+            ),
         )
     except _SAFE_EXECUTION_ERRORS as error:
         _restore_or_fail(state_path, events_path, running_snapshot)
@@ -445,6 +456,19 @@ def _validate_context_execution_target(
     """Reject target/provider replay before the ready/running persistence seam."""
     try:
         approval = context.execution_approval
+        if context.job_authorization is not None:
+            if approval is not None:
+                _fail("execution_contract")
+            target = validate_execution_target_for_provider(
+                context.execution_target,
+                provider=context.job_authorization.envelope.provider,
+            )
+            if (
+                execution_target_fingerprint(target)
+                != context.job_authorization.envelope.execution_target_fingerprint
+            ):
+                _fail("execution_contract")
+            return target
         if type(approval) is not ModelInvocationExecutionApproval:
             return DIRECT_OPENAI_EXECUTION_TARGET
         target = validate_execution_target_for_provider(
@@ -619,7 +643,34 @@ def _ensure_business_approval(
     assert context.binding is not None and context.manifest_store is not None
     step_index = step_position(workflow, step)
     if not required:
+        if context.job_authorization is not None:
+            _fail("business_approval")
         return None
+    if context.job_authorization is not None:
+        if (
+            _business_evidence_from_preparation(context.preparation_approval)
+            is not None
+        ):
+            _fail("business_approval")
+        try:
+            manifest = load_workflow_run_manifest(
+                context.manifest_store, context.binding.run_id
+            )
+            return validate_job_business_authority(
+                context.job_authorization,
+                binding=context.binding,
+                workflow_id=workflow.id,
+                step_id=step.id,
+                step_index=step_index,
+                employee_id=step.employee,
+                run_input=manifest.run_input,
+            )  # type: ignore[return-value]
+        except WorkflowJobAuthorizationError:
+            _fail("business_approval")
+        except FreshWorkflowBootstrapCompatibilityError:
+            raise
+        except Exception:
+            _fail("business_approval")
     try:
         # The durable Run namespace is authoritative after restart.  A caller
         # carrier is consulted only when no exact durable evidence exists; it
@@ -742,6 +793,26 @@ def _persist_execution_approval_before_provider(
     # Preserve the lower execution owner's established safe classification for
     # malformed caller values.  It rejects non-approval objects before the
     # provider; only an already-valid approval can produce durable evidence.
+    if context.job_authorization is not None:
+        if context.execution_approval is not None:
+            _fail("execution_contract")
+        try:
+            validate_job_execution_authority(
+                context.job_authorization,
+                binding=context.binding,
+                workflow_id=workflow.id,
+                step_id=step.id,
+                step_index=1,
+                employee_id=step.employee,
+                request=prepared_start.request,
+                resolved_tools=context.resolved_tools,
+                target=target,
+            )
+            return
+        except WorkflowJobAuthorizationError:
+            _fail("execution_contract")
+        except Exception:
+            _fail("execution_contract")
     if type(context.execution_approval) is not ModelInvocationExecutionApproval:
         return
     try:
@@ -857,9 +928,7 @@ def _build_prepared_start(
         task_instructions=prepared_step.step_instructions,
         allowed_tools=tuple(prepared_step.allowed_tool_names),
         run_id=(
-            None
-            if prepared_step.binding is None
-            else prepared_step.binding.run_id
+            None if prepared_step.binding is None else prepared_step.binding.run_id
         ),
         manifest_digest=(
             None

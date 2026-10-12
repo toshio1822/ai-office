@@ -51,6 +51,10 @@ from ai_office.engine.artifact import (
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
+from ai_office.engine.workflow_job_authorization import (
+    inspect_workflow_job_authorization,
+    load_workflow_job_authorization_by_identity,
+)
 from ai_office.engine.workflow_progression import WorkflowProgressionDecision
 from ai_office.engineering_evidence import (
     EngineeringEvidenceError,
@@ -1099,6 +1103,30 @@ def execution_evidence_workflow(
             "manifest_digest": manifest.digest,
             "operation": "execution-evidence",
             "run_id": manifest.run_id,
+        }
+    )
+
+
+@workflows_app.command("job-authorization")
+def job_authorization_workflow(
+    run_id: str,
+    job_id: str,
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Inspect Job grant, allowance, revocation, and dispatch evidence read-only."""
+    store = _load_run_store_or_exit(run_store)
+    try:
+        authorization = load_workflow_job_authorization_by_identity(
+            store, run_id, job_id
+        )
+        inspection = inspect_workflow_job_authorization(authorization)
+    except Exception:
+        _workflow_cli_error("Job authorization evidence is invalid or unavailable")
+    _emit_json(
+        {
+            **asdict(inspection),
+            "operation": "job-authorization",
+            "run_id": run_id,
         }
     )
 

@@ -17,9 +17,16 @@ from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition, WorkflowStepDefinition
 from ai_office.execution_evidence import ExecutionEvidenceError
 from ai_office.execution_target import (
+    ModelExecutionTarget,
     ModelExecutionTargetError,
     execution_target_fingerprint,
     validate_execution_target_for_provider,
+)
+from ai_office.engine.workflow_job_authorization import (
+    WorkflowJobAuthorization,
+    WorkflowJobAuthorizationError,
+    validate_job_business_authority,
+    validate_job_execution_authority,
 )
 from ai_office.engine.next_step_preparation import (
     NextStepPreparationApproval,
@@ -193,8 +200,11 @@ def route_approved_workflow_continuation_cycle(
     events_path: object,
     resolved_tools: object,
     api_key: object,
-    execution_approval: object,
+    execution_approval: object | None,
     transport: object,
+    *,
+    job_authorization: WorkflowJobAuthorization | None = None,
+    execution_target: ModelExecutionTarget | None = None,
 ) -> WorkflowProgressionDecision | PersistedExecutionOutcome:
     """Execute exactly one approved next workflow step and then stop.
 
@@ -234,6 +244,7 @@ def route_approved_workflow_continuation_cycle(
         workflow,
         preparation_approval,
         state_path,
+        job_authorization,
     )
     original = _capture_targets(state_path, events_path)
 
@@ -324,6 +335,8 @@ def route_approved_workflow_continuation_cycle(
             events_path,
             resolved_tools,
             execution_approval,
+            job_authorization,
+            execution_target,
         )
     except ApprovedWorkflowContinuationCycleCompatibilityError:
         if _changed(state_path, events_path, guard_before):
@@ -340,6 +353,8 @@ def route_approved_workflow_continuation_cycle(
         employee,
         resolved_tools,
         effective_execution_approval,
+        job_authorization,
+        execution_target,
         state_path,
     )
 
@@ -352,10 +367,10 @@ def route_approved_workflow_continuation_cycle(
             events_path,
             resolved_tools,
             effective_execution_approval,
+            job_authorization,
+            execution_target,
         )
-        persisted_running = persist_prepared_running_state(
-            prepared_start, state_path
-        )
+        persisted_running = persist_prepared_running_state(prepared_start, state_path)
     except _SAFE_RUNNING_PERSISTENCE_ERRORS as error:
         _restore_or_fail(state_path, events_path, original)
         raise error
@@ -387,6 +402,8 @@ def route_approved_workflow_continuation_cycle(
             effective_execution_approval,
             transport=transport,
             events_path=events_path,
+            job_authorization=job_authorization,
+            execution_target=execution_target,
         )
     except _SAFE_EXECUTION_ERRORS as error:
         _restore_or_fail(state_path, events_path, running_snapshot)
@@ -399,7 +416,13 @@ def route_approved_workflow_continuation_cycle(
     )
     if runtime_result_valid and (
         runtime_result.invocation_result.provider
-        != effective_execution_approval.provider
+        != (
+            effective_execution_approval.provider
+            if effective_execution_approval is not None
+            else execution_target.provider
+            if execution_target is not None
+            else None
+        )
     ):
         runtime_result_valid = False
     if _changed(state_path, events_path, running_snapshot):
@@ -443,6 +466,7 @@ def _ensure_business_approval(
     workflow: WorkflowDefinition,
     preparation_approval: object,
     state_path: Path,
+    job_authorization: WorkflowJobAuthorization | None = None,
 ) -> object:
     """Commit the exact Business Approval before next-step preparation."""
     binding = binding_of(result)
@@ -471,6 +495,29 @@ def _ensure_business_approval(
         evidence = None
         durable_evidence = None
         if snapshot.business_approval_required:
+            if job_authorization is not None:
+                if (
+                    type(preparation_approval) is not NextStepPreparationApproval
+                    or preparation_approval.business_approval_evidence is not None
+                ):
+                    _fail("business_approval")
+                try:
+                    validate_job_business_authority(
+                        job_authorization,
+                        binding=binding,
+                        workflow_id=workflow.id,
+                        step_id=next_step.id,
+                        step_index=next_index,
+                        employee_id=next_step.employee,
+                        run_input=manifest.run_input,
+                    )
+                    return replace(
+                        preparation_approval,
+                        approved=True,
+                        business_approval_evidence=None,
+                    )
+                except WorkflowJobAuthorizationError:
+                    _fail("business_approval")
             durable_evidence = find_business_approval_evidence(
                 store,
                 binding=binding,
@@ -520,6 +567,8 @@ def _ensure_business_approval(
         # carrier is left untouched so that the existing lower owner retains
         # its established compatibility classification; it is not an
         # alternative Business Approval authority.
+        if job_authorization is not None:
+            _fail("business_approval")
         if type(preparation_approval) is NextStepPreparationApproval:
             return replace(
                 preparation_approval,
@@ -540,13 +589,36 @@ def _persist_execution_approval_evidence(
     workflow: WorkflowDefinition,
     employee: object,
     resolved_tools: object,
-    execution_approval: ModelInvocationExecutionApproval,
+    execution_approval: ModelInvocationExecutionApproval | None,
+    job_authorization: WorkflowJobAuthorization | None,
+    execution_target: ModelExecutionTarget | None,
     state_path: Path,
 ) -> None:
     """Commit validated Execution Approval evidence before running persistence."""
     try:
         binding = binding_of(prepared_start.request)
         if binding is None or type(resolved_tools) is not tuple:
+            _fail("approval_evidence")
+        if job_authorization is not None:
+            if (
+                execution_approval is not None
+                or execution_target is None
+                or type(employee) is not EmployeeDefinition
+            ):
+                _fail("approval_evidence")
+            validate_job_execution_authority(
+                job_authorization,
+                binding=binding,
+                workflow_id=workflow.id,
+                step_id=prepared_start.running_state.current_step_id,
+                step_index=prepared_start.running_state.current_step_index,
+                employee_id=employee.id,
+                request=prepared_start.request,
+                resolved_tools=resolved_tools,
+                target=execution_target,
+            )
+            return
+        if type(execution_approval) is not ModelInvocationExecutionApproval:
             _fail("approval_evidence")
         target = validate_execution_target_for_provider(
             execution_approval.execution_target,
@@ -745,7 +817,10 @@ def _pinned_run_input(
         )
     except Exception:
         _fail("start_contract")
-    if manifest.workflow_id != workflow.id or manifest.digest != binding.manifest_digest:
+    if (
+        manifest.workflow_id != workflow.id
+        or manifest.digest != binding.manifest_digest
+    ):
         _fail("start_contract")
     return manifest.run_input
 
@@ -875,7 +950,9 @@ def _check_authoritative_pre_persistence(
     state_path: Path,
     events_path: Path,
     resolved_tools: object,
-    execution_approval: object,
+    execution_approval: object | None,
+    job_authorization: WorkflowJobAuthorization | None = None,
+    execution_target: ModelExecutionTarget | None = None,
 ) -> object:
     """Reload terminal history and validate the complete approved request."""
     try:
@@ -933,6 +1010,25 @@ def _check_authoritative_pre_persistence(
         _fail("start_contract")
     if type(resolved_tools) is not tuple:
         _fail("approval_contract")
+    if job_authorization is not None:
+        if execution_approval is not None or execution_target is None:
+            _fail("approval_contract")
+        step_index = prepared_start.running_state.current_step_index
+        try:
+            validate_job_execution_authority(
+                job_authorization,
+                binding=binding_of(prepared_start.request),
+                workflow_id=workflow.id,
+                step_id=prepared_start.running_state.current_step_id,
+                step_index=step_index,
+                employee_id=prepared_start.running_state.current_employee_id,
+                request=prepared_start.request,
+                resolved_tools=resolved_tools,
+                target=execution_target,
+            )
+        except Exception:
+            _fail("approval_contract")
+        return None
     if type(execution_approval) is not ModelInvocationExecutionApproval:
         _fail("approval_contract")
     try:

@@ -626,9 +626,11 @@ def assert_safe_error(call: object, classification: str) -> None:
     assert "secret" not in str(caught.value)
 
 
-def test_public_api_keeps_only_the_ten_business_runtime_inputs() -> None:
+def test_public_api_keeps_ten_business_inputs_and_job_authority_is_opt_in_keyword_only() -> (
+    None
+):
     params = list(inspect.signature(phase190).parameters.values())
-    assert [param.name for param in params] == [
+    assert [param.name for param in params[:10]] == [
         "result",
         "workflow",
         "preparation_approval",
@@ -641,8 +643,13 @@ def test_public_api_keeps_only_the_ten_business_runtime_inputs() -> None:
         "transport",
     ]
     assert all(
-        param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD for param in params
+        param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD for param in params[:10]
     )
+    assert [param.name for param in params[10:]] == [
+        "job_authorization",
+        "execution_target",
+    ]
+    assert all(param.kind is inspect.Parameter.KEYWORD_ONLY for param in params[10:])
     assert issubclass(Phase190Error, ApprovedWorkflowContinuationCycleError)
     assert ApprovedWorkflowContinuationCycleFailureDetail
     with pytest.raises(TypeError):

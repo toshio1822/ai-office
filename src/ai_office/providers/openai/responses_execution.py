@@ -1,6 +1,8 @@
 """Guarded composition of existing OpenAI provider execution boundaries."""
 
 from collections.abc import Callable
+from dataclasses import replace
+from hashlib import sha256
 
 from ai_office.execution_evidence import (
     ExecutionAttemptEvidence,
@@ -86,7 +88,7 @@ def execute_openai_model_invocation(
     request: ModelInvocationRequest,
     resolved_tools: tuple[ToolDefinition, ...],
     api_key: OpenAIApiKey,
-    approval: ModelInvocationExecutionApproval,
+    approval: ModelInvocationExecutionApproval | None,
     *,
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
     execution_target: ModelExecutionTarget | None = None,
@@ -117,6 +119,8 @@ def execute_openai_model_invocation(
             else target
             if target is not None
             else approval.execution_target
+            if approval is not None
+            else execution_evidence.target
         )
         selected_target = validate_execution_target_for_provider(selected_target)
         provider = selected_target.provider
@@ -134,13 +138,18 @@ def execute_openai_model_invocation(
         )
 
     try:
-        validate_model_invocation_execution_approval(
-            request,
-            resolved_tools,
-            approval,
-            provider=provider,
-            execution_target=selected_target,
-        )
+        if approval is not None:
+            validate_model_invocation_execution_approval(
+                request,
+                resolved_tools,
+                approval,
+                provider=provider,
+                execution_target=selected_target,
+            )
+        elif execution_evidence.job_authorization is None:
+            raise ModelInvocationExecutionApprovalError(
+                "model invocation execution is not approved"
+            )
     except ModelInvocationExecutionApprovalError as error:
         return build_model_invocation_failure_from_execution_approval_error(
             error, provider=provider
@@ -151,6 +160,7 @@ def execute_openai_model_invocation(
         or execution_evidence.resolved_tools != resolved_tools
         or execution_evidence.approval != approval
         or execution_evidence.target != selected_target
+        or (approval is not None and execution_evidence.job_authorization is not None)
     ):
         raise ExecutionEvidenceError("context")
 
@@ -177,8 +187,35 @@ def execute_openai_model_invocation(
             http_request,
             api_key,
         )
+        if execution_evidence.job_authorization is not None:
+            from ai_office.engine.workflow_job_authorization import (
+                WorkflowJobAuthorizationError,
+                reserve_job_attempt,
+            )
+
+            body_bytes = http_request.body.encode("utf-8")
+            try:
+                reservation_sha256 = reserve_job_attempt(
+                    execution_evidence.job_authorization,
+                    binding=execution_evidence.binding,
+                    workflow_id=execution_evidence.workflow_id,
+                    step_id=execution_evidence.step_id,
+                    step_index=execution_evidence.step_index,
+                    employee_id=execution_evidence.employee_id,
+                    request=request,
+                    resolved_tools=resolved_tools,
+                    target=selected_target,
+                    request_body_sha256=sha256(body_bytes).hexdigest(),
+                    request_body_length=len(body_bytes),
+                )
+            except WorkflowJobAuthorizationError:
+                raise ExecutionEvidenceError("job_reservation") from None
+            execution_evidence = replace(
+                execution_evidence, job_reservation_sha256=reservation_sha256
+            )
         # The claim consumes only the unauthenticated request template.  The
         # Authorization-bearing value never crosses into durable evidence.
+        # A Job reservation is the durable quota consume before this Run claim.
         attempt: ExecutionAttemptEvidence = claim_execution_attempt(
             execution_evidence, http_request
         )
@@ -186,6 +223,10 @@ def execute_openai_model_invocation(
             attempt_claimed(attempt)
         if before_transport is not None:
             before_transport()
+        if execution_evidence.job_authorization is not None:
+            from ai_office.execution_evidence import admit_job_execution_dispatch
+
+            admit_job_execution_dispatch(execution_evidence, attempt)
         raw_evidence: RawProviderResponseEvidence | None = None
         try:
             raw_response = transport(authenticated_request)
@@ -218,9 +259,7 @@ def execute_openai_model_invocation(
             # provider boundary.  Do not expose its internals; preserve the
             # conservative transport-uncertainty meaning instead.
             result = build_model_invocation_failure_from_openai_transport_error(
-                OpenAIResponsesTransportError(
-                    "OpenAI Responses transport failed"
-                ),
+                OpenAIResponsesTransportError("OpenAI Responses transport failed"),
                 provider=provider,
             )
         normalized = persist_normalized_result_evidence(
@@ -252,9 +291,7 @@ def normalize_openai_responses_raw_response(
         response = parse_openai_responses_http_response(raw_response)
         if isinstance(response, OpenAIResponsesSuccessResponse):
             output = extract_openai_responses_output_text(response)
-            return build_model_invocation_success_from_openai(
-                output, provider=provider
-            )
+            return build_model_invocation_success_from_openai(output, provider=provider)
         return build_model_invocation_failure_from_openai_api_error(
             response, provider=provider
         )
