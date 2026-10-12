@@ -66,6 +66,7 @@ _PATH_TYPE = type(Path())
 _ATTEMPT_SCHEMA = "workflow-execution-attempt.v1"
 _RECOVERY_ATTEMPT_SCHEMA = "workflow-execution-attempt.v2"
 _JOB_ATTEMPT_SCHEMA = "workflow-execution-attempt.v3"
+_DERIVED_JOB_ATTEMPT_SCHEMA = "workflow-execution-attempt.v4"
 _RAW_SCHEMA = "workflow-execution-raw-response.v1"
 _RESULT_SCHEMA = "workflow-execution-normalized-result.v1"
 _ATTEMPT_PREFIX = "execution-attempt"
@@ -138,6 +139,7 @@ _ATTEMPT_V3_KEYS = frozenset(
         "workflow_id",
     }
 )
+_ATTEMPT_V4_KEYS = _ATTEMPT_V3_KEYS | {"job_action_sha256", "job_action_ordinal"}
 _RAW_KEYS = frozenset(
     {
         "attempt_evidence_sha256",
@@ -298,6 +300,7 @@ class ExecutionAttemptEvidence:
         "workflow-execution-attempt.v1",
         "workflow-execution-attempt.v2",
         "workflow-execution-attempt.v3",
+        "workflow-execution-attempt.v4",
     ]
     attempt_id: str
     run_id: str
@@ -326,12 +329,16 @@ class ExecutionAttemptEvidence:
     recovery_approval_evidence_sha256: str | None = None
     previous_attempt_id: str | None = None
     previous_attempt_evidence_sha256: str | None = None
-    authorization_source: Literal["run_approval", "job_grant"] = "run_approval"
+    authorization_source: Literal["run_approval", "job_grant", "job_action"] = (
+        "run_approval"
+    )
     job_id: str | None = None
     job_envelope_sha256: str | None = None
     job_business_grant_sha256: str | None = None
     job_execution_grant_sha256: str | None = None
     job_reservation_sha256: str | None = None
+    job_action_sha256: str | None = None
+    job_action_ordinal: int | None = None
 
     def __post_init__(self) -> None:
         _validate_attempt(self)
@@ -727,7 +734,9 @@ def load_execution_attempt_evidence(
     _validate_sha256(attempt_id, "attempt")
     path = execution_attempt_evidence_path(root, run_id, attempt_id)
     value = _load_record(
-        path, (_ATTEMPT_V1_KEYS, _ATTEMPT_V2_KEYS, _ATTEMPT_V3_KEYS), _parse_attempt
+        path,
+        (_ATTEMPT_V1_KEYS, _ATTEMPT_V2_KEYS, _ATTEMPT_V3_KEYS, _ATTEMPT_V4_KEYS),
+        _parse_attempt,
     )
     assert type(value) is ExecutionAttemptEvidence
     if (
@@ -817,7 +826,9 @@ def list_run_execution_evidence(
         suffix = path.name.removeprefix(marker).removesuffix(".json")
         _validate_sha256(suffix, "identity", load=True)
         value = _load_record(
-            path, (_ATTEMPT_V1_KEYS, _ATTEMPT_V2_KEYS, _ATTEMPT_V3_KEYS), _parse_attempt
+            path,
+            (_ATTEMPT_V1_KEYS, _ATTEMPT_V2_KEYS, _ATTEMPT_V3_KEYS, _ATTEMPT_V4_KEYS),
+            _parse_attempt,
         )
         assert type(value) is ExecutionAttemptEvidence
         if (
@@ -1248,10 +1259,19 @@ def _validate_job_execution_context(context: ExecutionEvidenceContext) -> None:
         validate_job_execution_authority,
     )
 
-    if type(context.job_authorization) is not WorkflowJobAuthorization:
-        _raise_contract("job_authorization")
+    if type(context.job_authorization) is WorkflowJobAuthorization:
+        validate = validate_job_execution_authority
+    else:
+        from ai_office.engine.workflow_bounded_job import (
+            BoundedJobActionAuthorization,
+            validate_bounded_job_authority,
+        )
+
+        if type(context.job_authorization) is not BoundedJobActionAuthorization:
+            _raise_contract("job_authorization")
+        validate = validate_bounded_job_authority
     try:
-        validate_job_execution_authority(
+        validate(
             context.job_authorization,
             binding=context.binding,
             workflow_id=context.workflow_id,
@@ -1261,6 +1281,11 @@ def _validate_job_execution_context(context: ExecutionEvidenceContext) -> None:
             request=context.request,
             resolved_tools=context.resolved_tools,
             target=context.target,
+            **(
+                {"now_ns": None}
+                if type(context.job_authorization) is not WorkflowJobAuthorization
+                else {}
+            ),
         )
     except WorkflowJobAuthorizationError as error:
         raise ExecutionEvidenceError("job_" + error.classification) from None
@@ -1360,28 +1385,52 @@ def _build_attempt(
         from ai_office.engine.workflow_job_authorization import WorkflowJobAuthorization
 
         authorization = context.job_authorization
-        if (
-            type(authorization) is not WorkflowJobAuthorization
-            or context.approval is not None
-        ):
+        if context.approval is not None:
             _raise_contract("authorization_source")
-        values: dict[str, object] = {
-            "authorization_source": "job_grant",
-            "approved_by": None,
-            "job_business_grant_sha256": authorization.business_grant.digest,
-            "job_envelope_sha256": authorization.envelope.digest,
-            "job_execution_grant_sha256": authorization.execution_grant.digest,
-            "job_id": authorization.envelope.job_id,
-            "job_reservation_sha256": context.job_reservation_sha256,
-            "execution_approval_evidence_sha256": None,
-            "execution_approval_id": None,
-            "recovery_decision_sha256": None,
-            "recovery_approval_id": None,
-            "recovery_approval_evidence_sha256": None,
-            "previous_attempt_id": None,
-            "previous_attempt_evidence_sha256": None,
-            "schema_version": _JOB_ATTEMPT_SCHEMA,
-        }
+        if type(authorization) is WorkflowJobAuthorization:
+            values: dict[str, object] = {
+                "authorization_source": "job_grant",
+                "approved_by": None,
+                "job_business_grant_sha256": authorization.business_grant.digest,
+                "job_envelope_sha256": authorization.envelope.digest,
+                "job_execution_grant_sha256": authorization.execution_grant.digest,
+                "job_id": authorization.envelope.job_id,
+                "job_reservation_sha256": context.job_reservation_sha256,
+                "execution_approval_evidence_sha256": None,
+                "execution_approval_id": None,
+                "recovery_decision_sha256": None,
+                "recovery_approval_id": None,
+                "recovery_approval_evidence_sha256": None,
+                "previous_attempt_id": None,
+                "previous_attempt_evidence_sha256": None,
+                "schema_version": _JOB_ATTEMPT_SCHEMA,
+            }
+        else:
+            from ai_office.engine.workflow_bounded_job import (
+                BoundedJobActionAuthorization,
+            )
+
+            if type(authorization) is not BoundedJobActionAuthorization:
+                _raise_contract("authorization_source")
+            values = {
+                "authorization_source": "job_action",
+                "approved_by": None,
+                "job_business_grant_sha256": authorization.business_grant.digest,
+                "job_envelope_sha256": authorization.scope.digest,
+                "job_execution_grant_sha256": authorization.execution_grant.digest,
+                "job_id": authorization.job_id,
+                "job_reservation_sha256": context.job_reservation_sha256,
+                "job_action_sha256": authorization.action_sha256,
+                "job_action_ordinal": authorization.ordinal,
+                "execution_approval_evidence_sha256": None,
+                "execution_approval_id": None,
+                "recovery_decision_sha256": None,
+                "recovery_approval_id": None,
+                "recovery_approval_evidence_sha256": None,
+                "previous_attempt_id": None,
+                "previous_attempt_evidence_sha256": None,
+                "schema_version": _DERIVED_JOB_ATTEMPT_SCHEMA,
+            }
     else:
         if context.approval is None or context.job_authorization is not None:
             _raise_contract("authorization_source")
@@ -1406,6 +1455,8 @@ def _build_attempt(
                 context.approval.request_fingerprint
                 if context.approval is not None
                 else authorization.envelope.request_fingerprint
+                if hasattr(authorization, "envelope")
+                else authorization.request_fingerprint
             ),
             "manifest_digest": context.binding.manifest_digest,
             "provider": target.provider,
@@ -1436,7 +1487,7 @@ def _build_attempt(
             }
         )
     attempt_identity_values = values
-    if values.get("authorization_source") == "job_grant":
+    if values.get("authorization_source") in {"job_grant", "job_action"}:
         attempt_identity_values = {
             key: value
             for key, value in values.items()
@@ -1581,7 +1632,20 @@ def _validate_attempt_context(
                 and attempt.job_execution_grant_sha256
                 == context.job_authorization.execution_grant.digest
                 and attempt.job_reservation_sha256 == context.job_reservation_sha256
+            )
+            or (
+                attempt.authorization_source == "job_action"
+                and context.job_authorization is not None
+                and attempt.job_id == context.job_authorization.job_id
+                and attempt.job_envelope_sha256
+                == context.job_authorization.scope.digest
+                and attempt.job_business_grant_sha256
+                == context.job_authorization.business_grant.digest
+                and attempt.job_execution_grant_sha256
+                == context.job_authorization.execution_grant.digest
                 and attempt.job_reservation_sha256 == context.job_reservation_sha256
+                and attempt.job_action_sha256 == context.job_authorization.action_sha256
+                and attempt.job_action_ordinal == context.job_authorization.ordinal
             )
         )
         and attempt.execution_target_fingerprint
@@ -1672,7 +1736,7 @@ def _attempt_dict(value: ExecutionAttemptEvidence) -> dict[str, object]:
         "task_input_sha256": value.task_input_sha256,
         "workflow_id": value.workflow_id,
     }
-    if value.schema_version == _JOB_ATTEMPT_SCHEMA:
+    if value.schema_version in {_JOB_ATTEMPT_SCHEMA, _DERIVED_JOB_ATTEMPT_SCHEMA}:
         record.update(
             {
                 "authorization_source": "job_grant",
@@ -1683,6 +1747,16 @@ def _attempt_dict(value: ExecutionAttemptEvidence) -> dict[str, object]:
                 "job_reservation_sha256": value.job_reservation_sha256,
             }
         )
+        if value.schema_version == _DERIVED_JOB_ATTEMPT_SCHEMA:
+            record.update(
+                {
+                    "authorization_source": "job_action",
+                    "job_action_ordinal": value.job_action_ordinal,
+                    "job_action_sha256": value.job_action_sha256,
+                }
+            )
+        else:
+            record["authorization_source"] = "job_grant"
     else:
         record.update(
             {
@@ -1775,13 +1849,20 @@ def _response_diagnostics_dict(
 def _parse_attempt(value: Mapping[str, object]) -> ExecutionAttemptEvidence:
     try:
         values = dict(value)
-        if values.get("schema_version") == _JOB_ATTEMPT_SCHEMA:
+        if values.get("schema_version") in {
+            _JOB_ATTEMPT_SCHEMA,
+            _DERIVED_JOB_ATTEMPT_SCHEMA,
+        }:
             values.update(
                 {
                     "execution_approval_id": None,
                     "approved_by": None,
                     "execution_approval_evidence_sha256": None,
-                    "authorization_source": "job_grant",
+                    "authorization_source": (
+                        "job_grant"
+                        if values.get("schema_version") == _JOB_ATTEMPT_SCHEMA
+                        else "job_action"
+                    ),
                 }
             )
         else:
@@ -2074,7 +2155,12 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
     assert isinstance(value, ExecutionAttemptEvidence)
     if (
         value.schema_version
-        not in {_ATTEMPT_SCHEMA, _RECOVERY_ATTEMPT_SCHEMA, _JOB_ATTEMPT_SCHEMA}
+        not in {
+            _ATTEMPT_SCHEMA,
+            _RECOVERY_ATTEMPT_SCHEMA,
+            _JOB_ATTEMPT_SCHEMA,
+            _DERIVED_JOB_ATTEMPT_SCHEMA,
+        }
         or value.state != "claimed"
     ):
         fail("attempt")
@@ -2090,9 +2176,12 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
         ("protocol", value.execution_target_protocol),
     ):
         _validate_text(item, field, load=load)
-    if value.schema_version == _JOB_ATTEMPT_SCHEMA:
+    if value.schema_version in {_JOB_ATTEMPT_SCHEMA, _DERIVED_JOB_ATTEMPT_SCHEMA}:
+        expected_source = (
+            "job_grant" if value.schema_version == _JOB_ATTEMPT_SCHEMA else "job_action"
+        )
         if not (
-            value.authorization_source == "job_grant"
+            value.authorization_source == expected_source
             and value.execution_approval_id is None
             and value.approved_by is None
             and value.execution_approval_evidence_sha256 is None
@@ -2119,6 +2208,19 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
             _validate_text(
                 item, field, load=load
             ) if field == "job_id" else _validate_sha256(item, field, load=load)
+        if value.schema_version == _JOB_ATTEMPT_SCHEMA:
+            if (
+                value.job_action_sha256 is not None
+                or value.job_action_ordinal is not None
+            ):
+                fail("job_action")
+        elif (
+            type(value.job_action_sha256) is not str
+            or not _SHA256_PATTERN.fullmatch(value.job_action_sha256)
+            or type(value.job_action_ordinal) is not int
+            or value.job_action_ordinal < 0
+        ):
+            fail("job_action")
     else:
         if not (
             value.authorization_source == "run_approval"
@@ -2139,6 +2241,8 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
                     value.job_execution_grant_sha256,
                     value.job_reservation_sha256,
                     value.job_reservation_sha256,
+                    value.job_action_sha256,
+                    value.job_action_ordinal,
                 )
             )
         ):
@@ -2202,7 +2306,11 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
         value.previous_attempt_id,
         value.previous_attempt_evidence_sha256,
     )
-    if value.schema_version in {_ATTEMPT_SCHEMA, _JOB_ATTEMPT_SCHEMA}:
+    if value.schema_version in {
+        _ATTEMPT_SCHEMA,
+        _JOB_ATTEMPT_SCHEMA,
+        _DERIVED_JOB_ATTEMPT_SCHEMA,
+    }:
         if any(item is not None for item in recovery_values):
             fail("attempt_lineage")
     else:
@@ -2243,6 +2351,60 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
 
 def _validate_attempt_authority(root: Path, value: ExecutionAttemptEvidence) -> None:
     """Rejoin an attempt to its exact ordinary or Job authority source."""
+    if value.schema_version == _DERIVED_JOB_ATTEMPT_SCHEMA:
+        try:
+            from ai_office.engine.workflow_bounded_job import (
+                validate_bounded_job_attempt_authority,
+            )
+            from ai_office.engine.workflow_run_manifest import WorkflowRunManifestStore
+
+            validate_bounded_job_attempt_authority(
+                WorkflowRunManifestStore(root),
+                job_id=cast(str, value.job_id),
+                ordinal=cast(int, value.job_action_ordinal),
+                action_sha256=cast(str, value.job_action_sha256),
+                reservation_sha256=cast(str, value.job_reservation_sha256),
+                request_body_sha256=value.request_body_sha256,
+                request_body_length=value.request_body_length,
+                attempt_id=value.attempt_id,
+                attempt_evidence_sha256=value.digest,
+                verify_lineage=False,
+            )
+        except Exception:
+            _raise_load("job_action_authority")
+        authorization = None
+        try:
+            from ai_office.engine.workflow_bounded_job import (
+                load_bounded_job_action_by_identity,
+            )
+
+            authorization = load_bounded_job_action_by_identity(
+                WorkflowRunManifestStore(root),
+                cast(str, value.job_id),
+                cast(int, value.job_action_ordinal),
+                verify_lineage=False,
+            )
+        except Exception:
+            _raise_load("job_action_authority")
+        if not (
+            authorization.run_id == value.run_id
+            and authorization.manifest_digest == value.manifest_digest
+            and authorization.workflow_id == value.workflow_id
+            and authorization.step_id == value.step_id
+            and authorization.step_index == value.step_index
+            and authorization.employee_id == value.employee_id
+            and authorization.provider == value.provider
+            and authorization.execution_target_fingerprint
+            == value.execution_target_fingerprint
+            and authorization.request_fingerprint == value.invocation_fingerprint
+            and authorization.scope.business_grant.digest
+            == value.job_business_grant_sha256
+            and authorization.scope.execution_grant.digest
+            == value.job_execution_grant_sha256
+            and authorization.scope.digest == value.job_envelope_sha256
+        ):
+            _raise_load("job_action_binding")
+        return
     if value.schema_version == _JOB_ATTEMPT_SCHEMA:
         try:
             from ai_office.engine.workflow_job_authorization import (
@@ -2419,7 +2581,8 @@ def _validate_attempt_lineage(
         roots = [
             attempt
             for attempt in group
-            if attempt.schema_version in {_ATTEMPT_SCHEMA, _JOB_ATTEMPT_SCHEMA}
+            if attempt.schema_version
+            in {_ATTEMPT_SCHEMA, _JOB_ATTEMPT_SCHEMA, _DERIVED_JOB_ATTEMPT_SCHEMA}
             and attempt.previous_attempt_id is None
         ]
         if len(roots) != 1 or len(by_id) != len(group):
@@ -2442,7 +2605,11 @@ def _validate_attempt_lineage(
             if authority_identity in execution_authority_ids:
                 _raise_load("attempt_lineage")
             execution_authority_ids.add(authority_identity)
-            if attempt.schema_version in {_ATTEMPT_SCHEMA, _JOB_ATTEMPT_SCHEMA}:
+            if attempt.schema_version in {
+                _ATTEMPT_SCHEMA,
+                _JOB_ATTEMPT_SCHEMA,
+                _DERIVED_JOB_ATTEMPT_SCHEMA,
+            }:
                 if attempt.schema_version == _JOB_ATTEMPT_SCHEMA and len(group) != 1:
                     _raise_load("attempt_lineage")
                 continue
