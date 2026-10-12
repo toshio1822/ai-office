@@ -1616,7 +1616,6 @@ def _execute_bounded_document_job(
     if (
         initial_manifest.workflow_id != "research-and-summarize"
         or initial_manifest.run_input != assignment
-        or initial_manifest.execution_destination is None
         or initial_manifest.execution_destination.target != execution_target
         or _digest(_canonical(_workflow_dict(initial_manifest.workflow_snapshot)))
         != scope.actions[0].workflow_snapshot_sha256
@@ -1646,8 +1645,7 @@ def _execute_bounded_document_job(
 
     def verify_run_manifest(manifest, slot: BoundedJobActionSlot) -> None:
         if (
-            manifest.execution_destination is None
-            or manifest.execution_destination.target != execution_target
+            manifest.execution_destination.target != execution_target
             or not any(
                 employee.id == slot.employee_id and employee.model == slot.model
                 for employee in manifest.employee_snapshots

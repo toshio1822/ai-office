@@ -43,9 +43,7 @@ from ai_office.tools import (
     resolve_tool_names,
 )
 
-_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v3"
-_PREVIOUS_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v2"
-_DESTINATION_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v4"
+_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v4"
 _MANIFEST_ERROR_MESSAGE = "workflow run manifest is invalid"
 _PERSISTENCE_ERROR_MESSAGE = "workflow run manifest persistence failed"
 _LOAD_ERROR_MESSAGE = "workflow run manifest could not be loaded"
@@ -57,6 +55,7 @@ _CONTENT_TYPE_PATTERN = re.compile(
 _PATH_TYPE = type(Path())
 _MANIFEST_KEYS = frozenset(
     {
+        "execution_destination",
         "employee_snapshots",
         "run_id",
         "run_input",
@@ -66,7 +65,6 @@ _MANIFEST_KEYS = frozenset(
         "workflow_snapshot",
     }
 )
-_DESTINATION_MANIFEST_KEYS = _MANIFEST_KEYS | {"execution_destination"}
 _EXECUTION_DESTINATION_KEYS = frozenset(
     {
         "allow_loopback_http",
@@ -80,10 +78,16 @@ _EXECUTION_DESTINATION_KEYS = frozenset(
 )
 _OPTIONAL_EXECUTION_DESTINATION_KEYS = frozenset({"request_headers"})
 _WORKFLOW_KEYS = frozenset({"description", "id", "name", "steps"})
-_WORKFLOW_STEP_KEYS_V2 = frozenset(
-    {"business_approval_required", "employee", "id", "instructions", "name"}
+_WORKFLOW_STEP_KEYS = frozenset(
+    {
+        "artifact_content_type",
+        "business_approval_required",
+        "employee",
+        "id",
+        "instructions",
+        "name",
+    }
 )
-_WORKFLOW_STEP_KEYS_V3 = _WORKFLOW_STEP_KEYS_V2 | {"artifact_content_type"}
 _EMPLOYEE_KEYS = frozenset(
     {"allowed_tools", "id", "instructions", "model", "name", "role"}
 )
@@ -99,7 +103,7 @@ class WorkflowRunManifestFailureDetail:
 
 
 class WorkflowRunManifestError(ValueError):
-    """Raised when a Run Manifest value is not an exact v2 contract."""
+    """Raised when a Run Manifest value is not the canonical v4 contract."""
 
     def __init__(self, classification: str = "contract") -> None:
         super().__init__(_MANIFEST_ERROR_MESSAGE)
@@ -119,7 +123,7 @@ class WorkflowRunManifestConflictError(WorkflowRunManifestPersistenceError):
 
 
 class WorkflowRunManifestLoadError(WorkflowRunManifestError):
-    """Raised when a target is not an exact canonical v2 manifest."""
+    """Raised when a target is not an exact canonical v4 manifest."""
 
     def __init__(self, classification: str = "load") -> None:
         ValueError.__init__(self, _LOAD_ERROR_MESSAGE)
@@ -203,7 +207,7 @@ class ExecutionDestinationSnapshot:
     endpoint: str
     credential_environment_variable: str
     allow_loopback_http: bool
-    configuration_fingerprint: str
+    configuration_fingerprint: str | None
     fingerprint: str
     request_headers: tuple[ConfiguredRequestHeader, ...] = ()
 
@@ -242,18 +246,14 @@ class WorkflowRunManifest:
     each employee's allowed-tool order remain semantic and are preserved.
     """
 
-    schema_version: Literal[
-        "workflow-run-manifest.v2",
-        "workflow-run-manifest.v3",
-        "workflow-run-manifest.v4",
-    ]
+    schema_version: Literal["workflow-run-manifest.v4"]
     run_id: str
     workflow_id: str
     run_input: str
     workflow_snapshot: WorkflowDefinitionSnapshot
     employee_snapshots: tuple[EmployeeDefinitionSnapshot, ...]
     tool_contracts: tuple[ToolContractSnapshot, ...]
-    execution_destination: ExecutionDestinationSnapshot | None = None
+    execution_destination: ExecutionDestinationSnapshot
 
     def __post_init__(self) -> None:
         _validate_manifest(self)
@@ -358,28 +358,28 @@ def build_workflow_run_manifest(
         type(execution_model) is not str or not execution_model.strip()
     ):
         _raise_manifest("execution_model")
-    if (execution_model is None) != (execution_target is None):
+    if execution_model is not None and execution_target is None:
         _raise_manifest("execution_destination")
-    destination_snapshot = None
-    if execution_target is not None:
-        try:
-            execution_target = validate_execution_target_for_provider(execution_target)
-            if execution_target.configuration_fingerprint is None:
-                _raise_manifest("execution_destination")
-            destination_snapshot = ExecutionDestinationSnapshot(
-                provider=execution_target.provider,
-                protocol=execution_target.protocol,
-                endpoint=execution_target.endpoint,
-                credential_environment_variable=(
-                    execution_target.credential_environment_variable
-                ),
-                allow_loopback_http=execution_target.allow_loopback_http,
-                configuration_fingerprint=(execution_target.configuration_fingerprint),
-                fingerprint=execution_target_fingerprint(execution_target),
-                request_headers=execution_target.request_headers,
-            )
-        except Exception:
-            _raise_manifest("execution_destination")
+    if execution_target is None:
+        from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
+
+        execution_target = DIRECT_OPENAI_EXECUTION_TARGET
+    try:
+        execution_target = validate_execution_target_for_provider(execution_target)
+        destination_snapshot = ExecutionDestinationSnapshot(
+            provider=execution_target.provider,
+            protocol=execution_target.protocol,
+            endpoint=execution_target.endpoint,
+            credential_environment_variable=(
+                execution_target.credential_environment_variable
+            ),
+            allow_loopback_http=execution_target.allow_loopback_http,
+            configuration_fingerprint=(execution_target.configuration_fingerprint),
+            fingerprint=execution_target_fingerprint(execution_target),
+            request_headers=execution_target.request_headers,
+        )
+    except Exception:
+        _raise_manifest("execution_destination")
 
     # Keep the existing workflow-reference validator as the authoritative
     # lower-level employee-reference check, including its safe error type.
@@ -423,16 +423,7 @@ def build_workflow_run_manifest(
     tool_contracts = tuple(_tool_contract_snapshot(tool) for tool in resolved_tools)
 
     return WorkflowRunManifest(
-        schema_version=(
-            _DESTINATION_MANIFEST_SCHEMA_VERSION
-            if destination_snapshot is not None
-            else _MANIFEST_SCHEMA_VERSION
-            if any(
-                step.artifact_content_type is not None
-                for step in workflow_snapshot.steps
-            )
-            else _PREVIOUS_MANIFEST_SCHEMA_VERSION
-        ),
+        schema_version=_MANIFEST_SCHEMA_VERSION,
         run_id=run_id,
         workflow_id=workflow_snapshot.id,
         run_input=run_input,
@@ -801,35 +792,32 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
             "id": workflow.id,
             "name": workflow.name,
             "steps": [
-                _workflow_step_dict(step, manifest.schema_version)
+                _workflow_step_dict(step)
                 for step in workflow.steps
             ],
         },
     }
-    if manifest.execution_destination is not None:
-        destination = manifest.execution_destination
-        destination_value: dict[str, object] = {
-            "allow_loopback_http": destination.allow_loopback_http,
-            "configuration_fingerprint": destination.configuration_fingerprint,
-            "credential_environment_variable": (
-                destination.credential_environment_variable
-            ),
-            "endpoint": destination.endpoint,
-            "fingerprint": destination.fingerprint,
-            "protocol": destination.protocol,
-            "provider": destination.provider,
-        }
-        if destination.request_headers:
-            destination_value["request_headers"] = [
-                [header.name, header.value] for header in destination.request_headers
-            ]
-        value["execution_destination"] = destination_value
+    destination = manifest.execution_destination
+    destination_value: dict[str, object] = {
+        "allow_loopback_http": destination.allow_loopback_http,
+        "configuration_fingerprint": destination.configuration_fingerprint,
+        "credential_environment_variable": (
+            destination.credential_environment_variable
+        ),
+        "endpoint": destination.endpoint,
+        "fingerprint": destination.fingerprint,
+        "protocol": destination.protocol,
+        "provider": destination.provider,
+    }
+    if destination.request_headers:
+        destination_value["request_headers"] = [
+            [header.name, header.value] for header in destination.request_headers
+        ]
+    value["execution_destination"] = destination_value
     return value
 
 
-def _workflow_step_dict(
-    step: WorkflowStepSnapshot, schema_version: str
-) -> dict[str, object]:
+def _workflow_step_dict(step: WorkflowStepSnapshot) -> dict[str, object]:
     value: dict[str, object] = {
         "business_approval_required": step.business_approval_required,
         "employee": step.employee,
@@ -837,11 +825,7 @@ def _workflow_step_dict(
         "instructions": step.instructions,
         "name": step.name,
     }
-    if schema_version in {
-        _MANIFEST_SCHEMA_VERSION,
-        _DESTINATION_MANIFEST_SCHEMA_VERSION,
-    }:
-        value["artifact_content_type"] = step.artifact_content_type
+    value["artifact_content_type"] = step.artifact_content_type
     return value
 
 
@@ -849,30 +833,21 @@ def _validate_manifest(manifest: object) -> None:
     if type(manifest) is not WorkflowRunManifest:
         _raise_manifest("manifest_type")
     assert isinstance(manifest, WorkflowRunManifest)
-    if type(manifest.schema_version) is not str or manifest.schema_version not in {
-        _PREVIOUS_MANIFEST_SCHEMA_VERSION,
-        _MANIFEST_SCHEMA_VERSION,
-        _DESTINATION_MANIFEST_SCHEMA_VERSION,
-    }:
+    if (
+        type(manifest.schema_version) is not str
+        or manifest.schema_version != _MANIFEST_SCHEMA_VERSION
+    ):
         _raise_manifest("schema_version")
     _validate_run_identity(manifest.run_id)
-    if manifest.schema_version == _DESTINATION_MANIFEST_SCHEMA_VERSION:
-        if type(manifest.execution_destination) is not ExecutionDestinationSnapshot:
-            _raise_manifest("execution_destination")
-        manifest.execution_destination.__post_init__()
-    elif manifest.execution_destination is not None:
+    if type(manifest.execution_destination) is not ExecutionDestinationSnapshot:
         _raise_manifest("execution_destination")
+    manifest.execution_destination.__post_init__()
     if type(manifest.run_input) is not str:
         _raise_manifest("run_input")
     _validate_definition_id(manifest.workflow_id)
     if type(manifest.workflow_snapshot) is not WorkflowDefinitionSnapshot:
         _raise_manifest("workflow_snapshot")
     _validate_workflow_snapshot(manifest.workflow_snapshot)
-    if manifest.schema_version == _PREVIOUS_MANIFEST_SCHEMA_VERSION and any(
-        step.artifact_content_type is not None
-        for step in manifest.workflow_snapshot.steps
-    ):
-        _raise_manifest("schema_version")
     if manifest.workflow_id != manifest.workflow_snapshot.id:
         _raise_manifest("workflow_identity")
     if type(manifest.employee_snapshots) is not tuple:
@@ -1164,12 +1139,9 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         _raise_load("keys")
     try:
         schema_version = value.get("schema_version")
-        expected_keys = (
-            _DESTINATION_MANIFEST_KEYS
-            if schema_version == _DESTINATION_MANIFEST_SCHEMA_VERSION
-            else _MANIFEST_KEYS
-        )
-        if frozenset(value) != expected_keys:
+        if schema_version != _MANIFEST_SCHEMA_VERSION:
+            _raise_load("schema_version")
+        if frozenset(value) != _MANIFEST_KEYS:
             _raise_load("keys")
         workflow_value = value["workflow_snapshot"]
         if (
@@ -1180,14 +1152,8 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         step_values = workflow_value["steps"]
         if type(step_values) is not list:
             _raise_load("workflow_steps")
-        if schema_version not in {
-            _PREVIOUS_MANIFEST_SCHEMA_VERSION,
-            _MANIFEST_SCHEMA_VERSION,
-            _DESTINATION_MANIFEST_SCHEMA_VERSION,
-        }:
-            _raise_load("schema_version")
         steps = tuple(
-            _parse_workflow_step(item, schema_version) for item in step_values
+            _parse_workflow_step(item) for item in step_values
         )
 
         employee_values = value["employee_snapshots"]
@@ -1200,41 +1166,39 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
             _raise_load("tool_contracts")
         tools = tuple(_parse_tool(item) for item in tool_values)
 
-        destination = None
-        if schema_version == _DESTINATION_MANIFEST_SCHEMA_VERSION:
-            destination_value = value["execution_destination"]
-            if (
-                type(destination_value) is not dict
-                or frozenset(destination_value)
-                not in {
-                    _EXECUTION_DESTINATION_KEYS,
-                    _EXECUTION_DESTINATION_KEYS
-                    | _OPTIONAL_EXECUTION_DESTINATION_KEYS,
-                }
-            ):
+        destination_value = value["execution_destination"]
+        if (
+            type(destination_value) is not dict
+            or frozenset(destination_value)
+            not in {
+                _EXECUTION_DESTINATION_KEYS,
+                _EXECUTION_DESTINATION_KEYS
+                | _OPTIONAL_EXECUTION_DESTINATION_KEYS,
+            }
+        ):
+            _raise_load("execution_destination")
+        request_headers: tuple[ConfiguredRequestHeader, ...] = ()
+        if "request_headers" in destination_value:
+            try:
+                request_headers = request_headers_from_records(
+                    destination_value["request_headers"]
+                )
+            except ConfiguredRequestHeaderError:
                 _raise_load("execution_destination")
-            request_headers: tuple[ConfiguredRequestHeader, ...] = ()
-            if "request_headers" in destination_value:
-                try:
-                    request_headers = request_headers_from_records(
-                        destination_value["request_headers"]
-                    )
-                except ConfiguredRequestHeaderError:
-                    _raise_load("execution_destination")
-            destination = ExecutionDestinationSnapshot(
-                provider=destination_value["provider"],
-                protocol=destination_value["protocol"],
-                endpoint=destination_value["endpoint"],
-                credential_environment_variable=destination_value[
-                    "credential_environment_variable"
-                ],
-                allow_loopback_http=destination_value["allow_loopback_http"],
-                configuration_fingerprint=destination_value[
-                    "configuration_fingerprint"
-                ],
-                fingerprint=destination_value["fingerprint"],
-                request_headers=request_headers,
-            )
+        destination = ExecutionDestinationSnapshot(
+            provider=destination_value["provider"],
+            protocol=destination_value["protocol"],
+            endpoint=destination_value["endpoint"],
+            credential_environment_variable=destination_value[
+                "credential_environment_variable"
+            ],
+            allow_loopback_http=destination_value["allow_loopback_http"],
+            configuration_fingerprint=destination_value[
+                "configuration_fingerprint"
+            ],
+            fingerprint=destination_value["fingerprint"],
+            request_headers=request_headers,
+        )
 
         return WorkflowRunManifest(
             schema_version=value["schema_version"],
@@ -1259,13 +1223,8 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         _raise_load("manifest")
 
 
-def _parse_workflow_step(value: object, schema_version: str) -> WorkflowStepSnapshot:
-    step_keys = (
-        _WORKFLOW_STEP_KEYS_V2
-        if schema_version == _PREVIOUS_MANIFEST_SCHEMA_VERSION
-        else _WORKFLOW_STEP_KEYS_V3
-    )
-    if type(value) is not dict or frozenset(value) != step_keys:
+def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
+    if type(value) is not dict or frozenset(value) != _WORKFLOW_STEP_KEYS:
         _raise_load("workflow_step")
     try:
         return WorkflowStepSnapshot(
@@ -1274,11 +1233,7 @@ def _parse_workflow_step(value: object, schema_version: str) -> WorkflowStepSnap
             employee=value["employee"],
             instructions=value["instructions"],
             business_approval_required=value["business_approval_required"],
-            artifact_content_type=(
-                None
-                if schema_version == _PREVIOUS_MANIFEST_SCHEMA_VERSION
-                else value["artifact_content_type"]
-            ),
+            artifact_content_type=value["artifact_content_type"],
         )
     except Exception:
         _raise_load("workflow_step")

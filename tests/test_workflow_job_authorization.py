@@ -1902,28 +1902,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
 
     repository = Path(__file__).resolve().parents[1]
-    go_target = (
-        load_execution_destination_registry(
-            repository / "docs/examples/openai-compatible-destinations.yaml"
-        )
-        .resolve("opencode-go-glm-chat")
-        .target
-    )
-    assert go_target.endpoint == ("https://opencode.ai/zen/go/v1/chat/completions")
-    assert go_target.protocol == "openai-chat-completions"
-    assert go_target.credential_environment_variable == "OPENCODE_API_KEY"
-    assert [(header.name, header.value) for header in go_target.request_headers] == [
-        ("User-Agent", "ai-office/1.0"),
-        ("x-opencode-session", "{run_session}"),
-    ]
-    assert (
-        "glm-5.3-flash"
-        in load_execution_destination_registry(
-            repository / "docs/examples/openai-compatible-destinations.yaml"
-        )
-        .resolve("opencode-go-glm-chat")
-        .models
-    )
+    target = DIRECT_OPENAI_EXECUTION_TARGET
     workflow_names = (
         "research-and-summarize",
         "review-supplied-artifact",
@@ -1936,13 +1915,6 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     employees: dict[str, LoadedEmployee] = {
         name: load_employee_file(repository / "employees" / f"{name}.yaml")
         for name in ("general-researcher", "japanese-document-writer")
-    }
-    employees = {
-        name: LoadedEmployee(
-            employee.source_path,
-            employee.definition.model_copy(update={"model": "glm-5.3-flash"}),
-        )
-        for name, employee in employees.items()
     }
     store_root = tmp_path / "fixed-document-job"
     store_root.mkdir(mode=0o700, parents=True)
@@ -1961,8 +1933,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             employees[employee]
             for employee in ("general-researcher", "japanese-document-writer")
         ),
-        execution_model="glm-5.3-flash",
-        execution_target=go_target,
+        execution_target=target,
     )
     snapshots: dict[str, object] = {initial.workflow_id: initial}
     for name in workflow_names[1:]:
@@ -1978,8 +1949,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                     else "japanese-document-writer"
                 ],
             ),
-            execution_model="glm-5.3-flash",
-            execution_target=go_target,
+            execution_target=target,
         )
     plan = (
         ("research-and-summarize", "research", 1, "general-researcher", "assignment"),
@@ -2043,8 +2013,8 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                         separators=(",", ":"),
                     ).encode()
                 ).hexdigest(),
-                provider=go_target.provider,
-                execution_target_fingerprint=execution_target_fingerprint(go_target),
+                provider=target.provider,
+                execution_target_fingerprint=execution_target_fingerprint(target),
                 model=employee_snapshot.model,
                 input_source=input_source,
             )
@@ -2114,19 +2084,16 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 else "Verdict: PASS\n\nNo actionable findings."
             )
         call_labels.append(label)
-        assert request.url == go_target.endpoint
-        request_headers = {name.lower(): value for name, value in request.headers}
-        assert request_headers["user-agent"] == "ai-office/1.0"
-        assert request_headers["x-opencode-session"].startswith("ai-office-run-")
+        assert request.url == target.endpoint
         raw = json.dumps(
             {
                 "id": label,
-                "object": "chat.completion",
-                "choices": [
+                "object": "response",
+                "status": "completed",
+                "output": [
                     {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": text},
-                        "finish_reason": "stop",
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": text}],
                     }
                 ],
             }
@@ -2142,10 +2109,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         employees=employees,
         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
         transport=fake_transport,
-        execution_target=go_target,
-        execution_destinations=(
-            repository / "docs/examples/openai-compatible-destinations.yaml"
-        ),
+        execution_target=target,
     )
     assert outcome.status == expected_status
     assert outcome.stop_reason == expected_reason
@@ -2157,22 +2121,16 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     for dispatch in dispatches:
         action_manifest = load_workflow_run_manifest(store, dispatch["run_id"])
         destination = action_manifest.execution_destination
-        assert destination is not None
-        assert destination.target == go_target
-        assert destination.fingerprint == execution_target_fingerprint(go_target)
-        assert any(
-            employee.model == "glm-5.3-flash"
-            for employee in action_manifest.employee_snapshots
-        )
+        assert destination.target == target
+        assert destination.fingerprint == execution_target_fingerprint(target)
     final_manifest = load_workflow_run_manifest(store, outcome.final_artifact_run_id)
-    assert final_manifest.execution_destination is not None
-    assert final_manifest.execution_destination.target == go_target
+    assert final_manifest.execution_destination.target == target
     assert (
         final_manifest.execution_destination.fingerprint
-        == execution_target_fingerprint(go_target)
+        == execution_target_fingerprint(target)
     )
     assert all(
-        snapshot.model == "glm-5.3-flash"
+        snapshot.model == employees[snapshot.id].definition.model
         for snapshot in final_manifest.employee_snapshots
     )
     final_artifact = read_run_artifact(
@@ -2260,7 +2218,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 ordinal=3,
                 run_id=revision_run_id,
                 request_fingerprint=build_model_invocation_execution_fingerprint(
-                    revision_request, (), go_target
+                    revision_request, (), target
                 ),
                 predecessor=predecessor,
             )
@@ -2283,7 +2241,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 ordinal=3,
                 run_id=revision_run_id,
                 request_fingerprint=build_model_invocation_execution_fingerprint(
-                    revision_request, (), go_target
+                    revision_request, (), target
                 ),
                 predecessor=predecessor,
             )
@@ -2307,7 +2265,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
                         execution_approval=None,
                         transport=fake_transport,
-                        execution_target=go_target,
+                        execution_target=target,
                         binding=WorkflowRunBinding(
                             revision_run_id, revision_manifest.digest
                         ),
@@ -2367,7 +2325,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         employees=employees,
         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
         transport=fake_transport,
-        execution_target=go_target,
+        execution_target=target,
     )
     assert replay == outcome
     assert len(call_labels) == expected_calls
@@ -2436,7 +2394,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 employees=employees,
                 api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
                 transport=fake_transport,
-                execution_target=go_target,
+                execution_target=target,
             )
         assert len(call_labels) == expected_calls
         result_path.write_bytes(durable_artifact)
@@ -2517,19 +2475,21 @@ def test_bounded_job_launcher_rejects_non_tty_before_credential_lookup(
 
 
 @pytest.mark.parametrize(
-    ("scenario", "destination_fault"),
+    ("scenario", "destination_fault", "destination_name"),
     (
-        ("pass", "none"),
-        ("pass", "registry_changed_after_first_dispatch"),
-        ("pass", "manifest_mismatch"),
-        ("revision", "none"),
+        ("pass", "none", "opencode-go-glm-chat"),
+        ("pass", "none", "internal-chat-gateway"),
+        ("pass", "registry_changed_after_first_dispatch", "internal-chat-gateway"),
+        ("pass", "manifest_mismatch", "internal-chat-gateway"),
+        ("revision", "none", "opencode-go-glm-chat"),
     ),
 )
-def test_bounded_job_cli_runs_fixed_job_offline_and_persists_go_run_identity(
+def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     scenario: str,
     destination_fault: str,
+    destination_name: str,
 ) -> None:
     from types import SimpleNamespace
 
@@ -2543,15 +2503,23 @@ def test_bounded_job_cli_runs_fixed_job_offline_and_persists_go_run_identity(
     )
     destination_file = tmp_path / "destinations.yaml"
     destination_file.write_text(sample_destination_file.read_text(encoding="utf-8"))
+    selected_model = (
+        "glm-5.3-flash"
+        if destination_name == "opencode-go-glm-chat"
+        else "approved-chat-model"
+    )
     target = load_execution_destination_registry(destination_file).resolve(
-        "opencode-go-glm-chat"
+        destination_name
     ).target
     if destination_fault == "manifest_mismatch":
         original_build = manifest_module.build_workflow_run_manifest
 
         def build_with_mismatched_initial_destination(*args, **kwargs):
             if args[0] == "offline-cli-initial-run":
-                kwargs["execution_target"] = replace(target, request_headers=())
+                kwargs["execution_target"] = replace(
+                    target,
+                    base_url="https://manifest-mismatch.example.com/v1/chat/completions",
+                )
             return original_build(*args, **kwargs)
 
         monkeypatch.setattr(
@@ -2614,13 +2582,17 @@ def test_bounded_job_cli_runs_fixed_job_offline_and_persists_go_run_identity(
         labels.append(label)
         assert request.url == target.endpoint
         headers = {name.lower(): value for name, value in request.headers}
-        assert headers["user-agent"] == "ai-office/1.0"
-        assert headers["x-opencode-session"].startswith("ai-office-run-")
+        for header in target.request_headers:
+            actual = headers[header.name.lower()]
+            if header.value == "{run_session}":
+                assert actual.startswith("ai-office-run-")
+            else:
+                assert actual == header.value
         if index == 0 and destination_fault == "registry_changed_after_first_dispatch":
             destination_file.write_text(
                 destination_file.read_text(encoding="utf-8").replace(
-                    "https://opencode.ai/zen/go/v1/chat/completions",
-                    "https://opencode.ai/other/v1/chat/completions",
+                    target.endpoint,
+                    "https://changed.example.com/v1/chat/completions",
                 ),
                 encoding="utf-8",
             )
@@ -2662,11 +2634,11 @@ def test_bounded_job_cli_runs_fixed_job_offline_and_persists_go_run_identity(
         "--employees-directory",
         str(repository / "employees"),
         "--execution-target",
-        "opencode-go-glm-chat",
+        destination_name,
         "--execution-destinations",
         str(destination_file),
         "--execution-model",
-        "glm-5.3-flash",
+        selected_model,
     ]
     result = CliRunner().invoke(
         app,
@@ -2705,20 +2677,20 @@ def test_bounded_job_cli_runs_fixed_job_offline_and_persists_go_run_identity(
         manifest = load_workflow_run_manifest(store, dispatch["run_id"])
         destination = manifest.execution_destination
         assert destination is not None
-        assert destination.provider == "opencode-go-glm-chat"
-        assert destination.protocol == "openai-chat-completions"
+        assert destination.provider == destination_name
+        assert destination.protocol == target.protocol
         assert destination.endpoint == target.endpoint
-        assert destination.credential_environment_variable == "OPENCODE_API_KEY"
+        assert (
+            destination.credential_environment_variable
+            == target.credential_environment_variable
+        )
         assert destination.fingerprint == execution_target_fingerprint(target)
         assert destination.target == target
         assert [
             (item.name, item.value) for item in destination.request_headers
-        ] == [
-            ("User-Agent", "ai-office/1.0"),
-            ("x-opencode-session", "{run_session}"),
-        ]
+        ] == [(item.name, item.value) for item in target.request_headers]
         assert any(
-            employee.model == "glm-5.3-flash"
+            employee.model == selected_model
             for employee in manifest.employee_snapshots
         )
     if scenario == "pass" and destination_fault == "none":
@@ -2752,8 +2724,8 @@ def test_bounded_job_cli_rejects_destination_changed_after_confirmation(
             contents = destination_file.read_text(encoding="utf-8")
             destination_file.write_text(
                 contents.replace(
-                    "https://opencode.ai/zen/go/v1/chat/completions",
-                    "https://opencode.ai/other/v1/chat/completions",
+            "https://ai-gateway.example.com/v1/chat/completions",
+            "https://ai-gateway.example.com/other/v1/chat/completions",
                 ),
                 encoding="utf-8",
             )
@@ -2797,11 +2769,11 @@ def test_bounded_job_cli_rejects_destination_changed_after_confirmation(
             "--employees-directory",
             str(repository / "employees"),
             "--execution-target",
-            "opencode-go-glm-chat",
+            "internal-chat-gateway",
             "--execution-destinations",
             str(destination_file),
             "--execution-model",
-            "glm-5.3-flash",
+            "approved-chat-model",
         ],
     )
     assert result.exit_code != 0
@@ -2875,36 +2847,15 @@ def test_bounded_job_cli_cancel_does_not_issue_grants_or_load_credential(
     assert not run_store.exists()
 
 
-def test_bounded_go_launcher_pins_endpoint_model_credential_and_headers() -> None:
-    from ai_office.cli import _validate_bounded_go_pilot_destination
-
+def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> None:
     repository = Path(__file__).resolve().parents[1]
-    target = (
-        load_execution_destination_registry(
-            repository / "docs/examples/openai-compatible-destinations.yaml"
-        )
-        .resolve("opencode-go-glm-chat")
-        .target
+    registry = load_execution_destination_registry(
+        repository / "docs/examples/openai-compatible-destinations.yaml"
     )
-    _validate_bounded_go_pilot_destination(target, "glm-5.3-flash")
-
-    invalid_targets = (
-        replace(
-            target,
-            base_url="https://opencode.ai/inference/v1/chat/completions",
-        ),
-        replace(target, credential_environment_variable="OTHER_API_KEY"),
-        replace(target, request_headers=()),
-        replace(
-            target,
-            request_headers=(
-                replace(target.request_headers[0], value="other-agent/1.0"),
-                target.request_headers[1],
-            ),
-        ),
-    )
-    for invalid_target in invalid_targets:
-        with pytest.raises(ValueError):
-            _validate_bounded_go_pilot_destination(invalid_target, "glm-5.3-flash")
-    with pytest.raises(ValueError):
-        _validate_bounded_go_pilot_destination(target, "different-model")
+    go = registry.resolve("opencode-go-glm-chat")
+    gateway = registry.resolve("internal-chat-gateway")
+    assert go.target.protocol == gateway.target.protocol == "openai-chat-completions"
+    assert go.select_model("glm-5.3-flash") == "glm-5.3-flash"
+    assert gateway.select_model("approved-chat-model") == "approved-chat-model"
+    assert go.target.provider != gateway.target.provider
+    assert go.target.endpoint != gateway.target.endpoint

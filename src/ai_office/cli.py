@@ -734,31 +734,6 @@ def _resolve_execution_model(
         _workflow_cli_error("execution model is invalid")
 
 
-def _validate_bounded_go_pilot_destination(
-    target: ModelExecutionTarget, model: str
-) -> None:
-    """Pin the Gate A launcher to the exact documented OpenCode Go contract."""
-    actual_headers = tuple(
-        (header.name, header.value) for header in target.request_headers
-    )
-    if (
-        target.provider != "opencode-go-glm-chat"
-        or target.protocol != "openai-chat-completions"
-        or target.endpoint
-        != "https://opencode.ai/zen/go/v1/chat/completions"
-        or target.credential_environment_variable != "OPENCODE_API_KEY"
-        or model != "glm-5.3-flash"
-        or actual_headers
-        != (
-            ("User-Agent", "ai-office/1.0"),
-            ("x-opencode-session", "{run_session}"),
-        )
-    ):
-        raise ValueError(
-            "OpenCode Go pilot destination does not match its fixed contract"
-        )
-
-
 def _validate_pinned_models_for_target(
     target: ModelExecutionTarget,
     registry_path: Path | None,
@@ -785,11 +760,7 @@ def _validate_manifest_execution_target(
     """Prevent a configured Run from switching destination or configuration."""
     destination = getattr(manifest, "execution_destination", None)
     if destination is None:
-        if target.configuration_fingerprint is not None:
-            _workflow_cli_error(
-                "Run Manifest does not pin a configured execution destination"
-            )
-        return
+        _workflow_cli_error("Run Manifest does not pin an execution destination")
     try:
         pinned_target = destination.target
     except Exception:
@@ -1229,7 +1200,6 @@ def run_bounded_document_job_workflow(
         selected_model = _resolve_execution_model(
             target, execution_destinations, execution_model
         )
-        _validate_bounded_go_pilot_destination(target, selected_model)
         destination_fingerprint = execution_target_fingerprint(target)
         registry = load_execution_destination_registry(execution_destinations)
         destination = registry.resolve(execution_target)
@@ -1364,7 +1334,7 @@ def run_bounded_document_job_workflow(
         assignment_digest = sha256(assignment.encode("utf-8")).hexdigest()
     except Exception:
         _workflow_cli_error(
-            "bounded Job definition or OpenCode Go destination is invalid"
+            "bounded Job definition or execution destination is invalid"
         )
 
     _emit_json(
@@ -1411,7 +1381,6 @@ def run_bounded_document_job_workflow(
         confirmed_model = _resolve_execution_model(
             confirmed_target, execution_destinations, execution_model
         )
-        _validate_bounded_go_pilot_destination(confirmed_target, confirmed_model)
         if (
             confirmed_target != target
             or confirmed_model != selected_model
@@ -2097,7 +2066,7 @@ def start_workflow(
             workflows,
             employees,
             selected_model,
-            target if selected_model is not None else None,
+            target,
         )
     )
     workflow, preview = _build_workflow_step_preview(

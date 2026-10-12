@@ -641,6 +641,7 @@ def test_cli_fresh_and_continuation_omniroute_execution_then_result(
         _cli_args("continue", paths)
         + ["--preview-only", "--execution-target", "omniroute"],
     )
+    assert continue_preview_result.exit_code == 0, continue_preview_result.output
     continue_preview = json.loads(continue_preview_result.stdout)
     assert continue_preview["execution_target"]["provider"] == "omniroute"
     continue_result = runner.invoke(

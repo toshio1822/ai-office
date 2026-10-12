@@ -68,9 +68,10 @@ Business Approval required 動作を維持する。明示的な `false` は Busi
 Publication Approval、Recovery Approval を許可するものではない。
 
 この有効な policy は Run Manifest の workflow snapshot に含まれ、canonical bytes と
-digest に pin される。Artifact policy を明示した Run は
-`workflow-run-manifest.v3` を使う。Artifact policy がない新規 Run と既存 Run は v2
-形式を厳密に保ち、Artifact がない意味と既存の canonical identity を維持する。
+digest に pin される。新規Runは単一の `workflow-run-manifest.v4` 形式を使い、組み込み
+OpenAI/OmniRouteと管理者登録済みOpenAI互換destinationの両方について、宛先・protocol・
+endpoint・credential参照・header policy・fingerprintを同じManifestに固定する。未運用段階
+のv2/v3 Manifestは読み込まず、自動移行もしない。
 
 Approval evidence は同じ `WorkflowRunManifestStore` の Run namespace に、目的別の
 canonical JSON sidecar として排他的に保存する。
@@ -156,7 +157,7 @@ Artifact、provider failover、generic event-sourcing framework はこの eviden
 
 ## Current workflow Artifacts (Milestone 4)
 
-Workflow step は `artifact_content_type` に具体的な media type を指定して、成功した正規化済み step output を Artifact として保存する。省略した step は Artifact を作らない。Artifact policy を持つ Run Manifest は `workflow-run-manifest.v3` としてこの policy/content type を pin し、policy を持たない v2 Manifest は Artifact なしの意味と canonical identity を維持する。
+Workflow step は `artifact_content_type` に具体的な media type を指定して、成功した正規化済み step output を Artifact として保存する。省略した step は Artifact を作らない。単一の `workflow-run-manifest.v4` はこのpolicy/content typeと、すべてのRunに必須のdestination snapshotをpinする。
 
 Artifact は Run namespace 内の canonical immutable record で、Run/Manifest、workflow/step/index/employee、content bytes の SHA-256 と byte length、execution attempt、attempt evidence、normalized result、該当する raw-response digest、および successful terminal event digest を束縛する。保存済み Manifest と authoritative execution evidence からのみ生成し、同じ Artifact identity の異なる bytes/metadata は拒否する。persisted success の routing 前に required Artifact を確立し、保存が失敗しても成功済み state/event は維持する。再開時は既存 evidence から missing Artifact を完成し、provider を再実行しない。
 
