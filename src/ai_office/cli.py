@@ -1,9 +1,14 @@
 """Command-line interface for AI Office."""
 
+import getpass
 import json
 import os
+import sys
+import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import NoReturn
 
@@ -12,6 +17,7 @@ import typer
 from ai_office.definitions.employee import (
     EmployeeDefinition,
     EmployeeLoadError,
+    LoadedEmployee,
     load_employees,
 )
 from ai_office.definitions.workflow import (
@@ -68,6 +74,7 @@ from ai_office.execution_evidence import inspect_run_execution_evidence
 from ai_office.execution_target import (
     ModelExecutionTarget,
     ModelExecutionTargetError,
+    execution_target_fingerprint,
     execution_target_for_name,
 )
 from ai_office.github_snapshot import (
@@ -727,6 +734,31 @@ def _resolve_execution_model(
         _workflow_cli_error("execution model is invalid")
 
 
+def _validate_bounded_go_pilot_destination(
+    target: ModelExecutionTarget, model: str
+) -> None:
+    """Pin the Gate A launcher to the exact documented OpenCode Go contract."""
+    actual_headers = tuple(
+        (header.name, header.value) for header in target.request_headers
+    )
+    if (
+        target.provider != "opencode-go-glm-chat"
+        or target.protocol != "openai-chat-completions"
+        or target.endpoint
+        != "https://opencode.ai/zen/go/v1/chat/completions"
+        or target.credential_environment_variable != "OPENCODE_API_KEY"
+        or model != "glm-5.3-flash"
+        or actual_headers
+        != (
+            ("User-Agent", "ai-office/1.0"),
+            ("x-opencode-session", "{run_session}"),
+        )
+    ):
+        raise ValueError(
+            "OpenCode Go pilot destination does not match its fixed contract"
+        )
+
+
 def _validate_pinned_models_for_target(
     target: ModelExecutionTarget,
     registry_path: Path | None,
@@ -1145,6 +1177,295 @@ def bounded_document_job_workflow(
     except Exception:
         _workflow_cli_error("Bounded document Job evidence is invalid or unavailable")
     _emit_json({**inspection, "operation": "bounded-job"})
+
+
+@workflows_app.command("bounded-job-run")
+def run_bounded_document_job_workflow(
+    job_id: str,
+    initial_run_id: str = typer.Option(..., "--run-id"),
+    assignment_file: Path = typer.Option(..., "--assignment-file"),
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+    execution_target: str = typer.Option(..., "--execution-target"),
+    execution_destinations: Path = typer.Option(..., "--execution-destinations"),
+    execution_model: str = typer.Option(..., "--execution-model"),
+) -> None:
+    """Issue and start the fixed five-attempt document Job after operator confirmation.
+
+    The caller must already run inside the independently controlled OS
+    account/process described by the operator runbook; `approved_by` labels
+    and this confirmation prompt are not an isolation boundary.
+    """
+    from ai_office.engine.workflow_bounded_job import (
+        BoundedJobActionSlot,
+        WorkflowJobAuthorizationError,
+        issue_bounded_workflow_job_scope,
+        run_bounded_document_job,
+    )
+    from ai_office.engine.workflow_run_manifest import (
+        WorkflowRunManifestStore,
+        build_workflow_run_manifest,
+        persist_workflow_run_manifest,
+    )
+
+    try:
+        if (
+            os.geteuid() in {0, 1001}
+            or os.geteuid() != os.getuid()
+            or not sys.stdin.isatty()
+        ):
+            raise WorkflowJobAuthorizationError("operator_context")
+        if run_store.is_symlink() or (
+            run_store.exists() and (not run_store.is_dir() or any(run_store.iterdir()))
+        ):
+            raise WorkflowJobAuthorizationError("pilot_store_not_empty")
+        if run_store.parent.is_symlink():
+            raise WorkflowJobAuthorizationError("pilot_store_parent")
+        assignment = _resolve_run_input(None, assignment_file)
+        target = _resolve_execution_target(execution_target, execution_destinations)
+        selected_model = _resolve_execution_model(
+            target, execution_destinations, execution_model
+        )
+        _validate_bounded_go_pilot_destination(target, selected_model)
+        destination_fingerprint = execution_target_fingerprint(target)
+        registry = load_execution_destination_registry(execution_destinations)
+        destination = registry.resolve(execution_target)
+        destination.select_model(selected_model)
+        workflows, employees = _load_workflow_command_inputs(
+            directory, employees_directory
+        )
+        workflow_by_id = {item.definition.id: item for item in workflows}
+        model_employees = {
+            item.definition.id: LoadedEmployee(
+                item.source_path,
+                item.definition.model_copy(update={"model": selected_model}),
+            )
+            for item in employees
+        }
+        required_workflows = (
+            "research-and-summarize",
+            "review-supplied-artifact",
+            "revise-reviewed-artifact",
+        )
+        required_employees = ("general-researcher", "japanese-document-writer")
+        fixed_plan = (
+            (
+                "research-and-summarize",
+                "research",
+                1,
+                "general-researcher",
+                "assignment",
+            ),
+            (
+                "research-and-summarize",
+                "summarize",
+                2,
+                "japanese-document-writer",
+                "previous_step",
+            ),
+            (
+                "review-supplied-artifact",
+                "review",
+                1,
+                "general-researcher",
+                "review_input",
+            ),
+            (
+                "revise-reviewed-artifact",
+                "revise",
+                1,
+                "japanese-document-writer",
+                "revision_input",
+            ),
+            (
+                "review-supplied-artifact",
+                "review",
+                1,
+                "general-researcher",
+                "re_review_input",
+            ),
+        )
+        if any(name not in workflow_by_id for name in required_workflows) or any(
+            name not in model_employees for name in required_employees
+        ):
+            raise WorkflowJobAuthorizationError("pilot_definition_missing")
+        snapshot_manifests = {
+            "research-and-summarize": build_workflow_run_manifest(
+                initial_run_id,
+                assignment,
+                workflow_by_id["research-and-summarize"],
+                tuple(model_employees[name] for name in required_employees),
+            ),
+            "review-supplied-artifact": build_workflow_run_manifest(
+                f"snapshot-{sha256(job_id.encode()).hexdigest()[:16]}-review",
+                assignment,
+                workflow_by_id["review-supplied-artifact"],
+                (model_employees["general-researcher"],),
+            ),
+            "revise-reviewed-artifact": build_workflow_run_manifest(
+                f"snapshot-{sha256(job_id.encode()).hexdigest()[:16]}-revision",
+                assignment,
+                workflow_by_id["revise-reviewed-artifact"],
+                (model_employees["japanese-document-writer"],),
+            ),
+        }
+
+        def snapshot_digest(value: object) -> str:
+            encoded = json.dumps(
+                asdict(value),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            return sha256(encoded).hexdigest()
+
+        action_slots = []
+        for ordinal, (
+            workflow_id,
+            step_id,
+            step_index,
+            employee_id,
+            input_source,
+        ) in enumerate(fixed_plan):
+            manifest = snapshot_manifests[workflow_id]
+            employee_snapshot = next(
+                item for item in manifest.employee_snapshots if item.id == employee_id
+            )
+            action_slots.append(
+                BoundedJobActionSlot(
+                    ordinal=ordinal,
+                    workflow_id=workflow_id,
+                    step_id=step_id,
+                    step_index=step_index,
+                    employee_id=employee_id,
+                    workflow_snapshot_sha256=snapshot_digest(
+                        manifest.workflow_snapshot
+                    ),
+                    employee_snapshot_sha256=snapshot_digest(employee_snapshot),
+                    provider=target.provider,
+                    execution_target_fingerprint=destination_fingerprint,
+                    model=selected_model,
+                    input_source=input_source,
+                )
+            )
+        if run_store.exists() and (
+            not run_store.is_dir() or run_store.is_symlink() or any(run_store.iterdir())
+        ):
+            raise WorkflowJobAuthorizationError("pilot_store_not_empty")
+        assignment_digest = sha256(assignment.encode("utf-8")).hexdigest()
+    except Exception:
+        _workflow_cli_error(
+            "bounded Job definition or OpenCode Go destination is invalid"
+        )
+
+    _emit_json(
+        {
+            "operation": "bounded-job-launch-confirmation",
+            "job_id": job_id,
+            "run_id": initial_run_id,
+            "assignment_sha256": assignment_digest,
+            "provider": target.provider,
+            "protocol": target.protocol,
+            "endpoint": target.endpoint,
+            "destination_fingerprint": destination_fingerprint,
+            "model": selected_model,
+            "action_slots": len(action_slots),
+            "provider_attempt_limit": 5,
+            "revision_limit": 1,
+            "credential_environment_variable": (target.credential_environment_variable),
+            "approval_labels_are_not_identity_proofs": True,
+        }
+    )
+    confirmation = typer.prompt(
+        "After verifying the isolated operator context, type the Job ID to "
+        "issue the Business grant for this exact five-call Job",
+        default="",
+        show_default=False,
+    )
+    if confirmation != job_id:
+        _workflow_cli_error("Business grant was not confirmed", code=1)
+    execution_confirmation = typer.prompt(
+        "Type the same Job ID to issue the separate Execution grant and start "
+        "this Job once",
+        default="",
+        show_default=False,
+    )
+    if execution_confirmation != job_id:
+        _workflow_cli_error("Execution grant was not confirmed", code=1)
+
+    try:
+        now_ns = time.time_ns()
+        run_store.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if run_store.stat().st_mode & 0o077:
+            raise WorkflowJobAuthorizationError("pilot_store_permissions")
+        store = WorkflowRunManifestStore(run_store)
+        initial_manifest = build_workflow_run_manifest(
+            initial_run_id,
+            assignment,
+            workflow_by_id["research-and-summarize"],
+            tuple(model_employees[name] for name in required_employees),
+        )
+        persist_workflow_run_manifest(store, initial_manifest)
+        for name in ("review-supplied-artifact", "revise-reviewed-artifact"):
+            persist_workflow_run_manifest(store, snapshot_manifests[name])
+        operator_label = getpass.getuser()
+        grant_nonce = uuid.uuid4().hex
+        scope = issue_bounded_workflow_job_scope(
+            store,
+            job_id=job_id,
+            initial_run_id=initial_run_id,
+            assignment_sha256=assignment_digest,
+            initial_input_sha256=assignment_digest,
+            actions=tuple(action_slots),
+            max_provider_attempts=5,
+            max_revisions=1,
+            expires_at_ns=now_ns + 2 * 60 * 60 * 1_000_000_000,
+            business_approved_by=operator_label,
+            business_grant_id=f"business-{grant_nonce}",
+            execution_approved_by=operator_label,
+            execution_grant_id=f"execution-{grant_nonce}",
+            now_ns=now_ns,
+        )
+    except Exception:
+        _workflow_cli_error("bounded Job could not be durably prepared")
+
+    # Resolve the credential only after exact confirmation and durable scope
+    # issuance. The secret value is never emitted or persisted.
+    try:
+        api_key = _load_api_key_for_target(target)
+    except Exception:
+        _workflow_cli_error("credential unavailable; this Job cannot be resumed")
+    try:
+        outcome = run_bounded_document_job(
+            store,
+            scope,
+            initial_run_id=scope.initial_run_id,
+            assignment=initial_manifest.run_input,
+            workflows=workflow_by_id,
+            employees=model_employees,
+            api_key=api_key,
+            transport=send_openai_responses_http_request,
+            execution_target=target,
+        )
+    except Exception:
+        _workflow_cli_error("bounded Job stopped; inspect its durable evidence")
+    _emit_json(
+        {
+            "operation": "bounded-job-run",
+            "job_id": scope.job_id,
+            "run_id": scope.initial_run_id,
+            "status": outcome.status,
+            "stop_reason": outcome.stop_reason,
+            "final_artifact_run_id": outcome.final_artifact_run_id,
+            "final_artifact_id": outcome.final_artifact_id,
+            "review_artifact_run_id": outcome.review_artifact_run_id,
+            "review_artifact_id": outcome.review_artifact_id,
+            "revisions_used": outcome.revisions_used,
+        }
+    )
 
 
 def _artifact_metadata_json(artifact: WorkflowArtifact) -> dict[str, object]:

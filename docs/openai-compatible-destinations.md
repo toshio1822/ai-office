@@ -78,16 +78,17 @@ network are consulted, and continuation/recovery cannot silently change
 headers or session identity. Historical v2/v3 Runs and built-in
 `openai` / `omniroute` targets remain readable without header requirements.
 
-Example (see `examples/openai-compatible-destinations.yaml`):
+Example Go Chat Completions destination (see
+`examples/openai-compatible-destinations.yaml`):
 
 ```yaml
 destinations:
-  opencode-go:
-    protocol: openai-responses
-    endpoint: https://opencode.ai/zen/go/v1/responses
+  opencode-go-glm-chat:
+    protocol: openai-chat-completions
+    endpoint: https://opencode.ai/zen/go/v1/chat/completions
     credential: OPENCODE_API_KEY
     models:
-      - gpt-6-luna
+      - glm-5.3-flash
     headers:
       User-Agent: ai-office/1.0
       x-opencode-session: "{run_session}"
@@ -95,16 +96,19 @@ destinations:
 
 ## OpenCode Go usage caveats
 
-The Go sample above only demonstrates the header mechanism. AI Office makes
-no claim that it is compatible with, or that general business-document
-traffic is permitted by, the OpenCode Go service. Go is positioned as a
-coding-agent subscription with per-model monthly usage limits and
-abuse monitoring. Before any live canary, an administrator must confirm the
-service's published scope and acceptable use, select only models documented
-for the Responses API, review each model's pricing/retention/training terms
-for the intended data, and verify that Zen overage/fallback billing is
-disabled. Technical wire compatibility and contractual permission are
-separate concerns.
+The Go sample is a secret-free, offline-testable destination candidate for a
+code-related technical investigation. The current Go documentation lists
+`glm-5.3-flash` on the OpenAI-compatible Chat Completions endpoint shown above,
+and calls for typical coding-agent traffic, a truthful identifying `User-Agent`,
+and a stable `x-opencode-session` per conversation. Its Go endpoint is separate
+from the Console pay-as-you-go Inference API. Before a live run, an operator
+must confirm current model entitlement and allowance, use the exact admin
+destination fingerprint across every fixed Job action, and ensure no fallback
+to a separate balance is possible. A provider attempt count is not a monetary
+spend cap. Technical wire compatibility and account/contract eligibility are
+separate checks. The bounded one-shot Gate B procedure and required host/UID
+isolation checks are documented in
+[`runbooks/opencode-go-bounded-job.md`](runbooks/opencode-go-bounded-job.md).
 
 ## Supported compatibility subset
 

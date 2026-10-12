@@ -27,3 +27,15 @@ destinations:
     headers:
       User-Agent: ai-office/1.0
       x-opencode-session: "{run_session}"
+
+  # Current OpenCode Go Chat Completions candidate for the bounded code-analysis
+  # pilot. Confirm model entitlement with the operator at the live-run gate.
+  opencode-go-glm-chat:
+    protocol: openai-chat-completions
+    endpoint: https://opencode.ai/zen/go/v1/chat/completions
+    credential: OPENCODE_API_KEY
+    models:
+      - glm-5.3-flash
+    headers:
+      User-Agent: ai-office/1.0
+      x-opencode-session: "{run_session}"

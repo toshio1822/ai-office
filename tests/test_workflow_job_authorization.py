@@ -14,6 +14,7 @@ import pytest
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
+import ai_office.cli as cli_module
 import ai_office.engine.workflow_bounded_job as bounded_job_module
 import ai_office.engine.workflow_job_authorization as job_authorization_module
 from ai_office.cli import app
@@ -77,6 +78,7 @@ from ai_office.engine.workflow_run_manifest import (
     create_workflow_run_manifest,
     load_workflow_run_manifest,
 )
+from ai_office.execution_destination import load_execution_destination_registry
 from ai_office.execution_evidence import (
     ExecutionAttemptAlreadyClaimedError,
     ExecutionEvidenceError,
@@ -1898,6 +1900,28 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     final_verdict: str,
 ) -> None:
     repository = Path(__file__).resolve().parents[1]
+    go_target = (
+        load_execution_destination_registry(
+            repository / "docs/examples/openai-compatible-destinations.yaml"
+        )
+        .resolve("opencode-go-glm-chat")
+        .target
+    )
+    assert go_target.endpoint == ("https://opencode.ai/zen/go/v1/chat/completions")
+    assert go_target.protocol == "openai-chat-completions"
+    assert go_target.credential_environment_variable == "OPENCODE_API_KEY"
+    assert [(header.name, header.value) for header in go_target.request_headers] == [
+        ("User-Agent", "ai-office/1.0"),
+        ("x-opencode-session", "{run_session}"),
+    ]
+    assert (
+        "glm-5.3-flash"
+        in load_execution_destination_registry(
+            repository / "docs/examples/openai-compatible-destinations.yaml"
+        )
+        .resolve("opencode-go-glm-chat")
+        .models
+    )
     workflow_names = (
         "research-and-summarize",
         "review-supplied-artifact",
@@ -1910,6 +1934,13 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     employees: dict[str, LoadedEmployee] = {
         name: load_employee_file(repository / "employees" / f"{name}.yaml")
         for name in ("general-researcher", "japanese-document-writer")
+    }
+    employees = {
+        name: LoadedEmployee(
+            employee.source_path,
+            employee.definition.model_copy(update={"model": "glm-5.3-flash"}),
+        )
+        for name, employee in employees.items()
     }
     store_root = tmp_path / "fixed-document-job"
     store_root.mkdir(mode=0o700, parents=True)
@@ -2006,10 +2037,8 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                         separators=(",", ":"),
                     ).encode()
                 ).hexdigest(),
-                provider=DIRECT_OPENAI_EXECUTION_TARGET.provider,
-                execution_target_fingerprint=execution_target_fingerprint(
-                    DIRECT_OPENAI_EXECUTION_TARGET
-                ),
+                provider=go_target.provider,
+                execution_target_fingerprint=execution_target_fingerprint(go_target),
                 model=employee_snapshot.model,
                 input_source=input_source,
             )
@@ -2079,20 +2108,19 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 else "Verdict: PASS\n\nNo actionable findings."
             )
         call_labels.append(label)
+        assert request.url == go_target.endpoint
+        request_headers = {name.lower(): value for name, value in request.headers}
+        assert request_headers["user-agent"] == "ai-office/1.0"
+        assert request_headers["x-opencode-session"].startswith("ai-office-run-")
         raw = json.dumps(
             {
                 "id": label,
-                "object": "response",
-                "status": "completed",
-                "output": [
+                "object": "chat.completion",
+                "choices": [
                     {
-                        "type": "message",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": text,
-                            }
-                        ],
+                        "index": 0,
+                        "message": {"role": "assistant", "content": text},
+                        "finish_reason": "stop",
                     }
                 ],
             }
@@ -2108,7 +2136,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         employees=employees,
         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
         transport=fake_transport,
-        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        execution_target=go_target,
     )
     assert outcome.status == expected_status
     assert outcome.stop_reason == expected_reason
@@ -2201,7 +2229,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 ordinal=3,
                 run_id=revision_run_id,
                 request_fingerprint=build_model_invocation_execution_fingerprint(
-                    revision_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+                    revision_request, (), go_target
                 ),
                 predecessor=predecessor,
             )
@@ -2224,7 +2252,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 ordinal=3,
                 run_id=revision_run_id,
                 request_fingerprint=build_model_invocation_execution_fingerprint(
-                    revision_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+                    revision_request, (), go_target
                 ),
                 predecessor=predecessor,
             )
@@ -2248,7 +2276,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
                         execution_approval=None,
                         transport=fake_transport,
-                        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+                        execution_target=go_target,
                         binding=WorkflowRunBinding(
                             revision_run_id, revision_manifest.digest
                         ),
@@ -2308,7 +2336,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         employees=employees,
         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
         transport=fake_transport,
-        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        execution_target=go_target,
     )
     assert replay == outcome
     assert len(call_labels) == expected_calls
@@ -2377,7 +2405,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 employees=employees,
                 api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
                 transport=fake_transport,
-                execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+                execution_target=go_target,
             )
         assert len(call_labels) == expected_calls
         result_path.write_bytes(durable_artifact)
@@ -2413,3 +2441,80 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
             _review_verdict(unsupported_review, review_input=review_input)
         assert caught.value.classification == "document_job_unverified_finding"
+
+
+def test_bounded_job_launcher_rejects_non_tty_before_credential_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    credential_lookups: list[str] = []
+
+    def fail_if_credential_loaded(_target):
+        credential_lookups.append("lookup")
+        raise AssertionError("offline launcher guard must precede credentials")
+
+    monkeypatch.setattr(
+        cli_module, "_load_api_key_for_target", fail_if_credential_loaded
+    )
+    repository = Path(__file__).resolve().parents[1]
+    result = CliRunner().invoke(
+        app,
+        [
+            "workflows",
+            "bounded-job-run",
+            "offline-job",
+            "--run-id",
+            "offline-run",
+            "--assignment-file",
+            str(tmp_path / "assignment.md"),
+            "--run-store",
+            str(tmp_path / "runs"),
+            "--directory",
+            str(repository / "workflows"),
+            "--employees-directory",
+            str(repository / "employees"),
+            "--execution-target",
+            "opencode-go-glm-chat",
+            "--execution-destinations",
+            str(repository / "docs/examples/openai-compatible-destinations.yaml"),
+            "--execution-model",
+            "glm-5.3-flash",
+        ],
+    )
+    assert result.exit_code != 0
+    assert credential_lookups == []
+    assert "operator_context" not in result.output
+
+
+def test_bounded_go_launcher_pins_endpoint_model_credential_and_headers() -> None:
+    from ai_office.cli import _validate_bounded_go_pilot_destination
+
+    repository = Path(__file__).resolve().parents[1]
+    target = (
+        load_execution_destination_registry(
+            repository / "docs/examples/openai-compatible-destinations.yaml"
+        )
+        .resolve("opencode-go-glm-chat")
+        .target
+    )
+    _validate_bounded_go_pilot_destination(target, "glm-5.3-flash")
+
+    invalid_targets = (
+        replace(
+            target,
+            base_url="https://opencode.ai/inference/v1/chat/completions",
+        ),
+        replace(target, credential_environment_variable="OTHER_API_KEY"),
+        replace(target, request_headers=()),
+        replace(
+            target,
+            request_headers=(
+                replace(target.request_headers[0], value="other-agent/1.0"),
+                target.request_headers[1],
+            ),
+        ),
+    )
+    for invalid_target in invalid_targets:
+        with pytest.raises(ValueError):
+            _validate_bounded_go_pilot_destination(invalid_target, "glm-5.3-flash")
+    with pytest.raises(ValueError):
+        _validate_bounded_go_pilot_destination(target, "different-model")
