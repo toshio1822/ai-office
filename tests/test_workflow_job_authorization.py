@@ -53,6 +53,7 @@ from ai_office.engine.workflow_approval_evidence import (
     persist_execution_approval_evidence,
 )
 from ai_office.engine.workflow_bounded_job import (
+    BoundedJobActionAuthorization,
     BoundedJobActionSlot,
     derive_bounded_job_action_authorization,
     issue_bounded_workflow_job_scope,
@@ -598,6 +599,55 @@ def test_one_root_job_grant_authorizes_two_distinct_runs_through_shared_provider
         )
 
     _request_one, _action_one, attempt_one, artifact_one = execute_action(first, 0)
+    forged_run = create_test_run(
+        store_root,
+        "bounded-job-forged-unrelated-run",
+        workflow,
+        (employee,),
+        with_business_approvals=False,
+    )
+    forged_manifest = load_workflow_run_manifest(
+        forged_run.store, forged_run.binding.run_id
+    )
+    forged_request = ModelInvocationRequest(
+        model=employee.model,
+        system_instructions=employee.instructions,
+        task_instructions=workflow.steps[0].instructions,
+        allowed_tools=(),
+        run_id=forged_manifest.run_id,
+        manifest_digest=forged_manifest.digest,
+        run_input=forged_manifest.run_input,
+    )
+    forged_authorization = BoundedJobActionAuthorization(
+        first.store.root,
+        root_scope,
+        1,
+        forged_manifest.run_id,
+        forged_manifest.digest,
+        sha256(forged_manifest.run_input.encode()).hexdigest(),
+        build_model_invocation_execution_fingerprint(
+            forged_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+        ),
+        first.binding.run_id,
+        artifact_one.artifact_id,
+        artifact_one.content_sha256,
+        "f" * 64,
+    )
+    forged_context = _provider_evidence_context(
+        workflow, employee, forged_run, forged_request, forged_authorization
+    )
+    from ai_office.providers.openai import execute_openai_model_invocation
+
+    with pytest.raises(ExecutionEvidenceError):
+        execute_openai_model_invocation(
+            forged_request,
+            (),
+            OpenAIApiKey(value=SecretStr("synthetic-test-only")),
+            None,
+            transport=lambda _request: transport_calls.append("forged-run"),
+            execution_evidence=forged_context,
+        )
+    assert transport_calls == [first.binding.run_id]
     second_run_id = "bounded-job-run-2"
     second_input = artifact_one.content.decode("utf-8")
     second_manifest = create_workflow_run_manifest(
@@ -1741,6 +1791,42 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
         ),
         now_ns=3,
     )
+    from ai_office.engine.workflow_bounded_job import _action_path
+    from ai_office.execution_evidence import build_execution_evidence_context
+    from ai_office.providers.openai import execute_openai_model_invocation
+
+    second_action_path = _action_path(run.store.root, scope.job_id, 1)
+    second_action_bytes = second_action_path.read_bytes()
+    evidence_context = build_execution_evidence_context(
+        store_root=run.store.root,
+        binding=run.binding,
+        workflow_id=workflow.id,
+        step_id="summarize",
+        step_index=2,
+        employee_id="writer",
+        request=prepared_start.request,
+        resolved_tools=(),
+        approval=None,
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+        job_authorization=second_auth,
+    )
+    for tampered_bytes in (None, b"not canonical action json"):
+        if tampered_bytes is None:
+            second_action_path.unlink()
+        else:
+            second_action_path.write_bytes(tampered_bytes)
+        with pytest.raises(ExecutionEvidenceError):
+            execute_openai_model_invocation(
+                prepared_start.request,
+                (),
+                OpenAIApiKey(value=SecretStr("synthetic-test-only")),
+                None,
+                transport=lambda _request: calls.append("unauthorized"),
+                execution_evidence=evidence_context,
+            )
+        assert calls == ["research"]
+        second_action_path.write_bytes(second_action_bytes)
+        second_action_path.chmod(0o600)
     final = route_approved_workflow_continuation_cycle(
         first_outcome,
         workflow,
@@ -1826,7 +1912,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     store = WorkflowRunManifestStore(store_root)
     assignment = (
         "Requirements: summarize only the supplied evidence.\n"
-        "Evidence: synthetic offline fixture."
+        "Evidence reference: fixture:evidence-1"
     )
     initial_run_id = "bounded-document-initial"
     initial = create_workflow_run_manifest(
@@ -1959,15 +2045,15 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 text = "The report is not ready."
             else:
                 evidence_reference = (
-                    "unavailable phantom reference"
+                    "Synthetic report with limits"
                     if first_verdict == "NONACTIONABLE"
-                    else "Synthetic report with limits"
+                    else "fixture:evidence-1"
                 )
                 text = (
                     "Verdict: CHANGES_REQUIRED\n\n"
                     "Requirement: preserve the stated limit.\n"
                     "Artifact location: Conclusion.\n"
-                    f"Evidence source/reference: {evidence_reference}.\n"
+                    f"Evidence source/reference: {evidence_reference}\n"
                     "Impact: unsupported certainty.\n"
                     "Requested correction: retain the limitation."
                 )
@@ -1982,7 +2068,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 "Verdict: CHANGES_REQUIRED\n\n"
                 "Requirement: preserve the stated limit.\n"
                 "Artifact location: Conclusion.\n"
-                "Evidence source/reference: Synthetic report with limits.\n"
+                "Evidence source/reference: fixture:evidence-1\n"
                 "Impact: unsupported certainty.\n"
                 "Requested correction: retain the limitation."
                 if final_verdict == "CHANGES_REQUIRED"
@@ -2133,3 +2219,72 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         )
         == expected_calls
     )
+    if expected_status in {"candidate", "reviewed"}:
+        from ai_office.engine.artifact import workflow_artifact_path
+
+        # Delete the final report in the no-revision case; corrupt the final
+        # independent review Artifact after a revision. Each public read path
+        # must reject the damaged terminal proof without calling transport.
+        if expected_status == "candidate":
+            damaged_result = (outcome.final_artifact_run_id, outcome.final_artifact_id)
+            damaged_bytes = None
+        else:
+            damaged_result = (
+                outcome.review_artifact_run_id,
+                outcome.review_artifact_id,
+            )
+            damaged_bytes = b"{}"
+        result_path = workflow_artifact_path(store, *damaged_result)
+        durable_artifact = result_path.read_bytes()
+        if damaged_bytes is None:
+            result_path.unlink()
+        else:
+            result_path.write_bytes(damaged_bytes)
+        with pytest.raises(WorkflowJobAuthorizationError):
+            inspect_bounded_document_job(store, scope.job_id)
+        with pytest.raises(WorkflowJobAuthorizationError):
+            run_bounded_document_job(
+                store,
+                scope,
+                initial_run_id=initial_run_id,
+                assignment=assignment,
+                workflows=workflows,
+                employees=employees,
+                api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
+                transport=fake_transport,
+                execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+            )
+        assert len(call_labels) == expected_calls
+        result_path.write_bytes(durable_artifact)
+
+
+def test_changes_required_needs_exact_original_assignment_evidence_reference() -> None:
+    from ai_office.engine.workflow_bounded_job import _review_verdict
+
+    review_input = json.dumps(
+        {
+            "assignment": "Requirements: assess the supplied report.\n"
+            "Evidence reference: source:AC2#p4",
+            "source_artifact": {
+                "content": "The report mentions a weak unverified phrase."
+            },
+        }
+    )
+    review = (
+        "Verdict: CHANGES_REQUIRED\n\n"
+        "Requirement: use the cited evidence.\n"
+        "Artifact location: Conclusion.\n"
+        "Evidence source/reference: source:AC2#p4\n"
+        "Impact: unsupported statement.\n"
+        "Requested correction: remove unsupported wording."
+    )
+    assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
+    for unsupported_reference in (
+        "weak unverified phrase",
+        "assignment",
+        "source:AC2",
+    ):
+        unsupported_review = review.replace("source:AC2#p4", unsupported_reference)
+        with pytest.raises(WorkflowJobAuthorizationError) as caught:
+            _review_verdict(unsupported_review, review_input=review_input)
+        assert caught.value.classification == "document_job_unverified_finding"

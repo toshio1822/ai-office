@@ -523,6 +523,7 @@ def reserve_bounded_job_attempt(
     ):
         raise WorkflowJobAuthorizationError("job_reservation")
     with _job_lock(authorization.store_root, authorization.job_id):
+        _require_persisted_action_authorization(authorization)
         scope = load_bounded_workflow_job_scope(
             WorkflowRunManifestStore(authorization.store_root), authorization.job_id
         )
@@ -569,6 +570,7 @@ def admit_bounded_job_dispatch(
     now_ns: int | None = None,
 ) -> None:
     with _job_lock(authorization.store_root, authorization.job_id):
+        _require_persisted_action_authorization(authorization)
         scope = load_bounded_workflow_job_scope(
             WorkflowRunManifestStore(authorization.store_root), authorization.job_id
         )
@@ -664,6 +666,7 @@ def validate_bounded_job_authority(
     resolved_tools: tuple,
     now_ns: int | None = None,
 ) -> None:
+    authorization = _require_persisted_action_authorization(authorization)
     scope = load_bounded_workflow_job_scope(
         WorkflowRunManifestStore(authorization.store_root), authorization.job_id
     )
@@ -722,6 +725,7 @@ def validate_bounded_job_business_authority(
     run_input: str,
     now_ns: int | None = None,
 ) -> None:
+    authorization = _require_persisted_action_authorization(authorization)
     scope = load_bounded_workflow_job_scope(
         WorkflowRunManifestStore(authorization.store_root), authorization.job_id
     )
@@ -920,6 +924,20 @@ def load_bounded_job_action_by_identity(
         return authorization
     except Exception:
         raise WorkflowJobAuthorizationError("job_action_load") from None
+
+
+def _require_persisted_action_authorization(
+    authorization: BoundedJobActionAuthorization,
+) -> BoundedJobActionAuthorization:
+    """Rejoin caller-held action data to its immutable, fully derived record."""
+    persisted = load_bounded_job_action_by_identity(
+        WorkflowRunManifestStore(authorization.store_root),
+        authorization.job_id,
+        authorization.ordinal,
+    )
+    if persisted != authorization:
+        raise WorkflowJobAuthorizationError("job_action_binding")
+    return persisted
 
 
 def validate_bounded_job_attempt_authority(
@@ -1232,10 +1250,62 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
                 findings[label] = value.strip()
         if set(findings) != set(required):
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
-        evidence_reference = findings["Evidence source/reference"].casefold()
-        if review_input is None or evidence_reference not in review_input.casefold():
+        evidence_reference = _normalized_reference(
+            findings["Evidence source/reference"]
+        )
+        if (
+            review_input is None
+            or evidence_reference
+            not in _explicit_assignment_evidence_references(review_input)
+        ):
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     return verdict
+
+
+def _normalized_reference(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _explicit_assignment_evidence_references(review_input: str) -> frozenset[str]:
+    """Extract exact, explicitly labeled provenance references from assignment.
+
+    Subject Artifact text and the JSON envelope are deliberately excluded. This
+    is a scope/provenance check, not an automatic semantic-truth verifier.
+    """
+    try:
+        value = json.loads(review_input)
+    except Exception:
+        raise WorkflowJobAuthorizationError("document_job_unverified_finding") from None
+    assignment = value.get("assignment") if type(value) is dict else None
+    if type(assignment) is not str:
+        raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+    allowed_labels = {
+        "evidence",
+        "evidence id",
+        "evidence reference",
+        "acceptance evidence",
+        "source id",
+        "source reference",
+    }
+    generic = {
+        "acceptance evidence",
+        "assignment",
+        "artifact",
+        "evidence",
+        "input",
+        "report",
+        "result",
+        "source",
+    }
+    references = set()
+    for line in assignment.splitlines():
+        label, separator, raw_reference = line.partition(":")
+        if not separator or label.strip().casefold() not in allowed_labels:
+            continue
+        reference = _normalized_reference(raw_reference.strip().strip("`*_\"'"))
+        if reference and reference not in generic:
+            references.add(reference)
+    return frozenset(references)
 
 
 @dataclass(frozen=True)
@@ -1269,11 +1339,11 @@ def run_bounded_document_job(
         raise WorkflowJobAuthorizationError("document_job_binding")
     prior_status = _read_bounded_document_job_status(store, scope)
     if prior_status is not None:
-        return _outcome_from_status(prior_status)
+        return _outcome_from_status(store, scope, prior_status)
     with _job_lock(store.root, scope.job_id):
         prior_status = _read_bounded_document_job_status(store, scope)
         if prior_status is not None:
-            return _outcome_from_status(prior_status)
+            return _outcome_from_status(store, scope, prior_status)
         if _job_start_path(store.root, scope.job_id).exists():
             return BoundedDocumentJobOutcome(
                 "stopped", None, None, None, None, 0, "document_job_already_started"
@@ -1363,12 +1433,8 @@ def inspect_bounded_document_job(
         key=lambda item: (item["admitted_at_ns"], item["action_ordinal"])
     )
     status = _read_bounded_document_job_status(store, scope)
-    if status is not None and (
-        status["consumed_provider_attempts"] != len(reservations)
-        or status["revisions_used"]
-        != sum(1 for item in reservations if item.get("ordinal") == 3)
-    ):
-        raise WorkflowJobAuthorizationError("document_job_status_accounting")
+    if status is not None:
+        _verify_positive_terminal_status(store, scope, status)
     return {
         "assignment": manifest.run_input,
         "assignment_sha256": scope.assignment_sha256,
@@ -1392,6 +1458,54 @@ def inspect_bounded_document_job(
         if _job_start_path(store.root, job_id).exists()
         else None,
     }
+
+
+def _verify_positive_terminal_status(
+    store: WorkflowRunManifestStore,
+    scope: BoundedWorkflowJobScope,
+    status: dict[str, object],
+) -> BoundedDocumentJobOutcome:
+    """Rebuild the terminal result from immutable Artifact/run evidence."""
+    if status["status"] == "stopped":
+        return _stopped_document_job_outcome(store, scope, str(status["stop_reason"]))
+    if status["status"] == "candidate":
+        final_ordinal, review_ordinal, expected_revisions = 1, 2, 0
+    elif status["status"] == "reviewed":
+        final_ordinal, review_ordinal, expected_revisions = 3, 4, 1
+    else:
+        raise WorkflowJobAuthorizationError("document_job_status")
+    reservations = _reservation_records(store.root, scope.job_id)
+    expected_calls = 3 + (2 * expected_revisions)
+    expected_ordinals = set(range(expected_calls))
+    if (
+        len(reservations) != expected_calls
+        or {item.get("ordinal") for item in reservations} != expected_ordinals
+        or sum(1 for item in reservations if item.get("ordinal") == 3)
+        != expected_revisions
+    ):
+        raise WorkflowJobAuthorizationError("document_job_status_accounting")
+    try:
+        final_artifact = _artifact_for_action(store, scope.job_id, final_ordinal)
+        review_artifact = _artifact_for_action(store, scope.job_id, review_ordinal)
+        review_manifest = load_workflow_run_manifest(store, review_artifact.run_id)
+        verdict = _review_verdict(
+            review_artifact.content.decode("utf-8"),
+            review_input=review_manifest.run_input,
+        )
+    except WorkflowJobAuthorizationError:
+        raise
+    except Exception:
+        raise WorkflowJobAuthorizationError("document_job_terminal_evidence") from None
+    if verdict != "PASS":
+        raise WorkflowJobAuthorizationError("document_job_terminal_evidence")
+    return BoundedDocumentJobOutcome(
+        str(status["status"]),
+        final_artifact.run_id,
+        final_artifact.artifact_id,
+        review_artifact.run_id,
+        review_artifact.artifact_id,
+        expected_revisions,
+    )
 
 
 def _execute_bounded_document_job(
@@ -1750,22 +1864,10 @@ def _persist_bounded_document_job_status(
     scope: BoundedWorkflowJobScope,
     outcome: BoundedDocumentJobOutcome,
 ) -> None:
-    reservations = _reservation_records(store.root, scope.job_id)
     payload = _canonical(
         {
-            "assignment_sha256": scope.assignment_sha256,
-            "consumed_provider_attempts": len(reservations),
-            "final_artifact_id": outcome.final_artifact_id,
-            "final_artifact_run_id": outcome.final_artifact_run_id,
             "job_id": scope.job_id,
-            "max_provider_attempts": scope.max_provider_attempts,
-            "max_revisions": scope.max_revisions,
-            "remaining_provider_attempts": scope.max_provider_attempts
-            - len(reservations),
-            "review_artifact_id": outcome.review_artifact_id,
-            "review_artifact_run_id": outcome.review_artifact_run_id,
-            "revisions_used": outcome.revisions_used,
-            "schema_version": "workflow-bounded-document-job-status.v1",
+            "schema_version": "workflow-bounded-document-job-status.v2",
             "scope_sha256": scope.digest,
             "status": outcome.status,
             "stop_reason": outcome.stop_reason,
@@ -1786,17 +1888,7 @@ def _read_bounded_document_job_status(
     except Exception:
         raise WorkflowJobAuthorizationError("document_job_status") from None
     expected = {
-        "assignment_sha256",
-        "consumed_provider_attempts",
-        "final_artifact_id",
-        "final_artifact_run_id",
         "job_id",
-        "max_provider_attempts",
-        "max_revisions",
-        "remaining_provider_attempts",
-        "review_artifact_id",
-        "review_artifact_run_id",
-        "revisions_used",
         "schema_version",
         "scope_sha256",
         "status",
@@ -1806,19 +1898,10 @@ def _read_bounded_document_job_status(
         type(value) is dict
         and set(value) == expected
         and payload == _canonical(value)
-        and value.get("schema_version") == "workflow-bounded-document-job-status.v1"
+        and value.get("schema_version") == "workflow-bounded-document-job-status.v2"
         and value.get("job_id") == scope.job_id
         and value.get("scope_sha256") == scope.digest
-        and value.get("assignment_sha256") == scope.assignment_sha256
-        and value.get("max_provider_attempts") == scope.max_provider_attempts
-        and value.get("max_revisions") == scope.max_revisions
         and value.get("status") in {"candidate", "reviewed", "stopped"}
-        and type(value.get("consumed_provider_attempts")) is int
-        and 0 <= value["consumed_provider_attempts"] <= scope.max_provider_attempts
-        and value.get("remaining_provider_attempts")
-        == scope.max_provider_attempts - value["consumed_provider_attempts"]
-        and type(value.get("revisions_used")) is int
-        and 0 <= value["revisions_used"] <= scope.max_revisions
         and (
             value.get("stop_reason") is None
             if value.get("status") != "stopped"
@@ -1829,16 +1912,12 @@ def _read_bounded_document_job_status(
     return value
 
 
-def _outcome_from_status(value: dict[str, object]) -> BoundedDocumentJobOutcome:
-    return BoundedDocumentJobOutcome(
-        value["status"],
-        value["final_artifact_run_id"],
-        value["final_artifact_id"],
-        value["review_artifact_run_id"],
-        value["review_artifact_id"],
-        value["revisions_used"],
-        value["stop_reason"],
-    )
+def _outcome_from_status(
+    store: WorkflowRunManifestStore,
+    scope: BoundedWorkflowJobScope,
+    value: dict[str, object],
+) -> BoundedDocumentJobOutcome:
+    return _verify_positive_terminal_status(store, scope, value)
 
 
 def _stopped_document_job_outcome(
