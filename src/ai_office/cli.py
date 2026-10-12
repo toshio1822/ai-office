@@ -1298,18 +1298,24 @@ def run_bounded_document_job_workflow(
                 assignment,
                 workflow_by_id["research-and-summarize"],
                 tuple(model_employees[name] for name in required_employees),
+                execution_model=selected_model,
+                execution_target=target,
             ),
             "review-supplied-artifact": build_workflow_run_manifest(
                 f"snapshot-{sha256(job_id.encode()).hexdigest()[:16]}-review",
                 assignment,
                 workflow_by_id["review-supplied-artifact"],
                 (model_employees["general-researcher"],),
+                execution_model=selected_model,
+                execution_target=target,
             ),
             "revise-reviewed-artifact": build_workflow_run_manifest(
                 f"snapshot-{sha256(job_id.encode()).hexdigest()[:16]}-revision",
                 assignment,
                 workflow_by_id["revise-reviewed-artifact"],
                 (model_employees["japanese-document-writer"],),
+                execution_model=selected_model,
+                execution_target=target,
             ),
         }
 
@@ -1397,6 +1403,24 @@ def run_bounded_document_job_workflow(
         _workflow_cli_error("Execution grant was not confirmed", code=1)
 
     try:
+        # Re-resolve after both human confirmations; do not issue grants or
+        # load a credential if the configured endpoint/model/headers changed.
+        confirmed_target = _resolve_execution_target(
+            execution_target, execution_destinations
+        )
+        confirmed_model = _resolve_execution_model(
+            confirmed_target, execution_destinations, execution_model
+        )
+        _validate_bounded_go_pilot_destination(confirmed_target, confirmed_model)
+        if (
+            confirmed_target != target
+            or confirmed_model != selected_model
+            or execution_target_fingerprint(confirmed_target)
+            != destination_fingerprint
+        ):
+            raise WorkflowJobAuthorizationError(
+                "destination_changed_after_confirmation"
+            )
         now_ns = time.time_ns()
         run_store.mkdir(mode=0o700, parents=True, exist_ok=True)
         if run_store.stat().st_mode & 0o077:
@@ -1407,7 +1431,10 @@ def run_bounded_document_job_workflow(
             assignment,
             workflow_by_id["research-and-summarize"],
             tuple(model_employees[name] for name in required_employees),
+            execution_model=selected_model,
+            execution_target=target,
         )
+        _validate_manifest_execution_target(initial_manifest, target)
         persist_workflow_run_manifest(store, initial_manifest)
         for name in ("review-supplied-artifact", "revise-reviewed-artifact"):
             persist_workflow_run_manifest(store, snapshot_manifests[name])
@@ -1449,6 +1476,7 @@ def run_bounded_document_job_workflow(
             api_key=api_key,
             transport=send_openai_responses_http_request,
             execution_target=target,
+            execution_destinations=execution_destinations,
         )
     except Exception:
         _workflow_cli_error("bounded Job stopped; inspect its durable evidence")

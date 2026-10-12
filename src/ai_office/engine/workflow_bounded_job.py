@@ -1341,6 +1341,7 @@ def run_bounded_document_job(
     api_key,
     transport,
     execution_target,
+    execution_destinations: Path | None = None,
 ) -> BoundedDocumentJobOutcome:
     """Run the fixed job once and leave an inspectable immutable terminal record."""
     current = load_bounded_workflow_job_scope(store, scope.job_id)
@@ -1379,6 +1380,7 @@ def run_bounded_document_job(
             api_key=api_key,
             transport=transport,
             execution_target=execution_target,
+            execution_destinations=execution_destinations,
         )
     except WorkflowJobAuthorizationError as error:
         outcome = _stopped_document_job_outcome(store, scope, error.classification)
@@ -1528,6 +1530,7 @@ def _execute_bounded_document_job(
     api_key,
     transport,
     execution_target,
+    execution_destinations: Path | None,
 ) -> BoundedDocumentJobOutcome:
     """Execute only the approved fixed creator/review/one-revision sequence.
 
@@ -1560,6 +1563,10 @@ def _execute_bounded_document_job(
     from ai_office.engine.workflow_run_manifest import (
         create_workflow_run_manifest,
         load_workflow_run_manifest,
+    )
+    from ai_office.execution_destination import (
+        ExecutionDestinationError,
+        load_execution_destination_registry,
     )
     from ai_office.execution_target import execution_target_fingerprint
     from ai_office.invocation import (
@@ -1609,10 +1616,44 @@ def _execute_bounded_document_job(
     if (
         initial_manifest.workflow_id != "research-and-summarize"
         or initial_manifest.run_input != assignment
+        or initial_manifest.execution_destination is None
+        or initial_manifest.execution_destination.target != execution_target
         or _digest(_canonical(_workflow_dict(initial_manifest.workflow_snapshot)))
         != scope.actions[0].workflow_snapshot_sha256
     ):
         raise WorkflowJobAuthorizationError("document_job_initial_run")
+
+    def verify_destination(slot: BoundedJobActionSlot) -> None:
+        if slot.model != employees[slot.employee_id].definition.model:
+            raise WorkflowJobAuthorizationError("document_job_model_binding")
+        if execution_destinations is None:
+            return
+        try:
+            destination = load_execution_destination_registry(
+                execution_destinations
+            ).resolve(execution_target.provider)
+            if (
+                destination.target != execution_target
+                or destination.select_model(slot.model) != slot.model
+            ):
+                raise WorkflowJobAuthorizationError(
+                    "document_job_destination_changed"
+                )
+        except (ExecutionDestinationError, OSError):
+            raise WorkflowJobAuthorizationError(
+                "document_job_destination_changed"
+            ) from None
+
+    def verify_run_manifest(manifest, slot: BoundedJobActionSlot) -> None:
+        if (
+            manifest.execution_destination is None
+            or manifest.execution_destination.target != execution_target
+            or not any(
+                employee.id == slot.employee_id and employee.model == slot.model
+                for employee in manifest.employee_snapshots
+            )
+        ):
+            raise WorkflowJobAuthorizationError("document_job_manifest_destination")
 
     def run_fresh(
         ordinal: int,
@@ -1621,6 +1662,7 @@ def _execute_bounded_document_job(
         predecessor: tuple[str, str, str] | None = None,
     ):
         slot = scope.actions[ordinal]
+        verify_destination(slot)
         loaded_workflow = workflows[slot.workflow_id]
         workflow = loaded_workflow.definition
         manifest = (
@@ -1636,10 +1678,13 @@ def _execute_bounded_document_job(
                     for step in workflow.steps
                     if step.employee in employees
                 ),
+                execution_model=slot.model,
+                execution_target=execution_target,
             )
         )
         if manifest.run_input != run_input or manifest.workflow_id != workflow.id:
             raise WorkflowJobAuthorizationError("document_job_manifest")
+        verify_run_manifest(manifest, slot)
         employee = employees[slot.employee_id].definition
         step = workflow.steps[slot.step_index - 1]
         binding = WorkflowRunBinding(run_id=run_id, manifest_digest=manifest.digest)
@@ -1706,6 +1751,8 @@ def _execute_bounded_document_job(
         creator, history, require_execution_provenance=True
     )
     second_slot = scope.actions[1]
+    verify_destination(second_slot)
+    verify_run_manifest(creator_manifest, second_slot)
     second_employee = employees[second_slot.employee_id].definition
     second_step = creator.steps[second_slot.step_index - 1]
     second_preparation = NextStepPreparationApproval(

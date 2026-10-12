@@ -451,6 +451,8 @@ def create_workflow_run_manifest(
     employees: Sequence[LoadedEmployee],
     *,
     tool_catalog: ToolCatalog = DEFAULT_TOOL_CATALOG,
+    execution_model: str | None = None,
+    execution_target: ModelExecutionTarget | None = None,
 ) -> WorkflowRunManifest:
     """Build and durably create one Run Manifest before any execution.
 
@@ -465,6 +467,8 @@ def create_workflow_run_manifest(
         workflow,
         employees,
         tool_catalog=tool_catalog,
+        execution_model=execution_model,
+        execution_target=execution_target,
     )
     _persist_workflow_run_manifest(_manifest_path(store, run_id), manifest)
     return manifest
