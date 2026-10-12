@@ -1045,6 +1045,15 @@ def bounded_document_action_input(
         review = _artifact_for_action(store, job_id, 2, verify_lineage=verify_lineage)
         if handoff_artifact.artifact_id != review.artifact_id:
             raise WorkflowJobAuthorizationError("job_action_handoff")
+        review_manifest = load_workflow_run_manifest(store, review.run_id)
+        if (
+            _review_verdict(
+                review.content.decode("utf-8"),
+                review_input=review_manifest.run_input,
+            )
+            != "CHANGES_REQUIRED"
+        ):
+            raise WorkflowJobAuthorizationError("document_job_revision_not_authorized")
         values = {
             "assignment": assignment_manifest.run_input,
             "source_artifact": _artifact_payload(report),

@@ -14,6 +14,7 @@ import pytest
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
+import ai_office.engine.workflow_bounded_job as bounded_job_module
 import ai_office.engine.workflow_job_authorization as job_authorization_module
 from ai_office.cli import app
 from ai_office.definitions.employee import (
@@ -55,6 +56,7 @@ from ai_office.engine.workflow_approval_evidence import (
 from ai_office.engine.workflow_bounded_job import (
     BoundedJobActionAuthorization,
     BoundedJobActionSlot,
+    bounded_document_action_input,
     derive_bounded_job_action_authorization,
     issue_bounded_workflow_job_scope,
     load_bounded_workflow_job_scope,
@@ -96,6 +98,7 @@ from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesRawHttpResponse,
 )
+from ai_office.runtime.run_binding import WorkflowRunBinding
 from ai_office.storage import WorkflowExecutionPersistenceTargets
 from ai_office.storage.workflow_execution_history import (
     load_workflow_execution_history_with_source_digests,
@@ -1886,6 +1889,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
 )
 def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     first_verdict: str,
     expected_calls: int,
     expected_status: str,
@@ -2133,7 +2137,128 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         "content_sha256": source_artifact.content_sha256,
         "run_id": source_artifact.run_id,
     }
-    assert final_manifest.run_id == outcome.final_artifact_run_id
+
+    if first_verdict != "CHANGES_REQUIRED" and max_revisions > 0:
+        # Even with unused revision quota, the public derivation/input path
+        # must not create revision authority from PASS, BLOCKED, malformed, or
+        # ungrounded review evidence.
+        review_artifact = list_run_artifacts(store, first_review_run_id)[0]
+        revision_input_value = {
+            "assignment": assignment,
+            "source_artifact": {
+                "artifact_id": source_artifact.artifact_id,
+                "content": source_artifact.content.decode("utf-8"),
+                "content_length": source_artifact.content_length,
+                "content_sha256": source_artifact.content_sha256,
+                "run_id": source_artifact.run_id,
+            },
+            "review_artifact": {
+                "artifact_id": review_artifact.artifact_id,
+                "content": review_artifact.content.decode("utf-8"),
+                "content_length": review_artifact.content_length,
+                "content_sha256": review_artifact.content_sha256,
+                "run_id": review_artifact.run_id,
+            },
+        }
+        revision_input = json.dumps(
+            revision_input_value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        revision_run_id = (
+            "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-3"
+        )
+        revision_manifest = create_workflow_run_manifest(
+            store,
+            revision_run_id,
+            revision_input,
+            workflows["revise-reviewed-artifact"],
+            (employees["japanese-document-writer"],),
+        )
+        predecessor = (
+            review_artifact.run_id,
+            review_artifact.artifact_id,
+            review_artifact.content_sha256,
+        )
+        with pytest.raises(WorkflowJobAuthorizationError):
+            bounded_document_action_input(store, scope.job_id, 3, predecessor)
+        revision_employee = employees["japanese-document-writer"].definition
+        revision_step = workflows["revise-reviewed-artifact"].definition.steps[0]
+        revision_request = ModelInvocationRequest(
+            model=revision_employee.model,
+            system_instructions=revision_employee.instructions,
+            task_instructions=revision_step.instructions,
+            allowed_tools=(),
+            run_id=revision_run_id,
+            manifest_digest=revision_manifest.digest,
+            run_input=revision_manifest.run_input,
+        )
+        with pytest.raises(WorkflowJobAuthorizationError):
+            derive_bounded_job_action_authorization(
+                store,
+                scope,
+                ordinal=3,
+                run_id=revision_run_id,
+                request_fingerprint=build_model_invocation_execution_fingerprint(
+                    revision_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+                ),
+                predecessor=predecessor,
+            )
+        assert len(call_labels) == expected_calls
+
+        if first_verdict == "PASS":
+            # Exercise the shared provider route as if a corrupted/legacy
+            # caller had persisted an otherwise well-bound action. Provider
+            # admission must reload the authentic review, not trust the
+            # caller-held object or unused quota.
+            original_verdict = bounded_job_module._review_verdict
+            monkeypatch.setattr(
+                bounded_job_module,
+                "_review_verdict",
+                lambda _content, *, review_input=None: "CHANGES_REQUIRED",
+            )
+            forged_action = derive_bounded_job_action_authorization(
+                store,
+                scope,
+                ordinal=3,
+                run_id=revision_run_id,
+                request_fingerprint=build_model_invocation_execution_fingerprint(
+                    revision_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+                ),
+                predecessor=predecessor,
+            )
+            monkeypatch.setattr(bounded_job_module, "_review_verdict", original_verdict)
+            state_path, events_path = store.execution_paths(revision_run_id)
+            with pytest.raises(FreshWorkflowBootstrapCompatibilityError):
+                route_approved_workflow_fresh_start(
+                    workflows["revise-reviewed-artifact"].definition,
+                    state_path,
+                    events_path,
+                    ApprovedWorkflowBootstrapContext(
+                        preparation_approval=InitialStepPreparationApproval(
+                            False,
+                            "revise-reviewed-artifact",
+                            "revise",
+                            1,
+                            revision_employee.id,
+                        ),
+                        employee=revision_employee,
+                        resolved_tools=(),
+                        api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
+                        execution_approval=None,
+                        transport=fake_transport,
+                        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+                        binding=WorkflowRunBinding(
+                            revision_run_id, revision_manifest.digest
+                        ),
+                        manifest_store=store,
+                        job_authorization=forged_action,
+                    ),
+                )
+            assert len(call_labels) == expected_calls
+            bounded_job_module._action_path(store.root, scope.job_id, 3).unlink()
+        assert final_manifest.run_id == outcome.final_artifact_run_id
     if expected_status == "reviewed":
         assert call_labels[3:] == ["revision", "review-2"]
         assert outcome.revisions_used == 1
