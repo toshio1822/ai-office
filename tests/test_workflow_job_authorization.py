@@ -2651,6 +2651,15 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         return
 
     assert result.exit_code == 0, result.output
+    preview_before_grants = result.output.split(
+        "After verifying the isolated operator context, type the Job ID", 1
+    )[0]
+    assert '"operation": "bounded-job-launch-confirmation"' in preview_before_grants
+    for header in target.request_headers:
+        assert header.name in preview_before_grants
+        assert header.value in preview_before_grants
+    assert "Authorization" not in preview_before_grants
+    assert "synthetic-only" not in preview_before_grants
     expected_calls = (
         1
         if destination_fault == "registry_changed_after_first_dispatch"

@@ -1339,6 +1339,10 @@ def run_bounded_document_job_workflow(
             "provider_attempt_limit": 5,
             "revision_limit": 1,
             "credential_environment_variable": (target.credential_environment_variable),
+            "request_headers": [
+                {"name": header.name, "value": header.value}
+                for header in target.request_headers
+            ],
             "approval_labels_are_not_identity_proofs": True,
         }
     )
