@@ -16,6 +16,7 @@ from ai_office.engine.workflow_run_manifest import (
     create_workflow_run_manifest,
     load_workflow_run_manifest,
 )
+from ai_office.execution_target import ModelExecutionTarget
 from ai_office.runtime import WorkflowRunBinding
 
 
@@ -36,6 +37,7 @@ def create_test_run(
     employees: tuple[EmployeeDefinition, ...],
     *,
     with_business_approvals: bool = True,
+    execution_target: ModelExecutionTarget | None = None,
 ) -> TestRun:
     """Create or reload one exact Manifest-backed test Run.
 
@@ -58,6 +60,7 @@ def create_test_run(
                 LoadedEmployee(root / f"{employee.id}.yaml", employee)
                 for employee in employees
             ),
+            execution_target=execution_target,
         )
     binding = WorkflowRunBinding(manifest.run_id, manifest.digest)
     if with_business_approvals:

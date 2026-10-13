@@ -16,7 +16,6 @@ from ai_office.execution_evidence import (
 from ai_office.execution_target import (
     OPENAI_CHAT_COMPLETIONS_PROTOCOL,
     OPENAI_RESPONSES_PROTOCOL,
-    ModelExecutionTarget,
     ModelExecutionTargetError,
     validate_execution_target_for_provider,
 )
@@ -91,37 +90,24 @@ def execute_openai_model_invocation(
     approval: ModelInvocationExecutionApproval | None,
     *,
     transport: OpenAIResponsesTransport = send_openai_responses_http_request,
-    execution_target: ModelExecutionTarget | None = None,
-    target: ModelExecutionTarget | None = None,
     execution_evidence: ExecutionEvidenceContext,
     before_transport: Callable[[], None] | None = None,
     attempt_claimed: ExecutionAttemptClaimed | None = None,
 ) -> ModelInvocationResult:
     """Execute one guarded, non-streaming Responses invocation.
 
-    The OpenAI Responses wire stack is shared by both supported execution
-    targets.  The immutable target carried by the approval is authoritative
-    when the caller does not pass an explicit target; an explicit mismatch is
-    rejected before request construction or transport. Run-bound execution
-    evidence is mandatory and its exact durable attempt claim precedes transport.
+    The OpenAI-compatible wire stack is shared by both supported protocols.
+    The Run-bound evidence context derives its target from the persisted
+    Manifest; optional caller target arguments cannot select a connection.
+    Run-bound execution evidence is mandatory and its durable attempt claim
+    precedes transport.
     An optional pre-transport control runs only after that claim is durable.
     """
     if type(execution_evidence) is not ExecutionEvidenceContext:
         raise ExecutionEvidenceError("context")
 
     try:
-        if execution_target is not None and target is not None:
-            if execution_target != target:
-                raise ModelExecutionTargetError
-        selected_target = (
-            execution_target
-            if execution_target is not None
-            else target
-            if target is not None
-            else approval.execution_target
-            if approval is not None
-            else execution_evidence.target
-        )
+        selected_target = execution_evidence.target
         selected_target = validate_execution_target_for_provider(selected_target)
         provider = selected_target.provider
     except (ModelExecutionTargetError, AttributeError, TypeError, ValueError):

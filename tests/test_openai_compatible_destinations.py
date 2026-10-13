@@ -287,7 +287,7 @@ def test_same_workflow_executes_both_protocols_offline(
         ],
     )
     assert switched.exit_code == 2
-    assert "differs from the Run Manifest" in switched.stderr
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize(

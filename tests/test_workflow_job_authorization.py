@@ -14,6 +14,7 @@ import pytest
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
+import ai_office.cli as cli_module
 import ai_office.engine.workflow_bounded_job as bounded_job_module
 import ai_office.engine.workflow_job_authorization as job_authorization_module
 from ai_office.cli import app
@@ -77,6 +78,7 @@ from ai_office.engine.workflow_run_manifest import (
     create_workflow_run_manifest,
     load_workflow_run_manifest,
 )
+from ai_office.execution_destination import load_execution_destination_registry
 from ai_office.execution_evidence import (
     ExecutionAttemptAlreadyClaimedError,
     ExecutionEvidenceError,
@@ -1897,7 +1899,10 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     expected_reason: str | None,
     final_verdict: str,
 ) -> None:
+    from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
+
     repository = Path(__file__).resolve().parents[1]
+    target = DIRECT_OPENAI_EXECUTION_TARGET
     workflow_names = (
         "research-and-summarize",
         "review-supplied-artifact",
@@ -1928,6 +1933,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             employees[employee]
             for employee in ("general-researcher", "japanese-document-writer")
         ),
+        execution_target=target,
     )
     snapshots: dict[str, object] = {initial.workflow_id: initial}
     for name in workflow_names[1:]:
@@ -1943,6 +1949,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                     else "japanese-document-writer"
                 ],
             ),
+            execution_target=target,
         )
     plan = (
         ("research-and-summarize", "research", 1, "general-researcher", "assignment"),
@@ -2006,10 +2013,8 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                         separators=(",", ":"),
                     ).encode()
                 ).hexdigest(),
-                provider=DIRECT_OPENAI_EXECUTION_TARGET.provider,
-                execution_target_fingerprint=execution_target_fingerprint(
-                    DIRECT_OPENAI_EXECUTION_TARGET
-                ),
+                provider=target.provider,
+                execution_target_fingerprint=execution_target_fingerprint(target),
                 model=employee_snapshot.model,
                 input_source=input_source,
             )
@@ -2079,6 +2084,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 else "Verdict: PASS\n\nNo actionable findings."
             )
         call_labels.append(label)
+        assert request.url == target.endpoint
         raw = json.dumps(
             {
                 "id": label,
@@ -2087,12 +2093,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 "output": [
                     {
                         "type": "message",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": text,
-                            }
-                        ],
+                        "content": [{"type": "output_text", "text": text}],
                     }
                 ],
             }
@@ -2108,14 +2109,29 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         employees=employees,
         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
         transport=fake_transport,
-        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
     )
     assert outcome.status == expected_status
     assert outcome.stop_reason == expected_reason
     assert len(call_labels) == expected_calls
     assert call_labels[:2] == ["research", "summary"]
     assert call_labels[2] == "review-1"
+    dispatches = inspect_bounded_document_job(store, scope.job_id)["dispatch_order"]
+    assert len(dispatches) == expected_calls
+    for dispatch in dispatches:
+        action_manifest = load_workflow_run_manifest(store, dispatch["run_id"])
+        destination = action_manifest.execution_destination
+        assert destination.target == target
+        assert destination.fingerprint == execution_target_fingerprint(target)
     final_manifest = load_workflow_run_manifest(store, outcome.final_artifact_run_id)
+    assert final_manifest.execution_destination.target == target
+    assert (
+        final_manifest.execution_destination.fingerprint
+        == execution_target_fingerprint(target)
+    )
+    assert all(
+        snapshot.model == employees[snapshot.id].definition.model
+        for snapshot in final_manifest.employee_snapshots
+    )
     final_artifact = read_run_artifact(
         store, outcome.final_artifact_run_id, outcome.final_artifact_id
     )
@@ -2201,7 +2217,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 ordinal=3,
                 run_id=revision_run_id,
                 request_fingerprint=build_model_invocation_execution_fingerprint(
-                    revision_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+                    revision_request, (), target
                 ),
                 predecessor=predecessor,
             )
@@ -2224,7 +2240,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 ordinal=3,
                 run_id=revision_run_id,
                 request_fingerprint=build_model_invocation_execution_fingerprint(
-                    revision_request, (), DIRECT_OPENAI_EXECUTION_TARGET
+                    revision_request, (), target
                 ),
                 predecessor=predecessor,
             )
@@ -2248,7 +2264,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
                         execution_approval=None,
                         transport=fake_transport,
-                        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+                        execution_target=target,
                         binding=WorkflowRunBinding(
                             revision_run_id, revision_manifest.digest
                         ),
@@ -2308,7 +2324,6 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         employees=employees,
         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
         transport=fake_transport,
-        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
     )
     assert replay == outcome
     assert len(call_labels) == expected_calls
@@ -2377,7 +2392,6 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 employees=employees,
                 api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
                 transport=fake_transport,
-                execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
             )
         assert len(call_labels) == expected_calls
         result_path.write_bytes(durable_artifact)
@@ -2413,3 +2427,441 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
             _review_verdict(unsupported_review, review_input=review_input)
         assert caught.value.classification == "document_job_unverified_finding"
+
+
+def test_bounded_job_launcher_rejects_non_tty_before_credential_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    credential_lookups: list[str] = []
+
+    def fail_if_credential_loaded(_target):
+        credential_lookups.append("lookup")
+        raise AssertionError("offline launcher guard must precede credentials")
+
+    monkeypatch.setattr(
+        cli_module, "_load_api_key_for_target", fail_if_credential_loaded
+    )
+    repository = Path(__file__).resolve().parents[1]
+    result = CliRunner().invoke(
+        app,
+        [
+            "workflows",
+            "bounded-job-run",
+            "offline-job",
+            "--run-id",
+            "offline-run",
+            "--assignment-file",
+            str(tmp_path / "assignment.md"),
+            "--run-store",
+            str(tmp_path / "runs"),
+            "--directory",
+            str(repository / "workflows"),
+            "--employees-directory",
+            str(repository / "employees"),
+            "--execution-target",
+            "opencode-go-glm-chat",
+            "--execution-destinations",
+            str(repository / "docs/examples/openai-compatible-destinations.yaml"),
+            "--execution-model",
+            "glm-5.3-flash",
+        ],
+    )
+    assert result.exit_code != 0
+    assert credential_lookups == []
+    assert "operator_context" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("scenario", "destination_fault", "destination_name"),
+    (
+        ("pass", "none", "opencode-go-glm-chat"),
+        ("pass", "none", "internal-chat-gateway"),
+        ("pass", "registry_changed_after_first_dispatch", "internal-chat-gateway"),
+        ("pass", "manifest_mismatch", "internal-chat-gateway"),
+        ("revision", "none", "opencode-go-glm-chat"),
+    ),
+)
+def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    destination_fault: str,
+    destination_name: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from ai_office.engine import workflow_run_manifest as manifest_module
+    from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
+    from ai_office.providers.openai import OpenAIResponsesRawHttpResponse
+
+    repository = Path(__file__).resolve().parents[1]
+    sample_destination_file = (
+        repository / "docs/examples/openai-compatible-destinations.yaml"
+    )
+    destination_file = tmp_path / "destinations.yaml"
+    destination_file.write_text(sample_destination_file.read_text(encoding="utf-8"))
+    selected_model = (
+        "glm-5.3-flash"
+        if destination_name == "opencode-go-glm-chat"
+        else "approved-chat-model"
+    )
+    target = load_execution_destination_registry(destination_file).resolve(
+        destination_name
+    ).target
+    if destination_fault == "manifest_mismatch":
+        original_build = manifest_module.build_workflow_run_manifest
+
+        def build_with_mismatched_initial_destination(*args, **kwargs):
+            if args[0] == "offline-cli-initial-run":
+                kwargs["execution_target"] = replace(
+                    target,
+                    base_url="https://manifest-mismatch.example.com/v1/chat/completions",
+                )
+            return original_build(*args, **kwargs)
+
+        monkeypatch.setattr(
+            manifest_module,
+            "build_workflow_run_manifest",
+            build_with_mismatched_initial_destination,
+        )
+    assignment_file = tmp_path / "assignment.md"
+    assignment_file.write_text(
+        "Requirements: summarize the supplied evidence.\n"
+        "Evidence reference: fixture:evidence-1",
+        encoding="utf-8",
+    )
+    run_store = tmp_path / "run-store"
+
+    # Simulate only the CLI's terminal and non-root human operator checks;
+    # no system account, key, or API connection is used.
+    monkeypatch.setattr(
+        cli_module,
+        "sys",
+        SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
+    )
+    monkeypatch.setattr(
+        cli_module, "os", SimpleNamespace(geteuid=lambda: 2202, getuid=lambda: 2202)
+    )
+    monkeypatch.setattr(cli_module.getpass, "getuser", lambda: "offline-operator")
+    credential_lookups: list[str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "_load_api_key_for_target",
+        lambda _target: (
+            credential_lookups.append("synthetic")
+            or OpenAIApiKey(value=SecretStr("synthetic-only"))
+        ),
+    )
+    labels: list[str] = []
+
+    def fake_transport(request):
+        index = len(labels)
+        if index == 0:
+            label, text = "research", "Synthetic source-supported note."
+        elif index == 1:
+            label, text = "summary", "# Offline report\n\nLimitations retained."
+        elif index == 2 and scenario == "revision":
+            label = "review-1"
+            text = (
+                "Verdict: CHANGES_REQUIRED\n\n"
+                "Requirement: preserve the stated limit.\n"
+                "Artifact location: Conclusion.\n"
+                "Evidence source/reference: fixture:evidence-1\n"
+                "Impact: unsupported certainty.\n"
+                "Requested correction: retain the limitation."
+            )
+        elif index == 2:
+            label, text = "review", "Verdict: PASS\n\nNo actionable findings."
+        elif index == 3:
+            label, text = "revision", "# Revised report\n\nLimitations retained."
+        else:
+            label, text = "review-2", "Verdict: PASS\n\nNo actionable findings."
+        labels.append(label)
+        assert request.url == target.endpoint
+        headers = {name.lower(): value for name, value in request.headers}
+        for header in target.request_headers:
+            actual = headers[header.name.lower()]
+            if header.value == "{run_session}":
+                assert actual.startswith("ai-office-run-")
+            else:
+                assert actual == header.value
+        if index == 0 and destination_fault == "registry_changed_after_first_dispatch":
+            destination_file.write_text(
+                destination_file.read_text(encoding="utf-8").replace(
+                    target.endpoint,
+                    "https://changed.example.com/v1/chat/completions",
+                ),
+                encoding="utf-8",
+            )
+        return OpenAIResponsesRawHttpResponse(
+            200,
+            "synthetic",
+            (),
+            json.dumps(
+                {
+                    "id": label,
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": text},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            ).encode(),
+        )
+
+    monkeypatch.setattr(
+        cli_module, "send_openai_responses_http_request", fake_transport
+    )
+    job_id = "offline-cli-bounded-job"
+    cli_args = [
+        "workflows",
+        "bounded-job-run",
+        job_id,
+        "--run-id",
+        "offline-cli-initial-run",
+        "--assignment-file",
+        str(assignment_file),
+        "--run-store",
+        str(run_store),
+        "--directory",
+        str(repository / "workflows"),
+        "--employees-directory",
+        str(repository / "employees"),
+        "--execution-target",
+        destination_name,
+        "--execution-destinations",
+        str(destination_file),
+        "--execution-model",
+        selected_model,
+    ]
+    result = CliRunner().invoke(
+        app,
+        cli_args,
+        input=f"{job_id}\n{job_id}\n",
+    )
+
+    if destination_fault == "manifest_mismatch":
+        assert result.exit_code != 0
+        assert labels == []
+        assert credential_lookups == []
+        assert not tuple(run_store.glob("*.manifest.json"))
+        return
+
+    assert result.exit_code == 0, result.output
+    preview_before_grants = result.output.split(
+        "After verifying the isolated operator context, type the Job ID", 1
+    )[0]
+    assert '"operation": "bounded-job-launch-confirmation"' in preview_before_grants
+    for header in target.request_headers:
+        assert header.name in preview_before_grants
+        assert header.value in preview_before_grants
+    assert "Authorization" not in preview_before_grants
+    assert "synthetic-only" not in preview_before_grants
+    expected_calls = (
+        1
+        if destination_fault == "registry_changed_after_first_dispatch"
+        else 5
+        if scenario == "revision"
+        else 3
+    )
+    assert len(labels) == expected_calls
+    assert credential_lookups == ["synthetic"]
+    assert (
+        '"status": "stopped"' in result.output
+        if destination_fault == "registry_changed_after_first_dispatch"
+        else '"status": "reviewed"' in result.output
+        if scenario == "revision"
+        else '"status": "candidate"' in result.output
+    )
+    store = WorkflowRunManifestStore(run_store)
+    inspection = inspect_bounded_document_job(store, job_id)
+    assert inspection["consumed_provider_attempts"] == expected_calls
+    for dispatch in inspection["dispatch_order"]:
+        manifest = load_workflow_run_manifest(store, dispatch["run_id"])
+        destination = manifest.execution_destination
+        assert destination is not None
+        assert destination.provider == destination_name
+        assert destination.protocol == target.protocol
+        assert destination.endpoint == target.endpoint
+        assert (
+            destination.credential_environment_variable
+            == target.credential_environment_variable
+        )
+        assert destination.fingerprint == execution_target_fingerprint(target)
+        assert destination.target == target
+        assert [
+            (item.name, item.value) for item in destination.request_headers
+        ] == [(item.name, item.value) for item in target.request_headers]
+        assert any(
+            employee.model == selected_model
+            for employee in manifest.employee_snapshots
+        )
+    if scenario == "pass" and destination_fault == "none":
+        replay = CliRunner().invoke(app, cli_args, input=f"{job_id}\n{job_id}\n")
+        assert replay.exit_code != 0
+        assert len(labels) == expected_calls
+        assert credential_lookups == ["synthetic"]
+
+
+def test_bounded_job_cli_rejects_destination_changed_after_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    repository = Path(__file__).resolve().parents[1]
+    destination_file = tmp_path / "destinations.yaml"
+    source_destination_file = (
+        repository / "docs/examples/openai-compatible-destinations.yaml"
+    )
+    destination_file.write_text(source_destination_file.read_text(encoding="utf-8"))
+    assignment_file = tmp_path / "assignment.md"
+    assignment_file.write_text("A bounded assignment.", encoding="utf-8")
+    run_store = tmp_path / "run-store"
+    job_id = "stale-confirmation-job"
+    prompts = 0
+
+    def confirm_and_mutate(*_args, **_kwargs):
+        nonlocal prompts
+        prompts += 1
+        if prompts == 2:
+            contents = destination_file.read_text(encoding="utf-8")
+            destination_file.write_text(
+                contents.replace(
+            "https://ai-gateway.example.com/v1/chat/completions",
+            "https://ai-gateway.example.com/other/v1/chat/completions",
+                ),
+                encoding="utf-8",
+            )
+        return job_id
+
+    monkeypatch.setattr(
+        cli_module,
+        "sys",
+        SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
+    )
+    monkeypatch.setattr(
+        cli_module, "os", SimpleNamespace(geteuid=lambda: 2202, getuid=lambda: 2202)
+    )
+    monkeypatch.setattr(cli_module.typer, "prompt", confirm_and_mutate)
+    credential_lookups: list[str] = []
+    transport_calls: list[object] = []
+    monkeypatch.setattr(
+        cli_module,
+        "_load_api_key_for_target",
+        lambda _target: credential_lookups.append("lookup"),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "send_openai_responses_http_request",
+        lambda request: transport_calls.append(request),
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "workflows",
+            "bounded-job-run",
+            job_id,
+            "--run-id",
+            "stale-confirmation-run",
+            "--assignment-file",
+            str(assignment_file),
+            "--run-store",
+            str(run_store),
+            "--directory",
+            str(repository / "workflows"),
+            "--employees-directory",
+            str(repository / "employees"),
+            "--execution-target",
+            "internal-chat-gateway",
+            "--execution-destinations",
+            str(destination_file),
+            "--execution-model",
+            "approved-chat-model",
+        ],
+    )
+    assert result.exit_code != 0
+    assert prompts == 2
+    assert credential_lookups == []
+    assert transport_calls == []
+    assert not run_store.exists()
+
+
+def test_bounded_job_cli_cancel_does_not_issue_grants_or_load_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    repository = Path(__file__).resolve().parents[1]
+    assignment_file = tmp_path / "assignment.md"
+    assignment_file.write_text("A bounded assignment.", encoding="utf-8")
+    run_store = tmp_path / "run-store"
+    job_id = "cancelled-offline-job"
+    credential_lookups: list[str] = []
+    transport_calls: list[object] = []
+    monkeypatch.setattr(
+        cli_module,
+        "sys",
+        SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
+    )
+    monkeypatch.setattr(
+        cli_module, "os", SimpleNamespace(geteuid=lambda: 2202, getuid=lambda: 2202)
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_load_api_key_for_target",
+        lambda _target: credential_lookups.append("lookup"),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "send_openai_responses_http_request",
+        lambda request: transport_calls.append(request),
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "workflows",
+            "bounded-job-run",
+            job_id,
+            "--run-id",
+            "cancelled-offline-run",
+            "--assignment-file",
+            str(assignment_file),
+            "--run-store",
+            str(run_store),
+            "--directory",
+            str(repository / "workflows"),
+            "--employees-directory",
+            str(repository / "employees"),
+            "--execution-target",
+            "opencode-go-glm-chat",
+            "--execution-destinations",
+            str(
+                repository / "docs/examples/openai-compatible-destinations.yaml"
+            ),
+            "--execution-model",
+            "glm-5.3-flash",
+        ],
+        input="cancelled\n",
+    )
+    assert result.exit_code != 0
+    assert "Business grant was not confirmed" in result.output
+    assert credential_lookups == []
+    assert transport_calls == []
+    assert not run_store.exists()
+
+
+def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    registry = load_execution_destination_registry(
+        repository / "docs/examples/openai-compatible-destinations.yaml"
+    )
+    go = registry.resolve("opencode-go-glm-chat")
+    gateway = registry.resolve("internal-chat-gateway")
+    assert go.target.protocol == gateway.target.protocol == "openai-chat-completions"
+    assert go.select_model("glm-5.3-flash") == "glm-5.3-flash"
+    assert gateway.select_model("approved-chat-model") == "approved-chat-model"
+    assert go.target.provider != gateway.target.provider
+    assert go.target.endpoint != gateway.target.endpoint

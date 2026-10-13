@@ -154,6 +154,7 @@ def test_create_load_round_trip_preserves_exact_run_meaning_and_digest(
     assert b"source-workflow.yaml" not in contents
     assert b"source-researcher.yaml" not in contents
     assert set(json.loads(contents)) == {
+        "execution_destination",
         "employee_snapshots",
         "run_id",
         "run_input",
@@ -250,37 +251,47 @@ def test_artifact_policy_is_pinned_and_changes_manifest_identity() -> None:
     )
 
 
-def test_manifest_v2_loads_with_historical_no_artifact_semantics(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "schema_version", ("workflow-run-manifest.v2", "workflow-run-manifest.v3")
+)
+def test_unsupported_preproduction_manifest_versions_are_rejected(
+    tmp_path: Path, schema_version: str
 ) -> None:
     store = WorkflowRunManifestStore(tmp_path)
-    current = create_workflow_run_manifest(
-        store,
-        "run-1",
-        "request",
-        workflow(artifact_content_type="text/markdown"),
-        [employee()],
+    create_workflow_run_manifest(
+        store, "run-1", "request", workflow(), [employee()]
     )
     value = json.loads(store.manifest_path("run-1").read_text(encoding="utf-8"))
-    value["schema_version"] = "workflow-run-manifest.v2"
-    for step in value["workflow_snapshot"]["steps"]:
-        step.pop("artifact_content_type")
-    historical_bytes = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    store.manifest_path("run-1").write_bytes(historical_bytes)
+    value["schema_version"] = schema_version
+    value.pop("execution_destination")
+    if schema_version == "workflow-run-manifest.v2":
+        for step in value["workflow_snapshot"]["steps"]:
+            step.pop("artifact_content_type")
+    store.manifest_path("run-1").write_text(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        encoding="utf-8",
+    )
 
-    loaded = load_workflow_run_manifest(store, "run-1")
+    with pytest.raises(WorkflowRunManifestLoadError):
+        load_workflow_run_manifest(store, "run-1")
 
-    assert current.schema_version == "workflow-run-manifest.v3"
-    assert loaded.schema_version == "workflow-run-manifest.v2"
-    assert loaded.workflow_snapshot.steps[0].artifact_content_type is None
-    assert workflow_run_manifest_canonical_bytes(loaded) == historical_bytes
-    assert loaded.digest == hashlib.sha256(historical_bytes).hexdigest()
+
+def test_new_run_manifest_always_pins_builtin_destination_and_model() -> None:
+    value = manifest()
+    encoded = json.loads(workflow_run_manifest_canonical_bytes(value))
+
+    assert value.schema_version == "workflow-run-manifest.v4"
+    assert value.execution_destination.provider == "openai"
+    assert (
+        value.execution_destination.endpoint == "https://api.openai.com/v1/responses"
+    )
+    assert (
+        value.execution_destination.credential_environment_variable
+        == "OPENAI_API_KEY"
+    )
+    assert encoded["execution_destination"]["fingerprint"] == (
+        value.execution_destination.fingerprint
+    )
 
 
 def test_unrelated_employee_definitions_do_not_affect_pinned_manifest() -> None:
@@ -566,4 +577,5 @@ def test_manifest_constructor_rejects_unbound_or_invalid_values() -> None:
             workflow_snapshot=value.workflow_snapshot,
             employee_snapshots=value.employee_snapshots,
             tool_contracts=value.tool_contracts,
+            execution_destination=value.execution_destination,
         )
