@@ -1,5 +1,7 @@
 """Guarded composition of existing OpenAI provider execution boundaries."""
 
+import email.utils
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from hashlib import sha256
@@ -173,130 +175,150 @@ def execute_openai_model_invocation(
             http_request,
             api_key,
         )
-        if execution_evidence.job_authorization is not None:
-            from ai_office.engine.workflow_job_authorization import (
-                WorkflowJobAuthorizationError,
-            )
+        from ai_office.engine.workflow_bounded_job import (
+            BoundedJobActionAuthorization,
+            admit_bounded_job_dispatch,
+            reserve_bounded_job_attempt,
+        )
+        from ai_office.engine.workflow_job_authorization import (
+            WorkflowJobAuthorization,
+            WorkflowJobAuthorizationError,
+            reserve_job_attempt,
+        )
+        from ai_office.execution_evidence import admit_job_execution_dispatch
 
-            body_bytes = http_request.body.encode("utf-8")
+        authorization = execution_evidence.job_authorization
+        bounded = type(authorization) is BoundedJobActionAuthorization
+        retry_limit = authorization.scope.max_retries if bounded else 0
+        interval_seconds = (
+            authorization.scope.retry_interval_seconds if bounded else 0
+        )
+        body_bytes = http_request.body.encode("utf-8")
+        body_sha256 = sha256(body_bytes).hexdigest()
+        last_result: ModelInvocationResult | None = None
+        for retry_index in range(retry_limit + 1):
+            if authorization is not None:
+                try:
+                    if bounded:
+                        reservation_sha256 = reserve_bounded_job_attempt(
+                            authorization,
+                            request_body_sha256=body_sha256,
+                            request_body_length=len(body_bytes),
+                            retry_index=retry_index,
+                        )
+                    elif type(authorization) is WorkflowJobAuthorization:
+                        reservation_sha256 = reserve_job_attempt(
+                            authorization,
+                            binding=execution_evidence.binding,
+                            workflow_id=execution_evidence.workflow_id,
+                            step_id=execution_evidence.step_id,
+                            step_index=execution_evidence.step_index,
+                            employee_id=execution_evidence.employee_id,
+                            request=request,
+                            resolved_tools=resolved_tools,
+                            target=selected_target,
+                            request_body_sha256=body_sha256,
+                            request_body_length=len(body_bytes),
+                        )
+                    else:
+                        raise WorkflowJobAuthorizationError("authorization")
+                except WorkflowJobAuthorizationError:
+                    if retry_index and last_result is not None:
+                        return last_result
+                    raise ExecutionEvidenceError("job_reservation") from None
+                execution_evidence = replace(
+                    execution_evidence, job_reservation_sha256=reservation_sha256
+                )
+            attempt: ExecutionAttemptEvidence = claim_execution_attempt(
+                execution_evidence, http_request
+            )
+            if attempt_claimed is not None:
+                attempt_claimed(attempt)
+            if before_transport is not None:
+                before_transport()
+            if authorization is not None:
+                if bounded:
+                    try:
+                        admit_bounded_job_dispatch(
+                            authorization,
+                            attempt=attempt,
+                            reservation_sha256=attempt.job_reservation_sha256,
+                        )
+                    except WorkflowJobAuthorizationError as error:
+                        raise ExecutionEvidenceError(
+                            "job_" + error.classification
+                        ) from None
+                else:
+                    admit_job_execution_dispatch(execution_evidence, attempt)
+            raw_evidence: RawProviderResponseEvidence | None = None
+            raw_response = None
+            try:
+                raw_response = transport(authenticated_request)
+                raw_evidence = persist_raw_response_evidence(
+                    execution_evidence, attempt, raw_response
+                )
+                result = normalize_openai_compatible_raw_response(
+                    raw_response,
+                    protocol=selected_target.protocol,
+                    provider=provider,
+                )
+            except OpenAIResponsesTransportError as error:
+                result = build_model_invocation_failure_from_openai_transport_error(
+                    error, provider=provider
+                )
+            except OpenAIResponsesInvalidResponseError as error:
+                result = (
+                    build_model_invocation_failure_from_openai_invalid_response_error(
+                    error, provider=provider
+                    )
+                )
+            except OpenAIResponsesInvalidOutputError as error:
+                result = (
+                    build_model_invocation_failure_from_openai_invalid_output_error(
+                    error, provider=provider
+                    )
+                )
+            except ExecutionEvidenceError:
+                raise
+            except Exception:
+                result = build_model_invocation_failure_from_openai_transport_error(
+                    OpenAIResponsesTransportError("OpenAI Responses transport failed"),
+                    provider=provider,
+                )
+            normalized = persist_normalized_result_evidence(
+                execution_evidence, attempt, result, raw_response=raw_evidence
+            )
+            last_result = normalized.result
+            if (
+                not bounded
+                or retry_index >= retry_limit
+                or raw_response is None
+                or not _retryable_bounded_response(
+                    raw_response.status_code, raw_response.body
+                )
+            ):
+                return normalized.result
             try:
                 from ai_office.engine.workflow_bounded_job import (
-                    BoundedJobActionAuthorization,
-                    reserve_bounded_job_attempt,
-                )
-                from ai_office.engine.workflow_job_authorization import (
-                    WorkflowJobAuthorization,
-                    reserve_job_attempt,
+                    bounded_job_retry_budget_remaining,
                 )
 
-                if (
-                    type(execution_evidence.job_authorization)
-                    is BoundedJobActionAuthorization
-                ):
-                    reservation_sha256 = reserve_bounded_job_attempt(
-                        execution_evidence.job_authorization,
-                        request_body_sha256=sha256(body_bytes).hexdigest(),
-                        request_body_length=len(body_bytes),
-                    )
-                elif (
-                    type(execution_evidence.job_authorization)
-                    is WorkflowJobAuthorization
-                ):
-                    reservation_sha256 = reserve_job_attempt(
-                        execution_evidence.job_authorization,
-                        binding=execution_evidence.binding,
-                        workflow_id=execution_evidence.workflow_id,
-                        step_id=execution_evidence.step_id,
-                        step_index=execution_evidence.step_index,
-                        employee_id=execution_evidence.employee_id,
-                        request=request,
-                        resolved_tools=resolved_tools,
-                        target=selected_target,
-                        request_body_sha256=sha256(body_bytes).hexdigest(),
-                        request_body_length=len(body_bytes),
-                    )
-                else:
-                    raise WorkflowJobAuthorizationError("authorization")
-            except WorkflowJobAuthorizationError:
-                raise ExecutionEvidenceError("job_reservation") from None
-            execution_evidence = replace(
-                execution_evidence, job_reservation_sha256=reservation_sha256
+                if not bounded_job_retry_budget_remaining(authorization):
+                    return normalized.result
+            except Exception:
+                return normalized.result
+            delay = max(
+                interval_seconds,
+                _retry_after_seconds(raw_response.headers) or 0,
             )
-        # The claim consumes only the unauthenticated request template.  The
-        # Authorization-bearing value never crosses into durable evidence.
-        # A Job reservation is the durable quota consume before this Run claim.
-        attempt: ExecutionAttemptEvidence = claim_execution_attempt(
-            execution_evidence, http_request
-        )
-        if attempt_claimed is not None:
-            attempt_claimed(attempt)
-        if before_transport is not None:
-            before_transport()
-        if execution_evidence.job_authorization is not None:
-            from ai_office.engine.workflow_bounded_job import (
-                BoundedJobActionAuthorization,
-                admit_bounded_job_dispatch,
-            )
-            from ai_office.execution_evidence import admit_job_execution_dispatch
-
             if (
-                type(execution_evidence.job_authorization)
-                is BoundedJobActionAuthorization
+                time.time_ns() + delay * 1_000_000_000
+                >= authorization.scope.expires_at_ns
             ):
-                try:
-                    admit_bounded_job_dispatch(
-                        execution_evidence.job_authorization,
-                        attempt=attempt,
-                        reservation_sha256=attempt.job_reservation_sha256,
-                    )
-                except WorkflowJobAuthorizationError as error:
-                    raise ExecutionEvidenceError(
-                        "job_" + error.classification
-                    ) from None
-            else:
-                admit_job_execution_dispatch(execution_evidence, attempt)
-        raw_evidence: RawProviderResponseEvidence | None = None
-        try:
-            raw_response = transport(authenticated_request)
-            raw_evidence = persist_raw_response_evidence(
-                execution_evidence,
-                attempt,
-                raw_response,
-            )
-            result = normalize_openai_compatible_raw_response(
-                raw_response,
-                protocol=selected_target.protocol,
-                provider=provider,
-            )
-        except OpenAIResponsesTransportError as error:
-            result = build_model_invocation_failure_from_openai_transport_error(
-                error, provider=provider
-            )
-        except OpenAIResponsesInvalidResponseError as error:
-            result = build_model_invocation_failure_from_openai_invalid_response_error(
-                error, provider=provider
-            )
-        except OpenAIResponsesInvalidOutputError as error:
-            result = build_model_invocation_failure_from_openai_invalid_output_error(
-                error, provider=provider
-            )
-        except ExecutionEvidenceError:
-            raise
-        except Exception:
-            # A custom transport may raise an unexpected exception after the
-            # provider boundary.  Do not expose its internals; preserve the
-            # conservative transport-uncertainty meaning instead.
-            result = build_model_invocation_failure_from_openai_transport_error(
-                OpenAIResponsesTransportError("OpenAI Responses transport failed"),
-                provider=provider,
-            )
-        normalized = persist_normalized_result_evidence(
-            execution_evidence,
-            attempt,
-            result,
-            raw_response=raw_evidence,
-        )
-        return normalized.result
+                return normalized.result
+            time.sleep(delay)
+        assert last_result is not None
+        return last_result
     except OpenAIResponsesTransportError as error:
         return build_model_invocation_failure_from_openai_transport_error(
             error, provider=provider
@@ -355,6 +377,29 @@ def normalize_openai_compatible_raw_response(
         OpenAIResponsesExecutionInputError("execution target protocol is unsupported"),
         provider=provider,
     )
+
+
+def _retryable_bounded_response(status_code: int, body: bytes) -> bool:
+    from ai_office.engine.workflow_bounded_job import _retryable_http_response
+
+    return _retryable_http_response(status_code, body)
+
+
+def _retry_after_seconds(headers: tuple[tuple[str, str], ...]) -> int | None:
+    values = [value.strip() for name, value in headers if name.lower() == "retry-after"]
+    if len(values) != 1:
+        return None
+    value = values[0]
+    if value.isascii() and value.isdecimal():
+        return int(value)
+    try:
+        retry_at = email.utils.parsedate_to_datetime(value)
+        if retry_at.tzinfo is None:
+            return None
+        seconds = retry_at.timestamp() - time.time()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return max(0, int(seconds + 0.999999))
 
 
 def _validate_resolved_tools(

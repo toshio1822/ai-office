@@ -107,6 +107,9 @@ class BoundedWorkflowJobScope:
     expires_at_ns: int
     business_grant: WorkflowJobGrant
     execution_grant: WorkflowJobGrant
+    max_retries: int = 0
+    retry_interval_seconds: int = 30
+    schema_version: str = "workflow-bounded-job-scope.v2"
 
     def __post_init__(self) -> None:
         if not _identifier(self.job_id):
@@ -138,9 +141,23 @@ class BoundedWorkflowJobScope:
             raise WorkflowJobAuthorizationError("job_scope_actions")
         if (
             type(self.max_provider_attempts) is not int
-            or not 1 <= self.max_provider_attempts <= len(self.actions)
             or type(self.max_revisions) is not int
             or self.max_revisions not in {0, 1}
+            or not 3 + 2 * self.max_revisions
+            <= self.max_provider_attempts
+            <= 5 + 2
+            or type(self.max_retries) is not int
+            or not 0 <= self.max_retries <= 2
+            or type(self.retry_interval_seconds) is not int
+            or not 1 <= self.retry_interval_seconds <= 3600
+            or self.max_provider_attempts
+            != 3 + 2 * self.max_revisions + self.max_retries
+            or self.schema_version
+            not in {"workflow-bounded-job-scope.v1", "workflow-bounded-job-scope.v2"}
+            or (
+                self.schema_version == "workflow-bounded-job-scope.v1"
+                and self.max_retries != 0
+            )
             or type(self.expires_at_ns) is not int
             or self.expires_at_ns <= 0
             or self.business_grant.purpose != "job_business"
@@ -157,6 +174,9 @@ class BoundedWorkflowJobScope:
                 self.max_provider_attempts,
                 self.max_revisions,
                 self.expires_at_ns,
+                self.max_retries,
+                self.retry_interval_seconds,
+                self.schema_version,
             )
             or self.execution_grant.envelope_sha256
             != self.business_grant.envelope_sha256
@@ -178,7 +198,20 @@ class BoundedWorkflowJobScope:
                 "job_id": self.job_id,
                 "max_provider_attempts": self.max_provider_attempts,
                 "max_revisions": self.max_revisions,
-                "schema_version": "workflow-bounded-job-scope.v1",
+                **(
+                    {"retryable_http_statuses": [429, 503]}
+                    if self.schema_version == "workflow-bounded-job-scope.v2"
+                    else {}
+                ),
+                **(
+                    {
+                        "max_retries": self.max_retries,
+                        "retry_interval_seconds": self.retry_interval_seconds,
+                    }
+                    if self.schema_version == "workflow-bounded-job-scope.v2"
+                    else {}
+                ),
+                "schema_version": self.schema_version,
             }
         )
 
@@ -267,6 +300,8 @@ def issue_bounded_workflow_job_scope(
     actions: tuple[BoundedJobActionSlot, ...],
     max_provider_attempts: int,
     max_revisions: int,
+    max_retries: int = 0,
+    retry_interval_seconds: int = 30,
     expires_at_ns: int,
     business_approved_by: str,
     business_grant_id: str,
@@ -286,6 +321,8 @@ def issue_bounded_workflow_job_scope(
         max_provider_attempts,
         max_revisions,
         expires_at_ns,
+        max_retries,
+        retry_interval_seconds,
     )
     business = WorkflowJobGrant(
         "workflow-job-authorization-grant.v1",
@@ -343,9 +380,11 @@ def issue_bounded_workflow_job_scope(
         expires_at_ns,
         business,
         execution,
+        max_retries,
+        retry_interval_seconds,
     )
-    # The v1 envelope digest is a compatibility field only for this distinct
-    # root scope; v1 Run-bound records are not rewritten or reinterpreted.
+    # This root-scope digest is distinct from Run-bound authorization records.
+    # Legacy v1 scopes remain readable without being reinterpreted as retryable.
     _persist_immutable(_scope_path(store.root, job_id), scope.canonical)
     return scope
 
@@ -358,13 +397,26 @@ def load_bounded_workflow_job_scope(
     payload = _read_regular(_scope_path(store.root, job_id))
     try:
         value = json.loads(payload)
-        if value.pop("schema_version") != "workflow-bounded-job-scope.v1":
+        schema_version = value.pop("schema_version")
+        if schema_version not in {
+            "workflow-bounded-job-scope.v1",
+            "workflow-bounded-job-scope.v2",
+        }:
+            raise ValueError
+        if schema_version == "workflow-bounded-job-scope.v2":
+            if value.pop("retryable_http_statuses") != [429, 503]:
+                raise ValueError
+        elif "retryable_http_statuses" in value:
             raise ValueError
         business = WorkflowJobGrant(**value.pop("business_grant"))
         execution = WorkflowJobGrant(**value.pop("execution_grant"))
         actions = tuple(BoundedJobActionSlot(**item) for item in value.pop("actions"))
         scope = BoundedWorkflowJobScope(
-            actions=actions, business_grant=business, execution_grant=execution, **value
+            actions=actions,
+            business_grant=business,
+            execution_grant=execution,
+            schema_version=schema_version,
+            **value,
         )
         if scope.canonical != payload:
             raise ValueError
@@ -436,8 +488,8 @@ def derive_bounded_job_action_authorization(
         prior_authorization = load_bounded_job_action_by_identity(
             store, current.job_id, ordinal - 1
         )
-        prior_dispatch = json.loads(
-            _read_regular(_dispatch_path(store.root, current.job_id, ordinal - 1))
+        prior_dispatch = _latest_dispatch_for_action(
+            store, current.job_id, ordinal - 1
         )
         if not (
             prior_authorization.run_id == run_id
@@ -464,8 +516,8 @@ def derive_bounded_job_action_authorization(
         prior_authorization = load_bounded_job_action_by_identity(
             store, current.job_id, ordinal - 1
         )
-        prior_dispatch = json.loads(
-            _read_regular(_dispatch_path(store.root, current.job_id, ordinal - 1))
+        prior_dispatch = _latest_dispatch_for_action(
+            store, current.job_id, ordinal - 1
         )
         if (
             prior_authorization.run_id != pred_run
@@ -529,6 +581,7 @@ def reserve_bounded_job_attempt(
     *,
     request_body_sha256: str,
     request_body_length: int,
+    retry_index: int = 0,
     now_ns: int | None = None,
 ) -> str:
     """Consume one Job-wide slot before shared Run/Step attempt claim."""
@@ -536,6 +589,8 @@ def reserve_bounded_job_attempt(
         not _valid_digest(request_body_sha256)
         or type(request_body_length) is not int
         or request_body_length < 0
+        or type(retry_index) is not int
+        or retry_index < 0
     ):
         raise WorkflowJobAuthorizationError("job_reservation")
     with _job_lock(authorization.store_root, authorization.job_id):
@@ -553,25 +608,46 @@ def reserve_bounded_job_attempt(
         records = _reservation_records(authorization.store_root, scope.job_id)
         if len(records) >= scope.max_provider_attempts:
             raise WorkflowJobAuthorizationError("attempt_allowance_depleted")
-        if any(
-            item.get("action_sha256") == authorization.action_sha256 for item in records
-        ):
+        action_records = [
+            item
+            for item in records
+            if item.get("action_sha256") == authorization.action_sha256
+        ]
+        if len(action_records) != retry_index:
             raise WorkflowJobAuthorizationError("job_action_replayed")
+        if retry_index:
+            if (
+                scope.schema_version != "workflow-bounded-job-scope.v2"
+                or retry_index > scope.max_retries
+                or sum(1 for item in records if item.get("retry_index", 0) > 0)
+                >= scope.max_retries
+                or not _prior_job_attempts_are_retryable(
+                    authorization,
+                    expected_count=retry_index,
+                    request_body_sha256=request_body_sha256,
+                )
+            ):
+                raise WorkflowJobAuthorizationError("job_retry_not_authorized")
+        reservation_index = len(records)
         payload = _canonical(
             {
                 "action_sha256": authorization.action_sha256,
                 "ordinal": authorization.ordinal,
                 "request_body_length": request_body_length,
                 "request_body_sha256": request_body_sha256,
-                "reservation_index": len(records),
+                "reservation_index": reservation_index,
+                "retry_index": retry_index,
                 "run_id": authorization.run_id,
-                "schema_version": "workflow-bounded-job-reservation.v1",
+                "schema_version": "workflow-bounded-job-reservation.v2",
                 "scope_sha256": scope.digest,
             }
         )
         _persist_immutable(
             _reservation_path(
-                authorization.store_root, scope.job_id, authorization.ordinal
+                authorization.store_root,
+                scope.job_id,
+                authorization.ordinal,
+                retry_index,
             ),
             payload,
         )
@@ -597,11 +673,27 @@ def admit_bounded_job_dispatch(
             or _revoked(authorization.store_root, scope)
         ):
             raise WorkflowJobAuthorizationError("job_scope_expired_or_revoked")
-        reservation = _read_regular(
-            _reservation_path(
-                authorization.store_root, scope.job_id, authorization.ordinal
-            )
+        reservation = next(
+            (
+                _read_regular(path)
+                for path in _reservation_paths(
+                    authorization.store_root, scope.job_id
+                )
+                if _digest(_read_regular(path)) == reservation_sha256
+            ),
+            None,
         )
+        if reservation is None:
+            raise WorkflowJobAuthorizationError("job_reservation_binding")
+        reservation_value = json.loads(reservation)
+        retry_index = reservation_value.get("retry_index", 0)
+        if (
+            reservation_value.get("ordinal") != authorization.ordinal
+            or reservation_value.get("action_sha256") != authorization.action_sha256
+            or reservation_value.get("scope_sha256") != scope.digest
+            or reservation_value.get("run_id") != authorization.run_id
+        ):
+            raise WorkflowJobAuthorizationError("job_reservation_binding")
         if _digest(reservation) != reservation_sha256:
             raise WorkflowJobAuthorizationError("job_reservation_binding")
         try:
@@ -638,14 +730,19 @@ def admit_bounded_job_dispatch(
                 "admitted_at_ns": now,
                 "attempt_evidence_sha256": attempt.digest,
                 "attempt_id": attempt.attempt_id,
+                "ordinal": authorization.ordinal,
+                "retry_index": retry_index,
                 "reservation_sha256": reservation_sha256,
-                "schema_version": "workflow-bounded-job-dispatch.v1",
+                "schema_version": "workflow-bounded-job-dispatch.v2",
                 "scope_sha256": scope.digest,
             }
         )
         _persist_immutable(
             _dispatch_path(
-                authorization.store_root, scope.job_id, authorization.ordinal
+                authorization.store_root,
+                scope.job_id,
+                authorization.ordinal,
+                retry_index,
             ),
             payload,
         )
@@ -857,9 +954,7 @@ def load_bounded_job_action_by_identity(
             prior = json.loads(
                 _read_regular(_action_path(store.root, job_id, ordinal - 1))
             )
-            prior_dispatch = json.loads(
-                _read_regular(_dispatch_path(store.root, job_id, ordinal - 1))
-            )
+            prior_dispatch = _latest_dispatch_for_action(store, job_id, ordinal - 1)
             if not (
                 authorization.predecessor_run_id == authorization.run_id
                 and authorization.predecessor_artifact_id is None
@@ -919,9 +1014,7 @@ def load_bounded_job_action_by_identity(
             prior = json.loads(
                 _read_regular(_action_path(store.root, job_id, ordinal - 1))
             )
-            prior_dispatch = json.loads(
-                _read_regular(_dispatch_path(store.root, job_id, ordinal - 1))
-            )
+            prior_dispatch = _latest_dispatch_for_action(store, job_id, ordinal - 1)
             if (
                 prior.get("run_id") != authorization.predecessor_run_id
                 or prior_dispatch.get("attempt_id") is None
@@ -974,12 +1067,25 @@ def validate_bounded_job_attempt_authority(
     )
     if authorization.action_sha256 != action_sha256:
         raise WorkflowJobAuthorizationError("job_action_binding")
-    reservation = _read_regular(_reservation_path(store.root, job_id, ordinal))
+    reservation_path = next(
+        (
+            path
+            for path in _reservation_paths(store.root, job_id)
+            if _digest(_read_regular(path)) == reservation_sha256
+        ),
+        None,
+    )
+    if reservation_path is None:
+        raise WorkflowJobAuthorizationError("job_reservation_binding")
+    reservation = _read_regular(reservation_path)
     reservation_value = json.loads(reservation)
     if not (
         type(reservation_value) is dict
         and reservation_value.get("schema_version")
-        == "workflow-bounded-job-reservation.v1"
+        in {
+            "workflow-bounded-job-reservation.v1",
+            "workflow-bounded-job-reservation.v2",
+        }
         and reservation_value.get("scope_sha256") == authorization.scope.digest
         and _digest(reservation) == reservation_sha256
         and reservation == _canonical(reservation_value)
@@ -989,11 +1095,27 @@ def validate_bounded_job_attempt_authority(
         and reservation_value.get("request_body_length") == request_body_length
     ):
         raise WorkflowJobAuthorizationError("job_reservation_binding")
-    dispatch = _read_regular(_dispatch_path(store.root, job_id, ordinal))
+    dispatch_path = next(
+        (
+            path
+            for path in sorted(
+                store.root.glob(f"workflow-bounded-job.{job_id}.dispatch.*.json")
+            )
+            if json.loads(_read_regular(path)).get("attempt_id") == attempt_id
+        ),
+        None,
+    )
+    if dispatch_path is None:
+        raise WorkflowJobAuthorizationError("job_dispatch_binding")
+    dispatch = _read_regular(dispatch_path)
     dispatch_value = json.loads(dispatch)
     if not (
         type(dispatch_value) is dict
-        and dispatch_value.get("schema_version") == "workflow-bounded-job-dispatch.v1"
+        and dispatch_value.get("schema_version")
+        in {
+            "workflow-bounded-job-dispatch.v1",
+            "workflow-bounded-job-dispatch.v2",
+        }
         and type(dispatch_value.get("admitted_at_ns")) is int
         and dispatch_value["admitted_at_ns"] < authorization.scope.expires_at_ns
         and dispatch == _canonical(dispatch_value)
@@ -1001,6 +1123,9 @@ def validate_bounded_job_attempt_authority(
         and dispatch_value.get("attempt_id") == attempt_id
         and dispatch_value.get("attempt_evidence_sha256") == attempt_evidence_sha256
         and dispatch_value.get("reservation_sha256") == reservation_sha256
+        and dispatch_value.get("ordinal", ordinal) == ordinal
+        and dispatch_value.get("retry_index", 0)
+        == reservation_value.get("retry_index", 0)
         and dispatch_value.get("scope_sha256") == authorization.scope.digest
     ):
         raise WorkflowJobAuthorizationError("job_dispatch_binding")
@@ -1128,9 +1253,7 @@ def _read_predecessor_artifact(
         # dispatch to the bytes being handed off, without walking history again.
         prior_payload = _read_regular(_action_path(store.root, job_id, ordinal - 1))
         prior = json.loads(prior_payload)
-        prior_dispatch = json.loads(
-            _read_regular(_dispatch_path(store.root, job_id, ordinal - 1))
-        )
+        prior_dispatch = _latest_dispatch_for_action(store, job_id, ordinal - 1)
         if not (
             type(prior) is dict
             and prior_payload == _canonical(prior)
@@ -1173,7 +1296,7 @@ def _artifact_for_action(
         run_id = action_value.get("run_id")
         if type(run_id) is not str:
             raise WorkflowJobAuthorizationError("job_action_load")
-    dispatch = json.loads(_read_regular(_dispatch_path(store.root, job_id, ordinal)))
+    dispatches = _dispatches_for_action(store, job_id, ordinal)
     if verify_lineage:
         artifacts = list_run_artifacts(store, run_id)
     else:
@@ -1184,11 +1307,50 @@ def _artifact_for_action(
     candidates = [
         item
         for item in artifacts
-        if item.execution_attempt_id == dispatch.get("attempt_id")
+        if any(
+            item.execution_attempt_id == dispatch.get("attempt_id")
+            for dispatch in dispatches
+        )
     ]
     if len(candidates) != 1:
         raise WorkflowJobAuthorizationError("job_action_artifact")
     return candidates[0]
+
+
+def _dispatches_for_action(
+    store: WorkflowRunManifestStore, job_id: str, ordinal: int
+) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    prefix = f"workflow-bounded-job.{job_id}.dispatch.{ordinal}"
+    for path in sorted(store.root.glob(prefix + "*.json")):
+        payload = _read_regular(path)
+        value = json.loads(payload)
+        retry_index = value.get("retry_index", 0)
+        if (
+            type(value) is not dict
+            or payload != _canonical(value)
+            or value.get("schema_version")
+            not in {
+                "workflow-bounded-job-dispatch.v1",
+                "workflow-bounded-job-dispatch.v2",
+            }
+            or value.get("ordinal", ordinal) != ordinal
+            or type(retry_index) is not int
+            or retry_index < 0
+        ):
+            raise WorkflowJobAuthorizationError("job_dispatch_evidence")
+        records.append(value)
+    records.sort(key=lambda item: item.get("retry_index", 0))
+    return records
+
+
+def _latest_dispatch_for_action(
+    store: WorkflowRunManifestStore, job_id: str, ordinal: int
+) -> dict[str, object]:
+    records = _dispatches_for_action(store, job_id, ordinal)
+    if not records:
+        raise WorkflowJobAuthorizationError("job_dispatch_missing")
+    return records[-1]
 
 
 def _artifact_payload(artifact) -> dict[str, object]:
@@ -1241,7 +1403,8 @@ def validate_bounded_document_job_scope(scope: BoundedWorkflowJobScope) -> None:
     if (
         actual != expected
         or scope.max_revisions not in {0, 1}
-        or scope.max_provider_attempts != 3 + (2 * scope.max_revisions)
+        or scope.max_provider_attempts
+        != 3 + (2 * scope.max_revisions) + scope.max_retries
     ):
         raise WorkflowJobAuthorizationError("document_job_scope")
 
@@ -1423,36 +1586,80 @@ def inspect_bounded_document_job(
     if len(reservations) > scope.max_provider_attempts:
         raise WorkflowJobAuthorizationError("attempt_allowance_depleted")
     dispatch_order = []
-    for ordinal in range(len(scope.actions)):
-        action_path = _action_path(store.root, job_id, ordinal)
-        if not action_path.exists():
-            continue
+    reservation_by_digest = {
+        _digest(_read_regular(path)): (path, _read_regular(path))
+        for path in _reservation_paths(store.root, job_id)
+    }
+    for dispatch_path in sorted(
+        store.root.glob(f"workflow-bounded-job.{job_id}.dispatch.*.json")
+    ):
+        dispatch_payload = _read_regular(dispatch_path)
+        dispatch = json.loads(dispatch_payload)
+        ordinal = dispatch.get("ordinal")
+        if ordinal is None:
+            # v1 had exactly one dispatch file per action; retain read-only
+            # compatibility for already persisted non-retry Jobs.
+            try:
+                ordinal = int(
+                    dispatch_path.name.split(".dispatch.", 1)[1].split(".", 1)[0]
+                )
+            except (IndexError, ValueError):
+                raise WorkflowJobAuthorizationError("document_job_dispatch") from None
+        if type(ordinal) is not int or not 0 <= ordinal < len(scope.actions):
+            raise WorkflowJobAuthorizationError("document_job_dispatch")
         authorization = load_bounded_job_action_by_identity(
             store, job_id, ordinal, verify_lineage=False
         )
-        dispatch_path = _dispatch_path(store.root, job_id, ordinal)
-        if dispatch_path.exists():
-            dispatch_payload = _read_regular(dispatch_path)
-            dispatch = json.loads(dispatch_payload)
-            reservation = _read_regular(_reservation_path(store.root, job_id, ordinal))
-            reservation_value = json.loads(reservation)
-            if not (
-                dispatch_payload == _canonical(dispatch)
-                and dispatch.get("action_sha256") == authorization.action_sha256
-                and dispatch.get("reservation_sha256") == _digest(reservation)
-                and reservation == _canonical(reservation_value)
-                and reservation_value.get("action_sha256")
-                == authorization.action_sha256
-                and reservation_value.get("ordinal") == ordinal
-            ):
-                raise WorkflowJobAuthorizationError("document_job_dispatch")
-            dispatch_order.append(
-                {
-                    "action_ordinal": ordinal,
-                    "admitted_at_ns": dispatch["admitted_at_ns"],
-                    "attempt_id": dispatch["attempt_id"],
-                    "run_id": authorization.run_id,
-                }
+        reservation_pair = reservation_by_digest.get(dispatch.get("reservation_sha256"))
+        if reservation_pair is None:
+            raise WorkflowJobAuthorizationError("document_job_dispatch")
+        _, reservation = reservation_pair
+        reservation_value = json.loads(reservation)
+        if not (
+            dispatch_payload == _canonical(dispatch)
+            and dispatch.get("action_sha256") == authorization.action_sha256
+            and reservation == _canonical(reservation_value)
+            and reservation_value.get("action_sha256") == authorization.action_sha256
+            and reservation_value.get("ordinal") == ordinal
+            and dispatch.get("reservation_sha256") == _digest(reservation)
+            and dispatch.get("attempt_id")
+        ):
+            raise WorkflowJobAuthorizationError("document_job_dispatch")
+        dispatch_order.append(
+            {
+                "action_ordinal": ordinal,
+                "admitted_at_ns": dispatch["admitted_at_ns"],
+                "attempt_id": dispatch["attempt_id"],
+                "http_status": None,
+                "result_category": None,
+                "retry_index": dispatch.get("retry_index", 0),
+                "run_id": authorization.run_id,
+            }
+        )
+        from ai_office.execution_evidence import (
+            execution_normalized_result_evidence_path,
+            execution_raw_response_evidence_path,
+            load_normalized_result_evidence,
+            load_raw_response_evidence,
+        )
+
+        raw_path = execution_raw_response_evidence_path(
+            store.root, authorization.run_id, dispatch["attempt_id"]
+        )
+        if raw_path.exists() or raw_path.is_symlink():
+            raw = load_raw_response_evidence(
+                store.root, authorization.run_id, dispatch["attempt_id"]
+            )
+            dispatch_order[-1]["http_status"] = raw.status_code
+        result_path = execution_normalized_result_evidence_path(
+            store.root, authorization.run_id, dispatch["attempt_id"]
+        )
+        if result_path.exists() or result_path.is_symlink():
+            normalized = load_normalized_result_evidence(
+                store.root, authorization.run_id, dispatch["attempt_id"]
+            )
+            dispatch_order[-1]["result_category"] = getattr(
+                normalized.result, "category", "success"
             )
     dispatch_order.sort(
         key=lambda item: (item["admitted_at_ns"], item["action_ordinal"])
@@ -1467,10 +1674,28 @@ def inspect_bounded_document_job(
         "dispatch_order": dispatch_order,
         "job_id": job_id,
         "max_provider_attempts": scope.max_provider_attempts,
+        "normal_action_limit": 3 + (2 * scope.max_revisions),
+        "normal_actions_consumed": len(
+            {item.get("ordinal") for item in reservations}
+        ),
+        "retry_limit": scope.max_retries,
+        "retry_interval_seconds": scope.retry_interval_seconds,
+        "retryable_http_statuses": [429, 503]
+        if scope.schema_version == "workflow-bounded-job-scope.v2"
+        else [],
+        "retry_attempts_consumed": sum(
+            1 for item in reservations if item.get("retry_index", 0) > 0
+        ),
+        "total_physical_attempt_limit": scope.max_provider_attempts,
         "max_revisions": scope.max_revisions,
         "remaining_provider_attempts": scope.max_provider_attempts - len(reservations),
-        "revision_attempts_consumed": sum(
-            1 for item in reservations if item.get("ordinal") == 3
+        "revision_attempts_consumed": int(
+            any(item.get("ordinal") == 3 for item in reservations)
+        ),
+        "revision_retry_attempts_consumed": sum(
+            1
+            for item in reservations
+            if item.get("ordinal") == 3 and item.get("retry_index", 0) > 0
         ),
         "status": status.get("status", "in_progress")
         if status
@@ -1502,13 +1727,43 @@ def _verify_positive_terminal_status(
     reservations = _reservation_records(store.root, scope.job_id)
     expected_calls = 3 + (2 * expected_revisions)
     expected_ordinals = set(range(expected_calls))
+    retries_consumed = sum(
+        1 for item in reservations if item.get("retry_index", 0) > 0
+    )
     if (
-        len(reservations) != expected_calls
+        len(reservations) != expected_calls + retries_consumed
+        or len(reservations) > scope.max_provider_attempts
+        or retries_consumed > scope.max_retries
         or {item.get("ordinal") for item in reservations} != expected_ordinals
         or sum(1 for item in reservations if item.get("ordinal") == 3)
         != expected_revisions
     ):
         raise WorkflowJobAuthorizationError("document_job_status_accounting")
+    for ordinal in range(expected_calls):
+        action_records = [
+            item for item in reservations if item.get("ordinal") == ordinal
+        ]
+        action_records.sort(key=lambda item: item.get("retry_index", 0))
+        expected_retry_count = len(action_records) - 1
+        if (
+            not action_records
+            or [item.get("retry_index", 0) for item in action_records]
+            != list(range(len(action_records)))
+        ):
+            raise WorkflowJobAuthorizationError("document_job_status_accounting")
+        if expected_retry_count:
+            action_authorization = load_bounded_job_action_by_identity(
+                store, scope.job_id, ordinal, verify_lineage=False
+            )
+            for retry_index in range(1, expected_retry_count + 1):
+                if not _prior_job_attempts_are_retryable(
+                    action_authorization,
+                    expected_count=retry_index,
+                    request_body_sha256=action_records[0]["request_body_sha256"],
+                ):
+                    raise WorkflowJobAuthorizationError(
+                        "document_job_retry_evidence"
+                    )
     try:
         final_artifact = _artifact_for_action(store, scope.job_id, final_ordinal)
         review_artifact = _artifact_for_action(store, scope.job_id, review_ordinal)
@@ -2007,7 +2262,7 @@ def _stopped_document_job_outcome(
         final.artifact_id if final else None,
         review.run_id if review else None,
         review.artifact_id if review else None,
-        sum(1 for item in reservations if item.get("ordinal") == 3),
+        int(any(item.get("ordinal") == 3 for item in reservations)),
         reason,
     )
 
@@ -2025,10 +2280,11 @@ def _scope_intent_digest(
     max_provider_attempts: int,
     max_revisions: int,
     expires_at_ns: int,
+    max_retries: int = 0,
+    retry_interval_seconds: int = 30,
+    schema_version: str = "workflow-bounded-job-scope.v2",
 ) -> str:
-    return _digest(
-        _canonical(
-            {
+    value = {
                 "actions": [_slot_dict(item) for item in actions],
                 "assignment_sha256": assignment_sha256,
                 "expires_at_ns": expires_at_ns,
@@ -2037,10 +2293,17 @@ def _scope_intent_digest(
                 "job_id": job_id,
                 "max_provider_attempts": max_provider_attempts,
                 "max_revisions": max_revisions,
-                "schema_version": "workflow-bounded-job-scope-intent.v1",
+                "schema_version": (
+                    "workflow-bounded-job-scope-intent.v1"
+                    if schema_version == "workflow-bounded-job-scope.v1"
+                    else "workflow-bounded-job-scope-intent.v2"
+                ),
             }
-        )
-    )
+    if schema_version == "workflow-bounded-job-scope.v2":
+        value["max_retries"] = max_retries
+        value["retry_interval_seconds"] = retry_interval_seconds
+        value["retryable_http_statuses"] = [429, 503]
+    return _digest(_canonical(value))
 
 
 def _artifact_belongs_to_run(store, run_id: str, artifact_id: str) -> bool:
@@ -2150,12 +2413,18 @@ def _action_path(root: Path, job_id: str, ordinal: int) -> Path:
     return root / f"workflow-bounded-job.{job_id}.action.{ordinal}.json"
 
 
-def _reservation_path(root: Path, job_id: str, ordinal: int) -> Path:
-    return root / f"workflow-bounded-job.{job_id}.reservation.{ordinal}.json"
+def _reservation_path(
+    root: Path, job_id: str, ordinal: int, retry_index: int = 0
+) -> Path:
+    suffix = str(ordinal) if retry_index == 0 else f"{ordinal}.retry.{retry_index}"
+    return root / f"workflow-bounded-job.{job_id}.reservation.{suffix}.json"
 
 
-def _dispatch_path(root: Path, job_id: str, ordinal: int) -> Path:
-    return root / f"workflow-bounded-job.{job_id}.dispatch.{ordinal}.json"
+def _dispatch_path(
+    root: Path, job_id: str, ordinal: int, retry_index: int = 0
+) -> Path:
+    suffix = str(ordinal) if retry_index == 0 else f"{ordinal}.retry.{retry_index}"
+    return root / f"workflow-bounded-job.{job_id}.dispatch.{suffix}.json"
 
 
 def _revocation_path(root: Path, job_id: str) -> Path:
@@ -2187,15 +2456,260 @@ def _revoked(root: Path, scope: BoundedWorkflowJobScope) -> bool:
 
 def _reservation_records(root: Path, job_id: str) -> list[dict[str, object]]:
     records = []
-    for path in sorted(root.glob(f"workflow-bounded-job.{job_id}.reservation.*.json")):
-        value = json.loads(_read_regular(path))
+    scope = load_bounded_workflow_job_scope(WorkflowRunManifestStore(root), job_id)
+    for path in _reservation_paths(root, job_id):
+        payload = _read_regular(path)
+        value = json.loads(payload)
+        schema = value.get("schema_version") if type(value) is dict else None
+        expected_keys = {
+            "action_sha256",
+            "ordinal",
+            "request_body_length",
+            "request_body_sha256",
+            "reservation_index",
+            "run_id",
+            "schema_version",
+            "scope_sha256",
+        }
+        if schema == "workflow-bounded-job-reservation.v2":
+            expected_keys.add("retry_index")
         if (
             type(value) is not dict
-            or value.get("schema_version") != "workflow-bounded-job-reservation.v1"
+            or schema not in {
+                "workflow-bounded-job-reservation.v1",
+                "workflow-bounded-job-reservation.v2",
+            }
+            or set(value) != expected_keys
+            or payload != _canonical(value)
+            or value.get("scope_sha256") != scope.digest
+            or type(value.get("ordinal")) is not int
+            or not 0 <= value["ordinal"] < len(scope.actions)
+            or value.get("action_sha256")
+            != _digest(_read_regular(_action_path(root, job_id, value["ordinal"])))
+            or not _valid_digest(value.get("request_body_sha256"))
+            or type(value.get("request_body_length")) is not int
+            or value["request_body_length"] < 0
+            or type(value.get("reservation_index")) is not int
+            or value["reservation_index"] < 0
+            or type(value.get("retry_index", 0)) is not int
+            or value.get("retry_index", 0) < 0
+            or (
+                schema == "workflow-bounded-job-reservation.v1"
+                and scope.schema_version != "workflow-bounded-job-scope.v1"
+            )
+            or (
+                value.get("retry_index", 0) > 0
+                and scope.schema_version != "workflow-bounded-job-scope.v2"
+            )
+            or path
+            != _reservation_path(
+                root,
+                job_id,
+                value.get("ordinal", -1),
+                value.get("retry_index", 0),
+            )
         ):
             raise WorkflowJobAuthorizationError("job_reservation_evidence")
         records.append(value)
+    records.sort(
+        key=lambda item: item.get("reservation_index", item.get("ordinal", -1))
+    )
+    if (
+        len(records) > scope.max_provider_attempts
+        or [item["reservation_index"] for item in records] != list(range(len(records)))
+        or sum(1 for item in records if item.get("retry_index", 0) > 0)
+        > scope.max_retries
+    ):
+        raise WorkflowJobAuthorizationError("job_reservation_evidence")
     return records
+
+
+def _reservation_paths(root: Path, job_id: str) -> list[Path]:
+    return sorted(root.glob(f"workflow-bounded-job.{job_id}.reservation.*.json"))
+
+
+def _prior_job_attempts_are_retryable(
+    authorization: BoundedJobActionAuthorization,
+    *,
+    expected_count: int,
+    request_body_sha256: str,
+) -> bool:
+    """Require complete, durably retryable evidence for every earlier send."""
+    from ai_office.execution_evidence import (
+        list_run_execution_evidence,
+        load_normalized_result_evidence,
+        load_raw_response_evidence,
+    )
+
+    attempts = [
+        attempt
+        for attempt in list_run_execution_evidence(
+            authorization.store_root, authorization.run_id
+        )
+        if (attempt.workflow_id, attempt.step_id, attempt.step_index)
+        == (
+            authorization.workflow_id,
+            authorization.step_id,
+            authorization.step_index,
+        )
+    ]
+    action_records = [
+        item
+        for item in _reservation_records(authorization.store_root, authorization.job_id)
+        if item.get("action_sha256") == authorization.action_sha256
+    ]
+    if len(attempts) < expected_count or len(action_records) < expected_count:
+        return False
+    action_records.sort(key=lambda item: item.get("retry_index", 0))
+    action_records = action_records[:expected_count]
+    by_reservation = {
+        attempt.job_reservation_sha256: attempt for attempt in attempts
+    }
+    if len(by_reservation) < expected_count:
+        return False
+    for retry_index, reservation in enumerate(action_records):
+        reservation_path = _reservation_path(
+            authorization.store_root,
+            authorization.job_id,
+            authorization.ordinal,
+            retry_index,
+        )
+        reservation_sha256 = _digest(_read_regular(reservation_path))
+        attempt = by_reservation.get(reservation_sha256)
+        if attempt is None:
+            return False
+        if (
+            attempt.request_body_sha256 != request_body_sha256
+            or reservation.get("request_body_sha256") != request_body_sha256
+            or reservation.get("retry_index", 0) != retry_index
+            or reservation.get("action_sha256") != authorization.action_sha256
+        ):
+            return False
+        try:
+            raw = load_raw_response_evidence(
+                authorization.store_root, authorization.run_id, attempt.attempt_id
+            )
+            normalized = load_normalized_result_evidence(
+                authorization.store_root, authorization.run_id, attempt.attempt_id
+            )
+        except Exception:
+            return False
+        normalized_status = getattr(normalized.result, "status_code", None)
+        if normalized_status is None:
+            normalized_status = getattr(
+                getattr(normalized.result, "response_diagnostics", None),
+                "status_code",
+                None,
+            )
+        if not (
+            getattr(normalized.result, "category", None)
+            in {"api_error", "invalid_response"}
+            and normalized_status == raw.status_code
+            and _retryable_http_response(raw.status_code, raw.body)
+        ):
+            return False
+        try:
+            validate_bounded_job_attempt_authority(
+                WorkflowRunManifestStore(authorization.store_root),
+                job_id=authorization.job_id,
+                ordinal=authorization.ordinal,
+                action_sha256=authorization.action_sha256,
+                reservation_sha256=reservation_sha256,
+                request_body_sha256=request_body_sha256,
+                request_body_length=attempt.request_body_length,
+                attempt_id=attempt.attempt_id,
+                attempt_evidence_sha256=attempt.digest,
+            )
+        except Exception:
+            return False
+    return True
+
+
+def validate_bounded_job_retry_claim(
+    authorization: BoundedJobActionAuthorization,
+    *,
+    reservation_sha256: str,
+    request_body_sha256: str,
+    request_body_length: int,
+) -> bool:
+    """Bind a new same-action claim to the next approved retry reservation."""
+    scope = load_bounded_workflow_job_scope(
+        WorkflowRunManifestStore(authorization.store_root), authorization.job_id
+    )
+    reservation_path = next(
+        (
+            path
+            for path in _reservation_paths(
+                authorization.store_root, authorization.job_id
+            )
+            if _digest(_read_regular(path)) == reservation_sha256
+        ),
+        None,
+    )
+    if reservation_path is None:
+        return False
+    value = json.loads(_read_regular(reservation_path))
+    retry_index = value.get("retry_index", 0)
+    return bool(
+        scope == authorization.scope
+        and scope.schema_version == "workflow-bounded-job-scope.v2"
+        and type(retry_index) is int
+        and 1 <= retry_index <= scope.max_retries
+        and value.get("ordinal") == authorization.ordinal
+        and value.get("action_sha256") == authorization.action_sha256
+        and value.get("request_body_sha256") == request_body_sha256
+        and value.get("request_body_length") == request_body_length
+        and _prior_job_attempts_are_retryable(
+            authorization,
+            expected_count=retry_index,
+            request_body_sha256=request_body_sha256,
+        )
+    )
+
+
+def bounded_job_retry_budget_remaining(
+    authorization: BoundedJobActionAuthorization,
+) -> bool:
+    scope = load_bounded_workflow_job_scope(
+        WorkflowRunManifestStore(authorization.store_root), authorization.job_id
+    )
+    records = _reservation_records(authorization.store_root, authorization.job_id)
+    consumed = sum(1 for item in records if item.get("retry_index", 0) > 0)
+    return bool(
+        scope == authorization.scope
+        and scope.schema_version == "workflow-bounded-job-scope.v2"
+        and consumed < scope.max_retries
+        and len(records) < scope.max_provider_attempts
+        and time.time_ns() < scope.expires_at_ns
+        and not _revoked(authorization.store_root, scope)
+    )
+
+
+def _retryable_http_response(status_code: int, body: bytes) -> bool:
+    if status_code not in {429, 503}:
+        return False
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:
+        return True
+    if type(payload) is not dict:
+        return True
+    error = payload.get("error")
+    if type(error) is not dict:
+        return True
+    markers = " ".join(
+        str(error.get(key, "")) for key in ("code", "type", "message")
+    ).casefold()
+    return not any(
+        marker in markers
+        for marker in (
+            "insufficient_quota",
+            "quota exceeded",
+            "quota exhausted",
+            "billing",
+            "payment required",
+        )
+    )
 
 
 @contextmanager
