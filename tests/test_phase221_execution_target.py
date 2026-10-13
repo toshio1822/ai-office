@@ -13,6 +13,7 @@ import ai_office.providers.openai.responses_transport as responses_transport
 from ai_office.cli import app
 from ai_office.definitions.employee import EmployeeDefinition
 from ai_office.definitions.workflow import WorkflowDefinition
+from ai_office.execution_evidence import build_execution_evidence_context
 from ai_office.execution_target import (
     DIRECT_OPENAI_EXECUTION_TARGET,
     LOCAL_OMNIROUTE_EXECUTION_TARGET,
@@ -411,6 +412,21 @@ def test_omniroute_execution_reuses_responses_stack_and_preserves_alias(
     tmp_path: Path,
 ) -> None:
     fixture = execution_evidence_fixture(tmp_path, request("openClaw"))
+    # A stale caller-selected target is discarded when the Run-bound context
+    # is built; the persisted Run destination remains the sole source.
+    context = build_execution_evidence_context(
+        store_root=fixture.run.store.root,
+        binding=fixture.run.binding,
+        workflow_id="phase221-provider-workflow",
+        step_id="provider-step",
+        step_index=1,
+        employee_id="provider-employee",
+        request=fixture.request,
+        resolved_tools=(),
+        approval=fixture.approval,
+        target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )
+    assert context.target == LOCAL_OMNIROUTE_EXECUTION_TARGET
     calls: list[OpenAIResponsesAuthenticatedHttpRequest] = []
 
     def transport(
@@ -425,7 +441,7 @@ def test_omniroute_execution_reuses_responses_stack_and_preserves_alias(
         api_key(),
         fixture.approval,
         transport=transport,
-        execution_evidence=fixture.context,
+        execution_evidence=context,
     )
 
     assert result.provider == "omniroute"  # type: ignore[union-attr]
@@ -639,7 +655,7 @@ def test_cli_fresh_and_continuation_omniroute_execution_then_result(
     continue_preview_result = runner.invoke(
         app,
         _cli_args("continue", paths)
-        + ["--preview-only", "--execution-target", "omniroute"],
+        + ["--preview-only"],
     )
     assert continue_preview_result.exit_code == 0, continue_preview_result.output
     continue_preview = json.loads(continue_preview_result.stdout)
@@ -647,7 +663,6 @@ def test_cli_fresh_and_continuation_omniroute_execution_then_result(
     continue_result = runner.invoke(
         app,
         _cli_args("continue", paths)
-        + ["--execution-target", "omniroute"]
         + _approval_args(continue_preview),
     )
     assert continue_result.exit_code == 0, continue_result.stderr

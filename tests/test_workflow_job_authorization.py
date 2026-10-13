@@ -2109,7 +2109,6 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         employees=employees,
         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
         transport=fake_transport,
-        execution_target=target,
     )
     assert outcome.status == expected_status
     assert outcome.stop_reason == expected_reason
@@ -2325,7 +2324,6 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         employees=employees,
         api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
         transport=fake_transport,
-        execution_target=target,
     )
     assert replay == outcome
     assert len(call_labels) == expected_calls
@@ -2394,7 +2392,6 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 employees=employees,
                 api_key=OpenAIApiKey(value=SecretStr("synthetic-only")),
                 transport=fake_transport,
-                execution_target=target,
             )
         assert len(call_labels) == expected_calls
         result_path.write_bytes(durable_artifact)

@@ -53,6 +53,7 @@ def create_test_execution_evidence(
         workflow,
         employees,
         with_business_approvals=False,
+        execution_target=target,
     )
     step_index, step = next(
         (index, step)

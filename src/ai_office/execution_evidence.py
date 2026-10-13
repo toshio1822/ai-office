@@ -27,6 +27,7 @@ import stat
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
@@ -282,13 +283,46 @@ class ExecutionEvidenceContext:
     request: ModelInvocationRequest
     resolved_tools: tuple[ToolDefinition, ...]
     approval: ModelInvocationExecutionApproval | None
-    target: ModelExecutionTarget
+    target: ModelExecutionTarget = dataclass_field(init=False)
     job_authorization: object | None = None
     job_reservation_sha256: str | None = None
     recovery_assessment: object | None = None
     recovery_approval: object | None = None
 
     def __post_init__(self) -> None:
+        # A persisted Run chooses its own execution destination. The target
+        # supplied while planning a request is not an authority at dispatch.
+        from ai_office.engine.workflow_run_manifest import (
+            WorkflowRunManifestStore,
+            load_workflow_run_manifest,
+        )
+
+        if type(self.step_index) is not int or self.step_index < 1:
+            _raise_contract("step")
+        manifest = load_workflow_run_manifest(
+            WorkflowRunManifestStore(self.store_root), self.binding.run_id
+        )
+        if (
+            manifest.digest != self.binding.manifest_digest
+            or manifest.workflow_id != self.workflow_id
+            or self.step_index > len(manifest.workflow_snapshot.steps)
+            or manifest.workflow_snapshot.steps[self.step_index - 1].id
+            != self.step_id
+            or manifest.workflow_snapshot.steps[self.step_index - 1].employee
+            != self.employee_id
+        ):
+            _raise_contract("manifest")
+        employee = next(
+            (
+                item
+                for item in manifest.employee_snapshots
+                if item.id == self.employee_id
+            ),
+            None,
+        )
+        if employee is None or employee.model != self.request.model:
+            _raise_contract("manifest_model")
+        object.__setattr__(self, "target", manifest.execution_destination.target)
         _validate_context(self)
 
 
@@ -511,7 +545,7 @@ def build_execution_evidence_context(
     request: ModelInvocationRequest,
     resolved_tools: tuple[ToolDefinition, ...],
     approval: ModelInvocationExecutionApproval | None,
-    target: ModelExecutionTarget,
+    target: ModelExecutionTarget | None = None,
     job_authorization: object | None = None,
     recovery_assessment: object | None = None,
     recovery_approval: object | None = None,
@@ -527,7 +561,6 @@ def build_execution_evidence_context(
         request=request,
         resolved_tools=resolved_tools,
         approval=approval,
-        target=target,
         job_authorization=job_authorization,
         recovery_assessment=recovery_assessment,
         recovery_approval=recovery_approval,
@@ -1214,6 +1247,17 @@ def _validate_context_and_approval(context: ExecutionEvidenceContext):
         if (
             manifest.workflow_id != context.workflow_id
             or manifest.digest != context.binding.manifest_digest
+            or manifest.execution_destination.target != context.target
+            or context.step_index > len(manifest.workflow_snapshot.steps)
+            or manifest.workflow_snapshot.steps[context.step_index - 1].id
+            != context.step_id
+            or manifest.workflow_snapshot.steps[context.step_index - 1].employee
+            != context.employee_id
+            or not any(
+                item.id == context.employee_id
+                and item.model == context.request.model
+                for item in manifest.employee_snapshots
+            )
         ):
             _raise_contract("manifest")
         evidence = None

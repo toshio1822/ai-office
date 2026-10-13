@@ -412,18 +412,16 @@ def test_continuation_cannot_switch_header_policy(tmp_path: Path, monkeypatch) -
         [
             "workflows",
             "continue",
-            run_id,
-            "--run-store",
-            str(run_store),
-            "--execution-target",
-            "opencode-go",
-            "--execution-destinations",
-            str(registry),
+                run_id,
+                "--run-store",
+                str(run_store),
+                "--execution-destinations",
+                str(registry),
             "--preview-only",
         ],
     )
     assert switched.exit_code == 2
-    assert "differs from the Run Manifest" in switched.stderr
+    assert "approved execution destination is no longer permitted" in switched.stderr
 
 
 # ---------------------------------------------------------------------------

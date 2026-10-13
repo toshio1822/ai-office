@@ -750,23 +750,10 @@ def _validate_pinned_models_for_target(
         )
         for employee in employees:
             destination.select_model(employee.definition.model)
+        if destination.target != target:
+            _workflow_cli_error("approved execution destination is no longer permitted")
     except (AttributeError, ExecutionDestinationError):
         _workflow_cli_error("pinned execution model is no longer permitted")
-
-
-def _validate_manifest_execution_target(
-    manifest: object, target: ModelExecutionTarget
-) -> None:
-    """Prevent a configured Run from switching destination or configuration."""
-    destination = getattr(manifest, "execution_destination", None)
-    if destination is None:
-        _workflow_cli_error("Run Manifest does not pin an execution destination")
-    try:
-        pinned_target = destination.target
-    except Exception:
-        _workflow_cli_error("Run Manifest execution destination is invalid")
-    if target != pinned_target:
-        _workflow_cli_error("execution target differs from the Run Manifest")
 
 
 def _load_api_key_for_target(target: ModelExecutionTarget) -> OpenAIApiKey:
@@ -1373,23 +1360,12 @@ def run_bounded_document_job_workflow(
         _workflow_cli_error("Execution grant was not confirmed", code=1)
 
     try:
-        # Re-resolve after both human confirmations; do not issue grants or
-        # load a credential if the configured endpoint/model/headers changed.
-        confirmed_target = _resolve_execution_target(
-            execution_target, execution_destinations
+        # Re-read the administrator policy only as a veto. The approved
+        # manifest target remains authoritative; the registry cannot select a
+        # replacement target or model after confirmation.
+        _validate_pinned_models_for_target(
+            target, execution_destinations, list(model_employees.values())
         )
-        confirmed_model = _resolve_execution_model(
-            confirmed_target, execution_destinations, execution_model
-        )
-        if (
-            confirmed_target != target
-            or confirmed_model != selected_model
-            or execution_target_fingerprint(confirmed_target)
-            != destination_fingerprint
-        ):
-            raise WorkflowJobAuthorizationError(
-                "destination_changed_after_confirmation"
-            )
         now_ns = time.time_ns()
         run_store.mkdir(mode=0o700, parents=True, exist_ok=True)
         if run_store.stat().st_mode & 0o077:
@@ -1403,7 +1379,32 @@ def run_bounded_document_job_workflow(
             execution_model=selected_model,
             execution_target=target,
         )
-        _validate_manifest_execution_target(initial_manifest, target)
+        for slot in action_slots:
+            manifest = snapshot_manifests[slot.workflow_id]
+            employee_snapshot = next(
+                item
+                for item in manifest.employee_snapshots
+                if item.id == slot.employee_id
+            )
+            if (
+                manifest.execution_destination.fingerprint
+                != slot.execution_target_fingerprint
+                or manifest.execution_destination.provider != slot.provider
+                or employee_snapshot.model != slot.model
+            ):
+                raise WorkflowJobAuthorizationError("job_manifest_approval_binding")
+        if (
+            initial_manifest.execution_destination.fingerprint
+            != action_slots[0].execution_target_fingerprint
+            or initial_manifest.execution_destination.provider
+            != action_slots[0].provider
+            or not any(
+                item.id == action_slots[0].employee_id
+                and item.model == action_slots[0].model
+                for item in initial_manifest.employee_snapshots
+            )
+        ):
+            raise WorkflowJobAuthorizationError("job_manifest_approval_binding")
         persist_workflow_run_manifest(store, initial_manifest)
         for name in ("review-supplied-artifact", "revise-reviewed-artifact"):
             persist_workflow_run_manifest(store, snapshot_manifests[name])
@@ -1431,7 +1432,9 @@ def run_bounded_document_job_workflow(
     # Resolve the credential only after exact confirmation and durable scope
     # issuance. The secret value is never emitted or persisted.
     try:
-        api_key = _load_api_key_for_target(target)
+        api_key = _load_api_key_for_target(
+            initial_manifest.execution_destination.target
+        )
     except Exception:
         _workflow_cli_error("credential unavailable; this Job cannot be resumed")
     try:
@@ -1444,7 +1447,6 @@ def run_bounded_document_job_workflow(
             employees=model_employees,
             api_key=api_key,
             transport=send_openai_responses_http_request,
-            execution_target=target,
             execution_destinations=execution_destinations,
         )
     except Exception:
@@ -2140,7 +2142,6 @@ def continue_workflow(
     run_id: str,
     run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
     preview_only: bool = typer.Option(False, "--preview-only"),
-    execution_target: str = typer.Option("openai", "--execution-target"),
     execution_destinations: Path | None = typer.Option(
         None, "--execution-destinations"
     ),
@@ -2158,7 +2159,6 @@ def continue_workflow(
     ),
 ) -> None:
     """Preview or execute exactly one persisted next workflow step."""
-    target = _resolve_execution_target(execution_target, execution_destinations)
     if preview_only and _has_approval_fields(
         approve_business,
         business_approved_by,
@@ -2177,7 +2177,7 @@ def continue_workflow(
     manifest = _load_run_manifest_or_exit(store, run_id)
     binding = _run_binding_for_manifest(manifest)
     pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
-    _validate_manifest_execution_target(manifest, target)
+    target = manifest.execution_destination.target
     _validate_pinned_models_for_target(target, execution_destinations, pinned_employees)
     workflow = _select_workflow_or_exit(pinned_workflows, manifest.workflow_id)
     state_path, events_path = store.execution_paths(binding.run_id)
@@ -2647,7 +2647,6 @@ def recover_workflow(
     approve_recovery: bool = typer.Option(False, "--approve-recovery"),
     recovery_approved_by: str | None = typer.Option(None, "--recovery-approved-by"),
     recovery_approval_id: str | None = typer.Option(None, "--recovery-approval-id"),
-    execution_target: str = typer.Option("openai", "--execution-target"),
     execution_destinations: Path | None = typer.Option(
         None, "--execution-destinations"
     ),
@@ -2713,12 +2712,9 @@ def recover_workflow(
     manifest = _load_run_manifest_or_exit(store, run_id)
     binding = _run_binding_for_manifest(manifest)
     pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
-    requested_target = _resolve_execution_target(
-        execution_target, execution_destinations
-    )
+    requested_target = manifest.execution_destination.target
     if requested_target.provider != assessment.provider:
-        _workflow_cli_error("recovery cannot change the pinned execution target")
-    _validate_manifest_execution_target(manifest, requested_target)
+        _workflow_cli_error("recovery evidence differs from the Run Manifest")
     _validate_pinned_models_for_target(
         requested_target, execution_destinations, pinned_employees
     )

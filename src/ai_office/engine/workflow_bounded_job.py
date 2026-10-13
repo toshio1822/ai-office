@@ -316,6 +316,22 @@ def issue_bounded_workflow_job_scope(
         != actions[0].workflow_snapshot_sha256
     ):
         raise WorkflowJobAuthorizationError("job_initial_run")
+    initial_employee = next(
+        (
+            employee
+            for employee in initial_manifest.employee_snapshots
+            if employee.id == actions[0].employee_id
+        ),
+        None,
+    )
+    if (
+        initial_manifest.execution_destination.fingerprint
+        != actions[0].execution_target_fingerprint
+        or initial_manifest.execution_destination.provider != actions[0].provider
+        or initial_employee is None
+        or initial_employee.model != actions[0].model
+    ):
+        raise WorkflowJobAuthorizationError("job_initial_manifest_authorization")
     scope = BoundedWorkflowJobScope(
         job_id,
         assignment_sha256,
@@ -1340,7 +1356,6 @@ def run_bounded_document_job(
     employees: dict,
     api_key,
     transport,
-    execution_target,
     execution_destinations: Path | None = None,
 ) -> BoundedDocumentJobOutcome:
     """Run the fixed job once and leave an inspectable immutable terminal record."""
@@ -1379,7 +1394,6 @@ def run_bounded_document_job(
             employees=employees,
             api_key=api_key,
             transport=transport,
-            execution_target=execution_target,
             execution_destinations=execution_destinations,
         )
     except WorkflowJobAuthorizationError as error:
@@ -1529,7 +1543,6 @@ def _execute_bounded_document_job(
     employees: dict,
     api_key,
     transport,
-    execution_target,
     execution_destinations: Path | None,
 ) -> BoundedDocumentJobOutcome:
     """Execute only the approved fixed creator/review/one-revision sequence.
@@ -1583,6 +1596,8 @@ def _execute_bounded_document_job(
 
     validate_bounded_document_job_scope(scope)
     current_scope = load_bounded_workflow_job_scope(store, scope.job_id)
+    initial_manifest = load_workflow_run_manifest(store, initial_run_id)
+    execution_target = initial_manifest.execution_destination.target
     if (
         current_scope != scope
         or initial_run_id != scope.initial_run_id
@@ -1590,6 +1605,7 @@ def _execute_bounded_document_job(
         or _digest(assignment.encode("utf-8")) != scope.initial_input_sha256
         or execution_target_fingerprint(execution_target)
         != scope.actions[0].execution_target_fingerprint
+        or execution_target.provider != scope.actions[0].provider
     ):
         raise WorkflowJobAuthorizationError("document_job_binding")
     if any(
@@ -1612,11 +1628,9 @@ def _execute_bounded_document_job(
         ):
             raise WorkflowJobAuthorizationError("document_job_definition_changed")
 
-    initial_manifest = load_workflow_run_manifest(store, initial_run_id)
     if (
         initial_manifest.workflow_id != "research-and-summarize"
         or initial_manifest.run_input != assignment
-        or initial_manifest.execution_destination.target != execution_target
         or _digest(_canonical(_workflow_dict(initial_manifest.workflow_snapshot)))
         != scope.actions[0].workflow_snapshot_sha256
     ):
@@ -1645,8 +1659,7 @@ def _execute_bounded_document_job(
 
     def verify_run_manifest(manifest, slot: BoundedJobActionSlot) -> None:
         if (
-            manifest.execution_destination.target != execution_target
-            or not any(
+            not any(
                 employee.id == slot.employee_id and employee.model == slot.model
                 for employee in manifest.employee_snapshots
             )

@@ -231,18 +231,15 @@ def execute_openai_runtime_step(
         )
 
     try:
-        if execution_input.approval is None:
-            if execution_input.execution_evidence.job_authorization is None:
-                raise ModelExecutionTargetError
-            execution_target = validate_execution_target_for_provider(
-                execution_input.execution_evidence.target,
-                provider=execution_input.execution_evidence.target.provider,
-            )
-        else:
-            execution_target = validate_execution_target_for_provider(
-                execution_input.approval.execution_target,
-                provider=execution_input.approval.provider,
-            )
+        if (
+            execution_input.approval is None
+            and execution_input.execution_evidence.job_authorization is None
+        ):
+            raise ModelExecutionTargetError
+        validate_execution_target_for_provider(
+            execution_input.execution_evidence.target,
+            provider=execution_input.execution_evidence.target.provider,
+        )
     except (AttributeError, ModelExecutionTargetError, TypeError, ValueError):
         return _build_input_failure(
             execution_input.step_request,
@@ -256,7 +253,6 @@ def execute_openai_runtime_step(
         api_key,
         execution_input.approval,
         transport=transport,
-        execution_target=execution_target,
         execution_evidence=execution_input.execution_evidence,
         attempt_claimed=execution_input.attempt_claimed,
     )

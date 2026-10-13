@@ -146,7 +146,9 @@ normalized result sidecar は exact attempt と raw-response digest（raw respon
 
 provider transport を所有する実行境界はRun-bound Execution Evidenceを必須とし、request、
 resolved tools、Execution Approval、targetが同じcontextに束縛されない場合はtransportへ
-進めない。request/payload生成などprovider-free処理自体はEvidenceを要求しない。normalized
+進めない。targetとmodelは承認済みRun Manifest v4から導出し、既存Runの実行時にCLIやYAMLから
+再選択しない。現在の管理者destination policyは許可・失効の拒否だけを行い、接続先を置換しない。
+request/payload生成などprovider-free処理自体はEvidenceを要求しない。normalized
 resultのprovenanceは作成時に固定され、後付けで別attemptへ変更するAPIは提供しない。
 Run-bound terminal persistenceは参照attempt/result/raw evidenceをauthoritative namespaceから
 再読込し、eventのsemantic outcomeまで一致する場合だけstate/eventを書き込む。forged、
