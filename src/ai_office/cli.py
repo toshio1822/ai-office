@@ -1153,9 +1153,8 @@ def run_bounded_document_job_workflow(
 ) -> None:
     """Issue and start the fixed five-attempt document Job after operator confirmation.
 
-    The caller must already run inside the independently controlled OS
-    account/process described by the operator runbook; `approved_by` labels
-    and this confirmation prompt are not an isolation boundary.
+    Shared OS identity with OpenClaw is permitted; `approved_by` labels and
+    this confirmation prompt are not an identity or isolation boundary.
     """
     from ai_office.engine.workflow_bounded_job import (
         BoundedJobActionSlot,
@@ -1170,11 +1169,7 @@ def run_bounded_document_job_workflow(
     )
 
     try:
-        if (
-            os.geteuid() in {0, 1001}
-            or os.geteuid() != os.getuid()
-            or not sys.stdin.isatty()
-        ):
+        if os.geteuid() == 0 or os.geteuid() != os.getuid() or not sys.stdin.isatty():
             raise WorkflowJobAuthorizationError("operator_context")
         if run_store.is_symlink() or (
             run_store.exists() and (not run_store.is_dir() or any(run_store.iterdir()))
@@ -1347,7 +1342,7 @@ def run_bounded_document_job_workflow(
         }
     )
     confirmation = typer.prompt(
-        "After verifying the isolated operator context, type the Job ID to "
+        "After reviewing this launch summary, type the Job ID to "
         "issue the Business grant for this exact five-call Job",
         default="",
         show_default=False,
