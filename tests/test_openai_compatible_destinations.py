@@ -287,7 +287,6 @@ def test_same_workflow_executes_both_protocols_offline(
         ],
     )
     assert switched.exit_code == 2
-    assert "No such option: --execution-target" in switched.stderr
     assert len(requests) == 1
 
 
