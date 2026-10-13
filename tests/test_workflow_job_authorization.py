@@ -2429,9 +2429,19 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
         assert caught.value.classification == "document_job_unverified_finding"
 
 
-def test_bounded_job_launcher_rejects_non_tty_before_credential_lookup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("real_uid", "effective_uid", "is_tty"),
+    ((2202, 2202, False), (0, 0, True), (2202, 1001, True)),
+)
+def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    real_uid: int,
+    effective_uid: int,
+    is_tty: bool,
 ) -> None:
+    from types import SimpleNamespace
+
     credential_lookups: list[str] = []
 
     def fail_if_credential_loaded(_target):
@@ -2440,6 +2450,16 @@ def test_bounded_job_launcher_rejects_non_tty_before_credential_lookup(
 
     monkeypatch.setattr(
         cli_module, "_load_api_key_for_target", fail_if_credential_loaded
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "sys",
+        SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: is_tty)),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "os",
+        SimpleNamespace(getuid=lambda: real_uid, geteuid=lambda: effective_uid),
     )
     repository = Path(__file__).resolve().parents[1]
     result = CliRunner().invoke(
@@ -2472,13 +2492,18 @@ def test_bounded_job_launcher_rejects_non_tty_before_credential_lookup(
 
 
 @pytest.mark.parametrize(
-    ("scenario", "destination_fault", "destination_name"),
+    ("scenario", "destination_fault", "destination_name", "operator_uid"),
     (
-        ("pass", "none", "opencode-go-glm-chat"),
-        ("pass", "none", "internal-chat-gateway"),
-        ("pass", "registry_changed_after_first_dispatch", "internal-chat-gateway"),
-        ("pass", "manifest_mismatch", "internal-chat-gateway"),
-        ("revision", "none", "opencode-go-glm-chat"),
+        ("pass", "none", "opencode-go-glm-chat", 1001),
+        ("pass", "none", "internal-chat-gateway", 2202),
+        (
+            "pass",
+            "registry_changed_after_first_dispatch",
+            "internal-chat-gateway",
+            2202,
+        ),
+        ("pass", "manifest_mismatch", "internal-chat-gateway", 2202),
+        ("revision", "none", "opencode-go-glm-chat", 2202),
     ),
 )
 def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
@@ -2487,6 +2512,7 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     scenario: str,
     destination_fault: str,
     destination_name: str,
+    operator_uid: int,
 ) -> None:
     from types import SimpleNamespace
 
@@ -2532,15 +2558,17 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     )
     run_store = tmp_path / "run-store"
 
-    # Simulate only the CLI's terminal and non-root human operator checks;
-    # no system account, key, or API connection is used.
+    # Simulate only the CLI's terminal and non-root checks; no system account,
+    # key, or API connection is used. UID 1001 is an allowed shared identity.
     monkeypatch.setattr(
         cli_module,
         "sys",
         SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
     )
     monkeypatch.setattr(
-        cli_module, "os", SimpleNamespace(geteuid=lambda: 2202, getuid=lambda: 2202)
+        cli_module,
+        "os",
+        SimpleNamespace(geteuid=lambda: operator_uid, getuid=lambda: operator_uid),
     )
     monkeypatch.setattr(cli_module.getpass, "getuser", lambda: "offline-operator")
     credential_lookups: list[str] = []
@@ -2652,7 +2680,7 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
 
     assert result.exit_code == 0, result.output
     preview_before_grants = result.output.split(
-        "After verifying the isolated operator context, type the Job ID", 1
+        "After reviewing this launch summary, type the Job ID", 1
     )[0]
     assert '"operation": "bounded-job-launch-confirmation"' in preview_before_grants
     for header in target.request_headers:

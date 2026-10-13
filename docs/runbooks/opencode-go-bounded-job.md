@@ -5,21 +5,21 @@ the offline implementation, tests, CI, or OpenClaw. Gate A proves the fixed
 Job with fake transport only. Do not treat this document or an
 `approved_by` label as human authorization.
 
-## Required operator-only boundary
+## Shared-identity security limits
 
-Before launch, a human administrator must verify the actual host and process
-boundary. The current OpenClaw environment uses UID 1001, and this CLI refuses
-UID 1001, root, mismatched real/effective UIDs, and non-TTY stdin. Those checks
-are defense in depth, not proof that the boundary is isolated.
+The CLI permits the same OS identity as OpenClaw, including UID 1001. It only
+rejects root, mismatched real/effective UIDs, and non-TTY stdin; these checks
+are not authentication or proof of human identity. A confirmation prompt and
+`approved_by` value are operator intent signals, not an authorization or
+isolation boundary. When OpenClaw and AI Office share an OS identity, there is
+no strong OS-level separation of the API key or Job-launch authority from
+OpenClaw. Do not claim otherwise.
 
-Use a separately administered human OS identity or host. Verify from the host
-configuration that UID 1001 cannot use `sudo`/`su`, groups, ACLs, shared
-writable directories, inherited descriptors, or another launch path to read
-the operator credential, alter the destination registry, or invoke the
-operator process. Keep the Run store and registry private to the operator.
-Provide `OPENCODE_API_KEY` only to the one-shot operator process through the
-operator's approved secret manager/environment injection; never put it in a
-command argument, file in the repository, Run store, Issue, CI, or logs.
+Keep the Run store and registry private to the operator, while recognizing
+that filesystem permissions under a shared identity do not create separation
+from OpenClaw. Provide `OPENCODE_API_KEY` through the approved secret
+manager/environment injection; never put it in a command argument, file in the
+repository, Run store, Issue, CI, or logs.
 
 The human operator must also confirm the current OpenCode Go model entitlement
 and available included allowance. `Use balance OFF` is already operator-
@@ -33,8 +33,7 @@ path.
 1. Prepare a short, nonsensitive code-related investigation assignment in a
    private file. It should name only repository evidence the operator intends
    to provide. Do not include customer or personal data.
-2. As the operator identity, verify the account/process boundary above and
-   verify the installed AI Office source matches the Draft PR head approved
+2. Verify the installed AI Office source matches the Draft PR head approved
    after ChatGPT review. Keep the configured destination registry
    administrator-owned and unchanged during the Job.
 3. Provide the credential from the operator's secret manager to this process
@@ -71,7 +70,7 @@ fingerprint. A provider attempt is not a currency cap; do not describe it as
 one. No automated publication, repository write, device operation, or generic
 tool execution is part of this Job.
 
-Gate B is not satisfied merely by passing the CLI's UID/TTY checks. The human
-operator owns the identity isolation, credential injection, final endpoint
-and entitlement checks, exact non-sensitive assignment, and separate
+Passing the CLI's UID/TTY checks does not prove human identity or isolate
+credentials. The human operator owns credential injection, final endpoint and
+entitlement checks, exact non-sensitive assignment, and separate
 authorization for the single live Job.
