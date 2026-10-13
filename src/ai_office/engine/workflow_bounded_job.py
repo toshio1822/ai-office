@@ -143,14 +143,16 @@ class BoundedWorkflowJobScope:
             type(self.max_provider_attempts) is not int
             or type(self.max_revisions) is not int
             or self.max_revisions not in {0, 1}
-            or not len(self.actions)
+            or not min(len(self.actions), 3 + (2 * self.max_revisions))
             <= self.max_provider_attempts
-            <= len(self.actions) + 2
+            <= min(len(self.actions), 3 + (2 * self.max_revisions)) + 2
             or type(self.max_retries) is not int
             or not 0 <= self.max_retries <= 2
             or type(self.retry_interval_seconds) is not int
             or not 1 <= self.retry_interval_seconds <= 3600
-            or self.max_provider_attempts != len(self.actions) + self.max_retries
+            or self.max_provider_attempts
+            != min(len(self.actions), 3 + (2 * self.max_revisions))
+            + self.max_retries
             or self.schema_version
             not in {"workflow-bounded-job-scope.v1", "workflow-bounded-job-scope.v2"}
             or (
@@ -1673,7 +1675,9 @@ def inspect_bounded_document_job(
         "dispatch_order": dispatch_order,
         "job_id": job_id,
         "max_provider_attempts": scope.max_provider_attempts,
-        "normal_action_limit": len(scope.actions),
+        "normal_action_limit": min(
+            len(scope.actions), 3 + (2 * scope.max_revisions)
+        ),
         "normal_actions_consumed": len(
             {item.get("ordinal") for item in reservations}
         ),
