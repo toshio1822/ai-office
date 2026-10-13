@@ -1424,7 +1424,7 @@ def run_bounded_document_job_workflow(
             assignment_sha256=assignment_digest,
             initial_input_sha256=assignment_digest,
             actions=tuple(action_slots),
-            max_provider_attempts=5 + max_retries,
+            max_provider_attempts=len(action_slots) + max_retries,
             max_revisions=1,
             max_retries=max_retries,
             retry_interval_seconds=retry_interval_seconds,
