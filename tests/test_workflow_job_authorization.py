@@ -2628,7 +2628,12 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
             if scenario == "quota":
                 labels.append("quota-429")
                 body = json.dumps(
-                    {"error": {"code": "insufficient_quota", "message": "quota"}}
+                    {
+                        "error": {
+                            "code": "quota_exceeded",
+                            "message": "Usage limit reached",
+                        }
+                    }
                 ).encode()
                 return OpenAIResponsesRawHttpResponse(
                     429, "Too Many Requests", (), body
@@ -2725,7 +2730,7 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         "--execution-model",
         selected_model,
     ]
-    if scenario in {"retry-once", "retry-always", "revision-retry"}:
+    if scenario in {"retry-once", "retry-always", "quota", "revision-retry"}:
         cli_args.extend(
             [
                 "--max-retries",
@@ -2819,6 +2824,11 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         )
     if scenario == "quota":
         assert inspection["retry_attempts_consumed"] == 0
+        assert inspection["retry_limit"] == 2
+        assert inspection["status"] == "stopped"
+        assert len(inspection["dispatch_order"]) == 1
+        assert inspection["dispatch_order"][0]["http_status"] == 429
+        assert inspection["dispatch_order"][0]["result_category"] == "api_error"
     if scenario == "revision-retry":
         assert inspection["status"] == "reviewed"
         assert inspection["revision_attempts_consumed"] == 1

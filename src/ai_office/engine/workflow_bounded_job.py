@@ -2707,8 +2707,11 @@ def _retryable_http_response(status_code: int, body: bytes) -> bool:
         marker in markers
         for marker in (
             "insufficient_quota",
+            "quota_exceeded",
+            "quota_exhausted",
             "quota exceeded",
             "quota exhausted",
+            "usage limit reached",
             "billing",
             "payment required",
         )
