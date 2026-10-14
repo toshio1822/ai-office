@@ -2477,6 +2477,67 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
         assert caught.value.classification == "document_job_unverified_finding"
 
 
+def test_saved_japanese_findings_accept_bound_artifact_and_assignment_evidence(
+) -> None:
+    import hashlib
+
+    from ai_office.engine.workflow_bounded_job import _review_verdict
+
+    source_content = (
+        "調査範囲と資料 **前提の上.replace**\n"
+        "資料から確認できた事実 **必頍引数**\n"
+        "( Humans: hash確認含む) 読取search ・ publishing\n"
+        "報告された観測事実 research-and-summarize\n"
+        "Administrative veto Evidence D"
+    )
+    source_bytes = source_content.encode("utf-8")
+    review_input = json.dumps(
+        {
+            "assignment": "Evidence supplied for review.\n"
+            "**Evidence A — source A**\n"
+            "**Evidence B — source B**\n"
+            "**Evidence C — source C**\n"
+            "**Evidence D — source D**",
+            "source_artifact": {
+                "artifact_id": "artifact-747",
+                "content": source_content,
+                "content_length": len(source_bytes),
+                "content_sha256": hashlib.sha256(source_bytes).hexdigest(),
+            },
+        }
+    )
+    review = (
+        "Verdict: CHANGES_REQUIRED\n\n"
+        "### F1: Japanese review finding\n"
+        "- **要件**: 日本語Markdown報告。\n"
+        "- **Artifact位置**: `**前提の上.replace**`、`**必頍引数**`、"
+        "`( Humans: hash確認含む)`、`読取search`、`・ publishing`。\n"
+        "- **証拠**: Artifact本文の当該文字列（供給内容のまま引用）。\n"
+        "- **影響**: 文意が不明瞭。\n"
+        "- **修正要求**: 誤記を直す。\n\n"
+        "### F2: Evidence range\n"
+        "- **要件**: 供給証拠の範囲。\n"
+        "- **Artifact位置**: `research-and-summarize`。\n"
+        "- **証拠**: 本Runに供給された証拠はコード断片A–Dのみ。\n"
+        "- **影響**: 検証不能。\n"
+        "- **修正要求**: 記述を削除する。\n\n"
+        "### F3: Evidence D\n"
+        "- **要件**: 断片の表示範囲。\n"
+        "- **Artifact位置**: 経路説明。\n"
+        "- **証拠**: 課題の Evidence D は条件列で切断。\n"
+        "- **影響**: 断定が強すぎる。\n"
+        "- **修正要求**: 表現を限定する。"
+    )
+    assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
+
+    unsupported = review.replace(
+        "`**前提の上.replace**`", "`not-in-artifact`"
+    )
+    with pytest.raises(WorkflowJobAuthorizationError) as caught:
+        _review_verdict(unsupported, review_input=review_input)
+    assert caught.value.classification == "document_job_unverified_finding"
+
+
 @pytest.mark.parametrize(
     ("real_uid", "effective_uid", "is_tty"),
     ((2202, 2202, False), (0, 0, True), (2202, 1001, True)),

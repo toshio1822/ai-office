@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import stat
 import time
 from contextlib import contextmanager
@@ -1491,12 +1492,50 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
         if review_input is None:
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
         assignment_references = _explicit_assignment_evidence_references(review_input)
+        try:
+            input_value = json.loads(review_input)
+            source_artifact = input_value.get("source_artifact")
+            source_content = source_artifact.get("content")
+            source_bytes = source_content.encode("utf-8")
+            source_is_bound = (
+                type(source_artifact) is dict
+                and type(source_content) is str
+                and source_artifact.get("content_length") == len(source_bytes)
+                and source_artifact.get("content_sha256") == _digest(source_bytes)
+            )
+        except Exception:
+            source_content = ""
+            source_is_bound = False
         for item in findings:
             evidence_reference = _normalized_reference(
                 item["Evidence source/reference"]
             )
-            if evidence_reference not in assignment_references:
-                raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+            if evidence_reference in assignment_references:
+                continue
+            cited_references: set[str] = set()
+            for match in re.finditer(
+                r"(?:evidence|コード断片)\s*([A-Z])(?:\s*[-–—]\s*([A-Z]))?",
+                item["Evidence source/reference"],
+                re.IGNORECASE,
+            ):
+                first = ord(match.group(1).upper())
+                last = ord((match.group(2) or match.group(1)).upper())
+                if first <= last:
+                    cited_references.update(
+                        f"evidence {chr(code).casefold()}"
+                        for code in range(first, last + 1)
+                    )
+            if cited_references and cited_references <= assignment_references:
+                continue
+            location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
+            if (
+                evidence_reference.startswith("artifact本文の当該文字列")
+                and source_is_bound
+                and location_quotes
+                and all(quote in source_content for quote in location_quotes)
+            ):
+                continue
+            raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     return verdict
 
 
