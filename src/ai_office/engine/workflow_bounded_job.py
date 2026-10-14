@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import stat
 import time
 from contextlib import contextmanager
@@ -1427,26 +1428,113 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
             "Impact",
             "Requested correction",
         )
-        findings: dict[str, str] = {}
+        labels = {
+            "requirement": "Requirement",
+            "artifact location": "Artifact location",
+            "evidence source/reference": "Evidence source/reference",
+            "impact": "Impact",
+            "requested correction": "Requested correction",
+            "要件": "Requirement",
+            "artifact位置": "Artifact location",
+            "証拠": "Evidence source/reference",
+            "影響": "Impact",
+            "修正要求": "Requested correction",
+        }
+        findings: list[dict[str, str]] = []
+        finding: dict[str, str] = {}
+        finding_header_seen = False
         for line in lines[1:]:
+            heading = line.strip()
+            if heading.startswith("#"):
+                heading = heading.lstrip("#").strip()
+            elif heading.startswith(("- ", "* ")):
+                heading = heading[2:].strip()
+            else:
+                heading = ""
+            name, _, heading_detail = heading.partition(" ")
+            name = name.rstrip(":")
+            finding_header = (
+                name.casefold() == "finding"
+                and bool(heading_detail)
+                and heading_detail.strip().split(maxsplit=1)[0]
+                .rstrip(":")
+                .isdigit()
+            ) or (
+                len(name) > 1
+                and name[0].casefold() == "f"
+                and name[1:].isdigit()
+            )
+            if finding_header:
+                if finding_header_seen:
+                    findings.append(finding)
+                finding = {}
+                finding_header_seen = True
+                continue
             label, separator, value = line.partition(":")
             label = label.strip().lstrip("-* ").strip().strip("*_")
-            if label in required:
-                if not separator or not value.strip() or label in findings:
+            canonical_label = labels.get(label.casefold())
+            if canonical_label is not None:
+                if (
+                    not separator
+                    or not value.strip()
+                    or canonical_label in finding
+                ):
                     raise WorkflowJobAuthorizationError(
                         "document_job_nonactionable_review"
                     )
-                findings[label] = value.strip()
-        if set(findings) != set(required):
+                finding[canonical_label] = value.strip()
+        if finding_header_seen:
+            findings.append(finding)
+        elif finding:
+            findings.append(finding)
+        if not findings or any(set(item) != set(required) for item in findings):
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
-        evidence_reference = _normalized_reference(
-            findings["Evidence source/reference"]
-        )
-        if (
-            review_input is None
-            or evidence_reference
-            not in _explicit_assignment_evidence_references(review_input)
-        ):
+        if review_input is None:
+            raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+        assignment_references = _explicit_assignment_evidence_references(review_input)
+        try:
+            input_value = json.loads(review_input)
+            source_artifact = input_value.get("source_artifact")
+            source_content = source_artifact.get("content")
+            source_bytes = source_content.encode("utf-8")
+            source_is_bound = (
+                type(source_artifact) is dict
+                and type(source_content) is str
+                and source_artifact.get("content_length") == len(source_bytes)
+                and source_artifact.get("content_sha256") == _digest(source_bytes)
+            )
+        except Exception:
+            source_content = ""
+            source_is_bound = False
+        for item in findings:
+            evidence_reference = _normalized_reference(
+                item["Evidence source/reference"]
+            )
+            if evidence_reference in assignment_references:
+                continue
+            cited_references: set[str] = set()
+            for match in re.finditer(
+                r"(?:evidence|コード断片)\s*([A-Z])(?:\s*[-–—]\s*([A-Z]))?",
+                item["Evidence source/reference"],
+                re.IGNORECASE,
+            ):
+                first = ord(match.group(1).upper())
+                last = ord((match.group(2) or match.group(1)).upper())
+                if first <= last:
+                    cited_references.update(
+                        f"evidence {chr(code).casefold()}"
+                        for code in range(first, last + 1)
+                    )
+            if cited_references and cited_references <= assignment_references:
+                continue
+            location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
+            if (
+                evidence_reference.startswith("artifact本文の当該文字列")
+                and source_is_bound
+                and location_quotes
+                and all(quote in source_content for quote in location_quotes)
+            ):
+                continue
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     return verdict
 
@@ -1488,6 +1576,17 @@ def _explicit_assignment_evidence_references(review_input: str) -> frozenset[str
     }
     references = set()
     for line in assignment.splitlines():
+        heading = line.strip().strip("*_").strip()
+        for marker in ("—", "–"):
+            evidence_id, separator, _ = heading.partition(marker)
+            parts = evidence_id.split()
+            if (
+                separator
+                and len(parts) == 2
+                and parts[0].casefold() == "evidence"
+                and parts[1].isalnum()
+            ):
+                references.add(_normalized_reference(" ".join(parts)))
         label, separator, raw_reference = line.partition(":")
         if not separator or label.strip().casefold() not in allowed_labels:
             continue
