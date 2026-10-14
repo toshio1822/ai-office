@@ -61,10 +61,18 @@ steps:
       - `Verdict: BLOCKED` — evidence or input limitations prevent a reliable
         verdict.
 
-      Follow the verdict with a short rationale and a Findings section. For
-      each actionable finding identify the requirement, Artifact location,
-      evidence source/reference, impact, and requested correction. If there
-      are no actionable Artifact findings, say so explicitly. When
+      Follow the verdict with a short rationale and a Findings section. Put
+      every actionable finding in its own numbered Markdown subsection such as
+      `### Finding 1` or `### F1`. In each subsection include exactly one line
+      for each of these literal labels, keeping the English labels unchanged
+      even when the explanation is Japanese:
+      `Requirement:`, `Artifact location:`,
+      `Evidence source/reference:`, `Impact:`, and `Requested correction:`.
+      The evidence source/reference must be one exact, explicitly identified
+      reference from the original assignment (for example, `Evidence A`); do
+      not use the subject Artifact, this review, or an unsupported claim as a
+      source reference. If there are no actionable Artifact findings, say so
+      explicitly. When
       non-deliverable criteria are supplied, include a separate concise
       assessment of them and identify missing evidence without turning it into
       an Artifact correction. Preserve uncertainty and distinguish supplied

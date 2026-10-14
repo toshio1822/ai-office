@@ -1868,6 +1868,15 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
     [
         ("PASS", 3, "candidate", 1, None, "PASS"),
         ("CHANGES_REQUIRED", 5, "reviewed", 1, None, "PASS"),
+        ("MULTI_FINDING", 5, "reviewed", 1, None, "PASS"),
+        (
+            "INCOMPLETE",
+            3,
+            "stopped",
+            1,
+            "document_job_nonactionable_review",
+            "PASS",
+        ),
         (
             "CHANGES_REQUIRED",
             5,
@@ -1921,7 +1930,9 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     store = WorkflowRunManifestStore(store_root)
     assignment = (
         "Requirements: summarize only the supplied evidence.\n"
-        "Evidence reference: fixture:evidence-1"
+        "Evidence reference: fixture:evidence-1\n"
+        "**Evidence A — `src/example.py`, lines 1–2**\n"
+        "**Evidence D — `src/boundary.py`, lines 3–4**"
     )
     initial_run_id = "bounded-document-initial"
     initial = create_workflow_run_manifest(
@@ -2052,6 +2063,37 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 text = "Verdict: BLOCKED\n\nEvidence is insufficient."
             elif first_verdict == "MALFORMED":
                 text = "The report is not ready."
+            elif first_verdict == "INCOMPLETE":
+                text = (
+                    "Verdict: CHANGES_REQUIRED\n\n"
+                    "### Finding 1\n"
+                    "Requirement: preserve the stated limit.\n"
+                    "Artifact location: Conclusion.\n"
+                    "Evidence source/reference: Evidence A\n"
+                    "Impact: unsupported certainty."
+                )
+            elif first_verdict == "MULTI_FINDING":
+                text = (
+                    "Verdict: CHANGES_REQUIRED\n\n"
+                    "### F1: unsupported statement\n"
+                    "- **要件**: keep claims within supplied evidence.\n"
+                    "- **Artifact位置**: Conclusion, paragraph 1.\n"
+                    "- **証拠**: Evidence A\n"
+                    "- **影響**: readers may infer an unsupported guarantee.\n"
+                    "- **修正要求**: narrow the claim to the cited excerpt.\n\n"
+                    "### F2: missing boundary\n"
+                    "- **要件**: preserve stated unknowns.\n"
+                    "- **Artifact位置**: Unknowns, item 2.\n"
+                    "- **証拠**: Evidence D\n"
+                    "- **影響**: the implementation boundary is overstated.\n"
+                    "- **修正要求**: state only what the excerpt shows.\n\n"
+                    "### F3: citation scope\n"
+                    "- **要件**: cite supplied sources precisely.\n"
+                    "- **Artifact位置**: Sources, final bullet.\n"
+                    "- **証拠**: Evidence A\n"
+                    "- **影響**: the source range cannot be audited.\n"
+                    "- **修正要求**: retain the provided path and line range."
+                )
             else:
                 evidence_reference = (
                     "Synthetic report with limits"
@@ -2154,7 +2196,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         "run_id": source_artifact.run_id,
     }
 
-    if first_verdict != "CHANGES_REQUIRED" and max_revisions > 0:
+    if first_verdict not in {"CHANGES_REQUIRED", "MULTI_FINDING"} and max_revisions > 0:
         # Even with unused revision quota, the public derivation/input path
         # must not create revision authority from PASS, BLOCKED, malformed, or
         # ungrounded review evidence.
@@ -2403,7 +2445,9 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
     review_input = json.dumps(
         {
             "assignment": "Requirements: assess the supplied report.\n"
-            "Evidence reference: source:AC2#p4",
+            "Evidence reference: source:AC2#p4\n"
+            "**Evidence A — `src/report.py`, lines 4–8**\n"
+            "**Evidence D — `src/dispatch.py`, lines 10–12**",
             "source_artifact": {
                 "content": "The report mentions a weak unverified phrase."
             },
@@ -2418,10 +2462,14 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
         "Requested correction: remove unsupported wording."
     )
     assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
+    assert _review_verdict(
+        review.replace("source:AC2#p4", "Evidence A"), review_input=review_input
+    ) == "CHANGES_REQUIRED"
     for unsupported_reference in (
         "weak unverified phrase",
         "assignment",
         "source:AC2",
+        "Evidence B",
     ):
         unsupported_review = review.replace("source:AC2#p4", unsupported_reference)
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
