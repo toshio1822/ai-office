@@ -2500,6 +2500,7 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
             ("retry-always", "none", "internal-chat-gateway", 2202),
             ("retry-disabled", "none", "internal-chat-gateway", 2202),
             ("quota", "none", "internal-chat-gateway", 2202),
+            ("revision-retry", "none", "opencode-go-glm-chat", 2202),
         (
             "pass",
             "registry_changed_after_first_dispatch",
@@ -2589,7 +2590,7 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     retry_after_waits: list[int] = []
     retry_response_sent = False
     retry_request_body: str | None = None
-    if scenario in {"retry-once", "retry-always", "quota"}:
+    if scenario in {"retry-once", "retry-always", "quota", "revision-retry"}:
         from ai_office.providers.openai import responses_execution
 
         monkeypatch.setattr(
@@ -2606,13 +2607,21 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
             "retry-always",
             "retry-disabled",
             "quota",
+            "revision-retry",
         }
-        if is_retry_scenario and retry_request_body is None:
+        if (
+            is_retry_scenario
+            and retry_request_body is None
+            and (scenario != "revision-retry" or len(labels) == 3)
+        ):
             retry_request_body = request.body
         should_fail = (
             is_retry_scenario
             and request.body == retry_request_body
-            and (scenario != "retry-once" or not retry_response_sent)
+            and (
+                scenario not in {"retry-once", "revision-retry"}
+                or not retry_response_sent
+            )
         )
         if should_fail:
             retry_response_sent = True
@@ -2625,7 +2634,11 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
                     429, "Too Many Requests", (), body
                 )
             status = 502 if scenario == "retry-disabled" else 503
-            labels.append(f"research-{status}-empty")
+            labels.append(
+                "revision-503-empty"
+                if scenario == "revision-retry"
+                else f"research-{status}-empty"
+            )
             headers = (("Retry-After", "2"),) if status == 503 else ()
             return OpenAIResponsesRawHttpResponse(
                 status, "Service Unavailable", headers, b""
@@ -2635,7 +2648,7 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
             label, text = "research", "Synthetic source-supported note."
         elif index == 1:
             label, text = "summary", "# Offline report\n\nLimitations retained."
-        elif index == 2 and scenario == "revision":
+        elif index == 2 and scenario in {"revision", "revision-retry"}:
             label = "review-1"
             text = (
                 "Verdict: CHANGES_REQUIRED\n\n"
@@ -2712,9 +2725,14 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         "--execution-model",
         selected_model,
     ]
-    if scenario in {"retry-once", "retry-always"}:
+    if scenario in {"retry-once", "retry-always", "revision-retry"}:
         cli_args.extend(
-            ["--max-retries", "2", "--retry-interval-seconds", "1"]
+            [
+                "--max-retries",
+                "1" if scenario == "revision-retry" else "2",
+                "--retry-interval-seconds",
+                "1",
+            ]
         )
     result = CliRunner().invoke(
         app,
@@ -2746,6 +2764,8 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         if scenario == "retry-once"
         else 3
         if scenario == "retry-always"
+        else 6
+        if scenario == "revision-retry"
         else 1
         if scenario in {"retry-disabled", "quota"}
         else 5
@@ -2767,25 +2787,59 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     elif scenario == "quota":
         assert labels == ["quota-429"]
         assert retry_after_waits == []
+    elif scenario == "revision-retry":
+        assert labels == [
+            "research",
+            "summary",
+            "review-1",
+            "revision-503-empty",
+            "revision",
+            "review-2",
+        ]
+        assert request_bodies[3] == request_bodies[4]
+        assert retry_after_waits == [2]
     assert credential_lookups == ["synthetic"]
     assert (
         '"status": "stopped"' in result.output
         if destination_fault == "registry_changed_after_first_dispatch"
         or scenario in {"retry-always", "retry-disabled", "quota"}
         else '"status": "reviewed"' in result.output
-        if scenario == "revision"
+        if scenario in {"revision", "revision-retry"}
         else '"status": "candidate"' in result.output
     )
     store = WorkflowRunManifestStore(run_store)
     inspection = inspect_bounded_document_job(store, job_id)
     assert inspection["consumed_provider_attempts"] == expected_calls
-    if scenario in {"retry-once", "retry-always"}:
+    if scenario in {"retry-once", "retry-always", "revision-retry"}:
         assert inspection["retry_attempts_consumed"] == (
-            1 if scenario == "retry-once" else 2
+            2 if scenario == "retry-always" else 1
         )
-        assert inspection["retry_limit"] == 2
+        assert inspection["retry_limit"] == (
+            1 if scenario == "revision-retry" else 2
+        )
     if scenario == "quota":
         assert inspection["retry_attempts_consumed"] == 0
+    if scenario == "revision-retry":
+        assert inspection["status"] == "reviewed"
+        assert inspection["revision_attempts_consumed"] == 1
+        assert inspection["normal_actions_consumed"] == 5
+        assert inspection["consumed_provider_attempts"] == 6
+        assert inspection["total_physical_attempt_limit"] == 6
+        assert inspection["retry_attempts_consumed"] == 1
+        assert len(inspection["dispatch_order"]) == 6
+        assert [item["http_status"] for item in inspection["dispatch_order"]] == [
+            200,
+            200,
+            200,
+            503,
+            200,
+            200,
+        ]
+        assert all(
+            b"synthetic-only" not in path.read_bytes()
+            for path in run_store.rglob("*")
+            if path.is_file()
+        )
     for dispatch in inspection["dispatch_order"]:
         manifest = load_workflow_run_manifest(store, dispatch["run_id"])
         destination = manifest.execution_destination

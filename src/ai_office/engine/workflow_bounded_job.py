@@ -1738,7 +1738,7 @@ def _verify_positive_terminal_status(
         or len(reservations) > scope.max_provider_attempts
         or retries_consumed > scope.max_retries
         or {item.get("ordinal") for item in reservations} != expected_ordinals
-        or sum(1 for item in reservations if item.get("ordinal") == 3)
+        or int(any(item.get("ordinal") == 3 for item in reservations))
         != expected_revisions
     ):
         raise WorkflowJobAuthorizationError("document_job_status_accounting")
