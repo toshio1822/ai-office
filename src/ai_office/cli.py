@@ -1150,8 +1150,12 @@ def run_bounded_document_job_workflow(
     execution_target: str = typer.Option(..., "--execution-target"),
     execution_destinations: Path = typer.Option(..., "--execution-destinations"),
     execution_model: str = typer.Option(..., "--execution-model"),
+    max_retries: int = typer.Option(0, "--max-retries", min=0, max=2),
+    retry_interval_seconds: int = typer.Option(
+        30, "--retry-interval-seconds", min=1, max=3600
+    ),
 ) -> None:
-    """Issue and start the fixed five-attempt document Job after operator confirmation.
+    """Issue and start the fixed five-action document Job after confirmation.
 
     Shared OS identity with OpenClaw is permitted; `approved_by` labels and
     this confirmation prompt are not an identity or isolation boundary.
@@ -1331,7 +1335,11 @@ def run_bounded_document_job_workflow(
             "destination_fingerprint": destination_fingerprint,
             "model": selected_model,
             "action_slots": len(action_slots),
-            "provider_attempt_limit": 5,
+            "normal_action_limit": 5,
+            "max_retries": max_retries,
+            "retry_interval_seconds": retry_interval_seconds,
+            "retryable_http_statuses": [429, 503],
+            "provider_attempt_limit": 5 + max_retries,
             "revision_limit": 1,
             "credential_environment_variable": (target.credential_environment_variable),
             "request_headers": [
@@ -1416,8 +1424,10 @@ def run_bounded_document_job_workflow(
             assignment_sha256=assignment_digest,
             initial_input_sha256=assignment_digest,
             actions=tuple(action_slots),
-            max_provider_attempts=5,
+            max_provider_attempts=len(action_slots) + max_retries,
             max_revisions=1,
+            max_retries=max_retries,
+            retry_interval_seconds=retry_interval_seconds,
             expires_at_ns=now_ns + 2 * 60 * 60 * 1_000_000_000,
             business_approved_by=operator_label,
             business_grant_id=f"business-{grant_nonce}",

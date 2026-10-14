@@ -195,7 +195,13 @@ _EVENT_LINK_FIELDS = (
     "raw_response_body_sha256",
 )
 _SAFE_RESPONSE_HEADERS = frozenset(
-    {"content-type", "x-request-id", "request-id", "openai-request-id"}
+    {
+        "content-type",
+        "retry-after",
+        "x-request-id",
+        "request-id",
+        "openai-request-id",
+    }
 )
 _FAILURE_CATEGORIES = frozenset(
     {
@@ -590,7 +596,23 @@ def claim_execution_attempt(
         )
         if context.recovery_assessment is None:
             if existing:
-                raise ExecutionAttemptAlreadyClaimedError
+                from ai_office.engine.workflow_bounded_job import (
+                    BoundedJobActionAuthorization,
+                    validate_bounded_job_retry_claim,
+                )
+
+                authorization = context.job_authorization
+                if (
+                    type(authorization) is not BoundedJobActionAuthorization
+                    or context.job_reservation_sha256 is None
+                    or not validate_bounded_job_retry_claim(
+                        authorization,
+                        reservation_sha256=context.job_reservation_sha256,
+                        request_body_sha256=_digest(body.encode("utf-8")),
+                        request_body_length=len(body.encode("utf-8")),
+                    )
+                ):
+                    raise ExecutionAttemptAlreadyClaimedError
         else:
             assessment = context.recovery_assessment
             recovery_approval = context.recovery_approval
@@ -895,7 +917,7 @@ def list_run_execution_evidence(
         )
         if result_path.exists() or result_path.is_symlink():
             load_normalized_result_evidence(root, run_id, attempt.attempt_id)
-    _validate_attempt_lineage(values)
+    _validate_attempt_lineage(root, values)
     return tuple(values)
 
 
@@ -2605,6 +2627,7 @@ def _validate_attempt_authority(root: Path, value: ExecutionAttemptEvidence) -> 
 
 
 def _validate_attempt_lineage(
+    root: Path,
     attempts: list[ExecutionAttemptEvidence],
 ) -> None:
     """Require each same-step attempt set to be one immutable recovery chain."""
@@ -2622,6 +2645,14 @@ def _validate_attempt_lineage(
 
     for group in groups.values():
         by_id = {attempt.attempt_id: attempt for attempt in group}
+        if all(
+            attempt.schema_version == _DERIVED_JOB_ATTEMPT_SCHEMA
+            and attempt.authorization_source == "job_action"
+            for attempt in group
+        ):
+            if len(group) > 1:
+                _validate_bounded_job_retry_lineage(root, group)
+            continue
         roots = [
             attempt
             for attempt in group
@@ -2679,6 +2710,97 @@ def _validate_attempt_lineage(
                 break
             current = child
         if len(visited) != len(group):
+            _raise_load("attempt_lineage")
+
+
+def _validate_bounded_job_retry_lineage(
+    root: Path, attempts: list[ExecutionAttemptEvidence]
+) -> None:
+    """Validate a same-action retry chain from its Job reservations/evidence."""
+    from ai_office.engine.workflow_bounded_job import (
+        _reservation_records,
+        _retryable_http_response,
+        load_bounded_workflow_job_scope,
+    )
+    from ai_office.engine.workflow_run_manifest import WorkflowRunManifestStore
+
+    first = attempts[0]
+    if any(
+        attempt.job_id != first.job_id
+        or attempt.job_action_sha256 != first.job_action_sha256
+        or attempt.job_action_ordinal != first.job_action_ordinal
+        or attempt.job_business_grant_sha256 != first.job_business_grant_sha256
+        or attempt.job_execution_grant_sha256 != first.job_execution_grant_sha256
+        or attempt.job_envelope_sha256 != first.job_envelope_sha256
+        or attempt.request_body_sha256 != first.request_body_sha256
+        or attempt.request_body_length != first.request_body_length
+        or attempt.previous_attempt_id is not None
+        or attempt.recovery_approval_id is not None
+        for attempt in attempts
+    ):
+        _raise_load("attempt_lineage")
+    try:
+        store = WorkflowRunManifestStore(root)
+        scope = load_bounded_workflow_job_scope(store, cast(str, first.job_id))
+        records = [
+            item
+            for item in _reservation_records(root, scope.job_id)
+            if item.get("action_sha256") == first.job_action_sha256
+        ]
+    except Exception:
+        _raise_load("attempt_lineage")
+    records.sort(key=lambda item: item.get("retry_index", 0))
+    by_reservation = {
+        attempt.job_reservation_sha256: attempt for attempt in attempts
+    }
+    pending_reservation = len(records) == len(attempts) + 1
+    if (
+        len(records) not in {len(attempts), len(attempts) + 1}
+        or len(by_reservation) != len(attempts)
+        or [item.get("retry_index", 0) for item in records]
+        != list(range(len(records)))
+        or records[-1].get("retry_index", 0) > scope.max_retries
+    ):
+        _raise_load("attempt_lineage")
+    attempts_records = records[:-1] if pending_reservation else records
+    for retry_index, reservation in enumerate(attempts_records):
+        attempt = by_reservation.get(_digest(_canonical_json(reservation)))
+        if (
+            attempt is None
+            or reservation.get("request_body_sha256") != attempt.request_body_sha256
+            or reservation.get("request_body_length") != attempt.request_body_length
+        ):
+            _raise_load("attempt_lineage")
+        if retry_index == len(attempts_records) - 1:
+            continue
+        try:
+            raw = load_raw_response_evidence(root, attempt.run_id, attempt.attempt_id)
+            normalized = load_normalized_result_evidence(
+                root, attempt.run_id, attempt.attempt_id
+            )
+        except Exception:
+            _raise_load("attempt_lineage")
+        status_code = getattr(normalized.result, "status_code", None)
+        if status_code is None:
+            status_code = getattr(
+                getattr(normalized.result, "response_diagnostics", None),
+                "status_code",
+                None,
+            )
+        if not (
+            getattr(normalized.result, "category", None)
+            in {"api_error", "invalid_response"}
+            and status_code == raw.status_code
+            and _retryable_http_response(raw.status_code, raw.body)
+        ):
+            _raise_load("attempt_lineage")
+    if pending_reservation:
+        pending = records[-1]
+        if (
+            pending.get("retry_index", 0) != len(attempts)
+            or pending.get("request_body_sha256") != first.request_body_sha256
+            or pending.get("request_body_length") != first.request_body_length
+        ):
             _raise_load("attempt_lineage")
 
 
