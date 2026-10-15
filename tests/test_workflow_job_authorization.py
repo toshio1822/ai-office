@@ -2567,6 +2567,8 @@ def test_review_verdict_requires_one_unambiguous_declaration() -> None:
     quoted_examples = (
         "Assessment summary.\n> 判定： BLOCKED",
         "Assessment summary.\n```markdown\n判定： BLOCKED\n```",
+        "参考:\n\n    Verdict: PASS",
+        "````markdown\n```text\nVerdict: PASS\n```\n````",
     )
     for review in quoted_examples:
         with pytest.raises(WorkflowJobAuthorizationError) as caught:

@@ -1415,13 +1415,29 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
     lines = content.splitlines()
     allowed_verdicts = {"PASS", "CHANGES_REQUIRED", "BLOCKED"}
     declarations: list[tuple[int, str]] = []
-    in_fenced_block = False
+    fenced_block: tuple[str, int] | None = None
     for index, line in enumerate(lines):
-        candidate = line.strip()
-        if candidate.startswith(("```", "~~~")):
-            in_fenced_block = not in_fenced_block
+        indentation = len(line) - len(line.lstrip(" "))
+        if indentation >= 4 or line.startswith("\t"):
             continue
-        if in_fenced_block or candidate.startswith(">"):
+        candidate = line.strip()
+        fence = re.match(r"(`{3,}|~{3,})(.*)$", line[indentation:])
+        if fenced_block is not None:
+            if (
+                fence is not None
+                and fence.group(1)[0] == fenced_block[0]
+                and len(fence.group(1)) >= fenced_block[1]
+                and not fence.group(2).strip()
+            ):
+                fenced_block = None
+            continue
+        if (
+            fence is not None
+            and (fence.group(1)[0] != "`" or "`" not in fence.group(2))
+        ):
+            fenced_block = (fence.group(1)[0], len(fence.group(1)))
+            continue
+        if candidate.startswith(">"):
             continue
         declaration = candidate
         for marker in ("- ", "* ", "+ "):
