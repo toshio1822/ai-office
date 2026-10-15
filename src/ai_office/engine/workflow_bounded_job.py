@@ -1552,7 +1552,7 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
                 continue
             cited_references: set[str] = set()
             for match in re.finditer(
-                r"\b(?:evidence|コード断片)\s*([A-Z])\b"
+                r"(?:\bevidence\b|コード断片)\s*([A-Z])\b"
                 r"(?:\s*[-–—]\s*([A-Z])\b)?",
                 item["Evidence source/reference"],
                 re.IGNORECASE,
