@@ -1413,13 +1413,67 @@ def validate_bounded_document_job_scope(scope: BoundedWorkflowJobScope) -> None:
 
 def _review_verdict(content: str, *, review_input: str | None = None) -> str:
     lines = content.splitlines()
-    if not lines or lines[0] not in {
-        "Verdict: PASS",
-        "Verdict: CHANGES_REQUIRED",
-        "Verdict: BLOCKED",
-    }:
+    allowed_verdicts = {"PASS", "CHANGES_REQUIRED", "BLOCKED"}
+    declarations: list[tuple[int, str]] = []
+    fenced_block: tuple[str, int] | None = None
+    for index, line in enumerate(lines):
+        indentation = len(line) - len(line.lstrip(" "))
+        if indentation >= 4 or line.startswith("\t"):
+            continue
+        candidate = line.strip()
+        fence = re.match(r"(`{3,}|~{3,})(.*)$", line[indentation:])
+        if fenced_block is not None:
+            if (
+                fence is not None
+                and fence.group(1)[0] == fenced_block[0]
+                and len(fence.group(1)) >= fenced_block[1]
+                and not fence.group(2).strip()
+            ):
+                fenced_block = None
+            continue
+        if (
+            fence is not None
+            and (fence.group(1)[0] != "`" or "`" not in fence.group(2))
+        ):
+            fenced_block = (fence.group(1)[0], len(fence.group(1)))
+            continue
+        if candidate.startswith(">"):
+            continue
+        declaration = candidate
+        for marker in ("- ", "* ", "+ "):
+            if declaration.startswith(marker):
+                declaration = declaration[len(marker) :].strip()
+                break
+        if declaration.startswith("#"):
+            declaration = declaration.lstrip("#").strip()
+        is_english = declaration.startswith("Verdict:")
+        is_japanese = declaration.startswith(("判定：", "判定:"))
+        if not is_english and not is_japanese:
+            continue
+        if declaration != candidate:
+            raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
+        if is_english:
+            if declaration not in {
+                f"Verdict: {value}" for value in allowed_verdicts
+            }:
+                raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
+            verdict = declaration.removeprefix("Verdict: ")
+        else:
+            separator = "判定：" if declaration.startswith("判定：") else "判定:"
+            value = declaration[len(separator) :].strip()
+            if value.startswith("`") or value.endswith("`"):
+                if not (value.startswith("`") and value.endswith("`")):
+                    raise WorkflowJobAuthorizationError(
+                        "document_job_invalid_verdict"
+                    )
+                value = value[1:-1]
+            if value not in allowed_verdicts:
+                raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
+            verdict = value
+        declarations.append((index, verdict))
+    if len(declarations) != 1:
         raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
-    verdict = lines[0].removeprefix("Verdict: ")
+    verdict_index, verdict = declarations[0]
     if verdict == "CHANGES_REQUIRED":
         required = (
             "Requirement",
@@ -1443,7 +1497,7 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
         findings: list[dict[str, str]] = []
         finding: dict[str, str] = {}
         finding_header_seen = False
-        for line in lines[1:]:
+        for line in lines[verdict_index + 1 :]:
             heading = line.strip()
             if heading.startswith("#"):
                 heading = heading.lstrip("#").strip()
@@ -1514,7 +1568,8 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
                 continue
             cited_references: set[str] = set()
             for match in re.finditer(
-                r"(?:evidence|コード断片)\s*([A-Z])(?:\s*[-–—]\s*([A-Z]))?",
+                r"(?:\bevidence\b|コード断片)\s*([A-Z])\b"
+                r"(?:\s*[-–—]\s*([A-Z])\b)?",
                 item["Evidence source/reference"],
                 re.IGNORECASE,
             ):
