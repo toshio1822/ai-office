@@ -1885,6 +1885,14 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
             "document_job_final_review_not_pass",
             "CHANGES_REQUIRED",
         ),
+        (
+            "JAPANESE_CHANGES_REQUIRED",
+            5,
+            "stopped",
+            1,
+            "document_job_final_review_not_pass",
+            "JAPANESE_CHANGES_REQUIRED",
+        ),
         ("BLOCKED", 3, "stopped", 1, "document_job_review_blocked", "PASS"),
         ("MALFORMED", 3, "stopped", 1, "document_job_invalid_verdict", "PASS"),
         ("NONACTIONABLE", 3, "stopped", 1, "document_job_unverified_finding", "PASS"),
@@ -2094,6 +2102,17 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                     "- **影響**: the source range cannot be audited.\n"
                     "- **修正要求**: retain the provided path and line range."
                 )
+            elif first_verdict == "JAPANESE_CHANGES_REQUIRED":
+                text = (
+                    "**確定事項**： supplied material reviewed.\n\n"
+                    "判定： `CHANGES_REQUIRED`\n\n"
+                    "### Finding 1\n"
+                    "Requirement: preserve the stated limit.\n"
+                    "Artifact location: Conclusion.\n"
+                    "Evidence source/reference: fixture:evidence-1\n"
+                    "Impact: unsupported certainty.\n"
+                    "Requested correction: retain the limitation."
+                )
             else:
                 evidence_reference = (
                     "Synthetic report with limits"
@@ -2115,16 +2134,28 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             )
         else:
             label = "review-2"
-            text = (
-                "Verdict: CHANGES_REQUIRED\n\n"
-                "Requirement: preserve the stated limit.\n"
-                "Artifact location: Conclusion.\n"
-                "Evidence source/reference: fixture:evidence-1\n"
-                "Impact: unsupported certainty.\n"
-                "Requested correction: retain the limitation."
-                if final_verdict == "CHANGES_REQUIRED"
-                else "Verdict: PASS\n\nNo actionable findings."
-            )
+            if final_verdict == "JAPANESE_CHANGES_REQUIRED":
+                text = (
+                    "**確定事項**： revised report reviewed.\n\n"
+                    "判定： `CHANGES_REQUIRED`\n\n"
+                    "### Finding 1\n"
+                    "Requirement: preserve the stated limit.\n"
+                    "Artifact location: Conclusion.\n"
+                    "Evidence source/reference: fixture:evidence-1\n"
+                    "Impact: unsupported certainty.\n"
+                    "Requested correction: retain the limitation."
+                )
+            elif final_verdict == "CHANGES_REQUIRED":
+                text = (
+                    "Verdict: CHANGES_REQUIRED\n\n"
+                    "Requirement: preserve the stated limit.\n"
+                    "Artifact location: Conclusion.\n"
+                    "Evidence source/reference: fixture:evidence-1\n"
+                    "Impact: unsupported certainty.\n"
+                    "Requested correction: retain the limitation."
+                )
+            else:
+                text = "Verdict: PASS\n\nNo actionable findings."
         call_labels.append(label)
         assert request.url == target.endpoint
         raw = json.dumps(
@@ -2157,6 +2188,14 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     assert len(call_labels) == expected_calls
     assert call_labels[:2] == ["research", "summary"]
     assert call_labels[2] == "review-1"
+    if final_verdict == "JAPANESE_CHANGES_REQUIRED":
+        assert call_labels == [
+            "research",
+            "summary",
+            "review-1",
+            "revision",
+            "review-2",
+        ]
     dispatches = inspect_bounded_document_job(store, scope.job_id)["dispatch_order"]
     assert len(dispatches) == expected_calls
     for dispatch in dispatches:
@@ -2196,7 +2235,11 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         "run_id": source_artifact.run_id,
     }
 
-    if first_verdict not in {"CHANGES_REQUIRED", "MULTI_FINDING"} and max_revisions > 0:
+    if first_verdict not in {
+        "CHANGES_REQUIRED",
+        "JAPANESE_CHANGES_REQUIRED",
+        "MULTI_FINDING",
+    } and max_revisions > 0:
         # Even with unused revision quota, the public derivation/input path
         # must not create revision authority from PASS, BLOCKED, malformed, or
         # ungrounded review evidence.
@@ -2357,6 +2400,21 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     assert inspection["status"] == expected_status
     assert inspection["stop_reason"] == expected_reason
     assert len(inspection["dispatch_order"]) == expected_calls
+    if final_verdict == "JAPANESE_CHANGES_REQUIRED":
+        assert outcome.revisions_used == 1
+        assert outcome.final_artifact_id is not None
+        assert outcome.review_artifact_id is not None
+        persisted_final = read_run_artifact(
+            store, outcome.final_artifact_run_id, outcome.final_artifact_id
+        )
+        persisted_review = read_run_artifact(
+            store, outcome.review_artifact_run_id, outcome.review_artifact_id
+        )
+        assert persisted_review.content.decode().splitlines()[2] == (
+            "判定： `CHANGES_REQUIRED`"
+        )
+        assert persisted_review.content_sha256
+        assert persisted_final.artifact_id == outcome.final_artifact_id
     replay = run_bounded_document_job(
         store,
         scope,
@@ -2462,6 +2520,23 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
         "Requested correction: remove unsupported wording."
     )
     assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
+    package_reference_review = review.replace(
+        "source:AC2#p4",
+        "Evidence A / Evidence B / Evidence C / Evidence D "
+        "(the only evidence package)",
+    )
+    package_review_input = json.loads(review_input)
+    package_review_input["assignment"] += (
+        "\n**Evidence B — `src/review.py`, lines 1–3**"
+        "\n**Evidence C — `src/manifest.py`, lines 1–3**"
+    )
+    assert (
+        _review_verdict(
+            package_reference_review,
+            review_input=json.dumps(package_review_input),
+        )
+        == "CHANGES_REQUIRED"
+    )
     assert _review_verdict(
         review.replace("source:AC2#p4", "Evidence A"), review_input=review_input
     ) == "CHANGES_REQUIRED"
@@ -2475,6 +2550,39 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
             _review_verdict(unsupported_review, review_input=review_input)
         assert caught.value.classification == "document_job_unverified_finding"
+
+
+def test_review_verdict_requires_one_unambiguous_declaration() -> None:
+    from ai_office.engine.workflow_bounded_job import _review_verdict
+
+    after_preamble = "Assessment summary.\n\n判定: PASS"
+    assert _review_verdict(after_preamble) == "PASS"
+    quoted_examples_with_verdict = (
+        "Assessment summary.\n"
+        "> 判定： BLOCKED\n"
+        "```markdown\n判定： BLOCKED\n```\n"
+        "判定： PASS"
+    )
+    assert _review_verdict(quoted_examples_with_verdict) == "PASS"
+    quoted_examples = (
+        "Assessment summary.\n> 判定： BLOCKED",
+        "Assessment summary.\n```markdown\n判定： BLOCKED\n```",
+    )
+    for review in quoted_examples:
+        with pytest.raises(WorkflowJobAuthorizationError) as caught:
+            _review_verdict(review)
+        assert caught.value.classification == "document_job_invalid_verdict"
+
+    ambiguous_or_invalid = (
+        "Assessment summary.\n判定: PASS\nVerdict: PASS",
+        "Assessment summary.\n判定： PASS\n判定: PASS",
+        "Assessment summary.\n判定： MAYBE",
+        "Assessment summary.\nVerdict: `PASS`",
+    )
+    for review in ambiguous_or_invalid:
+        with pytest.raises(WorkflowJobAuthorizationError) as caught:
+            _review_verdict(review)
+        assert caught.value.classification == "document_job_invalid_verdict"
 
 
 def test_saved_japanese_findings_accept_bound_artifact_and_assignment_evidence(
