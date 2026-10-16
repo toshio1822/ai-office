@@ -374,7 +374,7 @@ class ExecutionAttemptEvidence:
     approved_by: str | None
     execution_approval_evidence_sha256: str | None
     state: Literal["claimed"]
-    request_body_base64: str | None = None
+    request_body_base64: str | None = dataclass_field(default=None, repr=False)
     recovery_decision_sha256: str | None = None
     recovery_approval_id: str | None = None
     recovery_approval_evidence_sha256: str | None = None

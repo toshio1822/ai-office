@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError, dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -39,11 +40,16 @@ from ai_office.execution_evidence import (
     load_raw_response_evidence,
     persist_raw_response_evidence,
 )
-from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
+from ai_office.execution_target import (
+    DIRECT_OPENAI_EXECUTION_TARGET,
+    OPENAI_CHAT_COMPLETIONS_PROTOCOL,
+    ModelExecutionTarget,
+)
 from ai_office.invocation import (
     ModelInvocationExecutionApproval,
     ModelInvocationRequest,
     ModelInvocationSuccess,
+    UpstreamStepOutput,
     approve_model_invocation_execution,
 )
 from ai_office.providers.openai import (
@@ -79,6 +85,7 @@ class EvidenceFixture:
     request: ModelInvocationRequest
     approval: ModelInvocationExecutionApproval
     context: object
+    target: ModelExecutionTarget
 
 
 def _workflow() -> WorkflowDefinition:
@@ -129,7 +136,12 @@ def _employee_two() -> EmployeeDefinition:
     )
 
 
-def _fixture(root: Path, *, run_id: str = "run-evidence") -> EvidenceFixture:
+def _fixture(
+    root: Path,
+    *,
+    run_id: str = "run-evidence",
+    target: ModelExecutionTarget = DIRECT_OPENAI_EXECUTION_TARGET,
+) -> EvidenceFixture:
     workflow = _workflow()
     run = create_test_run(
         root,
@@ -137,6 +149,7 @@ def _fixture(root: Path, *, run_id: str = "run-evidence") -> EvidenceFixture:
         workflow,
         (_employee(), _employee_two()),
         with_business_approvals=False,
+        execution_target=target,
     )
     invocation = ModelInvocationRequest(
         model="evidence-model",
@@ -150,10 +163,10 @@ def _fixture(root: Path, *, run_id: str = "run-evidence") -> EvidenceFixture:
     approval = approve_model_invocation_execution(
         invocation,
         (),
-        provider="openai",
+        provider=target.provider,
         approved_by="evidence-reviewer",
         approval_id="execution-evidence-approval",
-        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        execution_target=target,
     )
     approval_evidence = build_execution_approval_evidence_for_tools(
         invocation,
@@ -163,7 +176,7 @@ def _fixture(root: Path, *, run_id: str = "run-evidence") -> EvidenceFixture:
         step_id=workflow.steps[0].id,
         step_index=1,
         employee_id=workflow.steps[0].employee,
-        target=DIRECT_OPENAI_EXECUTION_TARGET,
+        target=target,
     )
     persist_execution_approval_evidence(run.store, approval_evidence)
     context = build_execution_evidence_context(
@@ -176,9 +189,9 @@ def _fixture(root: Path, *, run_id: str = "run-evidence") -> EvidenceFixture:
         request=invocation,
         resolved_tools=(),
         approval=approval,
-        target=DIRECT_OPENAI_EXECUTION_TARGET,
+        target=target,
     )
-    return EvidenceFixture(run, invocation, approval, context)
+    return EvidenceFixture(run, invocation, approval, context, target)
 
 
 def _second_step_execution(fixture: EvidenceFixture):
@@ -187,6 +200,15 @@ def _second_step_execution(fixture: EvidenceFixture):
         system_instructions="Use the evidence fixture instructions.",
         task_instructions="Return the second safe result.",
         allowed_tools=(),
+        upstream_inputs=(
+            UpstreamStepOutput(
+                workflow_id="evidence-workflow",
+                step_id="step-1",
+                step_index=1,
+                employee_id="employee-1",
+                output_text="handoff-marker-from-step-one",
+            ),
+        ),
         run_id=fixture.run.binding.run_id,
         manifest_digest=fixture.run.binding.manifest_digest,
         run_input="input-run-evidence",
@@ -194,10 +216,10 @@ def _second_step_execution(fixture: EvidenceFixture):
     approval = approve_model_invocation_execution(
         request,
         (),
-        provider="openai",
+        provider=fixture.target.provider,
         approved_by="evidence-reviewer",
         approval_id="execution-evidence-approval-step-2",
-        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+        execution_target=fixture.target,
     )
     approval_evidence = build_execution_approval_evidence_for_tools(
         request,
@@ -207,7 +229,7 @@ def _second_step_execution(fixture: EvidenceFixture):
         step_id="step-2",
         step_index=2,
         employee_id="employee-2",
-        target=DIRECT_OPENAI_EXECUTION_TARGET,
+        target=fixture.target,
     )
     persist_execution_approval_evidence(fixture.run.store, approval_evidence)
     context = build_execution_evidence_context(
@@ -220,7 +242,7 @@ def _second_step_execution(fixture: EvidenceFixture):
         request=request,
         resolved_tools=(),
         approval=approval,
-        target=DIRECT_OPENAI_EXECUTION_TARGET,
+        target=fixture.target,
     )
     return request, approval, context
 
@@ -343,6 +365,29 @@ def _api_error_response() -> OpenAIResponsesRawHttpResponse:
     )
 
 
+def _chat_success_response(
+    text: str, response_id: str
+) -> OpenAIResponsesRawHttpResponse:
+    return OpenAIResponsesRawHttpResponse(
+        status_code=200,
+        reason="synthetic",
+        headers=(("Content-Type", "application/json"),),
+        body=json.dumps(
+            {
+                "id": response_id,
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": text},
+                    }
+                ],
+            }
+        ).encode("utf-8"),
+    )
+
+
 def _api_key() -> OpenAIApiKey:
     return OpenAIApiKey(value=SecretStr("synthetic-provider-key"))
 
@@ -386,8 +431,13 @@ def test_claim_is_durable_before_transport_and_response_is_lossless_but_secret_f
     assert len(attempts) == 1
     attempt = attempts[0]
     assert attempt.request_body_base64 is not None
-    assert base64.b64decode(attempt.request_body_base64).decode("utf-8") == seen[0].body
+    saved_request_body = base64.b64decode(attempt.request_body_base64)
+    assert saved_request_body.decode("utf-8") == seen[0].body
     assert attempt.request_body_length == len(seen[0].body.encode("utf-8"))
+    assert seen[0].body not in repr(attempt)
+    assert "raw-secret-is-not-normal-output" not in repr(attempt)
+    assert attempt.request_body_base64 not in repr(attempt)
+    assert "raw-secret-is-not-normal-output" not in str(attempt)
     raw = load_raw_response_evidence(
         fixture.run.store.root, fixture.run.binding.run_id, attempt.attempt_id
     )
@@ -449,6 +499,68 @@ def test_attempt_claim_persistence_failure_means_zero_transport_calls(
         list_run_execution_evidence(fixture.run.store.root, fixture.run.binding.run_id)
         == ()
     )
+
+
+def test_chat_completions_handoff_attempts_store_exact_transport_bodies(
+    tmp_path: Path,
+) -> None:
+    target = ModelExecutionTarget(
+        provider="example-chat",
+        protocol=OPENAI_CHAT_COMPLETIONS_PROTOCOL,
+        base_url="https://api.example.com/v1/chat/completions",
+        credential_environment_variable="EXAMPLE_CHAT_API_KEY",
+        allow_loopback_http=False,
+        configuration_fingerprint="a" * 64,
+    )
+    fixture = _fixture(tmp_path, run_id="run-chat-handoff", target=target)
+    transport_bodies: list[str] = []
+
+    def transport(request_value: OpenAIResponsesAuthenticatedHttpRequest):
+        transport_bodies.append(request_value.body)
+        return _chat_success_response(
+            "handoff-marker-from-step-one" if len(transport_bodies) == 1 else "final",
+            f"chat-response-{len(transport_bodies)}",
+        )
+
+    execute_openai_model_invocation(
+        fixture.request,
+        (),
+        _api_key(),
+        fixture.approval,
+        transport=transport,
+        execution_evidence=fixture.context,
+    )
+    second_request, second_approval, second_context = _second_step_execution(fixture)
+    execute_openai_model_invocation(
+        second_request,
+        (),
+        _api_key(),
+        second_approval,
+        transport=transport,
+        execution_evidence=second_context,
+    )
+
+    attempts = list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )
+    assert len(transport_bodies) == 2
+    assert [attempt.step_index for attempt in attempts] == [1, 2]
+    stored_bodies = [
+        base64.b64decode(attempt.request_body_base64 or b"")
+        for attempt in attempts
+    ]
+    assert stored_bodies == [body.encode("utf-8") for body in transport_bodies]
+    assert all(
+        attempt.request_body_sha256 == sha256(body.encode("utf-8")).hexdigest()
+        for attempt, body in zip(attempts, transport_bodies, strict=True)
+    )
+    second_chat_body = json.loads(transport_bodies[1])
+    second_user_message = next(
+        message
+        for message in second_chat_body["messages"]
+        if message["role"] == "user"
+    )
+    assert "handoff-marker-from-step-one" in second_user_message["content"]
 
 
 def test_missing_execution_evidence_means_zero_transport_calls(tmp_path: Path) -> None:
