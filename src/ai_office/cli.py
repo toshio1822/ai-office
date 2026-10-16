@@ -1,5 +1,6 @@
 """Command-line interface for AI Office."""
 
+import base64
 import getpass
 import json
 import os
@@ -70,7 +71,14 @@ from ai_office.execution_destination import (
     ExecutionDestinationError,
     load_execution_destination_registry,
 )
-from ai_office.execution_evidence import inspect_run_execution_evidence
+from ai_office.execution_evidence import (
+    execution_normalized_result_evidence_path,
+    execution_raw_response_evidence_path,
+    inspect_run_execution_evidence,
+    load_execution_attempt_evidence,
+    load_normalized_result_evidence,
+    load_raw_response_evidence,
+)
 from ai_office.execution_target import (
     ModelExecutionTarget,
     ModelExecutionTargetError,
@@ -1079,14 +1087,110 @@ def approval_evidence_workflow(
 def execution_evidence_workflow(
     run_id: str,
     run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+    show_content: bool = typer.Option(False, "--show-content"),
+    attempt_id: str | None = typer.Option(None, "--attempt-id"),
 ) -> None:
-    """Inspect safe, strict execution evidence for one Run without execution."""
+    """Inspect execution evidence; opt in to viewing one attempt's content."""
     store = _load_run_store_or_exit(run_store)
     manifest = _load_run_manifest_or_exit(store, run_id)
     try:
         evidence = inspect_run_execution_evidence(store.root, run_id)
     except Exception:
         _workflow_cli_error("Run execution evidence is invalid or unavailable")
+    if show_content or attempt_id is not None:
+        if not show_content or attempt_id is None:
+            _workflow_cli_error("--show-content requires exactly one --attempt-id")
+        try:
+            attempt = load_execution_attempt_evidence(store.root, run_id, attempt_id)
+            raw_path = execution_raw_response_evidence_path(
+                store.root, run_id, attempt_id
+            )
+            result_path = execution_normalized_result_evidence_path(
+                store.root, run_id, attempt_id
+            )
+            raw = (
+                load_raw_response_evidence(store.root, run_id, attempt_id)
+                if raw_path.exists() or raw_path.is_symlink()
+                else None
+            )
+            normalized = (
+                load_normalized_result_evidence(store.root, run_id, attempt_id)
+                if result_path.exists() or result_path.is_symlink()
+                else None
+            )
+        except Exception:
+            _workflow_cli_error("Attempt content is unavailable or invalid")
+        request_body = None
+        if attempt.request_body_base64 is not None:
+            request_body = base64.b64decode(attempt.request_body_base64).decode("utf-8")
+        response_text = None
+        response_encoding = None
+        if raw is not None:
+            response_bytes = base64.b64decode(raw.body_base64)
+            try:
+                response_text = response_bytes.decode("utf-8")
+                response_encoding = "utf-8"
+            except UnicodeDecodeError:
+                response_encoding = "base64"
+        _emit_json(
+            {
+                "attempt_id": attempt.attempt_id,
+                "job_id": attempt.job_id,
+                "normalized_result": {
+                    "category": None if normalized is None else normalized.category,
+                    "failure_category": (
+                        None if normalized is None else normalized.failure_category
+                    ),
+                    "evidence_sha256": (
+                        None if normalized is None else normalized.digest
+                    ),
+                    "text": None if normalized is None else normalized.text,
+                    "unavailable": normalized is None,
+                },
+                "operation": "execution-evidence-content",
+                "provenance": {
+                    "employee_id": attempt.employee_id,
+                    "execution_target_fingerprint": (
+                        attempt.execution_target_fingerprint
+                    ),
+                    "provider": attempt.provider,
+                    "step_id": attempt.step_id,
+                    "step_index": attempt.step_index,
+                    "workflow_id": attempt.workflow_id,
+                },
+                "raw_response": {
+                    "body_base64": (
+                        raw.body_base64
+                        if raw is not None and response_text is None
+                        else None
+                    ),
+                    "body_encoding": response_encoding,
+                    "body_text": response_text,
+                    "body_length": None if raw is None else raw.body_length,
+                    "body_sha256": None if raw is None else raw.body_sha256,
+                    "evidence_sha256": None if raw is None else raw.digest,
+                    "safe_headers": (
+                        [] if raw is None else [list(item) for item in raw.safe_headers]
+                    ),
+                    "status_code": None if raw is None else raw.status_code,
+                    "unavailable": raw is None,
+                },
+                "request": {
+                    "body_base64": attempt.request_body_base64,
+                    "body_length": attempt.request_body_length,
+                    "body_sha256": attempt.request_body_sha256,
+                    "body_text": request_body,
+                    "evidence_sha256": attempt.digest,
+                    "unavailable": attempt.request_body_base64 is None,
+                },
+                "run_id": run_id,
+                "warning": (
+                    "Explicit content view may reveal sensitive information; "
+                    "stored evidence is private to this local account."
+                ),
+            }
+        )
+        return
     _emit_json(
         {
             "attempts": [asdict(item) for item in evidence],

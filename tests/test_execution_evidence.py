@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import os
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError, dataclass, replace
 from pathlib import Path
 
@@ -381,6 +385,9 @@ def test_claim_is_durable_before_transport_and_response_is_lossless_but_secret_f
     )
     assert len(attempts) == 1
     attempt = attempts[0]
+    assert attempt.request_body_base64 is not None
+    assert base64.b64decode(attempt.request_body_base64).decode("utf-8") == seen[0].body
+    assert attempt.request_body_length == len(seen[0].body.encode("utf-8"))
     raw = load_raw_response_evidence(
         fixture.run.store.root, fixture.run.binding.run_id, attempt.attempt_id
     )
@@ -807,3 +814,77 @@ def test_cli_inspection_is_read_only_and_does_not_emit_raw_body(
     assert "raw-secret-body" not in result.stdout
     assert "synthetic-provider-key" not in result.stdout
     assert "Authorization" not in result.stdout
+    first_attempt_path = execution_attempt_evidence_path(
+        fixture.run.store.root,
+        fixture.run.binding.run_id,
+        value["attempts"][0]["attempt_id"],
+    )
+    assert first_attempt_path.stat().st_mode & 0o777 == 0o600
+
+    cli_args = [
+        "workflows",
+        "execution-evidence",
+        fixture.run.binding.run_id,
+        "--run-store",
+        str(fixture.run.store.root),
+        "--show-content",
+        "--attempt-id",
+        value["attempts"][0]["attempt_id"],
+    ]
+    environment = os.environ.copy()
+    source_root = str(Path(__file__).resolve().parents[1] / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        item for item in (source_root, environment.get("PYTHONPATH", "")) if item
+    )
+    displayed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from ai_office.cli import app; from typer.testing import CliRunner; "
+            "import sys; result = CliRunner().invoke(app, sys.argv[1:]); "
+            "print(result.stdout, end=''); raise SystemExit(result.exit_code)",
+            *cli_args,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert displayed.returncode == 0, displayed.stderr
+    content = json.loads(displayed.stdout)
+    assert content["request"]["body_text"] is not None
+    assert content["request"]["body_length"] == len(
+        content["request"]["body_text"].encode("utf-8")
+    )
+    assert content["request"]["body_sha256"]
+    assert content["raw_response"]["body_text"] is not None
+    assert content["normalized_result"]["text"] == "raw-secret-body"
+    assert content["warning"].startswith("Explicit content view")
+    assert "synthetic-provider-key" not in displayed.stdout
+    assert "Bearer" not in displayed.stdout
+
+
+def test_request_body_evidence_is_integrity_checked_on_reload(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    execute_openai_model_invocation(
+        fixture.request,
+        (),
+        _api_key(),
+        fixture.approval,
+        transport=lambda _: _success_response(),
+        execution_evidence=fixture.context,
+    )
+    attempt = list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )[0]
+    path = execution_attempt_evidence_path(
+        fixture.run.store.root, fixture.run.binding.run_id, attempt.attempt_id
+    )
+    record = json.loads(path.read_text(encoding="utf-8"))
+    original = record["request_body_base64"]
+    record["request_body_base64"] = original[:-4] + "AAAA"
+    path.write_text(
+        json.dumps(record, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+    )
+    with pytest.raises(ExecutionEvidenceLoadError):
+        list_run_execution_evidence(fixture.run.store.root, fixture.run.binding.run_id)
