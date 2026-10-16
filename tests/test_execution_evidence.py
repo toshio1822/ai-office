@@ -652,7 +652,9 @@ def test_timed_out_attempt_persists_unknown_result_without_response_or_replay(
         nonlocal calls
         calls += 1
         raise OpenAIResponsesTransportError(
-            "OpenAI Responses HTTP request timed out; remote outcome is unknown"
+            "OpenAI-compatible HTTP transport timed out; "
+            "stage=response_headers; elapsed_ms=600400; "
+            "remote outcome is unknown"
         )
 
     result = execute_openai_model_invocation(
@@ -669,7 +671,9 @@ def test_timed_out_attempt_persists_unknown_result_without_response_or_replay(
     )
     assert result.category == "transport_error"  # type: ignore[union-attr]
     assert result.message == (  # type: ignore[union-attr]
-        "OpenAI Responses HTTP request timed out; remote outcome is unknown"
+        "OpenAI-compatible HTTP transport timed out; "
+        "stage=response_headers; elapsed_ms=600400; "
+        "remote outcome is unknown"
     )
     assert calls == 1
     assert len(attempts) == 1
@@ -679,6 +683,7 @@ def test_timed_out_attempt_persists_unknown_result_without_response_or_replay(
         fixture.run.store.root, fixture.run.binding.run_id, attempt.attempt_id
     )
     assert normalized.failure_category == "transport_error"
+    assert normalized.failure_message == result.message  # type: ignore[union-attr]
     assert normalized.status_code is None
     assert normalized.raw_response_evidence_sha256 is None
     assert not execution_raw_response_evidence_path(

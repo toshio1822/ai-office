@@ -3,6 +3,7 @@
 import http.client
 import ipaddress
 import socket
+import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -128,6 +129,8 @@ def send_openai_responses_http_request(
     body = request.body.encode("utf-8")
     _reject_caller_supplied_framing_headers(request.headers)
     connection: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
+    stage = "connection_setup"
+    started_at_ns = time.monotonic_ns()
 
     try:
         connection = (
@@ -135,6 +138,12 @@ def send_openai_responses_http_request(
             if scheme == "http"
             else _create_https_connection(hostname, port)
         )
+        # Make connection setup explicit so a later timeout in endheaders is
+        # known to be in request transmission, not an implicit connect/TLS.
+        # The connection setup stage intentionally groups DNS/TCP/TLS details
+        # that this synchronous path cannot always distinguish safely.
+        connection.connect()
+        stage = "request_send"
         has_host_header = any(name.lower() == "host" for name, _ in request.headers)
         connection.putrequest(
             request.method,
@@ -147,16 +156,25 @@ def send_openai_responses_http_request(
         connection.putheader("Content-Length", str(len(body)))
         connection.endheaders(body)
 
+        stage = "response_headers"
         response = connection.getresponse()
+        response_headers = tuple(response.getheaders())
+        stage = "response_body"
+        response_body = response.read()
         return OpenAIResponsesRawHttpResponse(
             status_code=response.status,
             reason=response.reason,
-            headers=tuple(response.getheaders()),
-            body=response.read(),
+            headers=response_headers,
+            body=response_body,
         )
     except TimeoutError:
+        elapsed_ms = max(
+            0,
+            (time.monotonic_ns() - started_at_ns) // 100_000_000 * 100,
+        )
         raise OpenAIResponsesTransportError(
-            "OpenAI Responses HTTP request timed out; remote outcome is unknown"
+            "OpenAI-compatible HTTP transport timed out; "
+            f"stage={stage}; elapsed_ms={elapsed_ms}; remote outcome is unknown"
         ) from None
     except Exception:
         raise OpenAIResponsesTransportError(
