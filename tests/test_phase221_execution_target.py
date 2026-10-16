@@ -325,6 +325,9 @@ class _FakeHttpConnection:
         self.bodies: list[bytes] = []
         self.closed = False
 
+    def connect(self) -> None:
+        pass
+
     def putrequest(self, method: str, target: str, **kwargs: object) -> None:
         self.requests.append((method, target, kwargs))
 

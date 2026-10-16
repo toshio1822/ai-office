@@ -33,6 +33,10 @@ class FakeConnection:
         self.headers: list[tuple[str, str]] = []
         self.bodies: list[bytes] = []
         self.closed = False
+        self.connect_calls = 0
+
+    def connect(self) -> None:
+        self.connect_calls += 1
 
     def putrequest(
         self,
@@ -128,6 +132,7 @@ def test_transport_sends_one_ordered_request_and_preserves_raw_response(
         name for name, _ in connection.headers if name.lower() == "transfer-encoding"
     ] == []
     assert connection.bodies == [request.body.encode("utf-8")]
+    assert connection.connect_calls == 1
     assert len(connection.putrequest_calls) == 1
     assert connection.closed is True
     assert response == OpenAIResponsesRawHttpResponse(
@@ -422,19 +427,34 @@ def test_http_and_https_connections_have_a_finite_socket_timeout(
 
 
 @pytest.mark.parametrize(
-    ("url", "timeout_stage"),
+    ("url", "timeout_stage", "stage_name"),
     [
-        ("https://api.example.test/v1/responses", "send"),
-        ("https://api.example.test/v1/chat/completions", "headers"),
-        ("http://127.0.0.1:20128/v1/chat/completions", "body"),
+        ("https://api.example.test/v1/responses", "connect", "connection_setup"),
+        ("https://api.example.test/v1/responses", "send", "request_send"),
+        (
+            "https://api.example.test/v1/chat/completions",
+            "headers",
+            "response_headers",
+        ),
+        (
+            "http://127.0.0.1:20128/v1/chat/completions",
+            "body",
+            "response_body",
+        ),
     ],
 )
 def test_socket_timeout_is_safe_ambiguous_and_never_retried(
     monkeypatch: pytest.MonkeyPatch,
     url: str,
     timeout_stage: str,
+    stage_name: str,
 ) -> None:
     class TimeoutConnection(FakeConnection):
+        def connect(self) -> None:
+            super().connect()
+            if timeout_stage == "connect":
+                raise TimeoutError("Bearer test-secret raw response bytes")
+
         def endheaders(self, body: bytes) -> None:
             if timeout_stage == "send":
                 raise TimeoutError("Bearer test-secret raw response bytes")
@@ -469,9 +489,13 @@ def test_socket_timeout_is_safe_ambiguous_and_never_retried(
     with pytest.raises(OpenAIResponsesTransportError) as error:
         send_openai_responses_http_request(authenticated_request(url))
 
-    assert str(error.value) == (
-        "OpenAI Responses HTTP request timed out; remote outcome is unknown"
+    assert str(error.value).startswith(
+        "OpenAI-compatible HTTP transport timed out; "
+        f"stage={stage_name}; elapsed_ms="
     )
+    assert str(error.value).endswith("; remote outcome is unknown")
+    elapsed_ms = int(str(error.value).split("elapsed_ms=", 1)[1].split(";", 1)[0])
+    assert elapsed_ms >= 0 and elapsed_ms % 100 == 0
     assert "test-secret" not in str(error.value)
     assert "raw response bytes" not in str(error.value)
     assert created == 1
