@@ -13,7 +13,7 @@ from ai_office.providers.openai.responses_observability import (
     extract_openai_responses_content_type,
 )
 
-PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS = 30.0
+PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS = 600.0
 
 
 @dataclass(frozen=True)

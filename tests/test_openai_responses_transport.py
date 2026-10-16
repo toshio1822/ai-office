@@ -416,6 +416,7 @@ def test_http_and_https_connections_have_a_finite_socket_timeout(
     https = transport._create_https_connection("api.example.test", None)
     http = transport._create_http_connection("127.0.0.1", 20128)
 
+    assert transport.PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS == 600.0
     assert https.timeout == transport.PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS
     assert http.timeout == transport.PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS
 
