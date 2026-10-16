@@ -43,6 +43,7 @@ from ai_office.execution_evidence import (
 from ai_office.execution_target import (
     DIRECT_OPENAI_EXECUTION_TARGET,
     OPENAI_CHAT_COMPLETIONS_PROTOCOL,
+    OPENAI_RESPONSES_PROTOCOL,
     ModelExecutionTarget,
 )
 from ai_office.invocation import (
@@ -619,6 +620,78 @@ def test_unresolved_transport_attempt_blocks_restart_replay(
             _api_key(),
             fixture.approval,
             transport=uncertain_transport,
+            execution_evidence=fixture.context,
+        )
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "protocol",
+    [OPENAI_RESPONSES_PROTOCOL, OPENAI_CHAT_COMPLETIONS_PROTOCOL],
+)
+def test_timed_out_attempt_persists_unknown_result_without_response_or_replay(
+    tmp_path: Path,
+    protocol: str,
+) -> None:
+    target = (
+        DIRECT_OPENAI_EXECUTION_TARGET
+        if protocol == OPENAI_RESPONSES_PROTOCOL
+        else ModelExecutionTarget(
+            provider="example-chat",
+            protocol=protocol,
+            base_url="https://api.example.com/v1/chat/completions",
+            credential_environment_variable="EXAMPLE_CHAT_API_KEY",
+            allow_loopback_http=False,
+            configuration_fingerprint="a" * 64,
+        )
+    )
+    fixture = _fixture(tmp_path, run_id=f"run-timeout-{protocol}", target=target)
+    calls = 0
+
+    def timeout_after_dispatch(_: OpenAIResponsesAuthenticatedHttpRequest):
+        nonlocal calls
+        calls += 1
+        raise OpenAIResponsesTransportError(
+            "OpenAI Responses HTTP request timed out; remote outcome is unknown"
+        )
+
+    result = execute_openai_model_invocation(
+        fixture.request,
+        (),
+        _api_key(),
+        fixture.approval,
+        transport=timeout_after_dispatch,
+        execution_evidence=fixture.context,
+    )
+
+    attempts = list_run_execution_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id
+    )
+    assert result.category == "transport_error"  # type: ignore[union-attr]
+    assert result.message == (  # type: ignore[union-attr]
+        "OpenAI Responses HTTP request timed out; remote outcome is unknown"
+    )
+    assert calls == 1
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    assert attempt.request_body_sha256 is not None
+    normalized = load_normalized_result_evidence(
+        fixture.run.store.root, fixture.run.binding.run_id, attempt.attempt_id
+    )
+    assert normalized.failure_category == "transport_error"
+    assert normalized.status_code is None
+    assert normalized.raw_response_evidence_sha256 is None
+    assert not execution_raw_response_evidence_path(
+        fixture.run.store.root, fixture.run.binding.run_id, attempt.attempt_id
+    ).exists()
+
+    with pytest.raises(ExecutionAttemptAlreadyClaimedError):
+        execute_openai_model_invocation(
+            fixture.request,
+            (),
+            _api_key(),
+            fixture.approval,
+            transport=timeout_after_dispatch,
             execution_evidence=fixture.context,
         )
     assert calls == 1

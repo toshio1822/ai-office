@@ -13,6 +13,8 @@ from ai_office.providers.openai.responses_observability import (
     extract_openai_responses_content_type,
 )
 
+PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS = 600.0
+
 
 @dataclass(frozen=True)
 class OpenAIResponsesRawHttpResponse:
@@ -63,14 +65,21 @@ def _create_https_connection(
     port: int | None,
 ) -> http.client.HTTPSConnection:
     address = _require_public_https_destination(hostname, port)
-    return _PinnedHTTPSConnection(hostname, address, port=port)
+    return _PinnedHTTPSConnection(
+        hostname,
+        address,
+        port=port,
+        timeout=PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS,
+    )
 
 
 def _create_http_connection(
     hostname: str,
     port: int | None,
 ) -> http.client.HTTPConnection:
-    return http.client.HTTPConnection(hostname, port=port)
+    return http.client.HTTPConnection(
+        hostname, port=port, timeout=PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS
+    )
 
 
 def _parse_openai_responses_transport_url(
@@ -145,6 +154,10 @@ def send_openai_responses_http_request(
             headers=tuple(response.getheaders()),
             body=response.read(),
         )
+    except TimeoutError:
+        raise OpenAIResponsesTransportError(
+            "OpenAI Responses HTTP request timed out; remote outcome is unknown"
+        ) from None
     except Exception:
         raise OpenAIResponsesTransportError(
             "OpenAI Responses HTTPS transport failed"
@@ -160,8 +173,15 @@ def send_openai_responses_http_request(
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """Connect to one validated address while retaining hostname TLS checks."""
 
-    def __init__(self, hostname: str, address: str, *, port: int | None = None) -> None:
-        super().__init__(hostname, port=port)
+    def __init__(
+        self,
+        hostname: str,
+        address: str,
+        *,
+        port: int | None = None,
+        timeout: float = PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__(hostname, port=port, timeout=timeout)
         self._validated_address = address
 
     def connect(self) -> None:
