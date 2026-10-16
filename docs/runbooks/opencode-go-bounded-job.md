@@ -69,6 +69,15 @@ path.
    ambiguous outcome, inspect the existing read-only evidence command; do not
    rerun the Job.
 
+The synchronous provider HTTP transport applies a 30-second socket timeout to
+connection and socket send/receive operations, including TLS and response-body
+reads. This is an inactivity limit per socket operation, not a total wall-clock
+deadline: DNS/public-address lookup happens before the HTTPS socket is opened,
+and operating-system name resolution or a peer that continually makes progress
+may take longer. If the timeout is reached after dispatch, the remote outcome
+is unknown. The Attempt remains consumed; no retry, fallback, or recovery is
+performed, and no complete response or Artifact is inferred from missing data.
+
 The fixed sequence is creator (2 attempts), independent reviewer (1), then
 only for a persisted evidence-grounded `CHANGES_REQUIRED`, revision (1) and
 fresh independent reviewer (1). All actions pin the same destination

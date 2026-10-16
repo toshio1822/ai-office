@@ -394,3 +394,84 @@ def test_transport_failure_is_safe_closes_once_and_never_retries(
     assert "raw response bytes" not in str(error.value)
     assert created == 1
     assert connection.closed is True
+
+
+def test_http_and_https_connections_have_a_finite_socket_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        transport.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (
+                transport.socket.AF_INET,
+                transport.socket.SOCK_STREAM,
+                6,
+                "",
+                ("8.8.8.8", 443),
+            )
+        ],
+    )
+
+    https = transport._create_https_connection("api.example.test", None)
+    http = transport._create_http_connection("127.0.0.1", 20128)
+
+    assert https.timeout == transport.PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS
+    assert http.timeout == transport.PROVIDER_HTTP_SOCKET_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("url", "timeout_stage"),
+    [
+        ("https://api.example.test/v1/responses", "send"),
+        ("https://api.example.test/v1/chat/completions", "headers"),
+        ("http://127.0.0.1:20128/v1/chat/completions", "body"),
+    ],
+)
+def test_socket_timeout_is_safe_ambiguous_and_never_retried(
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    timeout_stage: str,
+) -> None:
+    class TimeoutConnection(FakeConnection):
+        def endheaders(self, body: bytes) -> None:
+            if timeout_stage == "send":
+                raise TimeoutError("Bearer test-secret raw response bytes")
+            super().endheaders(body)
+
+        def getresponse(self) -> FakeResponse:
+            if timeout_stage == "headers":
+                raise TimeoutError("Bearer test-secret raw response bytes")
+            return super().getresponse()
+
+    class TimeoutResponse(FakeResponse):
+        def read(self) -> bytes:
+            if timeout_stage == "body":
+                raise TimeoutError("Bearer test-secret raw response bytes")
+            return super().read()
+
+    connection = TimeoutConnection(TimeoutResponse())
+    created = 0
+
+    def factory(hostname: str, port: int | None) -> TimeoutConnection:
+        nonlocal created
+        created += 1
+        return connection
+
+    factory_name = (
+        "_create_http_connection"
+        if url.startswith("http:")
+        else "_create_https_connection"
+    )
+    monkeypatch.setattr(transport, factory_name, factory)
+
+    with pytest.raises(OpenAIResponsesTransportError) as error:
+        send_openai_responses_http_request(authenticated_request(url))
+
+    assert str(error.value) == (
+        "OpenAI Responses HTTP request timed out; remote outcome is unknown"
+    )
+    assert "test-secret" not in str(error.value)
+    assert "raw response bytes" not in str(error.value)
+    assert created == 1
+    assert connection.closed is True
