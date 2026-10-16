@@ -589,9 +589,19 @@ Do not treat new Phase numbers as milestones by themselves.
 - invocation evidence
 - execution-target evidence
 - attempt identity
-- pre-transport attempt claim
+- pre-transport attempt claim containing the exact unauthenticated request body bytes, length, and SHA-256
 - raw-response evidence
 - normalized-response linkage
+
+Request bodies and raw responses are private Run-store evidence and may contain
+sensitive business data. Normal evidence listings and errors expose metadata
+only. Operators may explicitly request one attempt's request, raw response, and
+normalized result with `workflows execution-evidence RUN_ID --show-content
+--attempt-id ATTEMPT_ID`. This is read-only and warns before returning content;
+the local Run store must be protected by the host account. Same-UID processes
+can read or alter local files, so this is not an isolation boundary. Legacy
+attempts without a saved request body remain unavailable; never reconstruct or
+claim that a hash-only historical attempt contains the original request.
 
 ### Milestone 4 — Artifact
 - immutable artifact identity

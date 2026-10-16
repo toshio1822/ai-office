@@ -141,6 +141,16 @@ _ATTEMPT_V3_KEYS = frozenset(
     }
 )
 _ATTEMPT_V4_KEYS = _ATTEMPT_V3_KEYS | {"job_action_sha256", "job_action_ordinal"}
+_ATTEMPT_BODY_KEYS = "request_body_base64"
+_ATTEMPT_KEYS_WITH_BODY = tuple(
+    keys | {_ATTEMPT_BODY_KEYS}
+    for keys in (
+        _ATTEMPT_V1_KEYS,
+        _ATTEMPT_V2_KEYS,
+        _ATTEMPT_V3_KEYS,
+        _ATTEMPT_V4_KEYS,
+    )
+)
 _RAW_KEYS = frozenset(
     {
         "attempt_evidence_sha256",
@@ -364,6 +374,7 @@ class ExecutionAttemptEvidence:
     approved_by: str | None
     execution_approval_evidence_sha256: str | None
     state: Literal["claimed"]
+    request_body_base64: str | None = dataclass_field(default=None, repr=False)
     recovery_decision_sha256: str | None = None
     recovery_approval_id: str | None = None
     recovery_approval_evidence_sha256: str | None = None
@@ -790,7 +801,13 @@ def load_execution_attempt_evidence(
     path = execution_attempt_evidence_path(root, run_id, attempt_id)
     value = _load_record(
         path,
-        (_ATTEMPT_V1_KEYS, _ATTEMPT_V2_KEYS, _ATTEMPT_V3_KEYS, _ATTEMPT_V4_KEYS),
+        (
+            _ATTEMPT_V1_KEYS,
+            _ATTEMPT_V2_KEYS,
+            _ATTEMPT_V3_KEYS,
+            _ATTEMPT_V4_KEYS,
+            *_ATTEMPT_KEYS_WITH_BODY,
+        ),
         _parse_attempt,
     )
     assert type(value) is ExecutionAttemptEvidence
@@ -882,7 +899,13 @@ def list_run_execution_evidence(
         _validate_sha256(suffix, "identity", load=True)
         value = _load_record(
             path,
-            (_ATTEMPT_V1_KEYS, _ATTEMPT_V2_KEYS, _ATTEMPT_V3_KEYS, _ATTEMPT_V4_KEYS),
+            (
+                _ATTEMPT_V1_KEYS,
+                _ATTEMPT_V2_KEYS,
+                _ATTEMPT_V3_KEYS,
+                _ATTEMPT_V4_KEYS,
+                *_ATTEMPT_KEYS_WITH_BODY,
+            ),
             _parse_attempt,
         )
         assert type(value) is ExecutionAttemptEvidence
@@ -1528,6 +1551,9 @@ def _build_attempt(
             "provider": target.provider,
             "request_body_length": len(body.encode("utf-8")),
             "request_body_sha256": _digest(body.encode("utf-8")),
+            "request_body_base64": base64.b64encode(body.encode("utf-8")).decode(
+                "ascii"
+            ),
             "resolved_tools_sha256": _digest(_canonical_json(tool_value)),
             "run_id": context.binding.run_id,
             "state": "claimed",
@@ -1847,6 +1873,8 @@ def _attempt_dict(value: ExecutionAttemptEvidence) -> dict[str, object]:
                 "recovery_decision_sha256": value.recovery_decision_sha256,
             }
         )
+    if value.request_body_base64 is not None:
+        record[_ATTEMPT_BODY_KEYS] = value.request_body_base64
     return record
 
 
@@ -2150,6 +2178,7 @@ def _accept_existing(path: Path, contents: bytes) -> None:
 def _persist_new(handle: object, directory: Path, contents: bytes) -> None:
     try:
         with _handle_scope(handle) as active:
+            os.fchmod(active.fileno(), 0o600)  # type: ignore[attr-defined]
             written = active.write(contents)  # type: ignore[attr-defined]
             if type(written) is not int or written != len(contents):
                 raise OSError("short evidence write")
@@ -2365,6 +2394,17 @@ def _validate_attempt(value: object, *, load: bool = False) -> None:
         ("body", value.request_body_sha256),
     ):
         _validate_sha256(item, field, load=load)
+    if value.request_body_base64 is not None:
+        try:
+            request_body = base64.b64decode(value.request_body_base64, validate=True)
+        except (ValueError, binascii.Error):
+            fail("body")
+        if (
+            base64.b64encode(request_body).decode("ascii") != value.request_body_base64
+            or len(request_body) != value.request_body_length
+            or _digest(request_body) != value.request_body_sha256
+        ):
+            fail("body")
     recovery_values = (
         value.recovery_decision_sha256,
         value.recovery_approval_id,

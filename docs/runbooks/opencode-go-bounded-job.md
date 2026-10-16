@@ -15,6 +15,12 @@ isolation boundary. When OpenClaw and AI Office share an OS identity, there is
 no strong OS-level separation of the API key or Job-launch authority from
 OpenClaw. Do not claim otherwise.
 
+For production or any Job whose evidence must remain available for later
+audit, set `--run-store` to a persistent, owner-only location outside temporary
+or automatically-cleaned directories. Operator-managed backups and retention
+must preserve this evidence for the required audit period; do not assume the
+Run store is backed up or durable when it is placed under `/tmp` or similar.
+
 Keep the Run store and registry private to the operator, while recognizing
 that filesystem permissions under a shared identity do not create separation
 from OpenClaw. Provide `OPENCODE_API_KEY` through the approved secret
