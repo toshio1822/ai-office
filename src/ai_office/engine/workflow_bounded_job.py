@@ -1423,15 +1423,15 @@ def validate_bounded_document_job_scope(scope: BoundedWorkflowJobScope) -> None:
             for previous, item in zip(creator, creator[1:])
         )
     )
-    allowed_suffix = (
-        not suffix and scope.max_revisions == 0
-    ) or (
+    revision_suffix = (
         len(suffix) == 2
-        and scope.max_revisions == 1
         and suffix[0].input_source == "revision_input"
         and suffix[0].step_index == 1
         and suffix[1].input_source == "re_review_input"
         and suffix[1].step_index == 1
+    )
+    allowed_suffix = (not suffix and scope.max_revisions == 0) or (
+        revision_suffix and scope.max_revisions in {0, 1}
     )
     if (
         not creator_is_sequential
@@ -1586,7 +1586,11 @@ def _review_verdict(
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
         if review_input is None:
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-        assignment_references = _explicit_assignment_evidence_references(review_input)
+        assignment_references = _explicit_assignment_evidence_references(
+            review_input
+        )
+        assignment_text = json.loads(review_input)["assignment"]
+        assignment_reference_ids = _reference_ids(assignment_text)
         try:
             input_value = json.loads(review_input)
             source_artifact = input_value.get("source_artifact")
@@ -1607,6 +1611,14 @@ def _review_verdict(
             )
             if evidence_reference in assignment_references:
                 continue
+            cited_reference_ids = _reference_ids(
+                item["Evidence source/reference"]
+            )
+            if (
+                cited_reference_ids
+                and cited_reference_ids <= assignment_reference_ids
+            ):
+                continue
             location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
             if (
                 any(
@@ -1624,6 +1636,35 @@ def _review_verdict(
 
 def _normalized_reference(value: str) -> str:
     return " ".join(value.split()).casefold()
+
+
+def _reference_ids(value: str) -> frozenset[str]:
+    """Return identifiers explicitly attached to generic source/criterion labels."""
+    identifiers: set[str] = set()
+    pattern = re.compile(
+        r"(evidence|criterion|requirement|source|reference|fragment|証拠|断片)\s*"
+        r"([a-z0-9]+)(?:\s*[-–—]\s*([a-z0-9]+))?",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(value):
+        first = match.group(2).casefold()
+        last = (match.group(3) or first).casefold()
+        if first in {
+            "reference",
+            "identifier",
+            "id",
+            "package",
+            "only",
+            "supplied",
+            "provided",
+        }:
+            continue
+        identifiers.add(first)
+        if len(first) == len(last) == 1 and first.isalpha() and last.isalpha():
+            start, end = sorted((ord(first), ord(last)))
+            if end - start <= 25:
+                identifiers.update(chr(code) for code in range(start, end + 1))
+    return frozenset(identifiers)
 
 
 def _explicit_assignment_evidence_references(review_input: str) -> frozenset[str]:
