@@ -1896,14 +1896,6 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
         ("BLOCKED", 3, "stopped", 1, "document_job_review_blocked", "PASS"),
         ("MALFORMED", 3, "stopped", 1, "document_job_invalid_verdict", "PASS"),
         ("NONACTIONABLE", 3, "stopped", 1, "document_job_unverified_finding", "PASS"),
-        (
-            "CHANGES_REQUIRED",
-            3,
-            "stopped",
-            0,
-            "document_job_revision_budget_exhausted",
-            "PASS",
-        ),
     ],
 )
 def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
@@ -2740,6 +2732,7 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
         ("revision", "none", "opencode-go-glm-chat", 2202),
         ("note-configured", "none", "opencode-go-glm-chat", 1001),
         ("meeting-configured", "none", "opencode-go-glm-chat", 1001),
+        ("revision-three-exhausted", "none", "opencode-go-glm-chat", 1001),
     ),
 )
 def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
@@ -2880,10 +2873,32 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
                 status, "Service Unavailable", headers, b""
             )
         index = len(labels) - int(retry_response_sent)
-        if scenario in {"note-configured", "meeting-configured"} and index == 0:
+        configured_workflow_scenarios = {
+            "note-configured",
+            "meeting-configured",
+            "revision-three-exhausted",
+        }
+        if scenario in configured_workflow_scenarios and index == 0:
             label, text = "create", "# Offline draft\n\nOnly supplied input used."
         elif scenario in {"note-configured", "meeting-configured"} and index == 1:
             label, text = "review", "Verdict: PASS\n\nNo actionable findings."
+        elif scenario == "revision-three-exhausted" and index % 2 == 1:
+            review_number = (index + 1) // 2
+            label = f"review-{review_number}"
+            text = (
+                "Verdict: CHANGES_REQUIRED\n\n"
+                "Requirement: preserve the supplied limitation.\n"
+                "Artifact location: Conclusion.\n"
+                "Evidence source/reference: fixture:evidence-1\n"
+                "Impact: unsupported certainty.\n"
+                "Requested correction: retain the limitation."
+            )
+        elif scenario == "revision-three-exhausted" and index % 2 == 0:
+            revision_number = index // 2
+            label, text = f"revision-{revision_number}", (
+                f"# Offline revised draft {revision_number}\n\n"
+                "Only supplied input used; limitation retained."
+            )
         elif index == 0:
             label, text = "research", "Synthetic source-supported note."
         elif index == 1:
@@ -2959,7 +2974,11 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
             repository
             / (
                 "examples/workflows"
-                if scenario in {"note-configured", "meeting-configured"}
+                if scenario in {
+                    "note-configured",
+                    "meeting-configured",
+                    "revision-three-exhausted",
+                }
                 else "workflows"
             )
         ),
@@ -2979,10 +2998,25 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
                 "note-article-draft"
                 if scenario == "note-configured"
                 else "meeting-summary-draft",
+                    "--review-workflow",
+                    "review-draft",
+                    "--revision-workflow",
+                    "revise-draft",
+                    "--max-revisions",
+                    "3" if scenario == "note-configured" else "0",
+            ]
+        )
+    elif scenario == "revision-three-exhausted":
+        cli_args.extend(
+            [
+                "--creator-workflow",
+                "note-article-draft",
                 "--review-workflow",
                 "review-draft",
+                "--revision-workflow",
+                "revise-draft",
                 "--max-revisions",
-                "0",
+                "3",
             ]
         )
     if scenario in {"retry-once", "retry-always", "quota", "revision-retry"}:
@@ -3020,6 +3054,8 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     expected_calls = (
         2
         if scenario in {"note-configured", "meeting-configured"}
+        else 8
+        if scenario == "revision-three-exhausted"
         else 1
         if destination_fault == "registry_changed_after_first_dispatch"
         else 4
@@ -3038,9 +3074,23 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     if scenario in {"note-configured", "meeting-configured"}:
         assert labels == ["create", "review"]
         assert '"guaranteed_initial_actions": 2' in preview_before_grants
-        assert '"max_normal_actions": 2' in preview_before_grants
-        assert '"provider_attempt_limit": 2' in preview_before_grants
-        assert '"revision_limit": 0' in preview_before_grants
+        if scenario == "note-configured":
+            assert '"max_normal_actions": 8' in preview_before_grants
+            assert '"provider_attempt_limit": 8' in preview_before_grants
+            assert '"revision_limit": 3' in preview_before_grants
+            assert '"review_limit": 4' in preview_before_grants
+        else:
+            assert '"max_normal_actions": 2' in preview_before_grants
+            assert '"provider_attempt_limit": 2' in preview_before_grants
+            assert '"revision_limit": 0' in preview_before_grants
+    if scenario == "revision-three-exhausted":
+        assert labels[0] == "create"
+        assert len(labels) == 8
+        assert '"guaranteed_initial_actions": 2' in preview_before_grants
+        assert '"max_normal_actions": 8' in preview_before_grants
+        assert '"provider_attempt_limit": 8' in preview_before_grants
+        assert '"revision_limit": 3' in preview_before_grants
+        assert '"review_limit": 4' in preview_before_grants
     if scenario == "retry-once":
         assert labels[0:2] == ["research-503-empty", "research"]
         assert request_bodies[0] == request_bodies[1]
@@ -3070,7 +3120,8 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     assert (
         '"status": "stopped"' in result.output
         if destination_fault == "registry_changed_after_first_dispatch"
-        or scenario in {"retry-always", "retry-disabled", "quota"}
+        or scenario
+        in {"retry-always", "retry-disabled", "quota", "revision-three-exhausted"}
         else '"status": "reviewed"' in result.output
         if scenario in {"revision", "revision-retry"}
         else '"status": "candidate"' in result.output
@@ -3120,6 +3171,17 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
             for path in run_store.rglob("*")
             if path.is_file()
         )
+    if scenario == "revision-three-exhausted":
+        assert inspection["max_revisions"] == 3
+        assert inspection["revision_attempts_consumed"] == 3
+        assert inspection["normal_actions_consumed"] == 8
+        action_ordinals = [
+            item["action_ordinal"] for item in inspection["dispatch_order"]
+        ]
+        assert action_ordinals == list(range(8))
+        assert len({item["run_id"] for item in inspection["dispatch_order"]}) == 8
+        assert inspection["status"] == "stopped"
+        assert inspection["stop_reason"] == "document_job_revision_budget_exhausted"
     for dispatch in inspection["dispatch_order"]:
         manifest = load_workflow_run_manifest(store, dispatch["run_id"])
         destination = manifest.execution_destination
