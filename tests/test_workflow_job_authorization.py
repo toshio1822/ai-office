@@ -1882,7 +1882,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
             5,
             "stopped",
             1,
-            "document_job_final_review_not_pass",
+            "document_job_revision_budget_exhausted",
             "CHANGES_REQUIRED",
         ),
         (
@@ -1890,7 +1890,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
             5,
             "stopped",
             1,
-            "document_job_final_review_not_pass",
+            "document_job_revision_budget_exhausted",
             "JAPANESE_CHANGES_REQUIRED",
         ),
         ("BLOCKED", 3, "stopped", 1, "document_job_review_blocked", "PASS"),
