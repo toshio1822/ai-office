@@ -1571,6 +1571,26 @@ def _review_verdict(
             evidence_reference = _normalized_reference(
                 item["Evidence source/reference"]
             )
+            raw_evidence_reference = item["Evidence source/reference"]
+            if _contains_assignment_line_reference(raw_evidence_reference):
+                if not _assignment_line_reference_matches(
+                    raw_evidence_reference, assignment_text
+                ):
+                    raise WorkflowJobAuthorizationError(
+                        "document_job_unverified_finding"
+                    )
+                location_quotes = re.findall(
+                    r"`([^`]+)`", item["Artifact location"]
+                )
+                if (
+                    source_is_bound
+                    and location_quotes
+                    and all(quote in source_content for quote in location_quotes)
+                ):
+                    continue
+                raise WorkflowJobAuthorizationError(
+                    "document_job_unverified_finding"
+                )
             if evidence_reference in assignment_references:
                 continue
             cited_reference_ids = _reference_ids(
@@ -1591,6 +1611,26 @@ def _review_verdict(
                 continue
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     return verdict
+
+
+def _assignment_line_reference_matches(reference: str, assignment: str) -> bool:
+    """Verify a line citation against the exact immutable assignment text."""
+    match = re.fullmatch(r"assignment:L([1-9][0-9]*)\s+`([^`\n]+)`", reference)
+    if match is None:
+        return False
+    line_number = int(match.group(1))
+    lines = assignment.splitlines()
+    return line_number <= len(lines) and match.group(2) in lines[line_number - 1]
+
+
+def _contains_assignment_line_reference(reference: str) -> bool:
+    """Identify line-reference syntax to prevent legacy fallback."""
+    return (
+        re.search(
+            r"(?<![a-z0-9_])assignment\s*:\s*L", reference, re.IGNORECASE
+        )
+        is not None
+    )
 
 
 def _normalized_reference(value: str) -> str:

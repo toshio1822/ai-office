@@ -2591,6 +2591,311 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
         assert caught.value.classification == "document_job_unverified_finding"
 
 
+def test_note_findings_can_cite_verbatim_lines_of_unchanged_assignment() -> None:
+    from ai_office.engine.workflow_bounded_job import _review_verdict
+
+    assignment = (
+        "タイトル案: 複雑な仕事を抱え込まないために\n"
+        "ToDoリストを否定せず、不明点を確認可能な問いに変える。\n"
+        "著者が未提示の実体験や数字を捏造しない。"
+    )
+    artifact = (
+        "# 複雑な仕事を整理する\n\n"
+        "ToDoリストは役に立たない。\n"
+        "私は顧客の重大障害を必ず解決してきた。"
+    )
+    artifact_bytes = artifact.encode("utf-8")
+    review_input = json.dumps(
+        {
+            "assignment": assignment,
+            "source_artifact": {
+                "artifact_id": "note-draft-1",
+                "content": artifact,
+                "content_length": len(artifact_bytes),
+                "content_sha256": sha256(artifact_bytes).hexdigest(),
+            },
+        },
+        ensure_ascii=False,
+    )
+    review = (
+        "Verdict: CHANGES_REQUIRED\n\n"
+        "### Finding 1\n"
+        "Requirement: Do not reject ToDo lists.\n"
+        "Artifact location: `ToDoリストは役に立たない。`\n"
+        "Evidence source/reference: "
+        "assignment:L2 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`\n"
+        "Impact: the statement contradicts the supplied brief.\n"
+        "Requested correction: explain the different roles of ToDo and unknowns lists."
+        "\n\n"
+        "### Finding 2\n"
+        "Requirement: Do not invent personal experiences or numbers.\n"
+        "Artifact location: `重大障害を必ず解決してきた`\n"
+        "Evidence source/reference: "
+        "assignment:L3 `著者が未提示の実体験や数字を捏造しない。`\n"
+        "Impact: the draft presents an unsupported experience as fact.\n"
+        "Requested correction: remove the claim or mark it for author confirmation."
+    )
+
+    assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
+    assert json.loads(review_input)["assignment"] == assignment
+    for invalid_reference in (
+        "assignment:L0 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
+        "assignment:L3 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
+        "assignment:L2 `not present in the cited assignment line`",
+        "assignment:L999 `Artifact: "
+        "ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
+    ):
+        invalid_review = review.replace(
+            "assignment:L2 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
+            invalid_reference,
+            1,
+        )
+        with pytest.raises(WorkflowJobAuthorizationError) as caught:
+            _review_verdict(invalid_review, review_input=review_input)
+        assert caught.value.classification == "document_job_unverified_finding"
+
+    declared_evidence_input = json.loads(review_input)
+    declared_evidence_input["assignment"] += "\nEvidence A: author-provided brief"
+    invalid_id_fallback = review.replace(
+        "assignment:L2 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
+        "Evidence A; assignment:L999 `ToDoリストを否定せず、"
+        "不明点を確認可能な問いに変える。`",
+        1,
+    )
+    with pytest.raises(WorkflowJobAuthorizationError) as caught:
+        _review_verdict(
+            invalid_id_fallback,
+            review_input=json.dumps(declared_evidence_input, ensure_ascii=False),
+        )
+    assert caught.value.classification == "document_job_unverified_finding"
+
+
+def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
+    tmp_path: Path,
+) -> None:
+    from ai_office.engine.artifact import read_run_artifact
+    from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
+    from ai_office.providers.openai import OpenAIResponsesRawHttpResponse
+
+    repository = Path(__file__).resolve().parents[1]
+    workflow_ids = (
+        "note-article-draft",
+        "review-draft",
+        "revise-draft",
+    )
+    workflows = {
+        workflow_id: load_workflow_file(
+            repository / "examples/workflows" / f"{workflow_id}.yaml"
+        )
+        for workflow_id in workflow_ids
+    }
+    employees = {
+        employee_id: load_employee_file(
+            repository / "employees" / f"{employee_id}.yaml"
+        )
+        for employee_id in ("japanese-document-writer", "general-researcher")
+    }
+    assignment = (
+        "**タイトル案**：複雑な仕事を抱え込まないために、20年SEの私がやっている“外に出す”整理術\n"
+        "**サブタイトル案**：ToDoリストではなく、不明点リストから始める\n"
+        "複雑な仕事を前にしたとき、著者は、いきなりToDoリストを作るより、まず「分からないこと」を書き出す。\n"
+        "不明点リストは仕事を減らす魔法ではない。何を誰に確認するか、何を試すか、どこから着手するかを見えるようにする。\n"
+        "**「ToDoリストは仕事の量を見せるもの。不明点リストは仕事を前に進めるための足場を作るもの。」**\n"
+        "対象読者：複雑な仕事で疲れやすい人、抱え込みがちな人、着手点が見えない人。\n"
+        "1. 複雑な仕事がしんどくなる理由\n"
+        "2. ToDoリストだけでは疲れてしまう理由\n"
+        "3. 不明点リストを作ると何が変わるか\n"
+        "4. 不明点を「技術・仕様・人・リスク」に分類する考え方\n"
+        "5. 不明点を潰す順番\n"
+        "6. 不安をタスクではなく確認可能な問いに変える方法\n"
+        "7. 一人で抱え込まないための考え方\n"
+        "ToDoそのものを否定せず、両者の役割の違いを説明する。\n"
+        "著者が実際に経験した障害・顧客・発言・数字・成果・事件などを、与えられていないのに実体験として捏造しない。"
+    )
+    store_root = tmp_path / "note-job"
+    store_root.mkdir(mode=0o700)
+    store = WorkflowRunManifestStore(store_root)
+    target = DIRECT_OPENAI_EXECUTION_TARGET
+    initial_run_id = "note-multi-finding-initial"
+
+    def digest(value: object) -> str:
+        return sha256(
+            json.dumps(
+                asdict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+
+    snapshots = {
+        "note-article-draft": create_workflow_run_manifest(
+            store,
+            initial_run_id,
+            assignment,
+            workflows["note-article-draft"],
+            (employees["japanese-document-writer"],),
+            execution_target=target,
+        ),
+        "review-draft": create_workflow_run_manifest(
+            store,
+            "note-review-template",
+            assignment,
+            workflows["review-draft"],
+            (employees["general-researcher"],),
+            execution_target=target,
+        ),
+        "revise-draft": create_workflow_run_manifest(
+            store,
+            "note-revision-template",
+            assignment,
+            workflows["revise-draft"],
+            (employees["japanese-document-writer"],),
+            execution_target=target,
+        ),
+    }
+    plan = (
+        (
+            "note-article-draft",
+            "write-draft",
+            1,
+            "japanese-document-writer",
+            "assignment",
+        ),
+        ("review-draft", "review", 1, "general-researcher", "review_input"),
+        ("revise-draft", "revise", 1, "japanese-document-writer", "revision_input"),
+        ("review-draft", "review", 1, "general-researcher", "re_review_input"),
+    )
+    slots = []
+    for ordinal, (
+        workflow_id,
+        step_id,
+        step_index,
+        employee_id,
+        input_source,
+    ) in enumerate(plan):
+        employee_snapshot = next(
+            item
+            for item in snapshots[workflow_id].employee_snapshots
+            if item.id == employee_id
+        )
+        slots.append(
+            BoundedJobActionSlot(
+                ordinal=ordinal,
+                workflow_id=workflow_id,
+                step_id=step_id,
+                step_index=step_index,
+                employee_id=employee_id,
+                workflow_snapshot_sha256=digest(
+                    snapshots[workflow_id].workflow_snapshot
+                ),
+                employee_snapshot_sha256=digest(employee_snapshot),
+                provider=target.provider,
+                execution_target_fingerprint=execution_target_fingerprint(target),
+                model=employee_snapshot.model,
+                input_source=input_source,
+            )
+        )
+    assignment_sha = sha256(assignment.encode()).hexdigest()
+    scope = issue_bounded_workflow_job_scope(
+        store,
+        job_id="note-multi-finding-job",
+        initial_run_id=initial_run_id,
+        assignment_sha256=assignment_sha,
+        initial_input_sha256=assignment_sha,
+        actions=tuple(slots),
+        max_provider_attempts=4,
+        max_revisions=1,
+        expires_at_ns=9_999_999_999_999_999_999,
+        business_approved_by="offline-test",
+        business_grant_id="note-business",
+        execution_approved_by="offline-test",
+        execution_grant_id="note-execution",
+        now_ns=1,
+    )
+    requirement_lines = (
+        "ToDoそのものを否定せず、両者の役割の違いを説明する。",
+        "著者が実際に経験した障害・顧客・発言・数字・成果・事件などを、与えられていないのに実体験として捏造しない。",
+    )
+    refs = tuple(
+        f"assignment:L{assignment.splitlines().index(line) + 1} `{line}`"
+        for line in requirement_lines
+    )
+    draft = (
+        "# 整理術\n\nToDoリストは不要だ。\n"
+        "私は顧客の重大障害を必ず解決してきた。"
+    )
+    revised = (
+        "# 整理術\n\nToDoリストは作業量、不明点リストは確認事項を見える化する。\n"
+        "具体例は仮想例とし、著者の未確認経験は記載しない。"
+    )
+    findings = (
+        "### Finding 1\n"
+        "Requirement: ToDo自体を否定しない。\n"
+        "Artifact location: `ToDoリストは不要だ。`\n"
+        f"Evidence source/reference: {refs[0]}\n"
+        "Impact: briefと逆の主張になる。\n"
+        "Requested correction: 両者の役割の違いを説明する。\n\n"
+        "### Finding 2\n"
+        "Requirement: 未提示の経験を捏造しない。\n"
+        "Artifact location: `顧客の重大障害を必ず解決してきた`\n"
+        f"Evidence source/reference: {refs[1]}\n"
+        "Impact: 未確認の経験を事実として提示する。\n"
+        "Requested correction: 削除するか著者確認事項とする。"
+    )
+    responses = iter(
+        (
+            draft,
+            "Verdict: CHANGES_REQUIRED\n\n" + findings,
+            revised,
+            "Verdict: PASS\n\n要件を満たしています。",
+        )
+    )
+    labels = []
+
+    def fake_transport(request):
+        labels.append("transport-call")
+        response = next(responses)
+        body = json.dumps(
+            {
+                "id": f"offline-note-{len(labels)}",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": response}],
+                    }
+                ],
+            }
+        ).encode()
+        return OpenAIResponsesRawHttpResponse(200, "synthetic", (), body)
+
+    outcome = run_bounded_document_job(
+        store,
+        scope,
+        initial_run_id=initial_run_id,
+        assignment=assignment,
+        workflows=workflows,
+        employees=employees,
+        api_key=OpenAIApiKey(value=SecretStr("offline-only")),
+        transport=fake_transport,
+    )
+    inspection = inspect_bounded_document_job(store, scope.job_id)
+    assert outcome.status == "reviewed", outcome
+    assert outcome.revisions_used == 1
+    assert len(labels) == inspection["consumed_provider_attempts"] == 4
+    assert inspection["remaining_provider_attempts"] == 0
+    initial_manifest = load_workflow_run_manifest(store, initial_run_id)
+    assert initial_manifest.run_input == assignment
+    run_prefix = "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-"
+    review_runs = (run_prefix + "1", run_prefix + "3")
+    for run_id in review_runs:
+        run_input = json.loads(load_workflow_run_manifest(store, run_id).run_input)
+        assert run_input["assignment"] == assignment
+    final_artifact = read_run_artifact(
+        store, outcome.final_artifact_run_id, outcome.final_artifact_id
+    )
+    assert "ToDoリストは作業量" in final_artifact.content.decode()
+
+
 def test_review_verdict_requires_one_unambiguous_declaration() -> None:
     from ai_office.engine.workflow_bounded_job import _review_verdict
 
