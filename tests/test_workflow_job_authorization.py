@@ -2540,15 +2540,25 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
     assert _review_verdict(
         review.replace("source:AC2#p4", "Evidence A"), review_input=review_input
     ) == "CHANGES_REQUIRED"
+    incidental_assignment = json.loads(review_input)
+    incidental_assignment["assignment"] += (
+        "\nWe lack sources and requirements. The token sourcea is prose, not an ID."
+    )
     for unsupported_reference in (
         "weak unverified phrase",
         "assignment",
         "source:AC2",
         "Evidence B",
+        "Evidence S",
+        "Criterion A",
+        "Source A",
     ):
         unsupported_review = review.replace("source:AC2#p4", unsupported_reference)
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
-            _review_verdict(unsupported_review, review_input=review_input)
+            _review_verdict(
+                unsupported_review,
+                review_input=json.dumps(incidental_assignment),
+            )
         assert caught.value.classification == "document_job_unverified_finding"
 
 
@@ -2712,14 +2722,14 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
 
 @pytest.mark.parametrize(
     ("scenario", "destination_fault", "destination_name", "operator_uid"),
-        (
-            ("pass", "none", "opencode-go-glm-chat", 1001),
-            ("pass", "none", "internal-chat-gateway", 2202),
-            ("retry-once", "none", "internal-chat-gateway", 2202),
-            ("retry-always", "none", "internal-chat-gateway", 2202),
-            ("retry-disabled", "none", "internal-chat-gateway", 2202),
-            ("quota", "none", "internal-chat-gateway", 2202),
-            ("revision-retry", "none", "opencode-go-glm-chat", 2202),
+    (
+        ("pass", "none", "opencode-go-glm-chat", 1001),
+        ("pass", "none", "internal-chat-gateway", 2202),
+        ("retry-once", "none", "internal-chat-gateway", 2202),
+        ("retry-always", "none", "internal-chat-gateway", 2202),
+        ("retry-disabled", "none", "internal-chat-gateway", 2202),
+        ("quota", "none", "internal-chat-gateway", 2202),
+        ("revision-retry", "none", "opencode-go-glm-chat", 2202),
         (
             "pass",
             "registry_changed_after_first_dispatch",
@@ -2728,6 +2738,8 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
         ),
         ("pass", "manifest_mismatch", "internal-chat-gateway", 2202),
         ("revision", "none", "opencode-go-glm-chat", 2202),
+        ("note-configured", "none", "opencode-go-glm-chat", 1001),
+        ("meeting-configured", "none", "opencode-go-glm-chat", 1001),
     ),
 )
 def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
@@ -2868,7 +2880,11 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
                 status, "Service Unavailable", headers, b""
             )
         index = len(labels) - int(retry_response_sent)
-        if index == 0:
+        if scenario in {"note-configured", "meeting-configured"} and index == 0:
+            label, text = "create", "# Offline draft\n\nOnly supplied input used."
+        elif scenario in {"note-configured", "meeting-configured"} and index == 1:
+            label, text = "review", "Verdict: PASS\n\nNo actionable findings."
+        elif index == 0:
             label, text = "research", "Synthetic source-supported note."
         elif index == 1:
             label, text = "summary", "# Offline report\n\nLimitations retained."
@@ -2939,7 +2955,14 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         "--run-store",
         str(run_store),
         "--directory",
-        str(repository / "workflows"),
+        str(
+            repository
+            / (
+                "examples/workflows"
+                if scenario in {"note-configured", "meeting-configured"}
+                else "workflows"
+            )
+        ),
         "--employees-directory",
         str(repository / "employees"),
         "--execution-target",
@@ -2949,6 +2972,19 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         "--execution-model",
         selected_model,
     ]
+    if scenario in {"note-configured", "meeting-configured"}:
+        cli_args.extend(
+            [
+                "--creator-workflow",
+                "note-article-draft"
+                if scenario == "note-configured"
+                else "meeting-summary-draft",
+                "--review-workflow",
+                "review-draft",
+                "--max-revisions",
+                "0",
+            ]
+        )
     if scenario in {"retry-once", "retry-always", "quota", "revision-retry"}:
         cli_args.extend(
             [
@@ -2982,7 +3018,9 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     assert "Authorization" not in preview_before_grants
     assert "synthetic-only" not in preview_before_grants
     expected_calls = (
-        1
+        2
+        if scenario in {"note-configured", "meeting-configured"}
+        else 1
         if destination_fault == "registry_changed_after_first_dispatch"
         else 4
         if scenario == "retry-once"
@@ -2997,6 +3035,12 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         else 3
     )
     assert len(labels) == expected_calls
+    if scenario in {"note-configured", "meeting-configured"}:
+        assert labels == ["create", "review"]
+        assert '"guaranteed_initial_actions": 2' in preview_before_grants
+        assert '"max_normal_actions": 2' in preview_before_grants
+        assert '"provider_attempt_limit": 2' in preview_before_grants
+        assert '"revision_limit": 0' in preview_before_grants
     if scenario == "retry-once":
         assert labels[0:2] == ["research-503-empty", "research"]
         assert request_bodies[0] == request_bodies[1]
@@ -3034,6 +3078,13 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     store = WorkflowRunManifestStore(run_store)
     inspection = inspect_bounded_document_job(store, job_id)
     assert inspection["consumed_provider_attempts"] == expected_calls
+    if scenario == "revision":
+        assert '"guaranteed_initial_actions": 3' in preview_before_grants
+        assert '"max_normal_actions": 5' in preview_before_grants
+        assert '"provider_attempt_limit": 5' in preview_before_grants
+    assert int(
+        preview_before_grants.split('"max_normal_actions": ', 1)[1].split(",", 1)[0]
+    ) == inspection["normal_action_limit"]
     if scenario in {"retry-once", "retry-always", "revision-retry"}:
         assert inspection["retry_attempts_consumed"] == (
             2 if scenario == "retry-always" else 1
@@ -3255,3 +3306,216 @@ def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> No
     assert gateway.select_model("approved-chat-model") == "approved-chat-model"
     assert go.target.provider != gateway.target.provider
     assert go.target.endpoint != gateway.target.endpoint
+
+
+@pytest.mark.parametrize(
+    ("creator_id", "assignment", "verdict", "expected_status"),
+    [
+        (
+            "note-article-draft",
+            "Title: A note\nAudience: readers\nClaim: start with unknowns",
+            "Verdict: PASS\n\nThe exact supplied Artifact meets the brief.",
+            "candidate",
+        ),
+        (
+            "meeting-summary-draft",
+            "Notes: Decide the launch date. Owner: Aya. Open question: budget.",
+            "Verdict: PASS\n\nThe exact supplied Artifact meets the brief.",
+            "candidate",
+        ),
+        (
+            "note-article-draft",
+            "Title: A note\nAudience: readers\nClaim: start with unknowns",
+            "Verdict: CHANGES_REQUIRED\n\nA correction is requested.",
+            "stopped",
+        ),
+        (
+            "note-article-draft",
+            "Title: A note\nAudience: readers\nClaim: start with unknowns",
+            "Verdict: BLOCKED\n\nThe supplied brief is ambiguous.",
+            "stopped",
+        ),
+        (
+            "note-article-draft",
+            "Title: A note\nAudience: readers\nClaim: start with unknowns",
+            "Verdict: MAYBE",
+            "stopped",
+        ),
+    ],
+)
+def test_configured_create_review_workflows_share_bounded_offline_path(
+    tmp_path: Path,
+    creator_id: str,
+    assignment: str,
+    verdict: str,
+    expected_status: str,
+) -> None:
+    """Distinct business configs use the same immutable grant/evidence path."""
+    from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
+    from ai_office.providers.openai import OpenAIResponsesRawHttpResponse
+
+    repository = Path(__file__).resolve().parents[1]
+    creator = load_workflow_file(
+        repository / "examples" / "workflows" / f"{creator_id}.yaml"
+    )
+    reviewer = load_workflow_file(repository / "examples/workflows/review-draft.yaml")
+    employee_ids = tuple(
+        dict.fromkeys(
+            step.employee
+            for step in (*creator.definition.steps, *reviewer.definition.steps)
+        )
+    )
+    employees = {
+        employee_id: load_employee_file(
+            repository / "employees" / f"{employee_id}.yaml"
+        )
+        for employee_id in employee_ids
+    }
+    store_root = tmp_path / "configured-job"
+    store_root.mkdir(mode=0o700)
+    store = WorkflowRunManifestStore(store_root)
+    target = DIRECT_OPENAI_EXECUTION_TARGET
+    initial_run_id = f"configured-{creator_id}-initial"
+    initial_manifest = create_workflow_run_manifest(
+        store,
+        initial_run_id,
+        assignment,
+        creator,
+        tuple(employees[item] for item in employee_ids),
+        execution_target=target,
+    )
+    reviewer_manifest = create_workflow_run_manifest(
+        store,
+        f"configured-{creator_id}-review-snapshot",
+        assignment,
+        reviewer,
+        tuple(employees[item] for item in employee_ids),
+        execution_target=target,
+    )
+
+    def digest_snapshot(snapshot: object) -> str:
+        return sha256(
+            json.dumps(
+                asdict(snapshot),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
+    snapshots = {creator_id: initial_manifest, "review-draft": reviewer_manifest}
+    plan = [
+        (
+            creator_id,
+            step.id,
+            index,
+            step.employee,
+            "assignment" if index == 1 else "previous_step",
+        )
+        for index, step in enumerate(creator.definition.steps, start=1)
+    ]
+    review_step = reviewer.definition.steps[0]
+    plan.append(
+        ("review-draft", review_step.id, 1, review_step.employee, "review_input")
+    )
+    slots = []
+    for ordinal, (
+        workflow_id,
+        step_id,
+        step_index,
+        employee_id,
+        input_source,
+    ) in enumerate(plan):
+        snapshot_manifest = snapshots[workflow_id]
+        employee_snapshot = next(
+            item
+            for item in snapshot_manifest.employee_snapshots
+            if item.id == employee_id
+        )
+        slots.append(
+            BoundedJobActionSlot(
+                ordinal=ordinal,
+                workflow_id=workflow_id,
+                step_id=step_id,
+                step_index=step_index,
+                employee_id=employee_id,
+                workflow_snapshot_sha256=digest_snapshot(
+                    snapshot_manifest.workflow_snapshot
+                ),
+                employee_snapshot_sha256=digest_snapshot(employee_snapshot),
+                provider=target.provider,
+                execution_target_fingerprint=execution_target_fingerprint(target),
+                model=employee_snapshot.model,
+                input_source=input_source,
+            )
+        )
+    assignment_sha = sha256(assignment.encode()).hexdigest()
+    scope = issue_bounded_workflow_job_scope(
+        store,
+        job_id=f"configured-{creator_id}",
+        initial_run_id=initial_run_id,
+        assignment_sha256=assignment_sha,
+        initial_input_sha256=assignment_sha,
+        actions=tuple(slots),
+        max_provider_attempts=len(slots),
+        max_revisions=0,
+        expires_at_ns=9_999_999_999_999_999_999,
+        business_approved_by="offline-test",
+        business_grant_id=f"business-{creator_id}",
+        execution_approved_by="offline-test",
+        execution_grant_id=f"execution-{creator_id}",
+        now_ns=1,
+    )
+    responses = iter(
+        [
+            "# Draft\n\nGenerated from supplied input only.",
+            verdict,
+        ]
+    )
+    sent = []
+
+    def fake_transport(request):
+        sent.append(request)
+        output = next(responses)
+        body = json.dumps(
+            {
+                "id": f"offline-{len(sent)}",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": output}],
+                    }
+                ],
+            }
+        ).encode()
+        return OpenAIResponsesRawHttpResponse(200, "synthetic", (), body)
+
+    outcome = run_bounded_document_job(
+        store,
+        scope,
+        initial_run_id=initial_run_id,
+        assignment=assignment,
+        workflows={creator_id: creator, "review-draft": reviewer},
+        employees=employees,
+        api_key=OpenAIApiKey(value=SecretStr("offline-only")),
+        transport=fake_transport,
+    )
+    assert outcome.status == expected_status, outcome
+    assert len(sent) == 2
+    inspection = inspect_bounded_document_job(store, scope.job_id)
+    assert inspection["status"] == expected_status
+    assert inspection["consumed_provider_attempts"] == 2
+    if expected_status == "candidate":
+        review_manifest = load_workflow_run_manifest(
+            store, outcome.review_artifact_run_id
+        )
+        review_input = json.loads(review_manifest.run_input)
+        assert review_input["assignment"] == assignment
+        assert (
+            review_input["source_artifact"]["artifact_id"] == outcome.final_artifact_id
+        )
+        assert review_input["source_artifact"]["content_sha256"]
+    else:
+        assert len(inspection["dispatch_order"]) == 2

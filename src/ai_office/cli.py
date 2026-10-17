@@ -1254,12 +1254,22 @@ def run_bounded_document_job_workflow(
     execution_target: str = typer.Option(..., "--execution-target"),
     execution_destinations: Path = typer.Option(..., "--execution-destinations"),
     execution_model: str = typer.Option(..., "--execution-model"),
+    creator_workflow_id: str = typer.Option(
+        "research-and-summarize", "--creator-workflow"
+    ),
+    review_workflow_id: str = typer.Option(
+        "review-supplied-artifact", "--review-workflow"
+    ),
+    revision_workflow_id: str = typer.Option(
+        "revise-reviewed-artifact", "--revision-workflow"
+    ),
+    max_revisions: int = typer.Option(1, "--max-revisions", min=0, max=1),
     max_retries: int = typer.Option(0, "--max-retries", min=0, max=2),
     retry_interval_seconds: int = typer.Option(
         30, "--retry-interval-seconds", min=1, max=3600
     ),
 ) -> None:
-    """Issue and start the fixed five-action document Job after confirmation.
+    """Issue and start a finite configured Workflow review Job after confirmation.
 
     Shared OS identity with OpenClaw is permitted; `approved_by` labels and
     this confirmation prompt are not an identity or isolation boundary.
@@ -1305,78 +1315,82 @@ def run_bounded_document_job_workflow(
             )
             for item in employees
         }
-        required_workflows = (
-            "research-and-summarize",
-            "review-supplied-artifact",
-            "revise-reviewed-artifact",
-        )
-        required_employees = ("general-researcher", "japanese-document-writer")
-        fixed_plan = (
-            (
-                "research-and-summarize",
-                "research",
-                1,
-                "general-researcher",
-                "assignment",
-            ),
-            (
-                "research-and-summarize",
-                "summarize",
-                2,
-                "japanese-document-writer",
-                "previous_step",
-            ),
-            (
-                "review-supplied-artifact",
-                "review",
-                1,
-                "general-researcher",
-                "review_input",
-            ),
-            (
-                "revise-reviewed-artifact",
-                "revise",
-                1,
-                "japanese-document-writer",
-                "revision_input",
-            ),
-            (
-                "review-supplied-artifact",
-                "review",
-                1,
-                "general-researcher",
-                "re_review_input",
-            ),
-        )
-        if any(name not in workflow_by_id for name in required_workflows) or any(
-            name not in model_employees for name in required_employees
+        if (
+            creator_workflow_id not in workflow_by_id
+            or review_workflow_id not in workflow_by_id
         ):
-            raise WorkflowJobAuthorizationError("pilot_definition_missing")
+            raise WorkflowJobAuthorizationError("job_workflow_missing")
+        creator_workflow = workflow_by_id[creator_workflow_id]
+        review_workflow = workflow_by_id[review_workflow_id]
+        if (
+            not creator_workflow.definition.steps
+            or len(review_workflow.definition.steps) != 1
+        ):
+            raise WorkflowJobAuthorizationError("job_workflow_shape")
+        action_plan = [
+            (
+                creator_workflow_id,
+                step.id,
+                index,
+                step.employee,
+                "assignment" if index == 1 else "previous_step",
+            )
+            for index, step in enumerate(creator_workflow.definition.steps, start=1)
+        ]
+        review_step = review_workflow.definition.steps[0]
+        action_plan.append(
+            (
+                review_workflow_id,
+                review_step.id,
+                1,
+                review_step.employee,
+                "review_input",
+            )
+        )
+        if max_revisions:
+            if revision_workflow_id not in workflow_by_id:
+                raise WorkflowJobAuthorizationError("job_workflow_missing")
+            revision_workflow = workflow_by_id[revision_workflow_id]
+            if len(revision_workflow.definition.steps) != 1:
+                raise WorkflowJobAuthorizationError("job_workflow_shape")
+            revision_step = revision_workflow.definition.steps[0]
+            action_plan.extend(
+                [
+                    (
+                        revision_workflow_id,
+                        revision_step.id,
+                        1,
+                        revision_step.employee,
+                        "revision_input",
+                    ),
+                    (
+                        review_workflow_id,
+                        review_step.id,
+                        1,
+                        review_step.employee,
+                        "re_review_input",
+                    ),
+                ]
+            )
+        required_employees = tuple(dict.fromkeys(item[3] for item in action_plan))
+        if any(name not in model_employees for name in required_employees):
+            raise WorkflowJobAuthorizationError("job_employee_missing")
+        selected_workflow_ids = tuple(dict.fromkeys(item[0] for item in action_plan))
         snapshot_manifests = {
-            "research-and-summarize": build_workflow_run_manifest(
-                initial_run_id,
+            workflow_id: build_workflow_run_manifest(
+                initial_run_id
+                if workflow_id == creator_workflow_id
+                else f"snapshot-{sha256(job_id.encode()).hexdigest()[:12]}-{index}",
                 assignment,
-                workflow_by_id["research-and-summarize"],
-                tuple(model_employees[name] for name in required_employees),
+                workflow_by_id[workflow_id],
+                tuple(
+                    model_employees[step.employee]
+                    for step in workflow_by_id[workflow_id].definition.steps
+                ),
                 execution_model=selected_model,
                 execution_target=target,
-            ),
-            "review-supplied-artifact": build_workflow_run_manifest(
-                f"snapshot-{sha256(job_id.encode()).hexdigest()[:16]}-review",
-                assignment,
-                workflow_by_id["review-supplied-artifact"],
-                (model_employees["general-researcher"],),
-                execution_model=selected_model,
-                execution_target=target,
-            ),
-            "revise-reviewed-artifact": build_workflow_run_manifest(
-                f"snapshot-{sha256(job_id.encode()).hexdigest()[:16]}-revision",
-                assignment,
-                workflow_by_id["revise-reviewed-artifact"],
-                (model_employees["japanese-document-writer"],),
-                execution_model=selected_model,
-                execution_target=target,
-            ),
+            )
+            for index, workflow_id in enumerate(selected_workflow_ids)
         }
 
         def snapshot_digest(value: object) -> str:
@@ -1395,7 +1409,7 @@ def run_bounded_document_job_workflow(
             step_index,
             employee_id,
             input_source,
-        ) in enumerate(fixed_plan):
+        ) in enumerate(action_plan):
             manifest = snapshot_manifests[workflow_id]
             employee_snapshot = next(
                 item for item in manifest.employee_snapshots if item.id == employee_id
@@ -1427,6 +1441,15 @@ def run_bounded_document_job_workflow(
             "bounded Job definition or execution destination is invalid"
         )
 
+    review_action_index = next(
+        index
+        for index, action in enumerate(action_slots)
+        if action.input_source == "review_input"
+    )
+    guaranteed_initial_actions = review_action_index + 1
+    max_normal_actions = min(
+        len(action_slots), guaranteed_initial_actions + (2 * max_revisions)
+    )
     _emit_json(
         {
             "operation": "bounded-job-launch-confirmation",
@@ -1439,12 +1462,13 @@ def run_bounded_document_job_workflow(
             "destination_fingerprint": destination_fingerprint,
             "model": selected_model,
             "action_slots": len(action_slots),
-            "normal_action_limit": 5,
+            "guaranteed_initial_actions": guaranteed_initial_actions,
+            "max_normal_actions": max_normal_actions,
             "max_retries": max_retries,
             "retry_interval_seconds": retry_interval_seconds,
             "retryable_http_statuses": [429, 503],
-            "provider_attempt_limit": 5 + max_retries,
-            "revision_limit": 1,
+            "provider_attempt_limit": max_normal_actions + max_retries,
+            "revision_limit": max_revisions,
             "credential_environment_variable": (target.credential_environment_variable),
             "request_headers": [
                 {"name": header.name, "value": header.value}
@@ -1455,7 +1479,7 @@ def run_bounded_document_job_workflow(
     )
     confirmation = typer.prompt(
         "After reviewing this launch summary, type the Job ID to "
-        "issue the Business grant for this exact five-call Job",
+        "issue the Business grant for this exact bounded Job",
         default="",
         show_default=False,
     )
@@ -1485,7 +1509,7 @@ def run_bounded_document_job_workflow(
         initial_manifest = build_workflow_run_manifest(
             initial_run_id,
             assignment,
-            workflow_by_id["research-and-summarize"],
+            workflow_by_id[creator_workflow_id],
             tuple(model_employees[name] for name in required_employees),
             execution_model=selected_model,
             execution_target=target,
@@ -1517,8 +1541,9 @@ def run_bounded_document_job_workflow(
         ):
             raise WorkflowJobAuthorizationError("job_manifest_approval_binding")
         persist_workflow_run_manifest(store, initial_manifest)
-        for name in ("review-supplied-artifact", "revise-reviewed-artifact"):
-            persist_workflow_run_manifest(store, snapshot_manifests[name])
+        for workflow_id in selected_workflow_ids:
+            if workflow_id != creator_workflow_id:
+                persist_workflow_run_manifest(store, snapshot_manifests[workflow_id])
         operator_label = getpass.getuser()
         grant_nonce = uuid.uuid4().hex
         scope = issue_bounded_workflow_job_scope(
@@ -1529,7 +1554,7 @@ def run_bounded_document_job_workflow(
             initial_input_sha256=assignment_digest,
             actions=tuple(action_slots),
             max_provider_attempts=len(action_slots) + max_retries,
-            max_revisions=1,
+            max_revisions=max_revisions,
             max_retries=max_retries,
             retry_interval_seconds=retry_interval_seconds,
             expires_at_ns=now_ns + 2 * 60 * 60 * 1_000_000_000,
