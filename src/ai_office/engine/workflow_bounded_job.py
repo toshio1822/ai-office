@@ -1,9 +1,10 @@
-"""Finite, fixed-action Job authority spanning immutable Workflow Runs.
+"""Finite, configuration-bound Job authority spanning immutable Workflow Runs.
 
 This remains an authorization owner, not an execution engine. Each exact
-Run/Step action is materialized only after its immutable Run manifest and any
-predecessor Artifact have been reloaded and checked. Dispatch still goes
-through the existing provider and Execution Evidence path.
+Run/Step action is materialized from the approved action slots only after its
+immutable Run manifest and any predecessor Artifact have been reloaded and
+checked. Dispatch still goes through the existing provider and Execution
+Evidence path.
 """
 
 from __future__ import annotations
@@ -115,6 +116,23 @@ class BoundedWorkflowJobScope:
     def __post_init__(self) -> None:
         if not _identifier(self.job_id):
             raise WorkflowJobAuthorizationError("job_scope_identity")
+        first_review = next(
+            (
+                index
+                for index, item in enumerate(self.actions)
+                if item.input_source == "review_input"
+            ),
+            None,
+        )
+        create_and_review_actions = first_review + 1 if first_review is not None else 3
+        normal_action_limit = (
+            min(
+                len(self.actions),
+                create_and_review_actions + (2 * self.max_revisions),
+            )
+            if type(self.max_revisions) is int
+            else len(self.actions)
+        )
         if (
             not _valid_digest(self.assignment_sha256)
             or not _valid_digest(self.initial_input_sha256)
@@ -144,15 +162,15 @@ class BoundedWorkflowJobScope:
             type(self.max_provider_attempts) is not int
             or type(self.max_revisions) is not int
             or self.max_revisions not in {0, 1}
-            or not min(len(self.actions), 3 + (2 * self.max_revisions))
+            or not min(len(self.actions), normal_action_limit)
             <= self.max_provider_attempts
-            <= min(len(self.actions), 3 + (2 * self.max_revisions)) + 2
+            <= normal_action_limit + 2
             or type(self.max_retries) is not int
             or not 0 <= self.max_retries <= 2
             or type(self.retry_interval_seconds) is not int
             or not 1 <= self.retry_interval_seconds <= 3600
             or self.max_provider_attempts
-            != min(len(self.actions), 3 + (2 * self.max_revisions))
+            != normal_action_limit
             + self.max_retries
             or self.schema_version
             not in {"workflow-bounded-job-scope.v1", "workflow-bounded-job-scope.v2"}
@@ -448,7 +466,10 @@ def derive_bounded_job_action_authorization(
         raise WorkflowJobAuthorizationError("job_scope_expired_or_revoked")
     if type(ordinal) is not int or not 0 <= ordinal < len(current.actions):
         raise WorkflowJobAuthorizationError("job_action_out_of_scope")
-    if ordinal >= 3 and current.max_revisions == 0:
+    if (
+        current.actions[ordinal].input_source in {"revision_input", "re_review_input"}
+        and current.max_revisions == 0
+    ):
         raise WorkflowJobAuthorizationError("document_job_revision_budget_exhausted")
     if not _identifier(run_id) or not _valid_digest(request_fingerprint):
         raise WorkflowJobAuthorizationError("job_action_identity")
@@ -1176,45 +1197,56 @@ def bounded_document_action_input(
         != scope.assignment_sha256
     ):
         raise WorkflowJobAuthorizationError("job_assignment_binding")
-    report = _artifact_for_action(store, job_id, 1, verify_lineage=verify_lineage)
-    if ordinal == 2:
-        if handoff_artifact.artifact_id != report.artifact_id:
-            raise WorkflowJobAuthorizationError("job_action_handoff")
-        values = {
-            "assignment": assignment_manifest.run_input,
-            "source_artifact": _artifact_payload(report),
-        }
-    elif ordinal == 3:
-        review = _artifact_for_action(store, job_id, 2, verify_lineage=verify_lineage)
-        if handoff_artifact.artifact_id != review.artifact_id:
-            raise WorkflowJobAuthorizationError("job_action_handoff")
-        review_manifest = load_workflow_run_manifest(store, review.run_id)
-        if (
-            _review_verdict(
-                review.content.decode("utf-8"),
-                review_input=review_manifest.run_input,
+    if handoff_artifact.artifact_id != predecessor[1]:
+        raise WorkflowJobAuthorizationError("job_action_handoff")
+    prior_artifacts = []
+    for prior_ordinal in range(ordinal):
+        try:
+            prior_artifacts.append(
+                (prior_ordinal, _artifact_for_action(
+                    store, job_id, prior_ordinal, verify_lineage=verify_lineage
+                ))
             )
-            != "CHANGES_REQUIRED"
-        ):
+        except WorkflowJobAuthorizationError:
+            continue
+    creator_artifacts = [
+        artifact
+        for prior_ordinal, artifact in prior_artifacts
+        if scope.actions[prior_ordinal].input_source
+        in {"assignment", "previous_step", "previous_artifact"}
+    ]
+    review_artifacts = [
+        artifact
+        for prior_ordinal, artifact in prior_artifacts
+        if scope.actions[prior_ordinal].input_source
+        in {"review_input", "re_review_input"}
+    ]
+    if not creator_artifacts:
+        raise WorkflowJobAuthorizationError("job_action_predecessor")
+    source_artifact = (
+        handoff_artifact
+        if slot.input_source == "re_review_input"
+        else creator_artifacts[-1]
+    )
+    values = {
+        "assignment": assignment_manifest.run_input,
+        "source_artifact": _artifact_payload(source_artifact),
+    }
+    if slot.input_source == "revision_input":
+        if not review_artifacts:
             raise WorkflowJobAuthorizationError("document_job_revision_not_authorized")
-        values = {
-            "assignment": assignment_manifest.run_input,
-            "source_artifact": _artifact_payload(report),
-            "review_artifact": _artifact_payload(review),
-        }
-    elif ordinal == 4:
-        review = _artifact_for_action(store, job_id, 2, verify_lineage=verify_lineage)
-        revision = _artifact_for_action(store, job_id, 3, verify_lineage=verify_lineage)
-        if handoff_artifact.artifact_id != revision.artifact_id:
-            raise WorkflowJobAuthorizationError("job_action_handoff")
-        values = {
-            "assignment": assignment_manifest.run_input,
-            "source_artifact": _artifact_payload(report),
-            "review_artifact": _artifact_payload(review),
-            "revision_artifact": _artifact_payload(revision),
-        }
-    else:
-        raise WorkflowJobAuthorizationError("job_action_input")
+        review = review_artifacts[-1]
+        review_manifest = load_workflow_run_manifest(store, review.run_id)
+        if _review_verdict(
+            review.content.decode("utf-8"), review_input=review_manifest.run_input
+        ) != "CHANGES_REQUIRED":
+            raise WorkflowJobAuthorizationError("document_job_revision_not_authorized")
+        values["review_artifact"] = _artifact_payload(review)
+    elif slot.input_source == "re_review_input":
+        if not review_artifacts:
+            raise WorkflowJobAuthorizationError("job_action_predecessor")
+        values["review_artifact"] = _artifact_payload(review_artifacts[-1])
+        values["revision_artifact"] = _artifact_payload(handoff_artifact)
     return _canonical(values).decode("utf-8")
 
 
@@ -1366,52 +1398,59 @@ def _artifact_payload(artifact) -> dict[str, object]:
 
 
 def validate_bounded_document_job_scope(scope: BoundedWorkflowJobScope) -> None:
-    """Require the single supported creator/review/revision action plan."""
-    expected = (
-        ("research-and-summarize", "research", 1, "general-researcher", "assignment"),
+    """Require one finite create/review plan, with an optional legacy revision."""
+    actions = scope.actions
+    review_index = next(
         (
-            "research-and-summarize",
-            "summarize",
-            2,
-            "japanese-document-writer",
-            "previous_step",
+            index
+            for index, item in enumerate(actions)
+            if item.input_source == "review_input"
         ),
-        ("review-supplied-artifact", "review", 1, "general-researcher", "review_input"),
-        (
-            "revise-reviewed-artifact",
-            "revise",
-            1,
-            "japanese-document-writer",
-            "revision_input",
-        ),
-        (
-            "review-supplied-artifact",
-            "review",
-            1,
-            "general-researcher",
-            "re_review_input",
-        ),
+        None,
     )
-    actual = tuple(
-        (
-            item.workflow_id,
-            item.step_id,
-            item.step_index,
-            item.employee_id,
-            item.input_source,
+    if review_index is None or review_index < 1:
+        raise WorkflowJobAuthorizationError("document_job_scope")
+    creator = actions[:review_index]
+    suffix = actions[review_index + 1 :]
+    creator_workflow = creator[0].workflow_id
+    creator_is_sequential = (
+        creator[0].input_source == "assignment"
+        and creator[0].step_index == 1
+        and all(
+            item.workflow_id == creator_workflow
+            and item.input_source == "previous_step"
+            and item.step_index == previous.step_index + 1
+            for previous, item in zip(creator, creator[1:])
         )
-        for item in scope.actions
+    )
+    allowed_suffix = (
+        not suffix and scope.max_revisions == 0
+    ) or (
+        len(suffix) == 2
+        and scope.max_revisions == 1
+        and suffix[0].input_source == "revision_input"
+        and suffix[0].step_index == 1
+        and suffix[1].input_source == "re_review_input"
+        and suffix[1].step_index == 1
     )
     if (
-        actual != expected
+        not creator_is_sequential
+        or actions[review_index].step_index != 1
         or scope.max_revisions not in {0, 1}
+        or not allowed_suffix
         or scope.max_provider_attempts
-        != 3 + (2 * scope.max_revisions) + scope.max_retries
+        != min(len(actions), review_index + 1 + (2 * scope.max_revisions))
+        + scope.max_retries
     ):
         raise WorkflowJobAuthorizationError("document_job_scope")
 
 
-def _review_verdict(content: str, *, review_input: str | None = None) -> str:
+def _review_verdict(
+    content: str,
+    *,
+    review_input: str | None = None,
+    require_actionable_findings: bool = True,
+) -> str:
     lines = content.splitlines()
     allowed_verdicts = {"PASS", "CHANGES_REQUIRED", "BLOCKED"}
     declarations: list[tuple[int, str]] = []
@@ -1475,6 +1514,8 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
         raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
     verdict_index, verdict = declarations[0]
     if verdict == "CHANGES_REQUIRED":
+        if not require_actionable_findings:
+            return verdict
         required = (
             "Requirement",
             "Artifact location",
@@ -1566,25 +1607,12 @@ def _review_verdict(content: str, *, review_input: str | None = None) -> str:
             )
             if evidence_reference in assignment_references:
                 continue
-            cited_references: set[str] = set()
-            for match in re.finditer(
-                r"(?:\bevidence\b|コード断片)\s*([A-Z])\b"
-                r"(?:\s*[-–—]\s*([A-Z])\b)?",
-                item["Evidence source/reference"],
-                re.IGNORECASE,
-            ):
-                first = ord(match.group(1).upper())
-                last = ord((match.group(2) or match.group(1)).upper())
-                if first <= last:
-                    cited_references.update(
-                        f"evidence {chr(code).casefold()}"
-                        for code in range(first, last + 1)
-                    )
-            if cited_references and cited_references <= assignment_references:
-                continue
             location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
             if (
-                evidence_reference.startswith("artifact本文の当該文字列")
+                any(
+                    label in evidence_reference
+                    for label in ("artifact", "deliverable", "成果物")
+                )
                 and source_is_bound
                 and location_quotes
                 and all(quote in source_content for quote in location_quotes)
@@ -1599,10 +1627,12 @@ def _normalized_reference(value: str) -> str:
 
 
 def _explicit_assignment_evidence_references(review_input: str) -> frozenset[str]:
-    """Extract exact, explicitly labeled provenance references from assignment.
+    """Extract exact, explicitly labeled criteria/source references from input.
 
     Subject Artifact text and the JSON envelope are deliberately excluded. This
-    is a scope/provenance check, not an automatic semantic-truth verifier.
+    is a scope/provenance check, not an automatic semantic-truth verifier. The
+    accepted labels are generic and do not require a domain-specific evidence
+    naming convention.
     """
     try:
         value = json.loads(review_input)
@@ -1616,6 +1646,11 @@ def _explicit_assignment_evidence_references(review_input: str) -> frozenset[str
         "evidence id",
         "evidence reference",
         "acceptance evidence",
+        "criterion",
+        "criterion id",
+        "requirement",
+        "requirement id",
+        "reference",
         "source id",
         "source reference",
     }
@@ -1632,16 +1667,17 @@ def _explicit_assignment_evidence_references(review_input: str) -> frozenset[str
     references = set()
     for line in assignment.splitlines():
         heading = line.strip().strip("*_").strip()
-        for marker in ("—", "–"):
-            evidence_id, separator, _ = heading.partition(marker)
-            parts = evidence_id.split()
-            if (
-                separator
-                and len(parts) == 2
-                and parts[0].casefold() == "evidence"
-                and parts[1].isalnum()
-            ):
-                references.add(_normalized_reference(" ".join(parts)))
+        reference_label = re.match(
+            r"(?:evidence|criterion|requirement|source)\s+([a-z0-9][a-z0-9_-]*)\b",
+            heading,
+            re.IGNORECASE,
+        )
+        if reference_label:
+            references.add(
+                _normalized_reference(
+                    f"{heading.split()[0]} {reference_label.group(1)}"
+                )
+            )
         label, separator, raw_reference = line.partition(":")
         if not separator or label.strip().casefold() not in allowed_labels:
             continue
@@ -1822,6 +1858,20 @@ def inspect_bounded_document_job(
     status = _read_bounded_document_job_status(store, scope)
     if status is not None:
         _verify_positive_terminal_status(store, scope, status)
+    review_index = next(
+        index
+        for index, item in enumerate(scope.actions)
+        if item.input_source == "review_input"
+    )
+    revision_index = next(
+        (
+            index
+            for index, item in enumerate(scope.actions)
+            if item.input_source == "revision_input"
+        ),
+        None,
+    )
+    normal_action_limit = review_index + 1 + (2 * scope.max_revisions)
     return {
         "assignment": manifest.run_input,
         "assignment_sha256": scope.assignment_sha256,
@@ -1829,9 +1879,7 @@ def inspect_bounded_document_job(
         "dispatch_order": dispatch_order,
         "job_id": job_id,
         "max_provider_attempts": scope.max_provider_attempts,
-        "normal_action_limit": min(
-            len(scope.actions), 3 + (2 * scope.max_revisions)
-        ),
+        "normal_action_limit": min(len(scope.actions), normal_action_limit),
         "normal_actions_consumed": len(
             {item.get("ordinal") for item in reservations}
         ),
@@ -1847,12 +1895,15 @@ def inspect_bounded_document_job(
         "max_revisions": scope.max_revisions,
         "remaining_provider_attempts": scope.max_provider_attempts - len(reservations),
         "revision_attempts_consumed": int(
-            any(item.get("ordinal") == 3 for item in reservations)
+            revision_index is not None
+            and any(item.get("ordinal") == revision_index for item in reservations)
         ),
         "revision_retry_attempts_consumed": sum(
             1
             for item in reservations
-            if item.get("ordinal") == 3 and item.get("retry_index", 0) > 0
+            if revision_index is not None
+            and item.get("ordinal") == revision_index
+            and item.get("retry_index", 0) > 0
         ),
         "status": status.get("status", "in_progress")
         if status
@@ -1875,14 +1926,34 @@ def _verify_positive_terminal_status(
     """Rebuild the terminal result from immutable Artifact/run evidence."""
     if status["status"] == "stopped":
         return _stopped_document_job_outcome(store, scope, str(status["stop_reason"]))
+    review_ordinal = next(
+        index
+        for index, item in enumerate(scope.actions)
+        if item.input_source == "review_input"
+    )
+    revision_ordinal = next(
+        (
+            index
+            for index, item in enumerate(scope.actions)
+            if item.input_source == "revision_input"
+        ),
+        None,
+    )
     if status["status"] == "candidate":
-        final_ordinal, review_ordinal, expected_revisions = 1, 2, 0
+        final_ordinal = review_ordinal - 1
+        expected_revisions = 0
+        expected_calls = review_ordinal + 1
+        final_review_ordinal = review_ordinal
     elif status["status"] == "reviewed":
-        final_ordinal, review_ordinal, expected_revisions = 3, 4, 1
+        if revision_ordinal is None:
+            raise WorkflowJobAuthorizationError("document_job_status")
+        final_ordinal = revision_ordinal
+        expected_revisions = 1
+        expected_calls = revision_ordinal + 2
+        final_review_ordinal = revision_ordinal + 1
     else:
         raise WorkflowJobAuthorizationError("document_job_status")
     reservations = _reservation_records(store.root, scope.job_id)
-    expected_calls = 3 + (2 * expected_revisions)
     expected_ordinals = set(range(expected_calls))
     retries_consumed = sum(
         1 for item in reservations if item.get("retry_index", 0) > 0
@@ -1892,7 +1963,10 @@ def _verify_positive_terminal_status(
         or len(reservations) > scope.max_provider_attempts
         or retries_consumed > scope.max_retries
         or {item.get("ordinal") for item in reservations} != expected_ordinals
-        or int(any(item.get("ordinal") == 3 for item in reservations))
+        or int(
+            revision_ordinal is not None
+            and any(item.get("ordinal") == revision_ordinal for item in reservations)
+        )
         != expected_revisions
     ):
         raise WorkflowJobAuthorizationError("document_job_status_accounting")
@@ -1923,7 +1997,9 @@ def _verify_positive_terminal_status(
                     )
     try:
         final_artifact = _artifact_for_action(store, scope.job_id, final_ordinal)
-        review_artifact = _artifact_for_action(store, scope.job_id, review_ordinal)
+        review_artifact = _artifact_for_action(
+            store, scope.job_id, final_review_ordinal
+        )
         review_manifest = load_workflow_run_manifest(store, review_artifact.run_id)
         verdict = _review_verdict(
             review_artifact.content.decode("utf-8"),
@@ -1957,7 +2033,7 @@ def _execute_bounded_document_job(
     transport,
     execution_destinations: Path | None,
 ) -> BoundedDocumentJobOutcome:
-    """Execute only the approved fixed creator/review/one-revision sequence.
+    """Execute only the approved finite creator/review/action plan.
 
     Every provider call is delegated to the existing fresh-start or
     continuation owner. This function only materializes pinned inputs,
@@ -2041,7 +2117,7 @@ def _execute_bounded_document_job(
             raise WorkflowJobAuthorizationError("document_job_definition_changed")
 
     if (
-        initial_manifest.workflow_id != "research-and-summarize"
+        initial_manifest.workflow_id != scope.actions[0].workflow_id
         or initial_manifest.run_input != assignment
         or _digest(_canonical(_workflow_dict(initial_manifest.workflow_snapshot)))
         != scope.actions[0].workflow_snapshot_sha256
@@ -2157,71 +2233,81 @@ def _execute_bounded_document_job(
             raise WorkflowJobAuthorizationError("document_job_outcome_mismatch")
         return result, workflow, manifest, authorization
 
-    creator = workflows["research-and-summarize"].definition
-    first_result, _, creator_manifest, _ = run_fresh(0, initial_run_id, assignment)
-    if (
-        type(first_result) is not WorkflowProgressionDecision
-        or first_result.decision != "prepare_next_step"
-    ):
-        raise WorkflowJobAuthorizationError("document_job_creator_stopped")
-    history, state_sha, _ = load_workflow_execution_history_with_source_digests(
-        WorkflowExecutionPersistenceTargets(
-            *store.execution_paths(initial_run_id),
-            binding=WorkflowRunBinding(initial_run_id, creator_manifest.digest),
+    creator_action_count = next(
+        index
+        for index, item in enumerate(scope.actions)
+        if item.input_source == "review_input"
+    )
+    creator = workflows[scope.actions[0].workflow_id].definition
+    creator_manifest = initial_manifest
+    progression, _, _, _ = run_fresh(0, initial_run_id, assignment)
+    for ordinal in range(1, creator_action_count):
+        if (
+            type(progression) is not WorkflowProgressionDecision
+            or progression.decision != "prepare_next_step"
+        ):
+            raise WorkflowJobAuthorizationError("document_job_creator_stopped")
+        history, state_sha, _ = load_workflow_execution_history_with_source_digests(
+            WorkflowExecutionPersistenceTargets(
+                *store.execution_paths(initial_run_id),
+                binding=WorkflowRunBinding(
+                    initial_run_id, creator_manifest.digest
+                ),
+            )
         )
-    )
-    validate_loaded_persisted_execution_history(
-        creator, history, require_execution_provenance=True
-    )
-    second_slot = scope.actions[1]
-    verify_destination(second_slot)
-    verify_run_manifest(creator_manifest, second_slot)
-    second_employee = employees[second_slot.employee_id].definition
-    second_step = creator.steps[second_slot.step_index - 1]
-    second_preparation = NextStepPreparationApproval(
-        True,
-        creator.id,
-        creator.steps[0].id,
-        1,
-        second_step.id,
-        second_slot.step_index,
-        second_employee.id,
-    )
-    prepared = _prepare_approved_next_workflow_step(
-        creator, history, first_result, second_preparation, second_employee
-    )
-    prepared_start = prepare_prepared_step_execution_start(
-        prepared,
-        history,
-        state_source_sha256=state_sha,
-        run_input=creator_manifest.run_input,
-    )
-    second_authorization = derive_bounded_job_action_authorization(
-        store,
-        scope,
-        ordinal=1,
-        run_id=initial_run_id,
-        request_fingerprint=build_model_invocation_execution_fingerprint(
-            prepared_start.request, (), execution_target
-        ),
-        now_ns=time.time_ns(),
-    )
-    second_result = route_approved_workflow_continuation_cycle(
-        first_result,
-        creator,
-        second_preparation,
-        second_employee,
-        *store.execution_paths(initial_run_id),
-        (),
-        api_key,
-        None,
-        transport,
-        job_authorization=second_authorization,
-        execution_target=execution_target,
-    )
+        validate_loaded_persisted_execution_history(
+            creator, history, require_execution_provenance=True
+        )
+        slot = scope.actions[ordinal]
+        verify_destination(slot)
+        verify_run_manifest(creator_manifest, slot)
+        employee = employees[slot.employee_id].definition
+        step = creator.steps[slot.step_index - 1]
+        previous = creator.steps[slot.step_index - 2]
+        preparation = NextStepPreparationApproval(
+            True,
+            creator.id,
+            previous.id,
+            slot.step_index - 1,
+            step.id,
+            slot.step_index,
+            employee.id,
+        )
+        prepared = _prepare_approved_next_workflow_step(
+            creator, history, progression, preparation, employee
+        )
+        prepared_start = prepare_prepared_step_execution_start(
+            prepared,
+            history,
+            state_source_sha256=state_sha,
+            run_input=creator_manifest.run_input,
+        )
+        authorization = derive_bounded_job_action_authorization(
+            store,
+            scope,
+            ordinal=ordinal,
+            run_id=initial_run_id,
+            request_fingerprint=build_model_invocation_execution_fingerprint(
+                prepared_start.request, (), execution_target
+            ),
+            now_ns=time.time_ns(),
+        )
+        progression = route_approved_workflow_continuation_cycle(
+            progression,
+            creator,
+            preparation,
+            employee,
+            *store.execution_paths(initial_run_id),
+            (),
+            api_key,
+            None,
+            transport,
+            job_authorization=authorization,
+            execution_target=execution_target,
+        )
     if (
-        type(second_result) is not WorkflowProgressionDecision
-        or second_result.decision != "workflow_complete"
+        type(progression) is not WorkflowProgressionDecision
+        or progression.decision != "workflow_complete"
     ):
         raise WorkflowJobAuthorizationError("document_job_creator_stopped")
     persisted_creator = route_persisted_execution_outcome_reentry(
@@ -2229,9 +2315,11 @@ def _execute_bounded_document_job(
         *store.execution_paths(initial_run_id),
         allow_artifact_completion=True,
     )
-    if persisted_creator != second_result:
+    if persisted_creator != progression:
         raise WorkflowJobAuthorizationError("document_job_outcome_mismatch")
-    source_artifact = _artifact_for_action(store, scope.job_id, 1)
+    source_artifact = _artifact_for_action(
+        store, scope.job_id, creator_action_count - 1
+    )
 
     def materialize(ordinal: int, predecessor):
         run_input = bounded_document_action_input(
@@ -2242,8 +2330,9 @@ def _execute_bounded_document_job(
         )
         return run_id, run_input
 
+    review_ordinal = creator_action_count
     review_run_id, review_input = materialize(
-        2,
+        review_ordinal,
         (
             source_artifact.run_id,
             source_artifact.artifact_id,
@@ -2251,7 +2340,7 @@ def _execute_bounded_document_job(
         ),
     )
     review_result, _, _, _ = run_fresh(
-        2,
+        review_ordinal,
         review_run_id,
         review_input,
         (
@@ -2265,9 +2354,11 @@ def _execute_bounded_document_job(
         or review_result.decision != "workflow_complete"
     ):
         raise WorkflowJobAuthorizationError("document_job_review_stopped")
-    first_review = _artifact_for_action(store, scope.job_id, 2)
+    first_review = _artifact_for_action(store, scope.job_id, review_ordinal)
     first_verdict = _review_verdict(
-        first_review.content.decode("utf-8"), review_input=review_input
+        first_review.content.decode("utf-8"),
+        review_input=review_input,
+        require_actionable_findings=scope.max_revisions > 0,
     )
     if first_verdict == "PASS":
         return BoundedDocumentJobOutcome(
@@ -2282,11 +2373,17 @@ def _execute_bounded_document_job(
         raise WorkflowJobAuthorizationError("document_job_review_blocked")
     if scope.max_revisions < 1:
         raise WorkflowJobAuthorizationError("document_job_revision_budget_exhausted")
+    revision_ordinal = review_ordinal + 1
     revision_run_id, revision_input = materialize(
-        3, (first_review.run_id, first_review.artifact_id, first_review.content_sha256)
+        revision_ordinal,
+        (
+            first_review.run_id,
+            first_review.artifact_id,
+            first_review.content_sha256,
+        ),
     )
     revision_result, _, _, _ = run_fresh(
-        3,
+        revision_ordinal,
         revision_run_id,
         revision_input,
         (first_review.run_id, first_review.artifact_id, first_review.content_sha256),
@@ -2296,9 +2393,10 @@ def _execute_bounded_document_job(
         or revision_result.decision != "workflow_complete"
     ):
         raise WorkflowJobAuthorizationError("document_job_revision_stopped")
-    revised_artifact = _artifact_for_action(store, scope.job_id, 3)
+    revised_artifact = _artifact_for_action(store, scope.job_id, revision_ordinal)
+    rereview_ordinal = revision_ordinal + 1
     final_review_run_id, final_review_input = materialize(
-        4,
+        rereview_ordinal,
         (
             revised_artifact.run_id,
             revised_artifact.artifact_id,
@@ -2306,7 +2404,7 @@ def _execute_bounded_document_job(
         ),
     )
     final_review_result, _, _, _ = run_fresh(
-        4,
+        rereview_ordinal,
         final_review_run_id,
         final_review_input,
         (
@@ -2320,7 +2418,7 @@ def _execute_bounded_document_job(
         or final_review_result.decision != "workflow_complete"
     ):
         raise WorkflowJobAuthorizationError("document_job_final_review_stopped")
-    final_review = _artifact_for_action(store, scope.job_id, 4)
+    final_review = _artifact_for_action(store, scope.job_id, rereview_ordinal)
     if (
         _review_verdict(
             final_review.content.decode("utf-8"), review_input=final_review_input
@@ -2403,15 +2501,33 @@ def _stopped_document_job_outcome(
     store: WorkflowRunManifestStore, scope: BoundedWorkflowJobScope, reason: str
 ) -> BoundedDocumentJobOutcome:
     artifacts = {}
-    for ordinal in (1, 2, 3, 4):
+    for ordinal in range(len(scope.actions)):
         try:
             artifacts[ordinal] = _artifact_for_action(
                 store, scope.job_id, ordinal, verify_lineage=False
             )
         except Exception:
             pass
-    final = artifacts.get(3) or artifacts.get(1)
-    review = artifacts.get(4) or artifacts.get(2)
+    final = next(
+        (
+            artifacts[index]
+            for index in reversed(range(len(scope.actions)))
+            if scope.actions[index].input_source
+            in {"assignment", "previous_step", "previous_artifact", "revision_input"}
+            and index in artifacts
+        ),
+        None,
+    )
+    review = next(
+        (
+            artifacts[index]
+            for index in reversed(range(len(scope.actions)))
+            if scope.actions[index].input_source
+            in {"review_input", "re_review_input"}
+            and index in artifacts
+        ),
+        None,
+    )
     reservations = _reservation_records(store.root, scope.job_id)
     return BoundedDocumentJobOutcome(
         "stopped",
@@ -2419,7 +2535,14 @@ def _stopped_document_job_outcome(
         final.artifact_id if final else None,
         review.run_id if review else None,
         review.artifact_id if review else None,
-        int(any(item.get("ordinal") == 3 for item in reservations)),
+        int(
+            any(
+                item.get("ordinal") == ordinal
+                and scope.actions[ordinal].input_source == "revision_input"
+                for item in reservations
+                for ordinal in range(len(scope.actions))
+            )
+        ),
         reason,
     )
 

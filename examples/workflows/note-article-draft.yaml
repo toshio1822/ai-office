@@ -1,0 +1,14 @@
+id: note-article-draft
+name: Note Article Draft
+description: Produces a Markdown draft from an immutable article brief.
+
+steps:
+  - id: write-draft
+    name: Write Draft
+    employee: japanese-document-writer
+    instructions: |
+      Write a Japanese Markdown article draft from the supplied brief. Preserve
+      its title, subtitle, central claim, audience, and constraints. Do not add
+      personal experiences or facts absent from the brief. Return only the draft.
+    business_approval_required: true
+    artifact_content_type: text/markdown
