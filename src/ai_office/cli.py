@@ -1263,7 +1263,7 @@ def run_bounded_document_job_workflow(
     revision_workflow_id: str = typer.Option(
         "revise-reviewed-artifact", "--revision-workflow"
     ),
-    max_revisions: int = typer.Option(1, "--max-revisions", min=0, max=1),
+    max_revisions: int = typer.Option(1, "--max-revisions", min=0),
     max_retries: int = typer.Option(0, "--max-retries", min=0, max=2),
     retry_interval_seconds: int = typer.Option(
         30, "--retry-interval-seconds", min=1, max=3600
@@ -1347,7 +1347,7 @@ def run_bounded_document_job_workflow(
                 "review_input",
             )
         )
-        if max_revisions:
+        for _ in range(max_revisions):
             if revision_workflow_id not in workflow_by_id:
                 raise WorkflowJobAuthorizationError("job_workflow_missing")
             revision_workflow = workflow_by_id[revision_workflow_id]
@@ -1355,7 +1355,7 @@ def run_bounded_document_job_workflow(
                 raise WorkflowJobAuthorizationError("job_workflow_shape")
             revision_step = revision_workflow.definition.steps[0]
             action_plan.extend(
-                [
+                (
                     (
                         revision_workflow_id,
                         revision_step.id,
@@ -1370,7 +1370,7 @@ def run_bounded_document_job_workflow(
                         review_step.employee,
                         "re_review_input",
                     ),
-                ]
+                )
             )
         required_employees = tuple(dict.fromkeys(item[3] for item in action_plan))
         if any(name not in model_employees for name in required_employees):
@@ -1447,6 +1447,7 @@ def run_bounded_document_job_workflow(
         if action.input_source == "review_input"
     )
     guaranteed_initial_actions = review_action_index + 1
+    review_limit = 1 + max_revisions
     max_normal_actions = min(
         len(action_slots), guaranteed_initial_actions + (2 * max_revisions)
     )
@@ -1469,6 +1470,7 @@ def run_bounded_document_job_workflow(
             "retryable_http_statuses": [429, 503],
             "provider_attempt_limit": max_normal_actions + max_retries,
             "revision_limit": max_revisions,
+            "review_limit": review_limit,
             "credential_environment_variable": (target.credential_environment_variable),
             "request_headers": [
                 {"name": header.name, "value": header.value}

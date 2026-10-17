@@ -1,8 +1,8 @@
 # OpenCode Go bounded document Job operator runbook
 
 This is a Gate B procedure only. The command below is deliberately not run by
-the offline implementation, tests, CI, or OpenClaw. Gate A proves the fixed
-Job with fake transport only. Do not treat this document or an
+the offline implementation, tests, CI, or OpenClaw. Gate A proves configured
+finite action plans with fake transport only. Do not treat this document or an
 `approved_by` label as human authorization.
 
 ## Shared-identity security limits
@@ -57,11 +57,12 @@ path.
      --execution-model glm-5.3-flash
    ```
 
-4. Check the confirmation summary: endpoint must be
+4. Check the confirmation summary against the exact configured plan: endpoint must be
    `https://opencode.ai/zen/go/v1/chat/completions`, protocol
    `openai-chat-completions`, model `glm-5.3-flash`, provider
-   `opencode-go-glm-chat`, exactly five pinned action slots, five-attempt cap,
-   and one-revision cap. Type the exact Job ID only after deciding to authorize
+   `opencode-go-glm-chat`. Verify that the creator steps, independent review,
+   configured revision/re-review pairs, provider-attempt cap and retry limit
+   match the intended Job. Type the exact Job ID only after deciding to authorize
    its Business grant, then type the same Job ID again to authorize the
    separate Execution grant and start this one Job.
 5. Allow the command to finish once. A PASS after the initial review is a
@@ -83,12 +84,18 @@ outcome is unknown. The Attempt remains consumed; no retry, fallback, or
 recovery is performed, and no complete response or Artifact is inferred from
 missing data.
 
-The fixed sequence is creator (2 attempts), independent reviewer (1), then
-only for a persisted evidence-grounded `CHANGES_REQUIRED`, revision (1) and
-fresh independent reviewer (1). All actions pin the same destination
-fingerprint. A provider attempt is not a currency cap; do not describe it as
-one. No automated publication, repository write, device operation, or generic
-tool execution is part of this Job.
+The action sequence is fixed and persisted at approval time: every creator
+step, one independent review, then zero or more configured revision/re-review
+pairs. A `CHANGES_REQUIRED` verdict advances only to the next pre-authorized
+pair; `PASS` stops early as a candidate; blocked/invalid findings or an
+exhausted revision limit stop without another send. For the one-step
+`note-article-draft` configuration, select `--revision-workflow revise-draft`
+and `--max-revisions 3` to produce at most four reviews and eight normal
+sends. Multi-step creators add their actual step count to that send bound.
+The limit is an attempt count, not a currency cap.
+All actions pin the same destination fingerprint. No automated publication,
+repository write, device operation, or generic tool execution is part of this
+Job.
 
 Passing the CLI's UID/TTY checks does not prove human identity or isolate
 credentials. The human operator owns credential injection, final endpoint and
