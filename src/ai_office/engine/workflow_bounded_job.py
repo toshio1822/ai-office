@@ -1627,9 +1627,10 @@ def _reference_ids(
     """Return explicitly typed IDs; incidental words are not declarations."""
     identifiers: set[tuple[str, str]] = set()
     pattern = re.compile(
-        r"(?<![a-z0-9_])(?P<kind>evidence|criterion|requirement|source|"
-        r"reference|fragment|証拠|断片)(?![a-z0-9_])"
-        r"(?:\s+|\s*[:#]\s*)"
+        r"(?<![a-z0-9_])(?:"
+        r"(?P<kind>evidence|criterion|requirement|source|reference|fragment)"
+        r"(?![a-z0-9_])|(?P<kind_ja>証拠|断片))"
+        r"(?:\s+|\s*[:#]\s*|(?<=証拠)|(?<=断片))"
         r"(?P<first>[a-z0-9][a-z0-9_-]*)"
         r"(?:\s*[-–—]\s*(?P<last>[a-z0-9][a-z0-9_-]*))?"
         r"(?![a-z0-9_])",
@@ -1649,7 +1650,9 @@ def _reference_ids(
         else pattern.finditer(value)
     )
     for match in matches:
-        kind = match.group("kind").casefold()
+        kind = (match.group("kind") or match.group("kind_ja")).casefold()
+        if kind in {"fragment", "断片"}:
+            kind = "evidence"
         first = match.group("first").casefold()
         last = (match.group("last") or first).casefold()
         if first in {
