@@ -34,6 +34,25 @@ Preserve the existing strengths:
 - durable state ownership and external side effects remain separated;
 - simpler structures are preferred when they provide the same guarantees.
 
+### Non-negotiable invariant: domain-neutral, configuration-driven execution
+
+**Business-specific behavior MUST NOT be implemented in the Python execution engine.** The engine must support distinct kinds of work by loading validated Workflow/Employee definitions and immutable Run Input, rather than by changing Python source for every new domain. A technical-investigation Job and an article-production Job are different *configurations of work*, not reasons for separate execution engines.
+
+Responsibilities are deliberately separated:
+
+- **Workflow configuration** defines the business steps, their order and handoffs, applicable review/output criteria, and any supported conditional progression or finite iteration policy. The engine validates and interprets this declarative policy; it must not hard-code concrete workflow IDs, employee IDs, step names, fixed action sequences or domain-specific review rules in its execution decisions.
+- **Employee configuration** defines an employee's role, instructions, model and authorized tool set. Article voice, evidence labels, domain terminology and other business-specific instructions belong here or in the Workflow/Run Input, never in provider or authorization internals.
+- **Run Input** contains the concrete business assignment, facts supplied by the operator and applicable acceptance criteria. It must not be embedded in reusable Python logic, and it must remain pinned to its Run.
+- **The common engine** owns definition validation and snapshotting, approvals and finite budgets, deterministic authorized progression, immutable Run/Attempt/Evidence/Artifact lineage, error classification and safe stopping. The engine enforces the configured plan **without knowing which business it represents**.
+
+**Non-negotiable prohibitions:** Do not add domain-specific dispatch branches or admission rules keyed by a workflow/employee name, a particular document type, a fixed plan such as research → summarize → review → revise, or a hard-coded number of revision rounds. Do not create a second article-specific Job executor, scheduler, approval system, evidence store, wrapper chain or new Phase when existing common Workflow/Run ownership can supply the same guarantees. Existing specialized implementation must be assessed as a **current limitation to simplify or generalize**, not elevated into a permanent engine contract.
+
+**Safety is engine-owned, not delegated to untrusted YAML or model output.** Configuration may select only supported, finite and statically valid transitions/limits. Before external effects, pin the effective definition/input/target and explicit human-approved execution scope; enforce attempt/revision ceilings and authorization for each action, even after restart or duplicate invocation. Invalid definitions, uncertain outcomes, unsupported transitions and budget exhaustion fail closed. Configuration cannot grant arbitrary code execution, self-amend its policy, authorize publication or transform a failed/ambiguous request into an implicit retry. Historical Run and Artifact evidence must remain readable without reinterpretation against newly edited definitions.
+
+**Observable architectural acceptance:** Two materially different business workflows must be selectable and executable through the same engine and authorization/evidence facilities **without any intervening Python source edit**; changing their business steps, employee roles, content requirements and supported finite bounds must require only configuration/Run Input changes. Verify behavior, provenance and stop conditions rather than freezing internal helper or call structure.
+
+**Status boundary:** This is the required *target architecture*, not a statement that current bounded-document Jobs already satisfy it. The limited technical-report-specific executor presently has fixed action and revision constraints. Its evolution must reuse and simplify the existing engine where possible. A controlled finite configuration-driven review/revision cycle is a future, explicitly authorized capability; it does not authorize arbitrary/unbounded workflow loops, automatic retry or publication, and does not contradict the initial-scope limits in §26.
+
 ## 2. Central concept: Workflow Run
 
 A `WorkflowDefinition` is a reusable **type of work**.
