@@ -1571,9 +1571,14 @@ def _review_verdict(
             evidence_reference = _normalized_reference(
                 item["Evidence source/reference"]
             )
-            if _assignment_line_reference_matches(
-                item["Evidence source/reference"], assignment_text
-            ):
+            raw_evidence_reference = item["Evidence source/reference"]
+            if _contains_assignment_line_reference(raw_evidence_reference):
+                if not _assignment_line_reference_matches(
+                    raw_evidence_reference, assignment_text
+                ):
+                    raise WorkflowJobAuthorizationError(
+                        "document_job_unverified_finding"
+                    )
                 location_quotes = re.findall(
                     r"`([^`]+)`", item["Artifact location"]
                 )
@@ -1616,6 +1621,16 @@ def _assignment_line_reference_matches(reference: str, assignment: str) -> bool:
     line_number = int(match.group(1))
     lines = assignment.splitlines()
     return line_number <= len(lines) and match.group(2) in lines[line_number - 1]
+
+
+def _contains_assignment_line_reference(reference: str) -> bool:
+    """Identify line-reference syntax to prevent legacy fallback."""
+    return (
+        re.search(
+            r"(?<![a-z0-9_])assignment\s*:\s*L", reference, re.IGNORECASE
+        )
+        is not None
+    )
 
 
 def _normalized_reference(value: str) -> str:

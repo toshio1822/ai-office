@@ -2642,6 +2642,8 @@ def test_note_findings_can_cite_verbatim_lines_of_unchanged_assignment() -> None
         "assignment:L0 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
         "assignment:L3 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
         "assignment:L2 `not present in the cited assignment line`",
+        "assignment:L999 `Artifact: "
+        "ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
     ):
         invalid_review = review.replace(
             "assignment:L2 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
@@ -2651,6 +2653,21 @@ def test_note_findings_can_cite_verbatim_lines_of_unchanged_assignment() -> None
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
             _review_verdict(invalid_review, review_input=review_input)
         assert caught.value.classification == "document_job_unverified_finding"
+
+    declared_evidence_input = json.loads(review_input)
+    declared_evidence_input["assignment"] += "\nEvidence A: author-provided brief"
+    invalid_id_fallback = review.replace(
+        "assignment:L2 `ToDoリストを否定せず、不明点を確認可能な問いに変える。`",
+        "Evidence A; assignment:L999 `ToDoリストを否定せず、"
+        "不明点を確認可能な問いに変える。`",
+        1,
+    )
+    with pytest.raises(WorkflowJobAuthorizationError) as caught:
+        _review_verdict(
+            invalid_id_fallback,
+            review_input=json.dumps(declared_evidence_input, ensure_ascii=False),
+        )
+    assert caught.value.classification == "document_job_unverified_finding"
 
 
 def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
