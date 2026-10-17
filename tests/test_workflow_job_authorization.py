@@ -2390,6 +2390,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         scope.max_provider_attempts - expected_calls
     )
     assert inspection["status"] == expected_status
+    assert inspection["revisions_used"] == outcome.revisions_used
     assert inspection["stop_reason"] == expected_reason
     assert len(inspection["dispatch_order"]) == expected_calls
     if final_verdict == "JAPANESE_CHANGES_REQUIRED":
@@ -2487,6 +2488,42 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             )
         assert len(call_labels) == expected_calls
         result_path.write_bytes(durable_artifact)
+
+
+@pytest.mark.parametrize("revision_count", [0, 1, 2, 3])
+def test_stopped_outcome_counts_distinct_revision_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, revision_count: int
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        bounded_job_module, "_artifact_for_action", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        bounded_job_module,
+        "_reservation_records",
+        lambda *_args: [
+            {"ordinal": ordinal}
+            for ordinal in range(2, 2 + (2 * revision_count), 2)
+        ],
+    )
+    scope = SimpleNamespace(
+        job_id="revision-count-job",
+        actions=tuple(
+            SimpleNamespace(
+                input_source=(
+                    "revision_input" if ordinal in {2, 4, 6} else "review_input"
+                )
+            )
+            for ordinal in range(7)
+        ),
+    )
+
+    outcome = bounded_job_module._stopped_document_job_outcome(
+        SimpleNamespace(root=tmp_path), scope, "document_job_revision_budget_exhausted"
+    )
+
+    assert outcome.revisions_used == revision_count
 
 
 def test_changes_required_needs_exact_original_assignment_evidence_reference() -> None:
@@ -3174,6 +3211,8 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     if scenario == "revision-three-exhausted":
         assert inspection["max_revisions"] == 3
         assert inspection["revision_attempts_consumed"] == 3
+        assert inspection["revisions_used"] == 3
+        assert '"revisions_used": 3' in result.output
         assert inspection["normal_actions_consumed"] == 8
         action_ordinals = [
             item["action_ordinal"] for item in inspection["dispatch_order"]

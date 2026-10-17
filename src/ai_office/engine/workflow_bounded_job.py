@@ -1806,6 +1806,9 @@ def inspect_bounded_document_job(
     reservations = _reservation_records(store.root, job_id)
     if len(reservations) > scope.max_provider_attempts:
         raise WorkflowJobAuthorizationError("attempt_allowance_depleted")
+    consumed_revision_ordinals = _consumed_revision_action_ordinals(
+        scope, reservations
+    )
     dispatch_order = []
     reservation_by_digest = {
         _digest(_read_regular(path)): (path, _read_regular(path))
@@ -1886,18 +1889,14 @@ def inspect_bounded_document_job(
         key=lambda item: (item["admitted_at_ns"], item["action_ordinal"])
     )
     status = _read_bounded_document_job_status(store, scope)
-    if status is not None:
-        _verify_positive_terminal_status(store, scope, status)
+    terminal_outcome = (
+        _verify_positive_terminal_status(store, scope, status) if status else None
+    )
     review_index = next(
         index
         for index, item in enumerate(scope.actions)
         if item.input_source == "review_input"
     )
-    revision_indices = {
-        index
-        for index, item in enumerate(scope.actions)
-        if item.input_source == "revision_input"
-    }
     normal_action_limit = review_index + 1 + (2 * scope.max_revisions)
     return {
         "assignment": manifest.run_input,
@@ -1921,17 +1920,14 @@ def inspect_bounded_document_job(
         "total_physical_attempt_limit": scope.max_provider_attempts,
         "max_revisions": scope.max_revisions,
         "remaining_provider_attempts": scope.max_provider_attempts - len(reservations),
-        "revision_attempts_consumed": len(
-            {
-                item.get("ordinal")
-                for item in reservations
-                if item.get("ordinal") in revision_indices
-            }
-        ),
+        "revision_attempts_consumed": len(consumed_revision_ordinals),
+        "revisions_used": terminal_outcome.revisions_used
+        if terminal_outcome
+        else len(consumed_revision_ordinals),
         "revision_retry_attempts_consumed": sum(
             1
             for item in reservations
-            if item.get("ordinal") in revision_indices
+            if item.get("ordinal") in consumed_revision_ordinals
             and item.get("retry_index", 0) > 0
         ),
         "status": status.get("status", "in_progress")
@@ -2511,6 +2507,18 @@ def _outcome_from_status(
     return _verify_positive_terminal_status(store, scope, value)
 
 
+def _consumed_revision_action_ordinals(
+    scope: BoundedWorkflowJobScope, reservations: list[dict[str, object]]
+) -> set[int]:
+    return {
+        ordinal
+        for item in reservations
+        if type(ordinal := item.get("ordinal")) is int
+        and 0 <= ordinal < len(scope.actions)
+        and scope.actions[ordinal].input_source == "revision_input"
+    }
+
+
 def _stopped_document_job_outcome(
     store: WorkflowRunManifestStore, scope: BoundedWorkflowJobScope, reason: str
 ) -> BoundedDocumentJobOutcome:
@@ -2543,20 +2551,14 @@ def _stopped_document_job_outcome(
         None,
     )
     reservations = _reservation_records(store.root, scope.job_id)
+    revisions_used = len(_consumed_revision_action_ordinals(scope, reservations))
     return BoundedDocumentJobOutcome(
         "stopped",
         final.run_id if final else None,
         final.artifact_id if final else None,
         review.run_id if review else None,
         review.artifact_id if review else None,
-        int(
-            any(
-                item.get("ordinal") == ordinal
-                and scope.actions[ordinal].input_source == "revision_input"
-                for item in reservations
-                for ordinal in range(len(scope.actions))
-            )
-        ),
+        revisions_used,
         reason,
     )
 
