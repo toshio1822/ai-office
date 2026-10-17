@@ -1441,6 +1441,15 @@ def run_bounded_document_job_workflow(
             "bounded Job definition or execution destination is invalid"
         )
 
+    review_action_index = next(
+        index
+        for index, action in enumerate(action_slots)
+        if action.input_source == "review_input"
+    )
+    guaranteed_initial_actions = review_action_index + 1
+    max_normal_actions = min(
+        len(action_slots), guaranteed_initial_actions + (2 * max_revisions)
+    )
     _emit_json(
         {
             "operation": "bounded-job-launch-confirmation",
@@ -1453,11 +1462,12 @@ def run_bounded_document_job_workflow(
             "destination_fingerprint": destination_fingerprint,
             "model": selected_model,
             "action_slots": len(action_slots),
-            "normal_action_limit": len(action_slots) - (2 * max_revisions),
+            "guaranteed_initial_actions": guaranteed_initial_actions,
+            "max_normal_actions": max_normal_actions,
             "max_retries": max_retries,
             "retry_interval_seconds": retry_interval_seconds,
             "retryable_http_statuses": [429, 503],
-            "provider_attempt_limit": len(action_slots) + max_retries,
+            "provider_attempt_limit": max_normal_actions + max_retries,
             "revision_limit": max_revisions,
             "credential_environment_variable": (target.credential_environment_variable),
             "request_headers": [

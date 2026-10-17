@@ -172,12 +172,7 @@ class BoundedWorkflowJobScope:
             or self.max_provider_attempts
             != normal_action_limit
             + self.max_retries
-            or self.schema_version
-            not in {"workflow-bounded-job-scope.v1", "workflow-bounded-job-scope.v2"}
-            or (
-                self.schema_version == "workflow-bounded-job-scope.v1"
-                and self.max_retries != 0
-            )
+            or self.schema_version != "workflow-bounded-job-scope.v2"
             or type(self.expires_at_ns) is not int
             or self.expires_at_ns <= 0
             or self.business_grant.purpose != "job_business"
@@ -196,7 +191,6 @@ class BoundedWorkflowJobScope:
                 self.expires_at_ns,
                 self.max_retries,
                 self.retry_interval_seconds,
-                self.schema_version,
             )
             or self.execution_grant.envelope_sha256
             != self.business_grant.envelope_sha256
@@ -404,7 +398,6 @@ def issue_bounded_workflow_job_scope(
         retry_interval_seconds,
     )
     # This root-scope digest is distinct from Run-bound authorization records.
-    # Legacy v1 scopes remain readable without being reinterpreted as retryable.
     _persist_immutable(_scope_path(store.root, job_id), scope.canonical)
     return scope
 
@@ -418,15 +411,9 @@ def load_bounded_workflow_job_scope(
     try:
         value = json.loads(payload)
         schema_version = value.pop("schema_version")
-        if schema_version not in {
-            "workflow-bounded-job-scope.v1",
-            "workflow-bounded-job-scope.v2",
-        }:
+        if schema_version != "workflow-bounded-job-scope.v2":
             raise ValueError
-        if schema_version == "workflow-bounded-job-scope.v2":
-            if value.pop("retryable_http_statuses") != [429, 503]:
-                raise ValueError
-        elif "retryable_http_statuses" in value:
+        if value.pop("retryable_http_statuses") != [429, 503]:
             raise ValueError
         business = WorkflowJobGrant(**value.pop("business_grant"))
         execution = WorkflowJobGrant(**value.pop("execution_grant"))
@@ -1105,10 +1092,7 @@ def validate_bounded_job_attempt_authority(
     if not (
         type(reservation_value) is dict
         and reservation_value.get("schema_version")
-        in {
-            "workflow-bounded-job-reservation.v1",
-            "workflow-bounded-job-reservation.v2",
-        }
+        == "workflow-bounded-job-reservation.v2"
         and reservation_value.get("scope_sha256") == authorization.scope.digest
         and _digest(reservation) == reservation_sha256
         and reservation == _canonical(reservation_value)
@@ -1398,7 +1382,7 @@ def _artifact_payload(artifact) -> dict[str, object]:
 
 
 def validate_bounded_document_job_scope(scope: BoundedWorkflowJobScope) -> None:
-    """Require one finite create/review plan, with an optional legacy revision."""
+    """Require one finite configured create/review plan and declared bounds."""
     actions = scope.actions
     review_index = next(
         (
@@ -1590,7 +1574,9 @@ def _review_verdict(
             review_input
         )
         assignment_text = json.loads(review_input)["assignment"]
-        assignment_reference_ids = _reference_ids(assignment_text)
+        assignment_reference_ids = _reference_ids(
+            assignment_text, line_start_only=True
+        )
         try:
             input_value = json.loads(review_input)
             source_artifact = input_value.get("source_artifact")
@@ -1614,10 +1600,7 @@ def _review_verdict(
             cited_reference_ids = _reference_ids(
                 item["Evidence source/reference"]
             )
-            if (
-                cited_reference_ids
-                and cited_reference_ids <= assignment_reference_ids
-            ):
+            if cited_reference_ids and cited_reference_ids <= assignment_reference_ids:
                 continue
             location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
             if (
@@ -1638,32 +1621,59 @@ def _normalized_reference(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
-def _reference_ids(value: str) -> frozenset[str]:
-    """Return identifiers explicitly attached to generic source/criterion labels."""
-    identifiers: set[str] = set()
+def _reference_ids(
+    value: str, *, line_start_only: bool = False
+) -> frozenset[tuple[str, str]]:
+    """Return explicitly typed IDs; incidental words are not declarations."""
+    identifiers: set[tuple[str, str]] = set()
     pattern = re.compile(
-        r"(evidence|criterion|requirement|source|reference|fragment|証拠|断片)\s*"
-        r"([a-z0-9]+)(?:\s*[-–—]\s*([a-z0-9]+))?",
+        r"(?<![a-z0-9_])(?P<kind>evidence|criterion|requirement|source|"
+        r"reference|fragment|証拠|断片)(?![a-z0-9_])"
+        r"(?:\s+|\s*[:#]\s*)"
+        r"(?P<first>[a-z0-9][a-z0-9_-]*)"
+        r"(?:\s*[-–—]\s*(?P<last>[a-z0-9][a-z0-9_-]*))?"
+        r"(?![a-z0-9_])",
         re.IGNORECASE,
     )
-    for match in pattern.finditer(value):
-        first = match.group(2).casefold()
-        last = (match.group(3) or first).casefold()
+    matches = (
+        (
+            match
+            for line in value.splitlines()
+            if (
+                match := pattern.match(
+                    line.lstrip(" \t#>*_`-+")
+                )
+            )
+        )
+        if line_start_only
+        else pattern.finditer(value)
+    )
+    for match in matches:
+        kind = match.group("kind").casefold()
+        first = match.group("first").casefold()
+        last = (match.group("last") or first).casefold()
         if first in {
-            "reference",
+            "criterion",
+            "evidence",
+            "fragment",
             "identifier",
             "id",
-            "package",
             "only",
-            "supplied",
+            "package",
             "provided",
+            "reference",
+            "requirement",
+            "source",
+            "supplied",
         }:
             continue
-        identifiers.add(first)
+        identifiers.add((kind, first))
         if len(first) == len(last) == 1 and first.isalpha() and last.isalpha():
             start, end = sorted((ord(first), ord(last)))
             if end - start <= 25:
-                identifiers.update(chr(code) for code in range(start, end + 1))
+                identifiers.update(
+                    (kind, chr(code)) for code in range(start, end + 1)
+                )
     return frozenset(identifiers)
 
 
@@ -2603,27 +2613,21 @@ def _scope_intent_digest(
     expires_at_ns: int,
     max_retries: int = 0,
     retry_interval_seconds: int = 30,
-    schema_version: str = "workflow-bounded-job-scope.v2",
 ) -> str:
     value = {
-                "actions": [_slot_dict(item) for item in actions],
-                "assignment_sha256": assignment_sha256,
-                "expires_at_ns": expires_at_ns,
-                "initial_input_sha256": initial_input_sha256,
-                "initial_run_id": initial_run_id,
-                "job_id": job_id,
-                "max_provider_attempts": max_provider_attempts,
-                "max_revisions": max_revisions,
-                "schema_version": (
-                    "workflow-bounded-job-scope-intent.v1"
-                    if schema_version == "workflow-bounded-job-scope.v1"
-                    else "workflow-bounded-job-scope-intent.v2"
-                ),
-            }
-    if schema_version == "workflow-bounded-job-scope.v2":
-        value["max_retries"] = max_retries
-        value["retry_interval_seconds"] = retry_interval_seconds
-        value["retryable_http_statuses"] = [429, 503]
+        "actions": [_slot_dict(item) for item in actions],
+        "assignment_sha256": assignment_sha256,
+        "expires_at_ns": expires_at_ns,
+        "initial_input_sha256": initial_input_sha256,
+        "initial_run_id": initial_run_id,
+        "job_id": job_id,
+        "max_provider_attempts": max_provider_attempts,
+        "max_revisions": max_revisions,
+        "max_retries": max_retries,
+        "retry_interval_seconds": retry_interval_seconds,
+        "retryable_http_statuses": [429, 503],
+        "schema_version": "workflow-bounded-job-scope-intent.v2",
+    }
     return _digest(_canonical(value))
 
 
@@ -2788,18 +2792,14 @@ def _reservation_records(root: Path, job_id: str) -> list[dict[str, object]]:
             "request_body_length",
             "request_body_sha256",
             "reservation_index",
+            "retry_index",
             "run_id",
             "schema_version",
             "scope_sha256",
         }
-        if schema == "workflow-bounded-job-reservation.v2":
-            expected_keys.add("retry_index")
         if (
             type(value) is not dict
-            or schema not in {
-                "workflow-bounded-job-reservation.v1",
-                "workflow-bounded-job-reservation.v2",
-            }
+            or schema != "workflow-bounded-job-reservation.v2"
             or set(value) != expected_keys
             or payload != _canonical(value)
             or value.get("scope_sha256") != scope.digest
@@ -2814,14 +2814,6 @@ def _reservation_records(root: Path, job_id: str) -> list[dict[str, object]]:
             or value["reservation_index"] < 0
             or type(value.get("retry_index", 0)) is not int
             or value.get("retry_index", 0) < 0
-            or (
-                schema == "workflow-bounded-job-reservation.v1"
-                and scope.schema_version != "workflow-bounded-job-scope.v1"
-            )
-            or (
-                value.get("retry_index", 0) > 0
-                and scope.schema_version != "workflow-bounded-job-scope.v2"
-            )
             or path
             != _reservation_path(
                 root,

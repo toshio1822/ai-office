@@ -2540,15 +2540,25 @@ def test_changes_required_needs_exact_original_assignment_evidence_reference() -
     assert _review_verdict(
         review.replace("source:AC2#p4", "Evidence A"), review_input=review_input
     ) == "CHANGES_REQUIRED"
+    incidental_assignment = json.loads(review_input)
+    incidental_assignment["assignment"] += (
+        "\nWe lack sources and requirements. The token sourcea is prose, not an ID."
+    )
     for unsupported_reference in (
         "weak unverified phrase",
         "assignment",
         "source:AC2",
         "Evidence B",
+        "Evidence S",
+        "Criterion A",
+        "Source A",
     ):
         unsupported_review = review.replace("source:AC2#p4", unsupported_reference)
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
-            _review_verdict(unsupported_review, review_input=review_input)
+            _review_verdict(
+                unsupported_review,
+                review_input=json.dumps(incidental_assignment),
+            )
         assert caught.value.classification == "document_job_unverified_finding"
 
 
@@ -3027,7 +3037,9 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     assert len(labels) == expected_calls
     if scenario in {"note-configured", "meeting-configured"}:
         assert labels == ["create", "review"]
-        assert '"normal_action_limit": 2' in preview_before_grants
+        assert '"guaranteed_initial_actions": 2' in preview_before_grants
+        assert '"max_normal_actions": 2' in preview_before_grants
+        assert '"provider_attempt_limit": 2' in preview_before_grants
         assert '"revision_limit": 0' in preview_before_grants
     if scenario == "retry-once":
         assert labels[0:2] == ["research-503-empty", "research"]
@@ -3066,6 +3078,13 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
     store = WorkflowRunManifestStore(run_store)
     inspection = inspect_bounded_document_job(store, job_id)
     assert inspection["consumed_provider_attempts"] == expected_calls
+    if scenario == "revision":
+        assert '"guaranteed_initial_actions": 3' in preview_before_grants
+        assert '"max_normal_actions": 5' in preview_before_grants
+        assert '"provider_attempt_limit": 5' in preview_before_grants
+    assert int(
+        preview_before_grants.split('"max_normal_actions": ', 1)[1].split(",", 1)[0]
+    ) == inspection["normal_action_limit"]
     if scenario in {"retry-once", "retry-always", "revision-retry"}:
         assert inspection["retry_attempts_consumed"] == (
             2 if scenario == "retry-always" else 1
