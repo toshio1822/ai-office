@@ -87,6 +87,10 @@ def test_note_review_contract_matches_finite_revision_engine() -> None:
         "Requested correction:",
     ):
         assert required_field in instructions
+    assert "### Finding 1" in instructions
+    assert "### Finding 2" in instructions
+    assert "assignment:L<line-number>" in instructions
+    assert "never add identifiers to or rewrite" in instructions
     assert "Do not require technical Evidence A–D" in instructions
     assert "PASS never authorizes acceptance or publication" in instructions
 

@@ -1571,6 +1571,21 @@ def _review_verdict(
             evidence_reference = _normalized_reference(
                 item["Evidence source/reference"]
             )
+            if _assignment_line_reference_matches(
+                item["Evidence source/reference"], assignment_text
+            ):
+                location_quotes = re.findall(
+                    r"`([^`]+)`", item["Artifact location"]
+                )
+                if (
+                    source_is_bound
+                    and location_quotes
+                    and all(quote in source_content for quote in location_quotes)
+                ):
+                    continue
+                raise WorkflowJobAuthorizationError(
+                    "document_job_unverified_finding"
+                )
             if evidence_reference in assignment_references:
                 continue
             cited_reference_ids = _reference_ids(
@@ -1591,6 +1606,16 @@ def _review_verdict(
                 continue
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     return verdict
+
+
+def _assignment_line_reference_matches(reference: str, assignment: str) -> bool:
+    """Verify a line citation against the exact immutable assignment text."""
+    match = re.fullmatch(r"assignment:L([1-9][0-9]*)\s+`([^`\n]+)`", reference)
+    if match is None:
+        return False
+    line_number = int(match.group(1))
+    lines = assignment.splitlines()
+    return line_number <= len(lines) and match.group(2) in lines[line_number - 1]
 
 
 def _normalized_reference(value: str) -> str:

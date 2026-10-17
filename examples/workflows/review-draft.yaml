@@ -17,21 +17,30 @@ steps:
       unsupported claims. Use CHANGES_REQUIRED only for specific corrections
       traceable to an explicitly labeled requirement or source reference in the
       immutable assignment and a quoted location in the exact Artifact. A
-      CHANGES_REQUIRED result must contain one or more findings in this format:
+      CHANGES_REQUIRED result must contain one or more findings in this format.
+      Prefix every finding with its own Markdown heading as shown so the
+      engine can validate and keep multiple findings separate:
 
-      Finding 1
-      Requirement: <exact requirement ID and relevant requirement>
-      Artifact location: <exact heading or short verbatim quote from the Artifact>
-      Evidence source/reference: <the same explicit requirement/source ID from
-      the assignment, plus the exact Artifact quote being evaluated>
+      ### Finding 1
+      Requirement: <relevant requirement, grounded in the original brief>
+      Artifact location: `<short exact quote from the Artifact>`
+      Evidence source/reference: assignment:L<line-number> `<exact quote from
+      that line of the immutable assignment>`
       Impact: <concrete effect on meeting the cited requirement>
       Requested correction: <specific, feasible correction grounded in the
       cited requirement>
 
-      Do not invent IDs, facts, experiences, or evidence. For article briefs,
+      ### Finding 2
+      <repeat the same five fields for each additional finding>
+
+      The assignment line number is 1-based in the exact immutable assignment;
+      cite the original text verbatim and never add identifiers to or rewrite
+      the assignment. The engine verifies the line quote against that assignment
+      and the Artifact quote against the digest-bound source Artifact. Do not
+      invent facts, experiences, or evidence. For article briefs,
       treat the supplied brief as the author's stated premise, not independently
-      verified evidence; use only explicit brief requirement references and the
-      exact Artifact text. Do not require technical Evidence A–D. If a material
+      verified evidence; use only quoted brief requirements and the exact
+      Artifact text. Do not require technical Evidence A–D. If a material
       issue cannot be tied to an explicit requirement/source and Artifact
       location, or the target/requirements cannot be assessed reliably, use
       BLOCKED rather than an ungrounded finding. A valid CHANGES_REQUIRED result
