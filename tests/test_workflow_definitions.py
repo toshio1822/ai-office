@@ -72,6 +72,25 @@ def test_load_workflow_file_loads_valid_yaml_and_preserves_step_order(
     assert [step.id for step in loaded.definition.steps] == ["research", "summarize"]
 
 
+def test_note_review_contract_matches_finite_revision_engine() -> None:
+    source = Path(__file__).parents[1] / "examples/workflows/review-draft.yaml"
+    loaded = load_workflow_file(source).definition
+    instructions = " ".join(loaded.steps[0].instructions.split())
+
+    assert "every non-PASS result as a safe stop" not in instructions
+    assert "advances to the already-authorized finite revision" in instructions
+    for required_field in (
+        "Requirement:",
+        "Artifact location:",
+        "Evidence source/reference:",
+        "Impact:",
+        "Requested correction:",
+    ):
+        assert required_field in instructions
+    assert "Do not require technical Evidence A–D" in instructions
+    assert "PASS never authorizes acceptance or publication" in instructions
+
+
 def test_workflow_artifact_content_type_is_explicit_and_validated(
     tmp_path: Path,
 ) -> None:
