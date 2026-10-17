@@ -94,6 +94,13 @@ destinations:
       x-opencode-session: "{run_session}"
 ```
 
+The registry also includes `opencode-go-deepseek-v4-pro-chat`, which uses the
+same Go Chat Completions endpoint and safe headers with only the model changed
+to `deepseek-v4-pro`. Keep `opencode-go-glm-chat` unchanged so existing Run
+fingerprints and evidence retain their original meaning. Adding this named
+destination is configuration-only: preview it offline, and treat any provider
+execution as a separate, explicitly authorized pilot.
+
 ## OpenCode Go usage caveats
 
 The Go sample is a secret-free, offline-testable destination candidate for a

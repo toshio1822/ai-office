@@ -375,6 +375,59 @@ def test_header_change_invalidates_preview_before_credential(
     assert key_calls == []
 
 
+def test_deepseek_go_destination_preview_is_exact_and_offline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry_path = ROOT / "docs/examples/openai-compatible-destinations.yaml"
+    registry = load_execution_destination_registry(registry_path)
+    glm = registry.resolve("opencode-go-glm-chat")
+    deepseek = registry.resolve("opencode-go-deepseek-v4-pro-chat")
+
+    assert glm.target.endpoint == deepseek.target.endpoint == (
+        "https://opencode.ai/zen/go/v1/chat/completions"
+    )
+    assert glm.target.protocol == deepseek.target.protocol == (
+        "openai-chat-completions"
+    )
+    assert glm.select_model("glm-5.3-flash") == "glm-5.3-flash"
+    assert deepseek.select_model("deepseek-v4-pro") == "deepseek-v4-pro"
+    assert deepseek.target.request_headers == glm.target.request_headers
+
+    def unexpected_credential_lookup(_target: object) -> object:
+        pytest.fail("preview must not load credentials")
+
+    def unexpected_transport(_request: object) -> object:
+        pytest.fail("preview must not call the provider")
+
+    monkeypatch.setattr(
+        cli_module, "load_api_key_for_execution_target", unexpected_credential_lookup
+    )
+    monkeypatch.setattr(
+        cli_module, "send_openai_responses_http_request", unexpected_transport
+    )
+    args = _start_args(
+        tmp_path / "runs",
+        registry_path,
+        "deepseek-v4-pro-offline-preview",
+        "opencode-go-deepseek-v4-pro-chat",
+        "deepseek-v4-pro",
+    )
+    result = runner.invoke(app, args + ["--preview-only"])
+    assert result.exit_code == 0, (result.stderr, result.stdout)
+    preview = json.loads(result.stdout)
+    assert preview["execution_target"]["provider"] == (
+        "opencode-go-deepseek-v4-pro-chat"
+    )
+    assert preview["execution_target"]["endpoint"] == deepseek.target.endpoint
+    assert preview["execution_target"]["protocol"] == deepseek.target.protocol
+    assert preview["model"] == "deepseek-v4-pro"
+    assert preview["execution_target"]["request_headers"] == [
+        {"name": "User-Agent", "value": "ai-office/1.0"},
+        {"name": "x-opencode-session", "value": SESSION_MARKER},
+    ]
+    assert not (tmp_path / "runs").exists()
+
+
 def test_continuation_cannot_switch_header_policy(tmp_path: Path, monkeypatch) -> None:
     registry = tmp_path / "destinations.yaml"
     _write_registry(

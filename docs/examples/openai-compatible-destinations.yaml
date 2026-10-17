@@ -39,3 +39,14 @@ destinations:
     headers:
       User-Agent: ai-office/1.0
       x-opencode-session: "{run_session}"
+
+  # Model-only alternative for the separately authorized DeepSeek V4 Pro pilot.
+  opencode-go-deepseek-v4-pro-chat:
+    protocol: openai-chat-completions
+    endpoint: https://opencode.ai/zen/go/v1/chat/completions
+    credential: OPENCODE_API_KEY
+    models:
+      - deepseek-v4-pro
+    headers:
+      User-Agent: ai-office/1.0
+      x-opencode-session: "{run_session}"
