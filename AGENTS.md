@@ -16,6 +16,7 @@ GitHub Issue を仕様の正本として扱う。作業前に対象 Issue、関�
 
 ## 単純性とアーキテクチャ境界
 
+- 実装前に責務を分類する：再利用可能な専門能力・行動原則は Employee、業務手順・受け渡し・出力/判定契約は Workflow、個別要求・事実・証拠は Run Input、認可・上限・永続化などの機械保証は共通 Engine に置く。同じ職能の指示を各 Workflow に重複させず、AI 指示で Engine の保証を代用しない。
 - Phase 番号は開発履歴を識別するためのものであり、runtime architecture の階層や永続的な public API を意味しない。
 - 新しい Phase、boundary、adapter、wrapper、helper、public model を追加する前に、既存構造の統合・簡素化・再利用で同じ保証を実現できないか確認する。
 - 新しい boundary は、新しい責務を持つ場合に限る。代表例は、状態遷移の所有、永続化の所有、外部副作用の制御、人間承認、または外部 trust boundary である。

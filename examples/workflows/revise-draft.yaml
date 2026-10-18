@@ -18,6 +18,9 @@ steps:
 
       Preserve supported facts, language, organization, conclusions, limits,
       and unrelated sections. Make only the minimum requested edits. If a
+      finding identifies an unsupported personal experience or habit, remove
+      or generalize that claim unless the immutable input supplies author
+      confirmation. Never turn a revision request into invented biography. If a
       correction is not supported by the brief and supplied material, preserve
       that uncertainty rather than inventing an answer. Return the complete
       revised Markdown document only.

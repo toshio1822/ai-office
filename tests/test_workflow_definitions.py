@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ai_office.definitions.employee import EmployeeDefinition, LoadedEmployee
+from ai_office.definitions.employee import (
+    EmployeeDefinition,
+    LoadedEmployee,
+    load_employees,
+)
 from ai_office.definitions.workflow import (
     WorkflowLoadError,
     load_workflow_file,
@@ -72,33 +76,86 @@ def test_load_workflow_file_loads_valid_yaml_and_preserves_step_order(
     assert [step.id for step in loaded.definition.steps] == ["research", "summarize"]
 
 
-def test_note_review_contract_matches_finite_revision_engine() -> None:
-    source = Path(__file__).parents[1] / "examples/workflows/review-draft.yaml"
-    loaded = load_workflow_file(source).definition
-    instructions = " ".join(loaded.steps[0].instructions.split())
+def test_review_workflow_uses_specialist_and_keeps_business_contract() -> None:
+    root = Path(__file__).parents[1]
+    workflow = load_workflow_file(
+        root / "examples/workflows/review-draft.yaml"
+    ).definition
+    assert len(workflow.steps) == 1
+    step = workflow.steps[0]
+    assert step.employee == "document-reviewer"
+    assert step.business_approval_required is True
+    assert step.artifact_content_type == "text/markdown"
 
-    assert "every non-PASS result as a safe stop" not in instructions
-    assert "advances to the already-authorized finite revision" in instructions
-    for required_field in (
-        "Requirement:",
-        "Artifact location:",
-        "Evidence source/reference:",
-        "Impact:",
-        "Requested correction:",
-    ):
-        assert required_field in instructions
-    assert "### Finding 1" in instructions
-    assert "### Finding 2" in instructions
-    assert "assignment:L<line-number>" in instructions
-    assert "never add identifiers to or rewrite" in instructions
-    assert "Do not require technical Evidence A–D" in instructions
-    assert "Unresolved material issues: none" in instructions
-    assert "### Check 1" in instructions
-    assert "Assessment:" in instructions
-    assert "newest revised Artifact against" in instructions
-    assert "bare or malformed PASS" in instructions
-    assert "do not claim otherwise" in instructions
-    assert "PASS never authorizes acceptance or publication" in instructions
+    # Freeze the output/handoff contract, not the Employee's reusable review
+    # reasoning or its exact prompt phrasing.
+    instructions = step.instructions
+    assert all(
+        verdict in instructions
+        for verdict in (
+            "Verdict: PASS",
+            "Verdict: CHANGES_REQUIRED",
+            "Verdict: BLOCKED",
+        )
+    )
+    assert all(
+        field in instructions
+        for field in (
+            "Requirement:",
+            "Artifact location:",
+            "Evidence source/reference:",
+            "Impact:",
+            "Requested correction:",
+            "Assessment:",
+        )
+    )
+    assert "newest Artifact" in instructions
+    assert "PASS is only a human-acceptance candidate" in instructions
+
+
+def test_note_writer_and_revision_workflows_keep_their_assigned_roles() -> None:
+    root = Path(__file__).parents[1]
+    note_workflow = load_workflow_file(
+        root / "examples/workflows/note-article-draft.yaml"
+    ).definition
+    review_workflow = load_workflow_file(
+        root / "examples/workflows/revise-draft.yaml"
+    ).definition
+    assert note_workflow.steps[0].employee == "japanese-document-writer"
+    assert review_workflow.steps[0].employee == "japanese-document-writer"
+    assert note_workflow.steps[0].business_approval_required is True
+    assert review_workflow.steps[0].business_approval_required is True
+    assert note_workflow.steps[0].artifact_content_type == "text/markdown"
+    assert review_workflow.steps[0].artifact_content_type == "text/markdown"
+
+
+def test_dedicated_reviewer_definition_is_generic_and_reusable() -> None:
+    root = Path(__file__).parents[1]
+    reviewers = load_employees(root / "employees")
+    workflows = load_workflows(root / "examples/workflows")
+    validate_workflow_employee_references(workflows, reviewers)
+    employee = next(
+        item.definition
+        for item in reviewers
+        if item.definition.id == "document-reviewer"
+    )
+    assert employee.allowed_tools == []
+    assert employee.role
+    assert employee.instructions
+    assert not any(
+        issue_specific in f"{employee.role}\n{employee.instructions}"
+        for issue_specific in (
+            "Issue #764",
+            "793b6a3a",
+            "私も以前はそうだった",
+        )
+    )
+    researcher = next(
+        item.definition
+        for item in reviewers
+        if item.definition.id == "general-researcher"
+    )
+    assert "Gathers and organizes information" in researcher.role
 
 
 def test_workflow_artifact_content_type_is_explicit_and_validated(

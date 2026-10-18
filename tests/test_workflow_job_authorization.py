@@ -2711,6 +2711,78 @@ def test_note_findings_can_cite_verbatim_lines_of_unchanged_assignment() -> None
     assert caught.value.classification == "document_job_unverified_finding"
 
 
+def test_issue_772_personal_history_findings_and_supported_first_person_stay_distinct(
+) -> None:
+    from ai_office.engine.workflow_bounded_job import _review_verdict
+
+    assignment = (
+        "著者の一人称で書く。\n"
+        "私は複雑な仕事に取りかかるとき、まず「不明点リスト」を作る。\n"
+        "著者が未提示の実体験・過去の経験・個人的な習慣などを、"
+        "与えられていないのに実体験として捏造しない。"
+    )
+    unsupported_claims = (
+        "私も以前はそうだった。",
+        "私は「技術」「仕様」「人」「リスク」の4つに分けることが多い。",
+        "私はすべての不明点を一度に潰そうとはしない。",
+    )
+    artifact = "\n".join(unsupported_claims)
+    artifact_bytes = artifact.encode("utf-8")
+    review_input = json.dumps(
+        {
+            "assignment": assignment,
+            "source_artifact": {
+                "artifact_id": "issue-772-fixture",
+                "content": artifact,
+                "content_length": len(artifact_bytes),
+                "content_sha256": sha256(artifact_bytes).hexdigest(),
+            },
+        },
+        ensure_ascii=False,
+    )
+    findings = [
+        f"### Finding {index}\n"
+        "Requirement: Do not invent unsupplied personal experiences or habits.\n"
+        f"Artifact location: `{claim}`\n"
+        "Evidence source/reference: assignment:L3 `"
+        "著者が未提示の実体験・過去の経験・個人的な習慣などを、"
+        "与えられていないのに実体験として捏造しない。`\n"
+        "Impact: This states unsupported author history as fact.\n"
+        "Requested correction: Remove or generalize the claim, or move it to an "
+        "author-confirmation note outside the article."
+        for index, claim in enumerate(unsupported_claims, start=1)
+    ]
+    review = "Verdict: CHANGES_REQUIRED\n\n" + "\n\n".join(findings)
+
+    assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
+
+    supported_artifact = "私は複雑な仕事に取りかかるとき、まず「不明点リスト」を作る。"
+    supported_bytes = supported_artifact.encode("utf-8")
+    supported_input = json.dumps(
+        {
+            "assignment": assignment,
+            "source_artifact": {
+                "artifact_id": "issue-772-supported-fixture",
+                "content": supported_artifact,
+                "content_length": len(supported_bytes),
+                "content_sha256": sha256(supported_bytes).hexdigest(),
+            },
+        },
+        ensure_ascii=False,
+    )
+    supported_pass = (
+        "Verdict: PASS\n"
+        "Unresolved material issues: none\n\n"
+        "### Check 1\n"
+        "Requirement: Use the supplied author voice and supported fact.\n"
+        f"Artifact location: `{supported_artifact}`\n"
+        "Evidence source/reference: assignment:L2 `"
+        "私は複雑な仕事に取りかかるとき、まず「不明点リスト」を作る。`\n"
+        "Assessment: This first-person claim is explicitly supported by the brief."
+    )
+    assert _review_verdict(supported_pass, review_input=supported_input) == "PASS"
+
+
 def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
     tmp_path: Path,
 ) -> None:
@@ -2733,7 +2805,7 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
         employee_id: load_employee_file(
             repository / "employees" / f"{employee_id}.yaml"
         )
-        for employee_id in ("japanese-document-writer", "general-researcher")
+        for employee_id in ("japanese-document-writer", "document-reviewer")
     }
     assignment = (
         "**タイトル案**：複雑な仕事を抱え込まないために、20年SEの私がやっている“外に出す”整理術\n"
@@ -2779,7 +2851,7 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
             "note-review-template",
             assignment,
             workflows["review-draft"],
-            (employees["general-researcher"],),
+            (employees["document-reviewer"],),
             execution_target=target,
         ),
         "revise-draft": create_workflow_run_manifest(
@@ -2799,9 +2871,9 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
             "japanese-document-writer",
             "assignment",
         ),
-        ("review-draft", "review", 1, "general-researcher", "review_input"),
+        ("review-draft", "review", 1, "document-reviewer", "review_input"),
         ("revise-draft", "revise", 1, "japanese-document-writer", "revision_input"),
-        ("review-draft", "review", 1, "general-researcher", "re_review_input"),
+        ("review-draft", "review", 1, "document-reviewer", "re_review_input"),
     )
     slots = []
     for ordinal, (

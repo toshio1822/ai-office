@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -3147,6 +3148,58 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
     assert len(preview["request_fingerprint"]) == 64
     assert not paths["state"].exists()
     assert not paths["events"].exists()
+    assert calls == []
+    assert key_calls == []
+
+
+def test_review_draft_resolves_specialist_into_preview_and_provider_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = Path(__file__).parents[1]
+    paths = workflow_command_paths(tmp_path)
+    shutil.copy(
+        root / "examples/workflows/review-draft.yaml",
+        paths["workflows"] / "review-draft.yaml",
+    )
+    shutil.copy(
+        root / "employees/document-reviewer.yaml",
+        paths["employees"] / "document-reviewer.yaml",
+    )
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+
+    preview_result, preview = preview_command("start", "review-draft", paths)
+    assert preview_result.exit_code == 0
+    employee = load_employees(paths["employees"])[0].definition
+    assert preview["employee_id"] == employee.id
+    assert preview["system_instructions"] == employee.instructions
+    assert "Verdict: CHANGES_REQUIRED" in preview["task_instructions"]
+    assert "Requested correction:" in preview["task_instructions"]
+    assert calls == []
+    assert key_calls == []
+
+    request_result = runner.invoke(
+        app,
+        [
+            "workflows",
+            "provider-json",
+            "openai",
+            "review-draft",
+            "1",
+            "--directory",
+            str(paths["workflows"]),
+            "--employees-directory",
+            str(paths["employees"]),
+        ],
+    )
+    assert request_result.exit_code == 0, request_result.stderr
+    json_text = request_result.stdout.removeprefix(
+        "Provider: openai\nJSON payload:\n"
+    )
+    payload = json.loads(json_text)
+    assert payload["instructions"] == employee.instructions
+    assert "Requested correction:" in payload["input"]
     assert calls == []
     assert key_calls == []
 
