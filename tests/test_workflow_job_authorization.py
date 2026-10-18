@@ -111,7 +111,11 @@ from tests._run_test_support import create_test_run
 def _grounded_pass_for_request(request) -> str:
     """Build a structural PASS fixture grounded in the exact provider input."""
     payload = json.loads(request.body)
-    task_input = json.loads(payload["input"])
+    task_input = (
+        json.loads(payload["input"])
+        if "input" in payload
+        else json.loads(payload["messages"][1]["content"])
+    )
     review_input = json.loads(task_input["run_input"])
     assignment_lines = review_input["assignment"].splitlines()
     assignment_line_number, assignment_line = next(
