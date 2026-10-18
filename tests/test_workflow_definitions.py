@@ -8,6 +8,7 @@ import yaml
 from ai_office.definitions.employee import (
     EmployeeDefinition,
     LoadedEmployee,
+    load_employee_file,
     load_employees,
 )
 from ai_office.definitions.workflow import (
@@ -115,10 +116,30 @@ def test_review_workflow_uses_specialist_and_keeps_business_contract() -> None:
 def test_article_writer_and_revision_steps_keep_their_assigned_roles() -> None:
     root = Path(__file__).parents[1]
     workflow = load_workflow_file(root / "workflows/article-production.yaml").definition
-    assert workflow.steps[0].employee == "japanese-document-writer"
-    assert workflow.steps[2].employee == "japanese-document-writer"
+    assert workflow.steps[0].employee == "article-writer"
+    assert workflow.steps[2].employee == "article-writer"
     assert all(step.business_approval_required for step in workflow.steps)
     assert all(step.artifact_content_type == "text/markdown" for step in workflow.steps)
+    assert "language" in workflow.steps[0].instructions
+    assert "supplied brief" in workflow.steps[0].instructions
+    assert "general-researcher" not in [step.employee for step in workflow.steps]
+
+
+def test_article_writer_definition_is_medium_and_language_agnostic() -> None:
+    root = Path(__file__).parents[1]
+    writer = load_employee_file(root / "employees" / "article-writer.yaml").definition
+    assert writer.id == "article-writer"
+    text = f"{writer.name}\n{writer.role}\n{writer.instructions}"
+    assert "Japanese" not in text
+    assert "日本語" not in text
+    assert "internal document" not in text.lower()
+    assert "Run input" in writer.instructions
+    assert "Do not invent" in writer.instructions
+    normalized = writer.instructions.replace("\n", " ")
+    assert "personal experiences" in normalized
+    assert "grounded review findings" in normalized
+    assert writer.model == "gpt-5-mini"
+    assert writer.allowed_tools == []
 
 
 def test_dedicated_reviewer_definition_is_generic_and_reusable() -> None:

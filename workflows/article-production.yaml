@@ -9,7 +9,7 @@ bounded_review:
 steps:
   - id: write-draft
     name: Write Draft
-    employee: japanese-document-writer
+    employee: article-writer
     instructions: |
       Write an article draft in the language, format, and for the medium
       specified by the supplied brief. Preserve its central claim, audience, and
@@ -91,7 +91,7 @@ steps:
     artifact_content_type: text/markdown
   - id: revise
     name: Revise Artifact
-    employee: japanese-document-writer
+    employee: article-writer
     instructions: |
       Revise the exact supplied Artifact only to address actionable
       findings in the supplied independent review that are traceable to the

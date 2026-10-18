@@ -30,6 +30,8 @@ model: codex
 allowed_tools: []
 ```
 
+現行の `article-production` が参照する社員は、執筆・改訂を担う `article-writer` と独立レビューを担う `document-reviewer` です。`general-researcher` は現在どのWorkflowからも参照されておらず、将来の調査付きWorkflow向けに保持しています。
+
 一覧表示と事前検証には次を使用します。`--directory` で別の定義ディレクトリを指定できます。
 
 ```bash
@@ -54,7 +56,7 @@ bounded_review:
 steps:
   - id: write-draft
     name: Write Draft
-    employee: japanese-document-writer
+    employee: article-writer
     instructions: Write an article from the supplied brief.
   - id: review
     name: Review
@@ -62,7 +64,7 @@ steps:
     instructions: Return a grounded PASS, CHANGES_REQUIRED, or BLOCKED verdict.
   - id: revise
     name: Revise
-    employee: japanese-document-writer
+    employee: article-writer
     instructions: Revise only grounded findings.
 ```
 

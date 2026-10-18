@@ -4,7 +4,7 @@ description: Test-only single-step document workflow for provider and header con
 steps:
   - id: draft
     name: Draft
-    employee: japanese-document-writer
+    employee: article-writer
     instructions: Write the requested Markdown document from the supplied input.
     business_approval_required: true
     artifact_content_type: text/markdown
