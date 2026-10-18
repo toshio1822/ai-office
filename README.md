@@ -40,19 +40,30 @@ ai-office employees list --directory path/to/employees
 
 ## ワークフロー定義
 
-ワークフロー定義は `workflows/` 直下の `.yaml` または `.yml` ファイルに記載します。`steps` の配列順が実行計画上の順序です。
+ワークフロー定義は `workflows/` 直下の `.yaml` または `.yml` ファイルに記載します。現行の選択可能な定義は媒体非依存の `article-production` 1件です。工程と有限の判定分岐は同じ定義を正本とし、媒体・テーマ・根拠などはRun Inputで指定します。
 
 ```yaml
-id: research-and-summarize
-name: Research and Summarize
-description: Researches an assigned topic and produces a summary.
-
+id: article-production
+name: Article Production
+description: Creates and independently reviews an article.
+bounded_review:
+  initial_steps: [write-draft]
+  review_step: review
+  revision_step: revise
+  max_revisions: 3
 steps:
-  - id: research
-    name: Research
-    employee: general-researcher
-    instructions: |
-      Gather and organize relevant information for the assigned topic.
+  - id: write-draft
+    name: Write Draft
+    employee: japanese-document-writer
+    instructions: Write an article from the supplied brief.
+  - id: review
+    name: Review
+    employee: document-reviewer
+    instructions: Return a grounded PASS, CHANGES_REQUIRED, or BLOCKED verdict.
+  - id: revise
+    name: Revise
+    employee: japanese-document-writer
+    instructions: Revise only grounded findings.
 ```
 
 一覧表示と事前検証には次を使用します。`--directory` と `--employees-directory` で別の定義ディレクトリを指定できます。
@@ -66,8 +77,8 @@ ai-office workflows list --directory path/to/workflows --employees-directory pat
 特定のworkflowの決定的な実行計画を確認するには、次を使用します。
 
 ```bash
-ai-office workflows plan research-and-summarize
-ai-office workflows plan research-and-summarize \
+ai-office workflows plan article-production
+ai-office workflows plan article-production \
   --directory path/to/workflows \
   --employees-directory path/to/employees
 ```
@@ -77,8 +88,8 @@ ai-office workflows plan research-and-summarize \
 特定stepの構造化された実行要求を確認するには、1始まりのstep indexを指定します。
 
 ```bash
-ai-office workflows request research-and-summarize 1
-ai-office workflows request research-and-summarize 1 \
+ai-office workflows request article-production 1
+ai-office workflows request article-production 1 \
   --directory path/to/workflows \
   --employees-directory path/to/employees
 ```
@@ -88,8 +99,8 @@ ai-office workflows request research-and-summarize 1 \
 特定stepを将来のAIプロバイダーへ渡すための、provider非依存のモデル呼び出し要求として確認するには次を使用します。
 
 ```bash
-ai-office workflows invocation research-and-summarize 1
-ai-office workflows invocation research-and-summarize 1 \
+ai-office workflows invocation article-production 1
+ai-office workflows invocation article-production 1 \
   --directory path/to/workflows \
   --employees-directory path/to/employees
 ```
@@ -101,8 +112,8 @@ ai-office workflows invocation research-and-summarize 1 \
 provider非依存のモデル呼び出し要求を、OpenAI Responses API向けの実行前情報へ決定的に変換できます。
 
 ```bash
-ai-office workflows provider-request openai research-and-summarize 1
-ai-office workflows provider-request openai research-and-summarize 1 \
+ai-office workflows provider-request openai article-production 1
+ai-office workflows provider-request openai article-production 1 \
   --directory path/to/workflows \
   --employees-directory path/to/employees
 ```
@@ -114,8 +125,8 @@ ai-office workflows provider-request openai research-and-summarize 1 \
 workflow stepのallowed tool名を、プロバイダー非依存の静的なtool定義へ解決できます。
 
 ```bash
-ai-office workflows resolve-tools research-and-summarize 1
-ai-office workflows resolve-tools research-and-summarize 1 \
+ai-office workflows resolve-tools article-production 1
+ai-office workflows resolve-tools article-production 1 \
   --directory path/to/workflows \
   --employees-directory path/to/employees
 ```
@@ -127,8 +138,8 @@ Tool名は完全一致で解決され、順序・重複・大文字小文字・�
 解決済みの`ToolDefinition`を、OpenAI Responses向けの不変なfunction tool schemaモデルへ決定的に変換できます。
 
 ```bash
-ai-office workflows provider-tools openai research-and-summarize 1
-ai-office workflows provider-tools openai research-and-summarize 1 \
+ai-office workflows provider-tools openai article-production 1
+ai-office workflows provider-tools openai article-production 1 \
   --directory path/to/workflows \
   --employees-directory path/to/employees
 ```
@@ -140,7 +151,7 @@ ai-office workflows provider-tools openai research-and-summarize 1 \
 OpenAI固有の基本request情報と、解決・変換済みのfunction tool schemaを、送信直前の不変な`OpenAIResponsesPayload`へ統合できます。
 
 ```bash
-ai-office workflows provider-payload openai research-and-summarize 1
+ai-office workflows provider-payload openai article-production 1
 ```
 
 payloadには未解決の`allowed_tool_names`を含めず、解決・変換済みの`tools`だけを保持します。toolが0件でも`tools=()`を明示的に保持し、順序・重複・空白・改行・大文字小文字・Unicodeを加工しません。これはdict payload、JSON、HTTP request bodyではなく、API呼び出し、SDK、HTTP通信、APIキー、課金、tool実行、Runtime、response処理も伴いません。
@@ -150,7 +161,7 @@ payloadには未解決の`allowed_tool_names`を含めず、解決・変換済�
 `OpenAIResponsesPayload`を、JSON互換のPython辞書へ決定的に変換できます。
 
 ```bash
-ai-office workflows provider-dict-payload openai research-and-summarize 1
+ai-office workflows provider-dict-payload openai article-production 1
 ```
 
 辞書のkey順序は保持され、toolsはtupleからlistへ、requiredはtupleからlistへ変換されます。`additional_properties`は`additionalProperties`へ変換し、property名は`properties`辞書のkeyとして使用します。同名propertyが複数ある場合は後の値が上書きしますが、keyの位置は最初の挿入位置を保持します。toolとrequiredの順序・重複は保持し、toolが0件でも`tools: []`、空propertiesは`{}`、空requiredは`[]`として明示します。
@@ -162,7 +173,7 @@ ai-office workflows provider-dict-payload openai research-and-summarize 1
 JSON互換Python辞書を、決定的なJSON文字列へ変換できます。
 
 ```bash
-ai-office workflows provider-json openai research-and-summarize 1
+ai-office workflows provider-json openai article-production 1
 ```
 
 compact serializerは不要な空白なし、pretty serializerは2 space indentで出力します。いずれも入力辞書を変更せずに挿入順序を保持し、`sort_keys=True`は使わず、`ensure_ascii=False`でUnicodeを保持します。tools、properties、requiredの順序と重複、空文字列、空list、空dict、JSONの`true` / `false`、`None`からJSONの`null`への変換を保持します。改行・引用符・バックスラッシュはJSON仕様に従ってescapeされ、compact版とpretty版はparse後に同じ構造になります。CLIの`JSON payload:`以降はparse可能なpretty JSONです。
@@ -174,7 +185,7 @@ JSONファイル出力、HTTP request body送信、OpenAI API・SDK・HTTP通信
 Phase 11のcompact JSONを、未認証かつ不変のHTTP request templateへ配置できます。
 
 ```bash
-ai-office workflows provider-http-request openai research-and-summarize 1
+ai-office workflows provider-http-request openai article-production 1
 ```
 
 templateは`POST`、`https://api.openai.com/v1/responses`、順序付きの`Content-Type: application/json`、変更しないcompact JSON bodyだけを保持します。Authorization headerは含まず、API keyや環境変数を読まず、HTTP通信、API呼び出し、課金は発生しません。Phase 13のAuthentication Boundaryが明示入力のAPI keyを安全に付加します。
@@ -3583,23 +3594,20 @@ preview を表示し、その出力を確認してから、同じ step を実行
 値を明示的に返します。
 
 ```bash
-# preview: 状態・イベント・API key・provider transportを変更しない
-ai-office workflows start research-and-summarize \
-  --state-path state.json --events-path events.json --preview-only
-
-# execution: previewから次の4値をそのまま指定する
-ai-office workflows start research-and-summarize \
-  --state-path state.json --events-path events.json \
-  --approve-preparation --approve-execution \
-  --approved-by operator --approval-id approval-20260904-001 \
-  --expected-step-id research --expected-step-index 1 \
-  --expected-employee-id general-researcher \
-  --expected-request-fingerprint <previewのrequest_fingerprint>
-
-# step 1成功後は、同じpreview-first手順で次の1 stepだけcontinueする
-ai-office workflows continue research-and-summarize \
-  --state-path state.json --events-path events.json --preview-only
+# article-production の入力と初稿工程の読み取り専用preview
+ai-office workflows start article-production \
+  --run-id article-preview \
+  --run-input-file /private/path/article-brief.txt \
+  --preview-only
 ```
+
+`article-production` の実実行は `workflows bounded-job-run` を使用します。
+`start` による単独実行および `continue` による同一Run内レビューは拒否されます。
+これにより執筆者のprivate sessionを独立レビューへ継承しません。
+単一定義からの有限計画、工程ごとの独立Run、承認と停止条件は
+[記事制作Jobの運用境界](docs/runbooks/article-production.md)を参照してください。
+以下の単一step実行説明は、別途定義した通常の逐次Workflow向けです。
+
 
 executionでは、`expected-step-id`、`expected-step-index`、
 `expected-employee-id`、`expected-request-fingerprint` の4値が、再計算した
@@ -3659,15 +3667,15 @@ provider input と fingerprint の互換性を維持します。
 ## Phase 218: restart-safeなworkflow result inspection
 
 永続化済みworkflowの現在のbusiness resultを、プロセス再起動後に
-read-onlyで確認するには、次を使用します。
+read-onlyで確認するには、次を使用します。この節は別途定義した通常の逐次Workflow向けです。記事制作Jobは `workflows bounded-job JOB_ID` で確認します。
 
 ```bash
-ai-office workflows result research-and-summarize \
+ai-office workflows result <custom-workflow-id> \
   --state-path state.json \
   --events-path events.jsonl
 
 # 定義ディレクトリを明示する場合
-ai-office workflows result research-and-summarize \
+ai-office workflows result <custom-workflow-id> \
   --state-path state.json \
   --events-path events.jsonl \
   --directory path/to/workflows \

@@ -194,9 +194,7 @@ def validate_employees(
     typer.echo(f"Validated {len(employees)} employee definition(s).")
 
 
-def _load_validated_definitions_or_exit(
-    directory: Path, employees_directory: Path
-):
+def _load_validated_definitions_or_exit(directory: Path, employees_directory: Path):
     try:
         workflows = load_workflows(directory)
         employees = load_employees(employees_directory)
@@ -459,9 +457,7 @@ def _display_openai_responses_dictionary_payload(
             for property_name, property_value in properties.items():
                 typer.echo(f"          {property_name}:")
                 typer.echo(f"            type: {property_value['type']}")
-                typer.echo(
-                    f"            description: {property_value['description']}"
-                )
+                typer.echo(f"            description: {property_value['description']}")
         required = parameters["required"]
         if not required:
             typer.echo("        required: []")
@@ -539,9 +535,7 @@ def _load_run_store_or_exit(root: Path) -> WorkflowRunManifestStore:
         _workflow_cli_error("Run storage namespace is invalid or unavailable")
 
 
-def _load_run_manifest_or_exit(
-    store: WorkflowRunManifestStore, run_id: str
-) -> object:
+def _load_run_manifest_or_exit(store: WorkflowRunManifestStore, run_id: str) -> object:
     """Load one exact immutable Manifest without consulting live definitions."""
     try:
         return load_workflow_run_manifest(store, run_id)
@@ -603,9 +597,7 @@ def _build_start_manifest_preview(
         _workflow_cli_error("fresh Run definition or input is invalid")
 
 
-def _resolve_run_input(
-    run_input: str | None, run_input_file: Path | None
-) -> str:
+def _resolve_run_input(run_input: str | None, run_input_file: Path | None) -> str:
     """Select one exact Run input without exposing file contents in argv."""
     if (run_input is None) == (run_input_file is None):
         _workflow_cli_error("provide exactly one of --run-input or --run-input-file")
@@ -771,9 +763,7 @@ def _load_api_key_for_target(target: ModelExecutionTarget) -> OpenAIApiKey:
     return load_api_key_for_execution_target(target)
 
 
-def _select_workflow_or_exit(
-    workflows: list[object], workflow_id: str
-) -> object:
+def _select_workflow_or_exit(workflows: list[object], workflow_id: str) -> object:
     """Select the requested loaded workflow without inspecting execution state."""
     try:
         return find_workflow_by_id(workflows, workflow_id)
@@ -1254,15 +1244,7 @@ def run_bounded_document_job_workflow(
     execution_target: str = typer.Option(..., "--execution-target"),
     execution_destinations: Path = typer.Option(..., "--execution-destinations"),
     execution_model: str = typer.Option(..., "--execution-model"),
-    creator_workflow_id: str = typer.Option(
-        "research-and-summarize", "--creator-workflow"
-    ),
-    review_workflow_id: str = typer.Option(
-        "review-supplied-artifact", "--review-workflow"
-    ),
-    revision_workflow_id: str = typer.Option(
-        "revise-reviewed-artifact", "--revision-workflow"
-    ),
+    workflow_id: str = typer.Option("article-production", "--workflow"),
     max_revisions: int = typer.Option(1, "--max-revisions", min=0),
     max_retries: int = typer.Option(0, "--max-retries", min=0, max=2),
     retry_interval_seconds: int = typer.Option(
@@ -1277,6 +1259,8 @@ def run_bounded_document_job_workflow(
     from ai_office.engine.workflow_bounded_job import (
         BoundedJobActionSlot,
         WorkflowJobAuthorizationError,
+        bounded_job_execution_view,
+        bounded_review_action_plan,
         issue_bounded_workflow_job_scope,
         run_bounded_document_job,
     )
@@ -1315,83 +1299,35 @@ def run_bounded_document_job_workflow(
             )
             for item in employees
         }
-        if (
-            creator_workflow_id not in workflow_by_id
-            or review_workflow_id not in workflow_by_id
-        ):
+        if workflow_id not in workflow_by_id:
             raise WorkflowJobAuthorizationError("job_workflow_missing")
-        creator_workflow = workflow_by_id[creator_workflow_id]
-        review_workflow = workflow_by_id[review_workflow_id]
-        if (
-            not creator_workflow.definition.steps
-            or len(review_workflow.definition.steps) != 1
-        ):
-            raise WorkflowJobAuthorizationError("job_workflow_shape")
-        action_plan = [
-            (
-                creator_workflow_id,
-                step.id,
-                index,
-                step.employee,
-                "assignment" if index == 1 else "previous_step",
-            )
-            for index, step in enumerate(creator_workflow.definition.steps, start=1)
-        ]
-        review_step = review_workflow.definition.steps[0]
-        action_plan.append(
-            (
-                review_workflow_id,
-                review_step.id,
-                1,
-                review_step.employee,
-                "review_input",
-            )
+        source_workflow = workflow_by_id[workflow_id]
+        plan = bounded_review_action_plan(source_workflow, max_revisions)
+        steps_by_id = {step.id: step for step in source_workflow.definition.steps}
+        required_employees = tuple(
+            dict.fromkeys(steps_by_id[item[0]].employee for item in plan)
         )
-        for _ in range(max_revisions):
-            if revision_workflow_id not in workflow_by_id:
-                raise WorkflowJobAuthorizationError("job_workflow_missing")
-            revision_workflow = workflow_by_id[revision_workflow_id]
-            if len(revision_workflow.definition.steps) != 1:
-                raise WorkflowJobAuthorizationError("job_workflow_shape")
-            revision_step = revision_workflow.definition.steps[0]
-            action_plan.extend(
-                (
-                    (
-                        revision_workflow_id,
-                        revision_step.id,
-                        1,
-                        revision_step.employee,
-                        "revision_input",
-                    ),
-                    (
-                        review_workflow_id,
-                        review_step.id,
-                        1,
-                        review_step.employee,
-                        "re_review_input",
-                    ),
-                )
-            )
-        required_employees = tuple(dict.fromkeys(item[3] for item in action_plan))
         if any(name not in model_employees for name in required_employees):
             raise WorkflowJobAuthorizationError("job_employee_missing")
-        selected_workflow_ids = tuple(dict.fromkeys(item[0] for item in action_plan))
-        snapshot_manifests = {
-            workflow_id: build_workflow_run_manifest(
-                initial_run_id
-                if workflow_id == creator_workflow_id
-                else f"snapshot-{sha256(job_id.encode()).hexdigest()[:12]}-{index}",
-                assignment,
-                workflow_by_id[workflow_id],
-                tuple(
-                    model_employees[step.employee]
-                    for step in workflow_by_id[workflow_id].definition.steps
-                ),
-                execution_model=selected_model,
-                execution_target=target,
-            )
-            for index, workflow_id in enumerate(selected_workflow_ids)
-        }
+        source_manifest = build_workflow_run_manifest(
+            f"source-{sha256(job_id.encode()).hexdigest()[:16]}",
+            assignment,
+            source_workflow,
+            tuple(model_employees[name] for name in required_employees),
+            execution_model=selected_model,
+            execution_target=target,
+        )
+        if source_manifest.run_id == initial_run_id:
+            raise WorkflowJobAuthorizationError("job_source_identity")
+        initial_view = bounded_job_execution_view(source_workflow, plan[0][0])
+        initial_manifest = build_workflow_run_manifest(
+            initial_run_id,
+            assignment,
+            initial_view,
+            (model_employees[initial_view.definition.steps[0].employee],),
+            execution_model=selected_model,
+            execution_target=target,
+        )
 
         def snapshot_digest(value: object) -> str:
             encoded = json.dumps(
@@ -1403,14 +1339,21 @@ def run_bounded_document_job_workflow(
             return sha256(encoded).hexdigest()
 
         action_slots = []
-        for ordinal, (
-            workflow_id,
-            step_id,
-            step_index,
-            employee_id,
-            input_source,
-        ) in enumerate(action_plan):
-            manifest = snapshot_manifests[workflow_id]
+        for ordinal, (step_id, step_index, input_source) in enumerate(plan):
+            employee_id = steps_by_id[step_id].employee
+            view = bounded_job_execution_view(source_workflow, step_id)
+            manifest = (
+                initial_manifest
+                if ordinal == 0
+                else build_workflow_run_manifest(
+                    f"snapshot-{sha256(job_id.encode()).hexdigest()[:12]}-{ordinal}",
+                    assignment,
+                    view,
+                    (model_employees[employee_id],),
+                    execution_model=selected_model,
+                    execution_target=target,
+                )
+            )
             employee_snapshot = next(
                 item for item in manifest.employee_snapshots if item.id == employee_id
             )
@@ -1457,6 +1400,18 @@ def run_bounded_document_job_workflow(
             "job_id": job_id,
             "run_id": initial_run_id,
             "assignment_sha256": assignment_digest,
+            "workflow_id": workflow_id,
+            "workflow_snapshot_sha256": snapshot_digest(
+                source_manifest.workflow_snapshot
+            ),
+            "planned_steps": [
+                {
+                    "step_id": slot.step_id,
+                    "employee_id": slot.employee_id,
+                    "input_source": slot.input_source,
+                }
+                for slot in action_slots
+            ],
             "provider": target.provider,
             "protocol": target.protocol,
             "endpoint": target.endpoint,
@@ -1508,16 +1463,16 @@ def run_bounded_document_job_workflow(
         if run_store.stat().st_mode & 0o077:
             raise WorkflowJobAuthorizationError("pilot_store_permissions")
         store = WorkflowRunManifestStore(run_store)
-        initial_manifest = build_workflow_run_manifest(
-            initial_run_id,
-            assignment,
-            workflow_by_id[creator_workflow_id],
-            tuple(model_employees[name] for name in required_employees),
-            execution_model=selected_model,
-            execution_target=target,
-        )
         for slot in action_slots:
-            manifest = snapshot_manifests[slot.workflow_id]
+            view = bounded_job_execution_view(source_workflow, slot.step_id)
+            manifest = build_workflow_run_manifest(
+                f"snapshot-{sha256(job_id.encode()).hexdigest()[:12]}-{slot.ordinal}",
+                assignment,
+                view,
+                tuple(model_employees[step.employee] for step in view.definition.steps),
+                execution_model=selected_model,
+                execution_target=target,
+            )
             employee_snapshot = next(
                 item
                 for item in manifest.employee_snapshots
@@ -1542,10 +1497,8 @@ def run_bounded_document_job_workflow(
             )
         ):
             raise WorkflowJobAuthorizationError("job_manifest_approval_binding")
+        persist_workflow_run_manifest(store, source_manifest)
         persist_workflow_run_manifest(store, initial_manifest)
-        for workflow_id in selected_workflow_ids:
-            if workflow_id != creator_workflow_id:
-                persist_workflow_run_manifest(store, snapshot_manifests[workflow_id])
         operator_label = getpass.getuser()
         grant_nonce = uuid.uuid4().hex
         scope = issue_bounded_workflow_job_scope(
@@ -1559,6 +1512,8 @@ def run_bounded_document_job_workflow(
             max_revisions=max_revisions,
             max_retries=max_retries,
             retry_interval_seconds=retry_interval_seconds,
+            source_manifest_run_id=source_manifest.run_id,
+            source_manifest_digest=source_manifest.digest,
             expires_at_ns=now_ns + 2 * 60 * 60 * 1_000_000_000,
             business_approved_by=operator_label,
             business_grant_id=f"business-{grant_nonce}",
@@ -1629,9 +1584,7 @@ def _artifact_metadata_json(artifact: WorkflowArtifact) -> dict[str, object]:
             ),
             "raw_response_body_sha256": artifact.raw_response_body_sha256,
             "raw_response_evidence_sha256": artifact.raw_response_evidence_sha256,
-            "terminal_success_event_sha256": (
-                artifact.terminal_success_event_sha256
-            ),
+            "terminal_success_event_sha256": (artifact.terminal_success_event_sha256),
         },
         "run_id": artifact.run_id,
         "step_id": artifact.step_id,
@@ -2041,8 +1994,7 @@ def _persisted_result_json(
     except (TypeError, ValueError):
         _workflow_cli_error("persisted workflow result binding is invalid")
     if not (
-        state_binding is not None
-        and state_binding == event_binding == routed_binding
+        state_binding is not None and state_binding == event_binding == routed_binding
     ):
         _workflow_cli_error("persisted workflow result binding is inconsistent")
 
@@ -2196,9 +2148,7 @@ def start_workflow(
     ):
         _workflow_cli_error("preview-only cannot include execution options")
 
-    workflows, employees = _load_workflow_command_inputs(
-        directory, employees_directory
-    )
+    workflows, employees = _load_workflow_command_inputs(directory, employees_directory)
     selected_run_input = _resolve_run_input(run_input, run_input_file)
     manifest, binding, pinned_workflows, pinned_employees, tool_catalog = (
         _build_start_manifest_preview(
@@ -2224,6 +2174,8 @@ def start_workflow(
     if preview_only:
         _emit_json(_step_preview_json("start", preview))
         return
+    if workflow.definition.bounded_review is not None:
+        _workflow_cli_error("bounded review workflow requires bounded-job-run")
     durable_business_approval = False
     if run_store.exists():
         existing_store = _load_run_store_or_exit(run_store)
@@ -2270,9 +2222,7 @@ def start_workflow(
         events_path,
         context,
     )
-    _emit_json(
-        _result_json("start", "execute", result, run_input=manifest.run_input)
-    )
+    _emit_json(_result_json("start", "execute", result, run_input=manifest.run_input))
     if type(result) is PersistedExecutionOutcome:
         raise typer.Exit(code=1)
 
@@ -2320,6 +2270,8 @@ def continue_workflow(
     target = manifest.execution_destination.target
     _validate_pinned_models_for_target(target, execution_destinations, pinned_employees)
     workflow = _select_workflow_or_exit(pinned_workflows, manifest.workflow_id)
+    if workflow.definition.bounded_review is not None:
+        _workflow_cli_error("bounded review workflow requires bounded-job-run")
     state_path, events_path = store.execution_paths(binding.run_id)
     routed = _read_persisted_continue_route(
         workflow.definition,
@@ -2484,9 +2436,7 @@ def result_workflow(
         _workflow_cli_error(
             "persisted workflow state requires recovery or investigation"
         )
-    _emit_json(
-        _persisted_result_json(routed, history, run_input=manifest.run_input)
-    )
+    _emit_json(_persisted_result_json(routed, history, run_input=manifest.run_input))
     if type(routed) is PersistedExecutionOutcome:
         raise typer.Exit(code=1)
 
@@ -2580,9 +2530,7 @@ def _build_recovery_preview(
             _workflow_cli_error("recovery state does not match the pinned step")
         expected_completed = tuple(
             step.id
-            for step in workflow.definition.steps[
-                : state.current_step_index - 1
-            ]
+            for step in workflow.definition.steps[: state.current_step_index - 1]
         )
         if state.completed_step_ids != expected_completed:
             _workflow_cli_error("completed predecessor history is inconsistent")
@@ -2664,8 +2612,9 @@ def _build_recovery_preview(
         ).hexdigest()
         if (
             preview.request_fingerprint != attempt.invocation_fingerprint
-            or sha256(preview.invocation_request.system_instructions.encode("utf-8"))
-            .hexdigest()
+            or sha256(
+                preview.invocation_request.system_instructions.encode("utf-8")
+            ).hexdigest()
             != attempt.system_instruction_sha256
             or task_digest != attempt.task_input_sha256
             or preview.execution_target.provider != attempt.provider
@@ -2751,13 +2700,9 @@ def _recovery_runtime_result(preview: _WorkflowStepPreview, result: object) -> o
         "binding": preview.run_binding,
     }
     if type(result) is ModelInvocationSuccess:
-        return StepRuntimeExecutionSuccess(
-            **identity, invocation_result=result
-        )
+        return StepRuntimeExecutionSuccess(**identity, invocation_result=result)
     if type(result) is ModelInvocationFailure:
-        return StepRuntimeExecutionFailure(
-            **identity, invocation_result=result
-        )
+        return StepRuntimeExecutionFailure(**identity, invocation_result=result)
     _workflow_cli_error("durable normalized result is invalid")
 
 
@@ -2842,11 +2787,7 @@ def recover_workflow(
         _workflow_cli_error("Run is not eligible for explicit recovery")
     if recovery_decision_sha256 != assessment.digest:
         _workflow_cli_error("recovery decision is stale or does not match")
-    if (
-        not approve_recovery
-        or not recovery_approved_by
-        or not recovery_approval_id
-    ):
+    if not approve_recovery or not recovery_approved_by or not recovery_approval_id:
         _workflow_cli_error("Recovery Approval requires explicit approval fields")
 
     manifest = _load_run_manifest_or_exit(store, run_id)
@@ -2908,9 +2849,7 @@ def recover_workflow(
                     store.root, run_id, attempt.attempt_id
                 )
             else:
-                raw = load_raw_response_evidence(
-                    store.root, run_id, attempt.attempt_id
-                )
+                raw = load_raw_response_evidence(store.root, run_id, attempt.attempt_id)
                 execution_evidence = _existing_attempt_evidence_context(
                     store, preview, attempt
                 )
@@ -2931,12 +2870,8 @@ def recover_workflow(
                     outcome,
                     raw_response=raw,
                 )
-            runtime_result = _recovery_runtime_result(
-                preview, normalized.result
-            )
-            persist_executed_step_transition(
-                runtime_result, state_path, events_path
-            )
+            runtime_result = _recovery_runtime_result(preview, normalized.result)
+            persist_executed_step_transition(runtime_result, state_path, events_path)
         except Exception:
             _workflow_cli_error("durable recovery completion could not be persisted")
     else:
@@ -3043,9 +2978,7 @@ def recover_workflow(
         allow_artifact_completion=True,
         expected_binding=binding,
     )
-    _emit_json(
-        _result_json("recover", "execute", routed, run_input=manifest.run_input)
-    )
+    _emit_json(_result_json("recover", "execute", routed, run_input=manifest.run_input))
     if type(routed) is PersistedExecutionOutcome:
         raise typer.Exit(code=1)
 
@@ -3070,6 +3003,13 @@ def plan_workflow(
         raise typer.Exit(code=1) from None
 
     _display_execution_plan(plan)
+    if workflow.definition.bounded_review is not None:
+        flow = workflow.definition.bounded_review
+        typer.echo()
+        typer.echo("Bounded review: draft -> independent review")
+        typer.echo("CHANGES_REQUIRED: revision -> independent re-review")
+        typer.echo("PASS: stop as human-acceptance candidate; BLOCKED: stop")
+        typer.echo(f"Maximum revisions: {flow.max_revisions}")
 
 
 @workflows_app.command("request", context_settings={"ignore_unknown_options": True})

@@ -66,7 +66,7 @@ def _start_args(
     return [
         "workflows",
         "start",
-        "write-internal-ai-guide",
+        "offline-document-draft",
         "--run-id",
         run_id,
         "--run-input",
@@ -74,7 +74,7 @@ def _start_args(
         "--run-store",
         str(run_store),
         "--directory",
-        str(ROOT / "workflows"),
+        str(ROOT / "tests" / "fixtures" / "workflows"),
         "--employees-directory",
         str(ROOT / "employees"),
         "--execution-target",

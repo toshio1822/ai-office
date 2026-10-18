@@ -23,7 +23,6 @@ from ai_office.engineering_evidence import (
 from ai_office.github_snapshot import GitHubRawResponse
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOWS = ROOT / "workflows"
 EMPLOYEES = ROOT / "employees"
 runner = CliRunner()
 SHA = "d" * 40
@@ -376,12 +375,28 @@ def test_cli_writes_private_output_exclusively_and_workflow_preview_is_offline(
     monkeypatch.setattr(
         cli_module, "load_openai_api_key_from_environment", unexpected_provider_call
     )
+    # The collector remains independent of the retired checked-in investigation
+    # workflow. A test-only one-step definition proves the CLI handoff.
+    workflow_dir = tmp_path / "offline-workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / "evidence-review.yaml").write_text(
+        "id: offline-evidence-review\n"
+        "name: Offline Evidence Review\n"
+        "description: Test-only collector handoff.\n"
+        "steps:\n"
+        "  - id: analyze-calamares-evidence\n"
+        "    name: Analyze Evidence\n"
+        "    employee: general-researcher\n"
+        "    instructions: Analyze only the supplied snapshot.\n"
+        "    business_approval_required: true\n",
+        encoding="utf-8",
+    )
     preview = runner.invoke(
         app,
         [
             "workflows",
             "start",
-            "investigate-calamares-usb-destination",
+            "offline-evidence-review",
             "--run-id",
             "issue-721-collector-preview",
             "--run-input",
@@ -389,7 +404,7 @@ def test_cli_writes_private_output_exclusively_and_workflow_preview_is_offline(
             "--run-store",
             str(tmp_path / "run-store"),
             "--directory",
-            str(WORKFLOWS),
+            str(workflow_dir),
             "--employees-directory",
             str(EMPLOYEES),
             "--preview-only",
