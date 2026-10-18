@@ -2805,7 +2805,7 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
         employee_id: load_employee_file(
             repository / "employees" / f"{employee_id}.yaml"
         )
-        for employee_id in ("japanese-document-writer", "general-researcher")
+        for employee_id in ("japanese-document-writer", "document-reviewer")
     }
     assignment = (
         "**タイトル案**：複雑な仕事を抱え込まないために、20年SEの私がやっている“外に出す”整理術\n"
@@ -2851,7 +2851,7 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
             "note-review-template",
             assignment,
             workflows["review-draft"],
-            (employees["general-researcher"],),
+            (employees["document-reviewer"],),
             execution_target=target,
         ),
         "revise-draft": create_workflow_run_manifest(
@@ -2871,9 +2871,9 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
             "japanese-document-writer",
             "assignment",
         ),
-        ("review-draft", "review", 1, "general-researcher", "review_input"),
+        ("review-draft", "review", 1, "document-reviewer", "review_input"),
         ("revise-draft", "revise", 1, "japanese-document-writer", "revision_input"),
-        ("review-draft", "review", 1, "general-researcher", "re_review_input"),
+        ("review-draft", "review", 1, "document-reviewer", "re_review_input"),
     )
     slots = []
     for ordinal, (
