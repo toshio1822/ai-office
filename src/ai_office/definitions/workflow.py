@@ -42,6 +42,17 @@ class WorkflowStepDefinition(BaseModel):
         return value
 
 
+class BoundedReviewDefinition(BaseModel):
+    """Declarative finite create/review/revise progression for a Job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_step: str
+    review_step: str
+    revision_step: str
+    max_revisions: int = Field(ge=0)
+
+
 class WorkflowDefinition(BaseModel):
     """A text-defined, ordered workflow."""
 
@@ -51,6 +62,7 @@ class WorkflowDefinition(BaseModel):
     name: str
     description: str
     steps: list[WorkflowStepDefinition] = Field(min_length=1)
+    bounded_review: BoundedReviewDefinition | None = None
 
     @field_validator("name", "description")
     @classmethod
@@ -68,6 +80,13 @@ class WorkflowDefinition(BaseModel):
             if step.id in seen_ids:
                 raise ValueError(f"duplicate step id {step.id!r}")
             seen_ids.add(step.id)
+        flow = self.bounded_review
+        if flow is not None:
+            ordered = [flow.draft_step, flow.review_step, flow.revision_step]
+            if len(ordered) != len(set(ordered)) or ordered != [
+                step.id for step in self.steps
+            ]:
+                raise ValueError("bounded review steps must name every step in order")
         return self
 
 

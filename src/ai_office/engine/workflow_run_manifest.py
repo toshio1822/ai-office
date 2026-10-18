@@ -153,9 +153,18 @@ class WorkflowDefinitionSnapshot:
     name: str
     description: str
     steps: tuple[WorkflowStepSnapshot, ...]
+    bounded_review: BoundedReviewSnapshot | None = None
 
     def __post_init__(self) -> None:
         _validate_workflow_snapshot(self)
+
+
+@dataclass(frozen=True)
+class BoundedReviewSnapshot:
+    draft_step: str
+    review_step: str
+    revision_step: str
+    max_revisions: int
 
 
 @dataclass(frozen=True)
@@ -401,6 +410,16 @@ def build_workflow_run_manifest(
         steps=tuple(
             _workflow_step_snapshot(step) for step in workflow_definition.steps
         ),
+        bounded_review=(
+            BoundedReviewSnapshot(
+                workflow_definition.bounded_review.draft_step,
+                workflow_definition.bounded_review.review_step,
+                workflow_definition.bounded_review.revision_step,
+                workflow_definition.bounded_review.max_revisions,
+            )
+            if workflow_definition.bounded_review is not None
+            else None
+        ),
     )
 
     referenced_employee_ids = {step.employee for step in workflow_definition.steps}
@@ -574,6 +593,16 @@ def workflow_definition_from_run_manifest(
                 }
                 for step in snapshot.steps
             ],
+            "bounded_review": (
+                {
+                    "draft_step": snapshot.bounded_review.draft_step,
+                    "review_step": snapshot.bounded_review.review_step,
+                    "revision_step": snapshot.bounded_review.revision_step,
+                    "max_revisions": snapshot.bounded_review.max_revisions,
+                }
+                if snapshot.bounded_review is not None
+                else None
+            ),
         }
     )
 
@@ -791,10 +820,19 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
             "description": workflow.description,
             "id": workflow.id,
             "name": workflow.name,
-            "steps": [
-                _workflow_step_dict(step)
-                for step in workflow.steps
-            ],
+            "steps": [_workflow_step_dict(step) for step in workflow.steps],
+            **(
+                {
+                    "bounded_review": {
+                        "draft_step": workflow.bounded_review.draft_step,
+                        "review_step": workflow.bounded_review.review_step,
+                        "revision_step": workflow.bounded_review.revision_step,
+                        "max_revisions": workflow.bounded_review.max_revisions,
+                    }
+                }
+                if workflow.bounded_review is not None
+                else {}
+            ),
         },
     }
     destination = manifest.execution_destination
@@ -912,6 +950,16 @@ def _validate_workflow_snapshot(snapshot: object) -> None:
     step_ids = tuple(step.id for step in snapshot.steps)
     if len(step_ids) != len(set(step_ids)):
         _raise_manifest("duplicate_step")
+    flow = snapshot.bounded_review
+    if flow is not None and (
+        type(flow) is not BoundedReviewSnapshot
+        or type(flow.draft_step) is not str
+        or not flow.draft_step
+        or type(flow.max_revisions) is not int
+        or flow.max_revisions < 0
+        or (flow.draft_step, flow.review_step, flow.revision_step) != step_ids
+    ):
+        _raise_manifest("bounded_review")
 
 
 def _validate_employee_snapshot(snapshot: object) -> None:
@@ -1144,17 +1192,15 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         if frozenset(value) != _MANIFEST_KEYS:
             _raise_load("keys")
         workflow_value = value["workflow_snapshot"]
-        if (
-            type(workflow_value) is not dict
-            or frozenset(workflow_value) != _WORKFLOW_KEYS
-        ):
+        if type(workflow_value) is not dict or frozenset(workflow_value) not in {
+            _WORKFLOW_KEYS,
+            _WORKFLOW_KEYS | {"bounded_review"},
+        }:
             _raise_load("workflow_snapshot")
         step_values = workflow_value["steps"]
         if type(step_values) is not list:
             _raise_load("workflow_steps")
-        steps = tuple(
-            _parse_workflow_step(item) for item in step_values
-        )
+        steps = tuple(_parse_workflow_step(item) for item in step_values)
 
         employee_values = value["employee_snapshots"]
         if type(employee_values) is not list:
@@ -1167,15 +1213,10 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         tools = tuple(_parse_tool(item) for item in tool_values)
 
         destination_value = value["execution_destination"]
-        if (
-            type(destination_value) is not dict
-            or frozenset(destination_value)
-            not in {
-                _EXECUTION_DESTINATION_KEYS,
-                _EXECUTION_DESTINATION_KEYS
-                | _OPTIONAL_EXECUTION_DESTINATION_KEYS,
-            }
-        ):
+        if type(destination_value) is not dict or frozenset(destination_value) not in {
+            _EXECUTION_DESTINATION_KEYS,
+            _EXECUTION_DESTINATION_KEYS | _OPTIONAL_EXECUTION_DESTINATION_KEYS,
+        }:
             _raise_load("execution_destination")
         request_headers: tuple[ConfiguredRequestHeader, ...] = ()
         if "request_headers" in destination_value:
@@ -1193,9 +1234,7 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
                 "credential_environment_variable"
             ],
             allow_loopback_http=destination_value["allow_loopback_http"],
-            configuration_fingerprint=destination_value[
-                "configuration_fingerprint"
-            ],
+            configuration_fingerprint=destination_value["configuration_fingerprint"],
             fingerprint=destination_value["fingerprint"],
             request_headers=request_headers,
         )
@@ -1210,6 +1249,16 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
                 name=workflow_value["name"],
                 description=workflow_value["description"],
                 steps=steps,
+                bounded_review=(
+                    BoundedReviewSnapshot(
+                        workflow_value["bounded_review"]["draft_step"],
+                        workflow_value["bounded_review"]["review_step"],
+                        workflow_value["bounded_review"]["revision_step"],
+                        workflow_value["bounded_review"]["max_revisions"],
+                    )
+                    if "bounded_review" in workflow_value
+                    else None
+                ),
             ),
             employee_snapshots=employees,
             tool_contracts=tools,

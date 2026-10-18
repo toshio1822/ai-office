@@ -35,24 +35,10 @@ working tree, execute source code, or invoke an AI provider.
    requested item was retrieved without truncation; `partial` means at least one
    item is unavailable or truncated. Partial output is still written for review,
    and the CLI exits with status 2. Do not describe it as complete.
-4. Only after human review, pass the package file directly to the existing
-   `investigate-calamares-usb-destination` Workflow. In the same shell session as
-   step 2, `--run-input-file` reads the collector output at
-   `$evidence_dir/evidence-package.json`. It accepts one explicitly selected UTF-8
-   file (up to 1 MiB), preserving exact text including line endings and trailing
-   newlines. For example:
-
-   ```bash
-   ai-office workflows start investigate-calamares-usb-destination \
-     --run-id calamares-preview-001 \
-     --run-input-file "$evidence_dir/evidence-package.json" \
-     --preview-only
-   ```
-
-   This creates only an in-memory preview and does not call a model. A live Workflow
-   run is a separate paid/external action requiring explicit Business and Execution
-   Approvals bound to the current Step preview. Existing `--run-input TEXT` remains
-   available for directly supplied text; choose exactly one input option.
+4. After human review, treat the package as untrusted source material. It may be
+   supplied to a separately selected and approved workflow when that workflow's
+   business task calls for it. The former Calamares investigation workflow is no
+   longer a checked-in selectable definition; this collector does not start a Run.
 
 ## Package and trust boundary
 

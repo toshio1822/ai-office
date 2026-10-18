@@ -3157,9 +3157,14 @@ def test_review_draft_resolves_specialist_into_preview_and_provider_payload(
 ) -> None:
     root = Path(__file__).parents[1]
     paths = workflow_command_paths(tmp_path)
-    shutil.copy(
-        root / "examples/workflows/review-draft.yaml",
-        paths["workflows"] / "review-draft.yaml",
+    source = yaml.safe_load(
+        (root / "workflows/article-production.yaml").read_text(encoding="utf-8")
+    )
+    source.pop("bounded_review")
+    source["id"] = "review-draft"
+    source["steps"] = [source["steps"][1]]
+    (paths["workflows"] / "review-draft.yaml").write_text(
+        yaml.safe_dump(source, allow_unicode=True), encoding="utf-8"
     )
     shutil.copy(
         root / "employees/document-reviewer.yaml",

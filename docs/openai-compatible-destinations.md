@@ -31,9 +31,9 @@ Bearer credential is not forwarded to a second host.
 Example preview (no credential read and no network request):
 
 ```console
-ai-office workflows start write-internal-ai-guide \
+ai-office workflows start article-production \
   --run-id m1-compatible-preview \
-  --run-input "社内向け利用ガイドを作成" \
+  --run-input "Medium: technical blog; explain the supplied design to engineers" \
   --execution-target opencode-zen \
   --execution-destinations docs/examples/openai-compatible-destinations.yaml \
   --execution-model replace-with-approved-responses-model \
@@ -115,7 +115,7 @@ to a separate balance is possible. A provider attempt count is not a monetary
 spend cap. Technical wire compatibility and account/contract eligibility are
 separate checks. The bounded one-shot Gate B procedure and required host/UID
 isolation checks are documented in
-[`runbooks/opencode-go-bounded-job.md`](runbooks/opencode-go-bounded-job.md).
+[`runbooks/article-production.md`](runbooks/article-production.md).
 
 ## Supported compatibility subset
 

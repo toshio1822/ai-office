@@ -78,11 +78,10 @@ def test_load_workflow_file_loads_valid_yaml_and_preserves_step_order(
 
 def test_review_workflow_uses_specialist_and_keeps_business_contract() -> None:
     root = Path(__file__).parents[1]
-    workflow = load_workflow_file(
-        root / "examples/workflows/review-draft.yaml"
-    ).definition
-    assert len(workflow.steps) == 1
-    step = workflow.steps[0]
+    workflow = load_workflow_file(root / "workflows/article-production.yaml").definition
+    assert workflow.bounded_review is not None
+    assert [step.id for step in workflow.steps] == ["write-draft", "review", "revise"]
+    step = workflow.steps[1]
     assert step.employee == "document-reviewer"
     assert step.business_approval_required is True
     assert step.artifact_content_type == "text/markdown"
@@ -113,26 +112,19 @@ def test_review_workflow_uses_specialist_and_keeps_business_contract() -> None:
     assert "PASS is only a human-acceptance candidate" in instructions
 
 
-def test_note_writer_and_revision_workflows_keep_their_assigned_roles() -> None:
+def test_article_writer_and_revision_steps_keep_their_assigned_roles() -> None:
     root = Path(__file__).parents[1]
-    note_workflow = load_workflow_file(
-        root / "examples/workflows/note-article-draft.yaml"
-    ).definition
-    review_workflow = load_workflow_file(
-        root / "examples/workflows/revise-draft.yaml"
-    ).definition
-    assert note_workflow.steps[0].employee == "japanese-document-writer"
-    assert review_workflow.steps[0].employee == "japanese-document-writer"
-    assert note_workflow.steps[0].business_approval_required is True
-    assert review_workflow.steps[0].business_approval_required is True
-    assert note_workflow.steps[0].artifact_content_type == "text/markdown"
-    assert review_workflow.steps[0].artifact_content_type == "text/markdown"
+    workflow = load_workflow_file(root / "workflows/article-production.yaml").definition
+    assert workflow.steps[0].employee == "japanese-document-writer"
+    assert workflow.steps[2].employee == "japanese-document-writer"
+    assert all(step.business_approval_required for step in workflow.steps)
+    assert all(step.artifact_content_type == "text/markdown" for step in workflow.steps)
 
 
 def test_dedicated_reviewer_definition_is_generic_and_reusable() -> None:
     root = Path(__file__).parents[1]
     reviewers = load_employees(root / "employees")
-    workflows = load_workflows(root / "examples/workflows")
+    workflows = load_workflows(root / "workflows")
     validate_workflow_employee_references(workflows, reviewers)
     employee = next(
         item.definition
@@ -305,9 +297,7 @@ def test_load_workflow_file_rejects_invalid_workflow_id(
         load_workflow_file(source)
 
 
-@pytest.mark.parametrize(
-    "field", ["name", "description"]
-)
+@pytest.mark.parametrize("field", ["name", "description"])
 def test_load_workflow_file_rejects_blank_workflow_string(
     tmp_path: Path, field: str
 ) -> None:

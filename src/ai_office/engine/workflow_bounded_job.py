@@ -21,6 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
+from ai_office.definitions.workflow import LoadedWorkflow, WorkflowDefinition
 from ai_office.engine.workflow_job_authorization import (
     WorkflowJobAuthorizationError,
     WorkflowJobGrant,
@@ -38,6 +39,97 @@ from ai_office.engine.workflow_run_manifest import (
 
 def _digest(value: bytes) -> str:
     return sha256(value).hexdigest()
+
+
+def bounded_review_action_plan(
+    workflow: LoadedWorkflow, max_revisions: int
+) -> tuple[tuple[str, int, str], ...]:
+    """Derive the finite plan only from the pinned business definition."""
+    definition = workflow.definition
+    flow = definition.bounded_review
+    if flow is None or not 0 <= max_revisions <= flow.max_revisions:
+        raise WorkflowJobAuthorizationError("document_job_flow")
+    plan = [(flow.draft_step, 1, "assignment"), (flow.review_step, 1, "review_input")]
+    for _ in range(max_revisions):
+        plan.extend(
+            (
+                (flow.revision_step, 1, "revision_input"),
+                (flow.review_step, 1, "re_review_input"),
+            )
+        )
+    return tuple(plan)
+
+
+def bounded_job_execution_view(
+    workflow: LoadedWorkflow, step_id: str
+) -> LoadedWorkflow:
+    """Job-private one-step view; never a selectable or stored source definition."""
+    source = workflow.definition
+    if source.bounded_review is None or step_id not in {
+        source.bounded_review.draft_step,
+        source.bounded_review.review_step,
+        source.bounded_review.revision_step,
+    }:
+        raise WorkflowJobAuthorizationError("document_job_view")
+    step = next(step for step in source.steps if step.id == step_id)
+    return LoadedWorkflow(
+        source_path=workflow.source_path,
+        definition=WorkflowDefinition(
+            id=source.id,
+            name=source.name,
+            description=source.description,
+            steps=[step],
+        ),
+    )
+
+
+def _validate_derived_review_plan(
+    initial_manifest, actions, max_revisions: int
+) -> None:
+    """Bind every execution view to the immutable source Run snapshot."""
+    from ai_office.engine.workflow_run_manifest import (
+        build_workflow_run_manifest,
+        loaded_employees_from_run_manifest,
+        loaded_workflow_from_run_manifest,
+    )
+
+    source = loaded_workflow_from_run_manifest(initial_manifest)
+    if source.definition.bounded_review is None:
+        return  # Existing generic Job scopes retain their own validation.
+    expected = bounded_review_action_plan(source, max_revisions)
+    if len(actions) != len(expected):
+        raise WorkflowJobAuthorizationError("document_job_source_plan")
+    employees = loaded_employees_from_run_manifest(initial_manifest)
+    for ordinal, (step_id, step_index, input_source) in enumerate(expected):
+        slot = actions[ordinal]
+        selected = next(step for step in source.definition.steps if step.id == step_id)
+        view = bounded_job_execution_view(source, step_id)
+        snapshot = build_workflow_run_manifest(
+            f"derived-{ordinal}",
+            initial_manifest.run_input,
+            view,
+            employees,
+            execution_model=slot.model,
+            execution_target=initial_manifest.execution_destination.target,
+        )
+        employee = next(
+            item for item in snapshot.employee_snapshots if item.id == selected.employee
+        )
+        if not (
+            slot.workflow_id == source.definition.id
+            and slot.step_id == step_id
+            and slot.step_index == step_index
+            and slot.input_source == input_source
+            and slot.employee_id == selected.employee
+            and slot.workflow_snapshot_sha256
+            == _digest(_canonical(_workflow_dict(snapshot.workflow_snapshot)))
+            and slot.employee_snapshot_sha256
+            == _digest(_canonical(_employee_dict(employee)))
+            and slot.execution_target_fingerprint
+            == initial_manifest.execution_destination.fingerprint
+            and slot.provider == initial_manifest.execution_destination.provider
+        ):
+            raise WorkflowJobAuthorizationError("document_job_source_plan")
 
 
 @dataclass(frozen=True)
@@ -111,6 +203,8 @@ class BoundedWorkflowJobScope:
     execution_grant: WorkflowJobGrant
     max_retries: int = 0
     retry_interval_seconds: int = 30
+    source_manifest_run_id: str | None = None
+    source_manifest_digest: str | None = None
     schema_version: str = "workflow-bounded-job-scope.v2"
 
     def __post_init__(self) -> None:
@@ -139,6 +233,15 @@ class BoundedWorkflowJobScope:
             or not _identifier(self.initial_run_id)
         ):
             raise WorkflowJobAuthorizationError("job_scope_digest")
+        if (self.source_manifest_run_id is None) != (
+            self.source_manifest_digest is None
+        ):
+            raise WorkflowJobAuthorizationError("job_scope_source")
+        if self.source_manifest_run_id is not None and (
+            not _identifier(self.source_manifest_run_id)
+            or not _valid_digest(self.source_manifest_digest)
+        ):
+            raise WorkflowJobAuthorizationError("job_scope_source")
         if (
             type(self.actions) is not tuple
             or len(self.actions) < 2
@@ -170,9 +273,7 @@ class BoundedWorkflowJobScope:
             or not 0 <= self.max_retries <= 2
             or type(self.retry_interval_seconds) is not int
             or not 1 <= self.retry_interval_seconds <= 3600
-            or self.max_provider_attempts
-            != normal_action_limit
-            + self.max_retries
+            or self.max_provider_attempts != normal_action_limit + self.max_retries
             or self.schema_version != "workflow-bounded-job-scope.v2"
             or type(self.expires_at_ns) is not int
             or self.expires_at_ns <= 0
@@ -192,6 +293,8 @@ class BoundedWorkflowJobScope:
                 self.expires_at_ns,
                 self.max_retries,
                 self.retry_interval_seconds,
+                self.source_manifest_run_id,
+                self.source_manifest_digest,
             )
             or self.execution_grant.envelope_sha256
             != self.business_grant.envelope_sha256
@@ -227,6 +330,14 @@ class BoundedWorkflowJobScope:
                     else {}
                 ),
                 "schema_version": self.schema_version,
+                **(
+                    {
+                        "source_manifest_run_id": self.source_manifest_run_id,
+                        "source_manifest_digest": self.source_manifest_digest,
+                    }
+                    if self.source_manifest_run_id is not None
+                    else {}
+                ),
             }
         )
 
@@ -317,6 +428,8 @@ def issue_bounded_workflow_job_scope(
     max_revisions: int,
     max_retries: int = 0,
     retry_interval_seconds: int = 30,
+    source_manifest_run_id: str | None = None,
+    source_manifest_digest: str | None = None,
     expires_at_ns: int,
     business_approved_by: str,
     business_grant_id: str,
@@ -338,6 +451,8 @@ def issue_bounded_workflow_job_scope(
         expires_at_ns,
         max_retries,
         retry_interval_seconds,
+        source_manifest_run_id,
+        source_manifest_digest,
     )
     business = WorkflowJobGrant(
         "workflow-job-authorization-grant.v1",
@@ -368,6 +483,19 @@ def issue_bounded_workflow_job_scope(
         != actions[0].workflow_snapshot_sha256
     ):
         raise WorkflowJobAuthorizationError("job_initial_run")
+    if source_manifest_run_id is not None:
+        source_manifest = load_workflow_run_manifest(store, source_manifest_run_id)
+        if (
+            source_manifest.digest != source_manifest_digest
+            or source_manifest.run_input != initial_manifest.run_input
+            or source_manifest.execution_destination
+            != initial_manifest.execution_destination
+            or source_manifest.workflow_id != initial_manifest.workflow_id
+            or store.state_path(source_manifest_run_id).exists()
+            or store.events_path(source_manifest_run_id).exists()
+        ):
+            raise WorkflowJobAuthorizationError("job_source_manifest")
+        _validate_derived_review_plan(source_manifest, actions, max_revisions)
     initial_employee = next(
         (
             employee
@@ -397,6 +525,8 @@ def issue_bounded_workflow_job_scope(
         execution,
         max_retries,
         retry_interval_seconds,
+        source_manifest_run_id,
+        source_manifest_digest,
     )
     # This root-scope digest is distinct from Run-bound authorization records.
     _persist_immutable(_scope_path(store.root, job_id), scope.canonical)
@@ -463,6 +593,19 @@ def derive_bounded_job_action_authorization(
         raise WorkflowJobAuthorizationError("job_action_identity")
     manifest = load_workflow_run_manifest(store, run_id)
     slot = current.actions[ordinal]
+    if current.source_manifest_run_id is not None:
+        source_manifest = load_workflow_run_manifest(
+            store, current.source_manifest_run_id
+        )
+        if (
+            source_manifest.digest != current.source_manifest_digest
+            or source_manifest.run_input
+            != load_workflow_run_manifest(store, current.initial_run_id).run_input
+        ):
+            raise WorkflowJobAuthorizationError("job_source_manifest")
+        _validate_derived_review_plan(
+            source_manifest, current.actions, current.max_revisions
+        )
     workflow_snapshot = _canonical(_workflow_dict(manifest.workflow_snapshot))
     employee = next(
         (item for item in manifest.employee_snapshots if item.id == slot.employee_id),
@@ -499,9 +642,7 @@ def derive_bounded_job_action_authorization(
         prior_authorization = load_bounded_job_action_by_identity(
             store, current.job_id, ordinal - 1
         )
-        prior_dispatch = _latest_dispatch_for_action(
-            store, current.job_id, ordinal - 1
-        )
+        prior_dispatch = _latest_dispatch_for_action(store, current.job_id, ordinal - 1)
         if not (
             prior_authorization.run_id == run_id
             and prior_authorization.ordinal == ordinal - 1
@@ -527,9 +668,7 @@ def derive_bounded_job_action_authorization(
         prior_authorization = load_bounded_job_action_by_identity(
             store, current.job_id, ordinal - 1
         )
-        prior_dispatch = _latest_dispatch_for_action(
-            store, current.job_id, ordinal - 1
-        )
+        prior_dispatch = _latest_dispatch_for_action(store, current.job_id, ordinal - 1)
         if (
             prior_authorization.run_id != pred_run
             or prior_authorization.ordinal != ordinal - 1
@@ -687,9 +826,7 @@ def admit_bounded_job_dispatch(
         reservation = next(
             (
                 _read_regular(path)
-                for path in _reservation_paths(
-                    authorization.store_root, scope.job_id
-                )
+                for path in _reservation_paths(authorization.store_root, scope.job_id)
                 if _digest(_read_regular(path)) == reservation_sha256
             ),
             None,
@@ -1197,9 +1334,12 @@ def bounded_document_action_input(
         )
         review = handoff_artifact
         review_manifest = load_workflow_run_manifest(store, review.run_id)
-        if _review_verdict(
-            review.content.decode("utf-8"), review_input=review_manifest.run_input
-        ) != "CHANGES_REQUIRED":
+        if (
+            _review_verdict(
+                review.content.decode("utf-8"), review_input=review_manifest.run_input
+            )
+            != "CHANGES_REQUIRED"
+        ):
             raise WorkflowJobAuthorizationError("document_job_revision_not_authorized")
         values["review_artifact"] = _artifact_payload(review)
         values["source_artifact"] = _artifact_payload(source_artifact)
@@ -1430,9 +1570,8 @@ def _review_verdict(
             ):
                 fenced_block = None
             continue
-        if (
-            fence is not None
-            and (fence.group(1)[0] != "`" or "`" not in fence.group(2))
+        if fence is not None and (
+            fence.group(1)[0] != "`" or "`" not in fence.group(2)
         ):
             fenced_block = (fence.group(1)[0], len(fence.group(1)))
             continue
@@ -1452,9 +1591,7 @@ def _review_verdict(
         if declaration != candidate:
             raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
         if is_english:
-            if declaration not in {
-                f"Verdict: {value}" for value in allowed_verdicts
-            }:
+            if declaration not in {f"Verdict: {value}" for value in allowed_verdicts}:
                 raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
             verdict = declaration.removeprefix("Verdict: ")
         else:
@@ -1462,9 +1599,7 @@ def _review_verdict(
             value = declaration[len(separator) :].strip()
             if value.startswith("`") or value.endswith("`"):
                 if not (value.startswith("`") and value.endswith("`")):
-                    raise WorkflowJobAuthorizationError(
-                        "document_job_invalid_verdict"
-                    )
+                    raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
                 value = value[1:-1]
             if value not in allowed_verdicts:
                 raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
@@ -1513,9 +1648,7 @@ def _review_verdict(
                 continue
             if line[indentation:].startswith(">"):
                 continue
-            heading = re.fullmatch(
-                r"#{1,6}\s+Check\s+([1-9][0-9]*)\s*", line.strip()
-            )
+            heading = re.fullmatch(r"#{1,6}\s+Check\s+([1-9][0-9]*)\s*", line.strip())
             if heading is not None:
                 if check:
                     checks.append(check)
@@ -1575,16 +1708,12 @@ def _review_verdict(
             if not _assignment_line_reference_matches(
                 evidence_reference, assignment_text
             ):
-                raise WorkflowJobAuthorizationError(
-                    "document_job_unverified_finding"
-                )
+                raise WorkflowJobAuthorizationError("document_job_unverified_finding")
             location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
             if not location_quotes or any(
                 quote not in source_content for quote in location_quotes
             ):
-                raise WorkflowJobAuthorizationError(
-                    "document_job_unverified_finding"
-                )
+                raise WorkflowJobAuthorizationError("document_job_unverified_finding")
         return verdict
     if verdict == "CHANGES_REQUIRED":
         if not require_actionable_findings:
@@ -1624,14 +1753,8 @@ def _review_verdict(
             finding_header = (
                 name.casefold() == "finding"
                 and bool(heading_detail)
-                and heading_detail.strip().split(maxsplit=1)[0]
-                .rstrip(":")
-                .isdigit()
-            ) or (
-                len(name) > 1
-                and name[0].casefold() == "f"
-                and name[1:].isdigit()
-            )
+                and heading_detail.strip().split(maxsplit=1)[0].rstrip(":").isdigit()
+            ) or (len(name) > 1 and name[0].casefold() == "f" and name[1:].isdigit())
             if finding_header:
                 if finding_header_seen:
                     findings.append(finding)
@@ -1642,11 +1765,7 @@ def _review_verdict(
             label = label.strip().lstrip("-* ").strip().strip("*_")
             canonical_label = labels.get(label.casefold())
             if canonical_label is not None:
-                if (
-                    not separator
-                    or not value.strip()
-                    or canonical_label in finding
-                ):
+                if not separator or not value.strip() or canonical_label in finding:
                     raise WorkflowJobAuthorizationError(
                         "document_job_nonactionable_review"
                     )
@@ -1659,13 +1778,9 @@ def _review_verdict(
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
         if review_input is None:
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-        assignment_references = _explicit_assignment_evidence_references(
-            review_input
-        )
+        assignment_references = _explicit_assignment_evidence_references(review_input)
         assignment_text = json.loads(review_input)["assignment"]
-        assignment_reference_ids = _reference_ids(
-            assignment_text, line_start_only=True
-        )
+        assignment_reference_ids = _reference_ids(assignment_text, line_start_only=True)
         try:
             input_value = json.loads(review_input)
             source_artifact = input_value.get("source_artifact") or input_value.get(
@@ -1694,23 +1809,17 @@ def _review_verdict(
                     raise WorkflowJobAuthorizationError(
                         "document_job_unverified_finding"
                     )
-                location_quotes = re.findall(
-                    r"`([^`]+)`", item["Artifact location"]
-                )
+                location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
                 if (
                     source_is_bound
                     and location_quotes
                     and all(quote in source_content for quote in location_quotes)
                 ):
                     continue
-                raise WorkflowJobAuthorizationError(
-                    "document_job_unverified_finding"
-                )
+                raise WorkflowJobAuthorizationError("document_job_unverified_finding")
             if evidence_reference in assignment_references:
                 continue
-            cited_reference_ids = _reference_ids(
-                item["Evidence source/reference"]
-            )
+            cited_reference_ids = _reference_ids(item["Evidence source/reference"])
             if cited_reference_ids and cited_reference_ids <= assignment_reference_ids:
                 continue
             location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
@@ -1741,9 +1850,7 @@ def _assignment_line_reference_matches(reference: str, assignment: str) -> bool:
 def _contains_assignment_line_reference(reference: str) -> bool:
     """Identify line-reference syntax to prevent legacy fallback."""
     return (
-        re.search(
-            r"(?<![a-z0-9_])assignment\s*:\s*L", reference, re.IGNORECASE
-        )
+        re.search(r"(?<![a-z0-9_])assignment\s*:\s*L", reference, re.IGNORECASE)
         is not None
     )
 
@@ -1771,11 +1878,7 @@ def _reference_ids(
         (
             match
             for line in value.splitlines()
-            if (
-                match := pattern.match(
-                    line.lstrip(" \t#>*_`-+")
-                )
-            )
+            if (match := pattern.match(line.lstrip(" \t#>*_`-+")))
         )
         if line_start_only
         else pattern.finditer(value)
@@ -1805,9 +1908,7 @@ def _reference_ids(
         if len(first) == len(last) == 1 and first.isalpha() and last.isalpha():
             start, end = sorted((ord(first), ord(last)))
             if end - start <= 25:
-                identifiers.update(
-                    (kind, chr(code)) for code in range(start, end + 1)
-                )
+                identifiers.update((kind, chr(code)) for code in range(start, end + 1))
     return frozenset(identifiers)
 
 
@@ -1961,9 +2062,7 @@ def inspect_bounded_document_job(
     reservations = _reservation_records(store.root, job_id)
     if len(reservations) > scope.max_provider_attempts:
         raise WorkflowJobAuthorizationError("attempt_allowance_depleted")
-    consumed_revision_ordinals = _consumed_revision_action_ordinals(
-        scope, reservations
-    )
+    consumed_revision_ordinals = _consumed_revision_action_ordinals(scope, reservations)
     dispatch_order = []
     reservation_by_digest = {
         _digest(_read_regular(path)): (path, _read_regular(path))
@@ -2061,9 +2160,7 @@ def inspect_bounded_document_job(
         "job_id": job_id,
         "max_provider_attempts": scope.max_provider_attempts,
         "normal_action_limit": min(len(scope.actions), normal_action_limit),
-        "normal_actions_consumed": len(
-            {item.get("ordinal") for item in reservations}
-        ),
+        "normal_actions_consumed": len({item.get("ordinal") for item in reservations}),
         "retry_limit": scope.max_retries,
         "retry_interval_seconds": scope.retry_interval_seconds,
         "retryable_http_statuses": [429, 503]
@@ -2120,8 +2217,7 @@ def _verify_positive_terminal_status(
             index
             for index in reversed(range(len(scope.actions)))
             if index in completed_ordinals
-            and scope.actions[index].input_source
-            in {"review_input", "re_review_input"}
+            and scope.actions[index].input_source in {"review_input", "re_review_input"}
         ),
         None,
     )
@@ -2137,9 +2233,7 @@ def _verify_positive_terminal_status(
     if (status["status"] == "candidate") != (expected_revisions == 0):
         raise WorkflowJobAuthorizationError("document_job_status_accounting")
     expected_ordinals = set(range(expected_calls))
-    retries_consumed = sum(
-        1 for item in reservations if item.get("retry_index", 0) > 0
-    )
+    retries_consumed = sum(1 for item in reservations if item.get("retry_index", 0) > 0)
     if (
         len(reservations) != expected_calls + retries_consumed
         or len(reservations) > scope.max_provider_attempts
@@ -2159,11 +2253,9 @@ def _verify_positive_terminal_status(
         ]
         action_records.sort(key=lambda item: item.get("retry_index", 0))
         expected_retry_count = len(action_records) - 1
-        if (
-            not action_records
-            or [item.get("retry_index", 0) for item in action_records]
-            != list(range(len(action_records)))
-        ):
+        if not action_records or [
+            item.get("retry_index", 0) for item in action_records
+        ] != list(range(len(action_records))):
             raise WorkflowJobAuthorizationError("document_job_status_accounting")
         if expected_retry_count:
             action_authorization = load_bounded_job_action_by_identity(
@@ -2175,9 +2267,7 @@ def _verify_positive_terminal_status(
                     expected_count=retry_index,
                     request_body_sha256=action_records[0]["request_body_sha256"],
                 ):
-                    raise WorkflowJobAuthorizationError(
-                        "document_job_retry_evidence"
-                    )
+                    raise WorkflowJobAuthorizationError("document_job_retry_evidence")
     try:
         review_artifact = None
         for ordinal in range(review_ordinal, final_review_ordinal + 1):
@@ -2193,14 +2283,10 @@ def _verify_positive_terminal_status(
                 review_input=review_manifest.run_input,
             )
             expected_verdict = (
-                "PASS"
-                if ordinal == final_review_ordinal
-                else "CHANGES_REQUIRED"
+                "PASS" if ordinal == final_review_ordinal else "CHANGES_REQUIRED"
             )
             if verdict != expected_verdict:
-                raise WorkflowJobAuthorizationError(
-                    "document_job_terminal_evidence"
-                )
+                raise WorkflowJobAuthorizationError("document_job_terminal_evidence")
         if review_artifact is None:
             raise WorkflowJobAuthorizationError("document_job_terminal_evidence")
         final_artifact = _artifact_for_action(store, scope.job_id, final_ordinal)
@@ -2261,6 +2347,7 @@ def _execute_bounded_document_job(
     from ai_office.engine.workflow_run_manifest import (
         create_workflow_run_manifest,
         load_workflow_run_manifest,
+        workflow_definition_from_run_manifest,
     )
     from ai_office.execution_destination import (
         ExecutionDestinationError,
@@ -2282,6 +2369,20 @@ def _execute_bounded_document_job(
     validate_bounded_document_job_scope(scope)
     current_scope = load_bounded_workflow_job_scope(store, scope.job_id)
     initial_manifest = load_workflow_run_manifest(store, initial_run_id)
+    if scope.source_manifest_run_id is not None:
+        source_manifest = load_workflow_run_manifest(
+            store, scope.source_manifest_run_id
+        )
+        if (
+            source_manifest.digest != scope.source_manifest_digest
+            or source_manifest.run_input != initial_manifest.run_input
+            or source_manifest.execution_destination
+            != initial_manifest.execution_destination
+        ):
+            raise WorkflowJobAuthorizationError("job_source_manifest")
+        _validate_derived_review_plan(
+            source_manifest, scope.actions, scope.max_revisions
+        )
     execution_target = initial_manifest.execution_destination.target
     if (
         current_scope != scope
@@ -2312,6 +2413,10 @@ def _execute_bounded_document_job(
             or loaded_employee.definition.allowed_tools != []
         ):
             raise WorkflowJobAuthorizationError("document_job_definition_changed")
+    if scope.source_manifest_run_id is not None and workflows[
+        scope.actions[0].workflow_id
+    ].definition != workflow_definition_from_run_manifest(source_manifest):
+        raise WorkflowJobAuthorizationError("document_job_definition_changed")
 
     if (
         initial_manifest.workflow_id != scope.actions[0].workflow_id
@@ -2334,20 +2439,16 @@ def _execute_bounded_document_job(
                 destination.target != execution_target
                 or destination.select_model(slot.model) != slot.model
             ):
-                raise WorkflowJobAuthorizationError(
-                    "document_job_destination_changed"
-                )
+                raise WorkflowJobAuthorizationError("document_job_destination_changed")
         except (ExecutionDestinationError, OSError):
             raise WorkflowJobAuthorizationError(
                 "document_job_destination_changed"
             ) from None
 
     def verify_run_manifest(manifest, slot: BoundedJobActionSlot) -> None:
-        if (
-            not any(
-                employee.id == slot.employee_id and employee.model == slot.model
-                for employee in manifest.employee_snapshots
-            )
+        if not any(
+            employee.id == slot.employee_id and employee.model == slot.model
+            for employee in manifest.employee_snapshots
         ):
             raise WorkflowJobAuthorizationError("document_job_manifest_destination")
 
@@ -2360,6 +2461,8 @@ def _execute_bounded_document_job(
         slot = scope.actions[ordinal]
         verify_destination(slot)
         loaded_workflow = workflows[slot.workflow_id]
+        if scope.source_manifest_run_id is not None:
+            loaded_workflow = bounded_job_execution_view(loaded_workflow, slot.step_id)
         workflow = loaded_workflow.definition
         manifest = (
             load_workflow_run_manifest(store, run_id)
@@ -2435,7 +2538,12 @@ def _execute_bounded_document_job(
         for index, item in enumerate(scope.actions)
         if item.input_source == "review_input"
     )
-    creator = workflows[scope.actions[0].workflow_id].definition
+    creator_loaded = workflows[scope.actions[0].workflow_id]
+    creator = (
+        bounded_job_execution_view(creator_loaded, scope.actions[0].step_id).definition
+        if scope.source_manifest_run_id is not None
+        else creator_loaded.definition
+    )
     creator_manifest = initial_manifest
     progression, _, _, _ = run_fresh(0, initial_run_id, assignment)
     for ordinal in range(1, creator_action_count):
@@ -2447,9 +2555,7 @@ def _execute_bounded_document_job(
         history, state_sha, _ = load_workflow_execution_history_with_source_digests(
             WorkflowExecutionPersistenceTargets(
                 *store.execution_paths(initial_run_id),
-                binding=WorkflowRunBinding(
-                    initial_run_id, creator_manifest.digest
-                ),
+                binding=WorkflowRunBinding(initial_run_id, creator_manifest.digest),
             )
         )
         validate_loaded_persisted_execution_history(
@@ -2593,9 +2699,7 @@ def _execute_bounded_document_job(
             or revision_result.decision != "workflow_complete"
         ):
             raise WorkflowJobAuthorizationError("document_job_revision_stopped")
-        current_artifact = _artifact_for_action(
-            store, scope.job_id, revision_ordinal
-        )
+        current_artifact = _artifact_for_action(store, scope.job_id, revision_ordinal)
         revisions_used += 1
         ordinal = revision_ordinal + 1
     raise WorkflowJobAuthorizationError("document_job_review_missing")
@@ -2699,8 +2803,7 @@ def _stopped_document_job_outcome(
         (
             artifacts[index]
             for index in reversed(range(len(scope.actions)))
-            if scope.actions[index].input_source
-            in {"review_input", "re_review_input"}
+            if scope.actions[index].input_source in {"review_input", "re_review_input"}
             and index in artifacts
         ),
         None,
@@ -2733,6 +2836,8 @@ def _scope_intent_digest(
     expires_at_ns: int,
     max_retries: int = 0,
     retry_interval_seconds: int = 30,
+    source_manifest_run_id: str | None = None,
+    source_manifest_digest: str | None = None,
 ) -> str:
     value = {
         "actions": [_slot_dict(item) for item in actions],
@@ -2747,6 +2852,14 @@ def _scope_intent_digest(
         "retry_interval_seconds": retry_interval_seconds,
         "retryable_http_statuses": [429, 503],
         "schema_version": "workflow-bounded-job-scope-intent.v2",
+        **(
+            {
+                "source_manifest_run_id": source_manifest_run_id,
+                "source_manifest_digest": source_manifest_digest,
+            }
+            if source_manifest_run_id is not None
+            else {}
+        ),
     }
     return _digest(_canonical(value))
 
@@ -2865,9 +2978,7 @@ def _reservation_path(
     return root / f"workflow-bounded-job.{job_id}.reservation.{suffix}.json"
 
 
-def _dispatch_path(
-    root: Path, job_id: str, ordinal: int, retry_index: int = 0
-) -> Path:
+def _dispatch_path(root: Path, job_id: str, ordinal: int, retry_index: int = 0) -> Path:
     suffix = str(ordinal) if retry_index == 0 else f"{ordinal}.retry.{retry_index}"
     return root / f"workflow-bounded-job.{job_id}.dispatch.{suffix}.json"
 
@@ -2995,9 +3106,7 @@ def _prior_job_attempts_are_retryable(
         return False
     action_records.sort(key=lambda item: item.get("retry_index", 0))
     action_records = action_records[:expected_count]
-    by_reservation = {
-        attempt.job_reservation_sha256: attempt for attempt in attempts
-    }
+    by_reservation = {attempt.job_reservation_sha256: attempt for attempt in attempts}
     if len(by_reservation) < expected_count:
         return False
     for retry_index, reservation in enumerate(action_records):

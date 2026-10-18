@@ -1,0 +1,10 @@
+id: offline-document-draft
+name: Offline Document Draft
+description: Test-only single-step document workflow for provider and header contracts.
+steps:
+  - id: draft
+    name: Draft
+    employee: japanese-document-writer
+    instructions: Write the requested Markdown document from the supplied input.
+    business_approval_required: true
+    artifact_content_type: text/markdown

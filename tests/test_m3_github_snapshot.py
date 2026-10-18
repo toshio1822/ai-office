@@ -1,4 +1,10 @@
-"""Offline proof for the Issue #716 read-only GitHub snapshot flow."""
+"""Offline proof for the Issue #716 read-only GitHub snapshot flow.
+
+Keeps the observable safety guarantees of the still-public
+`workflows snapshot-github-change` command: GET-only collection, revision
+binding, partial-CI handling, token redaction, and exclusive private output.
+The retired two-employee review workflow is not exercised here.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +12,6 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr
 from typer.testing import CliRunner
 
 import ai_office.cli as cli_module
@@ -17,13 +22,8 @@ from ai_office.github_snapshot import (
     GitHubSnapshotError,
     collect_github_change_snapshot,
 )
-from ai_office.providers.openai import (
-    OpenAIApiKey,
-    OpenAIResponsesRawHttpResponse,
-)
 
 runner = CliRunner()
-ROOT = Path(__file__).resolve().parents[1]
 HEAD_SHA = "a" * 40
 BASE_SHA = "b" * 40
 TOKEN = "github_pat_" + "x" * 30
@@ -167,9 +167,7 @@ def test_missing_ci_is_partial_and_never_successful_verification() -> None:
     snapshot = collect(FakeGitHub(github_responses(checks=[])))
 
     assert snapshot.collection_status == "partial"
-    assert snapshot.unavailable_fields == (
-        "ci.check_runs: no check results observed",
-    )
+    assert snapshot.unavailable_fields == ("ci.check_runs: no check results observed",)
     assert '"collection_status": "partial"' in snapshot.markdown
     assert '"check_runs": []' in snapshot.markdown
 
@@ -281,188 +279,3 @@ def test_snapshot_cli_writes_once_and_partial_exits_nonzero(
     partial_result = runner.invoke(app, args[:-1] + [str(tmp_path / "partial.md")])
     assert partial_result.exit_code == 2
     assert json.loads(partial_result.stdout)["collection_status"] == "partial"
-
-
-def synthetic_response(response_id: str, text: str) -> OpenAIResponsesRawHttpResponse:
-    return OpenAIResponsesRawHttpResponse(
-        200,
-        "synthetic",
-        (),
-        json.dumps(
-            {
-                "id": response_id,
-                "object": "response",
-                "status": "completed",
-                "output": [
-                    {
-                        "type": "message",
-                        "content": [{"type": "output_text", "text": text}],
-                    }
-                ],
-            }
-        ).encode(),
-    )
-
-
-def approval_args(preview: dict[str, object], suffix: str) -> list[str]:
-    return [
-        "--approve-business",
-        "--business-approved-by",
-        "offline-reviewer",
-        "--business-approval-id",
-        f"m3-business-{suffix}",
-        "--approve-execution",
-        "--execution-approved-by",
-        "offline-reviewer",
-        "--execution-approval-id",
-        f"m3-execution-{suffix}",
-        "--expected-step-id",
-        str(preview["step_id"]),
-        "--expected-step-index",
-        str(preview["step_index"]),
-        "--expected-employee-id",
-        str(preview["employee_id"]),
-        "--expected-request-fingerprint",
-        str(preview["request_fingerprint"]),
-    ]
-
-
-def test_snapshot_drives_existing_two_employee_workflow_offline(
-    tmp_path: Path, monkeypatch
-) -> None:
-    snapshot = collect(FakeGitHub(github_responses(checks=[])))
-    run_root = tmp_path / "runs"
-    calls: list[object] = []
-    keys: list[int] = []
-    analysis = (
-        f"Snapshot is partial at head `{HEAD_SHA}`. No CI checks were observed, so CI "
-        "validation is unknown. The diff was not retrieved; code correctness is "
-        "unverified. Human review must inspect the exact-head diff."
-    )
-    report = (
-        f"# 日本語レビュー\n\nhead `{HEAD_SHA}` のsnapshotは **partial**。"
-        "CI checkは観測されておらず、検証状況は未確認です。"
-        "diff本文・ソースコードは取得していないため、実装の正しさは未検証です。"
-        "人間の確認項目: このheadのdiffとソースコードを確認してください。"
-    )
-
-    def load_key() -> OpenAIApiKey:
-        keys.append(1)
-        return OpenAIApiKey(value=SecretStr("synthetic-offline-key"))
-
-    def transport(request: object) -> OpenAIResponsesRawHttpResponse:
-        calls.append(request)
-        if len(calls) == 1:
-            return synthetic_response("analysis", analysis)
-        if len(calls) == 2:
-            return synthetic_response("report", report)
-        raise AssertionError("unexpected retry or automatic continuation")
-
-    monkeypatch.setattr(cli_module, "load_openai_api_key_from_environment", load_key)
-    monkeypatch.setattr(cli_module, "send_openai_responses_http_request", transport)
-    start = [
-        "workflows",
-        "start",
-        "review-supplied-github-change",
-        "--run-id",
-        "m3-offline-proof",
-        "--run-input",
-        snapshot.markdown,
-        "--run-store",
-        str(run_root),
-        "--directory",
-        str(ROOT / "workflows"),
-        "--employees-directory",
-        str(ROOT / "employees"),
-    ]
-    preview_one_result = runner.invoke(app, start + ["--preview-only"])
-    assert preview_one_result.exit_code == 0
-    assert calls == []
-    assert keys == []
-    preview_one = json.loads(preview_one_result.stdout)
-    unapproved = runner.invoke(app, start)
-    assert unapproved.exit_code == 2
-    assert calls == []
-    first = runner.invoke(app, start + approval_args(preview_one, "analysis"))
-    assert first.exit_code == 0, first.stderr
-    assert len(calls) == 1
-
-    preview_two_result = runner.invoke(
-        app,
-        [
-            "workflows",
-            "continue",
-            "m3-offline-proof",
-            "--run-store",
-            str(run_root),
-            "--preview-only",
-        ],
-    )
-    assert preview_two_result.exit_code == 0, preview_two_result.stderr
-    preview_two = json.loads(preview_two_result.stdout)
-    assert preview_two["upstream_inputs"][0]["output_text"] == analysis
-    second = runner.invoke(
-        app,
-        [
-            "workflows",
-            "continue",
-            "m3-offline-proof",
-            "--run-store",
-            str(run_root),
-        ]
-        + approval_args(preview_two, "report"),
-    )
-    assert second.exit_code == 0, second.stderr
-    assert len(calls) == 2
-    assert keys == [1, 1]
-    request_payloads = [json.loads(call.body) for call in calls]  # type: ignore[union-attr]
-    first_task_input = json.loads(request_payloads[0]["input"])
-    second_task_input = json.loads(request_payloads[1]["input"])
-    assert '"collection_status": "partial"' in first_task_input["run_input"]
-    assert '"diff_content_included": false' in first_task_input["run_input"]
-    assert "Never describe missing CI/check data" in first_task_input[
-        "task_instructions"
-    ]
-    assert "Never claim the code changes" in first_task_input["task_instructions"]
-    assert "correctness is unverified without the exact-head diff" in first_task_input[
-        "task_instructions"
-    ]
-    assert "Never turn" in second_task_input["task_instructions"]
-    assert "Do not say code behavior or" in second_task_input["task_instructions"]
-    assert "missing CI/check results into a passing" in second_task_input[
-        "task_instructions"
-    ]
-    artifacts = runner.invoke(
-        app,
-        [
-            "workflows",
-            "artifacts",
-            "m3-offline-proof",
-            "--run-store",
-            str(run_root),
-        ],
-    )
-    artifact_values = json.loads(artifacts.stdout)["artifacts"]
-    assert len(artifact_values) == 1
-    assert artifact_values[0]["consistent_with_execution_evidence"] is True
-    assert artifact_values[0]["content_type"] == "text/markdown"
-    artifact = runner.invoke(
-        app,
-        [
-            "workflows",
-            "artifact",
-            "m3-offline-proof",
-            artifact_values[0]["artifact_id"],
-            "--run-store",
-            str(run_root),
-        ],
-    )
-    assert artifact.exit_code == 0, artifact.stderr
-    artifact_content = json.loads(artifact.stdout)["artifact"]["content"]
-    assert artifact_content == report
-    assert "日本語レビュー" in artifact_content
-    assert "partial" in artifact_content
-    assert "未確認" in artifact_content
-    assert "未検証" in artifact_content
-    assert "人間の確認項目" in artifact_content
-    assert len(calls) == 2
