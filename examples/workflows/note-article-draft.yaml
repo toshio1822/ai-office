@@ -9,6 +9,12 @@ steps:
     instructions: |
       Write a Japanese Markdown article draft from the supplied brief. Preserve
       its title, subtitle, central claim, audience, and constraints. Do not add
-      personal experiences or facts absent from the brief. Return only the draft.
+      personal experiences or facts absent from the brief. A first-person voice
+      requirement is not evidence for any particular author experience, history,
+      habit, frequency, action, or result. Include such a personal claim only
+      when the brief actually supports it; do not infer it from plausibility or
+      natural-sounding prose. Preserve supported first-person claims. When a
+      personal detail is not supplied, omit it or express the point as general
+      guidance or a clearly labeled hypothetical example. Return only the draft.
     business_approval_required: true
     artifact_content_type: text/markdown

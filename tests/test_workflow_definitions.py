@@ -99,6 +99,34 @@ def test_note_review_contract_matches_finite_revision_engine() -> None:
     assert "bare or malformed PASS" in instructions
     assert "do not claim otherwise" in instructions
     assert "PASS never authorizes acceptance or publication" in instructions
+    assert "negative audit" in instructions
+    assert "complete Artifact" in instructions
+    assert "A first-person voice requirement is not evidence" in instructions
+    assert "Do not infer support from one supported example" in instructions
+    assert "remove or generalize the unsupported claim" in instructions
+    assert "one exact assignment-line citation" in instructions
+    assert "Do not concatenate multiple lines into one field" in instructions
+
+
+def test_note_writer_and_revision_prompts_ground_personal_claims() -> None:
+    root = Path(__file__).parents[1]
+    note_workflow = load_workflow_file(
+        root / "examples/workflows/note-article-draft.yaml"
+    ).definition
+    review_workflow = load_workflow_file(
+        root / "examples/workflows/revise-draft.yaml"
+    ).definition
+    writer_instructions = " ".join(note_workflow.steps[0].instructions.split())
+    revision_instructions = " ".join(review_workflow.steps[0].instructions.split())
+
+    assert "first-person voice" in writer_instructions
+    assert "is not evidence for any particular author experience" in writer_instructions
+    assert "Preserve supported first-person claims" in writer_instructions
+    assert "omit it or express the point as general guidance" in writer_instructions
+    assert "remove or generalize that claim" in revision_instructions
+    assert (
+        "Never turn a revision request into invented biography" in revision_instructions
+    )
 
 
 def test_workflow_artifact_content_type_is_explicit_and_validated(
