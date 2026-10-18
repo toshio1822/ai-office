@@ -30,7 +30,7 @@ model: codex
 allowed_tools: []
 ```
 
-現行の `article-production` が参照する社員は、執筆・改訂を担う `article-writer` と独立レビューを担う `document-reviewer` です。`general-researcher` は現在どのWorkflowからも参照されておらず、将来の調査付きWorkflow向けに保持しています。
+現行の `article-production` が参照する社員は、執筆・改訂を担う `article-writer`、記事品質・要件適合をレビューする `document-reviewer`、著者に帰属する根拠・事実を監査する `evidence-auditor` です。**レビュー担当の人数・順序・専門分野は Workflow/Employee の設定だけが宣言**し、共通 Engine は人数・業務を知りません。人数を変えても Python 改修は不要です。`general-researcher` は現在どのWorkflowからも参照されておらず、将来の調査付きWorkflow向けに保持しています。
 
 一覧表示と事前検証には次を使用します。`--directory` で別の定義ディレクトリを指定できます。
 
@@ -47,10 +47,13 @@ ai-office employees list --directory path/to/employees
 ```yaml
 id: article-production
 name: Article Production
-description: Creates and independently reviews an article.
+description: Creates, independently multi-reviews, and finitely revises an article.
+# レビュー担当の人数・順序・専門分野はここでだけ宣言する。
 bounded_review:
   draft_step: write-draft
-  review_step: review
+  review_steps:        # 1人以上。人数は自由（エンジンは固定値を知らない）
+    - review-quality
+    - review-evidence
   revision_step: revise
   max_revisions: 3
 steps:
@@ -58,15 +61,21 @@ steps:
     name: Write Draft
     employee: article-writer
     instructions: Write an article from the supplied brief.
-  - id: review
-    name: Review
+  - id: review-quality
+    name: Review Quality
     employee: document-reviewer
     instructions: Return a grounded PASS, CHANGES_REQUIRED, or BLOCKED verdict.
+  - id: review-evidence
+    name: Audit Evidence
+    employee: evidence-auditor
+    instructions: Audit author-attributed claims; return a grounded verdict.
   - id: revise
     name: Revise
     employee: article-writer
-    instructions: Revise only grounded findings.
+    instructions: Aggregate grounded findings and revise.
 ```
+
+全員PASSがそろって初めて人間受け入れ候補となり、1人のPASSが他の担当の根拠付き修正要求を打ち消しません。改訂後は同じ全担当が新Artifactを再レビューします。通常送信の上限は宣言されたレビュー人数 `N`（1以上）と最大改訂 `R` に対し `(R + 1) * (N + 1)` で、`R = 3` なら `N = 1 / 2 / 3 / 4` で `8 / 12 / 16 / 20` 回です。これは試行回数の上限であり金額上限ではありません。
 
 一覧表示と事前検証には次を使用します。`--directory` と `--employees-directory` で別の定義ディレクトリを指定できます。
 
@@ -3605,7 +3614,9 @@ ai-office workflows start article-production \
 
 `article-production` の実実行は `workflows bounded-job-run` を使用します。
 `start` による単独実行および `continue` による同一Run内レビューは拒否されます。
-これにより執筆者のprivate sessionを独立レビューへ継承しません。
+各レビュー担当は独立したRunで最新の同一Artifactを評価するため、執筆者や
+他レビュー担当のprivate sessionを継承しません。レビュー担当の人数は
+Workflow定義が宣言し、CLI/Job scope はその有限な人数から送信上限を導出します。
 単一定義からの有限計画、工程ごとの独立Run、承認と停止条件は
 [記事制作Jobの運用境界](docs/runbooks/article-production.md)を参照してください。
 以下の単一step実行説明は、別途定義した通常の逐次Workflow向けです。

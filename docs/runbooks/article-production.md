@@ -1,11 +1,30 @@
 # Bounded article-production Job
 
 `workflows/article-production.yaml` is the sole checked-in article-production
-workflow. Its three steps (draft, independent review, revision) and bounded
-review policy are the source of the Job action plan. Different media, audience,
-brief, source material, and language requirements belong in each Run Input;
-they do not require another checked-in Workflow. The configured Employees supply
-writing and review capabilities.
+workflow. Its `bounded_review` policy declares a finite, ordered reviewer set
+plus the draft and revision steps; that declaration is the source of the Job
+action plan. The shipped workflow declares **two** independent reviewers
+(article quality/requirement fit via `document-reviewer`, and author-attributed
+evidence/fact audit via `evidence-auditor`), but the number, order and
+specialties are configuration only. The shared engine reads the reviewer count
+from the declared set and fixes no reviewer number in code, so adding or
+removing reviewers is a Workflow/Employee change with no Python change.
+Different media, audience, brief, source material, and language requirements
+belong in each Run Input; they do not require another checked-in Workflow. The
+configured Employees supply the writing and review capabilities.
+
+## Reviewer count and send budget
+
+For `N` declared reviewers (`N >= 1`) and at most `R` revisions, the normal
+provider-send budget is `(R + 1) * (N + 1)`: one draft, `N` first-round
+independent reviews, then `R` rounds of one revision plus `N` re-reviews. With
+the shipped `R = 3` cap this is `8 / 12 / 16 / 20` sends for `N = 1 / 2 / 3 / 4`,
+and more for larger sets. The count is a finite attempt budget, not a currency
+limit. Every reviewer in a round evaluates the same immutable Run Input and the
+same Artifact id/digest in its own independent Run; a single `PASS` never
+cancels another reviewer's grounded findings. Only an all-`PASS` round yields a
+`candidate`; any grounded `CHANGES_REQUIRED` aggregates into one revision, and
+the new Artifact is re-reviewed by all declared reviewers.
 
 ## Offline preparation
 
@@ -49,13 +68,14 @@ ai-office workflows bounded-job-run JOB_ID \
 
 This document does not authorize or execute that command. The CLI records the
 full source Workflow snapshot and derives a one-step execution view for each
-independent Run. The review Run receives the digest-bound latest Artifact, not
-the writer's private session. A PASS stops early as a human-acceptance
-candidate; CHANGES_REQUIRED uses only pre-authorized revision/re-review pairs.
-BLOCKED, invalid output, exhausted limits, or an unknown send outcome stop
-without replay, fallback, or publication. The limit counts attempts, not
-currency. Inspect the existing read-only Evidence after a stop; do not rerun an
-ambiguous Job.
+independent Run. Every declared reviewer step gets its own digest-bound Run and
+receives the latest immutable Artifact, not the writer's or another reviewer's
+private session. Only an all-reviewer PASS stops early as a human-acceptance
+candidate; any grounded CHANGES_REQUIRED uses only the pre-authorized finite
+revision/re-review rounds. BLOCKED, invalid output, exhausted limits, or an
+unknown send outcome stop without replay, fallback, or publication. The limit
+counts attempts, not currency. Inspect the existing read-only Evidence after a
+stop; do not rerun an ambiguous Job.
 
 Provider HTTP transport has a 600-second socket-inactivity timeout for
 connection and socket send/receive operations, including TLS and body reads.

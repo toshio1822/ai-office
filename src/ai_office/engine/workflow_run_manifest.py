@@ -162,7 +162,7 @@ class WorkflowDefinitionSnapshot:
 @dataclass(frozen=True)
 class BoundedReviewSnapshot:
     draft_step: str
-    review_step: str
+    review_steps: tuple[str, ...]
     revision_step: str
     max_revisions: int
 
@@ -413,7 +413,7 @@ def build_workflow_run_manifest(
         bounded_review=(
             BoundedReviewSnapshot(
                 workflow_definition.bounded_review.draft_step,
-                workflow_definition.bounded_review.review_step,
+                tuple(workflow_definition.bounded_review.review_steps),
                 workflow_definition.bounded_review.revision_step,
                 workflow_definition.bounded_review.max_revisions,
             )
@@ -596,7 +596,7 @@ def workflow_definition_from_run_manifest(
             "bounded_review": (
                 {
                     "draft_step": snapshot.bounded_review.draft_step,
-                    "review_step": snapshot.bounded_review.review_step,
+                    "review_steps": list(snapshot.bounded_review.review_steps),
                     "revision_step": snapshot.bounded_review.revision_step,
                     "max_revisions": snapshot.bounded_review.max_revisions,
                 }
@@ -825,7 +825,7 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
                 {
                     "bounded_review": {
                         "draft_step": workflow.bounded_review.draft_step,
-                        "review_step": workflow.bounded_review.review_step,
+                        "review_steps": list(workflow.bounded_review.review_steps),
                         "revision_step": workflow.bounded_review.revision_step,
                         "max_revisions": workflow.bounded_review.max_revisions,
                     }
@@ -955,9 +955,16 @@ def _validate_workflow_snapshot(snapshot: object) -> None:
         type(flow) is not BoundedReviewSnapshot
         or type(flow.draft_step) is not str
         or not flow.draft_step
+        or type(flow.review_steps) is not tuple
+        or not flow.review_steps
+        or any(
+            type(reviewer) is not str or not reviewer
+            for reviewer in flow.review_steps
+        )
+        or len(flow.review_steps) != len(set(flow.review_steps))
         or type(flow.max_revisions) is not int
         or flow.max_revisions < 0
-        or (flow.draft_step, flow.review_step, flow.revision_step) != step_ids
+        or (flow.draft_step, *flow.review_steps, flow.revision_step) != step_ids
     ):
         _raise_manifest("bounded_review")
 
@@ -1252,7 +1259,7 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
                 bounded_review=(
                     BoundedReviewSnapshot(
                         workflow_value["bounded_review"]["draft_step"],
-                        workflow_value["bounded_review"]["review_step"],
+                        tuple(workflow_value["bounded_review"]["review_steps"]),
                         workflow_value["bounded_review"]["revision_step"],
                         workflow_value["bounded_review"]["max_revisions"],
                     )

@@ -27,6 +27,34 @@ Phase 番号は開発履歴であり、runtime architecture の階層ではな�
 
 以下の Phase 記述は、過去にどの保証をどの構造で検証したかを理解するための資料として扱う。将来の実装は、同じ保証をより単純な構造で実現できるかを改めて評価する。
 
+## Current: 設定駆動の複数レビュー担当 (Issue #778)
+
+現行の `article-production` は、**独立レビュー担当の有限集合**を `bounded_review.review_steps`
+として1つの Workflow 定義で宣言する。人数・順序・専門分野は設定のみが所有し、
+共通 Engine は人数・固定プラン・業務名を分岐に持たない。1人でも2人でも、
+さらに任意の正の有限人数でも、Python 改変なしで同じ実行経路を共有する。
+これは「単一レビュー固定」から「設定で宣言されたレビュー担当集合」への実際の変更であり、
+`docs/engine-target-architecture.md` の不変条件を現行実装で満たす。
+
+同じレビュー周回の全担当は、同じ不変 Run Input と**同一版の Artifact id/digest**を、
+それぞれ独立した Run で評価する。執筆者・他担当の private transcript や推論は継承しない。
+集約規則は次のとおりです。
+
+- 全担当が有効な `PASS` を返した場合に限り `candidate`（人間受け入れ候補）。
+- 1人でも根拠付き `CHANGES_REQUIRED` があれば、その周回の指摘を集約して**1回の改訂**に渡す。
+  ある担当の `PASS` が他の担当の修正要求を打ち消さない。
+- 改訂は新しい不変 Artifact を作り、**同じ全担当**が新Artifactを再レビューする。
+- `BLOCKED`、不正な判定・引用、根拠不足、送信結果不明、許可・予算超過は fail closed で停止する。
+
+送信上限は宣言値から計算し（修正回数上限 `R`、レビュー人数 `N >= 1` に対し `(R + 1) * (N + 1)`）、
+preview・Business/Execution scope・永続 Evidence へ固定する。`R = 3` で `N = 1 / 2 / 3 / 4` は
+`8 / 12 / 16 / 20` 回。コードに固定の人数・上限はない。retry/fallback/recovery は既定 0 で、
+再起動・並行二重起動・曖昧な送信では再送しない。
+
+**状態境界**：ここに記したのは現行実装の挙動であり、任意の並列実行・多数決・重み付き評価・
+動的 Employee 生成は対象外（逐次実行）である。実モデルの品質向上（語義的な正しさ）は
+未検証であり、この変更はそれを保証しない。
+
 ## Current Run-bound workflow execution (Milestone 1 — Run Foundation)
 
 2026年10月2日時点で、公開 workflow 実行は Run identity を中心に動作する。
