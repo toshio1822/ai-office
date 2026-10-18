@@ -1966,11 +1966,11 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             workflow_names[0],
             (
                 ("research", "general-researcher"),
-                ("summarize", "japanese-document-writer"),
+                ("summarize", "article-writer"),
             ),
         ),
         (workflow_names[1], (("review", "general-researcher"),)),
-        (workflow_names[2], (("revise", "japanese-document-writer"),)),
+        (workflow_names[2], (("revise", "article-writer"),)),
     ):
         workflows[name] = LoadedWorkflow(
             source_path=Path(f"<offline-test:{name}>"),
@@ -1995,7 +1995,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         )
     employees: dict[str, LoadedEmployee] = {
         name: load_employee_file(repository / "employees" / f"{name}.yaml")
-        for name in ("general-researcher", "japanese-document-writer")
+        for name in ("general-researcher", "article-writer")
     }
     store_root = tmp_path / "fixed-document-job"
     store_root.mkdir(mode=0o700, parents=True)
@@ -2013,8 +2013,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         assignment,
         workflows["research-and-summarize"],
         tuple(
-            employees[employee]
-            for employee in ("general-researcher", "japanese-document-writer")
+            employees[employee] for employee in ("general-researcher", "article-writer")
         ),
         execution_target=target,
     )
@@ -2029,7 +2028,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 employees[
                     "general-researcher"
                     if name == "review-supplied-artifact"
-                    else "japanese-document-writer"
+                    else "article-writer"
                 ],
             ),
             execution_target=target,
@@ -2040,7 +2039,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             "research-and-summarize",
             "summarize",
             2,
-            "japanese-document-writer",
+            "article-writer",
             "previous_step",
         ),
         ("review-supplied-artifact", "review", 1, "general-researcher", "review_input"),
@@ -2048,7 +2047,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             "revise-reviewed-artifact",
             "revise",
             1,
-            "japanese-document-writer",
+            "article-writer",
             "revision_input",
         ),
         (
@@ -2350,7 +2349,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             revision_run_id,
             revision_input,
             workflows["revise-reviewed-artifact"],
-            (employees["japanese-document-writer"],),
+            (employees["article-writer"],),
         )
         predecessor = (
             review_artifact.run_id,
@@ -2359,7 +2358,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         )
         with pytest.raises(WorkflowJobAuthorizationError):
             bounded_document_action_input(store, scope.job_id, 3, predecessor)
-        revision_employee = employees["japanese-document-writer"].definition
+        revision_employee = employees["article-writer"].definition
         revision_step = workflows["revise-reviewed-artifact"].definition.steps[0]
         revision_request = ModelInvocationRequest(
             model=revision_employee.model,
@@ -2838,7 +2837,7 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
         employee_id: load_employee_file(
             repository / "employees" / f"{employee_id}.yaml"
         )
-        for employee_id in ("japanese-document-writer", "document-reviewer")
+        for employee_id in ("article-writer", "document-reviewer")
     }
     assignment = (
         "**タイトル案**：複雑な仕事を抱え込まないために、20年SEの私がやっている“外に出す”整理術\n"
@@ -2884,7 +2883,7 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
         initial_run_id,
         assignment,
         initial_view,
-        (employees["japanese-document-writer"],),
+        (employees["article-writer"],),
         execution_target=target,
     )
     slots = []
@@ -3575,7 +3574,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         employee_id: load_employee_file(
             repository / "employees" / f"{employee_id}.yaml"
         )
-        for employee_id in ("japanese-document-writer", "document-reviewer")
+        for employee_id in ("article-writer", "document-reviewer")
     }
     store_root = tmp_path / "configured-job"
     store_root.mkdir(mode=0o700)
@@ -3660,7 +3659,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         # An action slot cannot silently swap the source-defined reviewer.
         tampered = (
             slots[0],
-            replace(slots[1], employee_id="japanese-document-writer"),
+            replace(slots[1], employee_id="article-writer"),
         )
         with pytest.raises(WorkflowJobAuthorizationError):
             issue_scope(tampered)

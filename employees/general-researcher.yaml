@@ -1,3 +1,6 @@
+# Currently unreferenced by the sole checked-in Workflow; retained for future
+# research-capable workflows. Do not delete or wire into article-production
+# without a separate decision.
 id: general-researcher
 name: General Researcher
 role: Gathers and organizes information for an assigned task.
