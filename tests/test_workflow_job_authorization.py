@@ -108,6 +108,37 @@ from ai_office.storage.workflow_execution_history import (
 from tests._run_test_support import create_test_run
 
 
+def _grounded_pass_for_request(request) -> str:
+    """Build a structural PASS fixture grounded in the exact provider input."""
+    payload = json.loads(request.body)
+    task_input = (
+        json.loads(payload["input"])
+        if "input" in payload
+        else json.loads(payload["messages"][1]["content"])
+    )
+    review_input = json.loads(task_input["run_input"])
+    assignment_lines = review_input["assignment"].splitlines()
+    assignment_line_number, assignment_line = next(
+        (index, line)
+        for index, line in enumerate(assignment_lines, start=1)
+        if line.strip()
+    )
+    source = review_input.get("source_artifact") or review_input["revision_artifact"]
+    artifact_quote = next(
+        line.strip() for line in source["content"].splitlines() if line.strip()
+    )
+    return (
+        "Verdict: PASS\n"
+        "Unresolved material issues: none\n\n"
+        "### Check 1\n"
+        f"Requirement: {assignment_line}\n"
+        f"Artifact location: `{artifact_quote}`\n"
+        f"Evidence source/reference: assignment:L{assignment_line_number} "
+        f"`{assignment_line}`\n"
+        "Assessment: The exact quoted Artifact text addresses the cited requirement."
+    )
+
+
 def _competing_reservation_worker(
     authorization, run_binding, request, gate, results
 ) -> None:
@@ -1867,6 +1898,14 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
     ),
     [
         ("PASS", 3, "candidate", 1, None, "PASS"),
+        (
+            "BARE_PASS",
+            3,
+            "stopped",
+            1,
+            "document_job_nonactionable_review",
+            "PASS",
+        ),
         ("CHANGES_REQUIRED", 5, "reviewed", 1, None, "PASS"),
         ("MULTI_FINDING", 5, "reviewed", 1, None, "PASS"),
         (
@@ -2058,7 +2097,9 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         elif index == 2:
             label = "review-1"
             if first_verdict == "PASS":
-                text = "Verdict: PASS\n\nNo actionable findings."
+                text = _grounded_pass_for_request(request)
+            elif first_verdict == "BARE_PASS":
+                text = "Verdict: PASS"
             elif first_verdict == "BLOCKED":
                 text = "Verdict: BLOCKED\n\nEvidence is insufficient."
             elif first_verdict == "MALFORMED":
@@ -2147,7 +2188,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                     "Requested correction: retain the limitation."
                 )
             else:
-                text = "Verdict: PASS\n\nNo actionable findings."
+                text = _grounded_pass_for_request(request)
         call_labels.append(label)
         assert request.url == target.endpoint
         raw = json.dumps(
@@ -2675,7 +2716,6 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
 ) -> None:
     from ai_office.engine.artifact import read_run_artifact
     from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
-    from ai_office.providers.openai import OpenAIResponsesRawHttpResponse
 
     repository = Path(__file__).resolve().parents[1]
     workflow_ids = (
@@ -2845,7 +2885,7 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
             draft,
             "Verdict: CHANGES_REQUIRED\n\n" + findings,
             revised,
-            "Verdict: PASS\n\n要件を満たしています。",
+            None,
         )
     )
     labels = []
@@ -2853,6 +2893,8 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
     def fake_transport(request):
         labels.append("transport-call")
         response = next(responses)
+        if response is None:
+            response = _grounded_pass_for_request(request)
         body = json.dumps(
             {
                 "id": f"offline-note-{len(labels)}",
@@ -2899,15 +2941,61 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
 def test_review_verdict_requires_one_unambiguous_declaration() -> None:
     from ai_office.engine.workflow_bounded_job import _review_verdict
 
-    after_preamble = "Assessment summary.\n\n判定: PASS"
-    assert _review_verdict(after_preamble) == "PASS"
+    assignment = "Material requirement: preserve the supplied boundary."
+    source_content = "# Result\n\nThe supplied boundary is preserved."
+    source_bytes = source_content.encode()
+    review_input = json.dumps(
+        {
+            "assignment": assignment,
+            "source_artifact": {
+                "content": source_content,
+                "content_length": len(source_bytes),
+                "content_sha256": sha256(source_bytes).hexdigest(),
+            },
+        }
+    )
+    grounded_pass = (
+        "Verdict: PASS\n"
+        "Unresolved material issues: none\n\n"
+        "### Check 1\n"
+        "Requirement: preserve the supplied boundary.\n"
+        "Artifact location: `The supplied boundary is preserved.`\n"
+        "Evidence source/reference: assignment:L1 `Material requirement: "
+        "preserve the supplied boundary.`\n"
+        "Assessment: The quoted sentence states the required boundary."
+    )
+    assert _review_verdict(grounded_pass, review_input=review_input) == "PASS"
+    with pytest.raises(WorkflowJobAuthorizationError) as caught:
+        _review_verdict("Verdict: PASS", review_input=review_input)
+    assert caught.value.classification == "document_job_nonactionable_review"
+
+    invalid_passes = (
+        grounded_pass.replace("assignment:L1", "assignment:L9"),
+        grounded_pass.replace(
+            "`The supplied boundary is preserved.`", "`not in the Artifact`"
+        ),
+        grounded_pass.replace("Assessment:", "Rationale:"),
+        grounded_pass.replace(
+            "Unresolved material issues: none", "Unresolved material issues: unclear"
+        ),
+    )
+    for invalid_pass in invalid_passes:
+        with pytest.raises(WorkflowJobAuthorizationError) as caught:
+            _review_verdict(invalid_pass, review_input=review_input)
+        assert caught.value.classification in {
+            "document_job_nonactionable_review",
+            "document_job_unverified_finding",
+        }
+
     quoted_examples_with_verdict = (
         "Assessment summary.\n"
         "> 判定： BLOCKED\n"
         "```markdown\n判定： BLOCKED\n```\n"
         "判定： PASS"
     )
-    assert _review_verdict(quoted_examples_with_verdict) == "PASS"
+    with pytest.raises(WorkflowJobAuthorizationError) as caught:
+        _review_verdict(quoted_examples_with_verdict, review_input=review_input)
+    assert caught.value.classification == "document_job_nonactionable_review"
     quoted_examples = (
         "Assessment summary.\n> 判定： BLOCKED",
         "Assessment summary.\n```markdown\n判定： BLOCKED\n```",
@@ -3223,7 +3311,7 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
         if scenario in configured_workflow_scenarios and index == 0:
             label, text = "create", "# Offline draft\n\nOnly supplied input used."
         elif scenario in {"note-configured", "meeting-configured"} and index == 1:
-            label, text = "review", "Verdict: PASS\n\nNo actionable findings."
+            label, text = "review", _grounded_pass_for_request(request)
         elif scenario == "revision-three-exhausted" and index % 2 == 1:
             review_number = (index + 1) // 2
             label = f"review-{review_number}"
@@ -3256,11 +3344,11 @@ def test_bounded_job_cli_runs_fixed_job_offline_with_registered_destination(
                 "Requested correction: retain the limitation."
             )
         elif index == 2:
-            label, text = "review", "Verdict: PASS\n\nNo actionable findings."
+            label, text = "review", _grounded_pass_for_request(request)
         elif index == 3:
             label, text = "revision", "# Revised report\n\nLimitations retained."
         else:
-            label, text = "review-2", "Verdict: PASS\n\nNo actionable findings."
+            label, text = "review-2", _grounded_pass_for_request(request)
         labels.append(label)
         assert request.url == target.endpoint
         headers = {name.lower(): value for name, value in request.headers}
@@ -3883,6 +3971,8 @@ def test_configured_create_review_workflows_share_bounded_offline_path(
     def fake_transport(request):
         sent.append(request)
         output = next(responses)
+        if expected_status == "candidate" and len(sent) == 2:
+            output = _grounded_pass_for_request(request)
         body = json.dumps(
             {
                 "id": f"offline-{len(sent)}",
