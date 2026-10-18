@@ -1473,6 +1473,119 @@ def _review_verdict(
     if len(declarations) != 1:
         raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
     verdict_index, verdict = declarations[0]
+    if verdict == "PASS":
+        if review_input is None:
+            raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
+        required = (
+            "Requirement",
+            "Artifact location",
+            "Evidence source/reference",
+            "Assessment",
+        )
+        labels = {
+            "requirement": "Requirement",
+            "artifact location": "Artifact location",
+            "evidence source/reference": "Evidence source/reference",
+            "assessment": "Assessment",
+        }
+        checks: list[dict[str, str]] = []
+        check: dict[str, str] = {}
+        check_numbers: list[int] = []
+        unresolved_count = 0
+        unresolved_is_none = False
+        fenced: tuple[str, int] | None = None
+        for line in lines[verdict_index + 1 :]:
+            indentation = len(line) - len(line.lstrip(" "))
+            if indentation >= 4 or line.startswith("\t"):
+                continue
+            fence = re.match(r"(`{3,}|~{3,})(.*)$", line[indentation:])
+            if fenced is not None:
+                if (
+                    fence is not None
+                    and fence.group(1)[0] == fenced[0]
+                    and len(fence.group(1)) >= fenced[1]
+                    and not fence.group(2).strip()
+                ):
+                    fenced = None
+                continue
+            if fence is not None:
+                fenced = (fence.group(1)[0], len(fence.group(1)))
+                continue
+            if line[indentation:].startswith(">"):
+                continue
+            heading = re.fullmatch(
+                r"#{1,6}\s+Check\s+([1-9][0-9]*)\s*", line.strip()
+            )
+            if heading is not None:
+                if check:
+                    checks.append(check)
+                    check = {}
+                check_numbers.append(int(heading.group(1)))
+                continue
+            label, separator, value = line.partition(":")
+            normalized_label = label.strip().casefold()
+            if normalized_label == "unresolved material issues":
+                unresolved_count += 1
+                unresolved_is_none = (
+                    separator != "" and value.strip().casefold() == "none"
+                )
+                continue
+            canonical_label = labels.get(normalized_label)
+            if canonical_label is not None:
+                if not separator or not value.strip() or canonical_label in check:
+                    raise WorkflowJobAuthorizationError(
+                        "document_job_nonactionable_review"
+                    )
+                check[canonical_label] = value.strip()
+        if check:
+            checks.append(check)
+        if (
+            not checks
+            or check_numbers != list(range(1, len(check_numbers) + 1))
+            or len(checks) != len(check_numbers)
+            or any(set(item) != set(required) for item in checks)
+            or unresolved_count != 1
+            or not unresolved_is_none
+        ):
+            raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
+
+        try:
+            input_value = json.loads(review_input)
+            assignment_text = input_value["assignment"]
+            source_artifact = input_value.get("source_artifact") or input_value.get(
+                "revision_artifact"
+            )
+            source_content = source_artifact["content"]
+            source_bytes = source_content.encode("utf-8")
+            source_is_bound = (
+                type(source_artifact) is dict
+                and type(assignment_text) is str
+                and type(source_content) is str
+                and source_artifact.get("content_length") == len(source_bytes)
+                and source_artifact.get("content_sha256") == _digest(source_bytes)
+            )
+        except Exception:
+            assignment_text = ""
+            source_content = ""
+            source_is_bound = False
+        if not source_is_bound:
+            raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+        for item in checks:
+            evidence_reference = item["Evidence source/reference"]
+            if not _assignment_line_reference_matches(
+                evidence_reference, assignment_text
+            ):
+                raise WorkflowJobAuthorizationError(
+                    "document_job_unverified_finding"
+                )
+            location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
+            if not location_quotes or any(
+                quote not in source_content for quote in location_quotes
+            ):
+                raise WorkflowJobAuthorizationError(
+                    "document_job_unverified_finding"
+                )
+        return verdict
     if verdict == "CHANGES_REQUIRED":
         if not require_actionable_findings:
             return verdict
@@ -1555,7 +1668,9 @@ def _review_verdict(
         )
         try:
             input_value = json.loads(review_input)
-            source_artifact = input_value.get("source_artifact")
+            source_artifact = input_value.get("source_artifact") or input_value.get(
+                "revision_artifact"
+            )
             source_content = source_artifact.get("content")
             source_bytes = source_content.encode("utf-8")
             source_is_bound = (

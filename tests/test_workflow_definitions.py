@@ -92,6 +92,12 @@ def test_note_review_contract_matches_finite_revision_engine() -> None:
     assert "assignment:L<line-number>" in instructions
     assert "never add identifiers to or rewrite" in instructions
     assert "Do not require technical Evidence A–D" in instructions
+    assert "Unresolved material issues: none" in instructions
+    assert "### Check 1" in instructions
+    assert "Assessment:" in instructions
+    assert "newest revised Artifact against" in instructions
+    assert "bare or malformed PASS" in instructions
+    assert "do not claim otherwise" in instructions
     assert "PASS never authorizes acceptance or publication" in instructions
 
 
