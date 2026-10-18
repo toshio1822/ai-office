@@ -47,10 +47,10 @@ class BoundedReviewDefinition(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    initial_steps: list[str] = Field(min_length=1, max_length=1)
+    draft_step: str
     review_step: str
     revision_step: str
-    max_revisions: int = Field(ge=0, le=3)
+    max_revisions: int = Field(ge=0)
 
 
 class WorkflowDefinition(BaseModel):
@@ -82,7 +82,7 @@ class WorkflowDefinition(BaseModel):
             seen_ids.add(step.id)
         flow = self.bounded_review
         if flow is not None:
-            ordered = [*flow.initial_steps, flow.review_step, flow.revision_step]
+            ordered = [flow.draft_step, flow.review_step, flow.revision_step]
             if len(ordered) != len(set(ordered)) or ordered != [
                 step.id for step in self.steps
             ]:

@@ -3207,6 +3207,8 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
             "workflows",
             "bounded-job-run",
             "offline-job",
+            "--workflow",
+            "article-production",
             "--run-id",
             "offline-run",
             "--assignment-file",
@@ -3295,6 +3297,8 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
             "workflows",
             "bounded-job-run",
             job_id,
+            "--workflow",
+            "article-production",
             "--run-id",
             "article-initial",
             "--assignment-file",
@@ -3399,6 +3403,8 @@ def test_bounded_job_cli_rejects_destination_changed_after_confirmation(
             "workflows",
             "bounded-job-run",
             job_id,
+            "--workflow",
+            "article-production",
             "--run-id",
             "stale-confirmation-run",
             "--assignment-file",
@@ -3460,6 +3466,8 @@ def test_bounded_job_cli_cancel_does_not_issue_grants_or_load_credential(
             "workflows",
             "bounded-job-run",
             job_id,
+            "--workflow",
+            "article-production",
             "--run-id",
             "cancelled-offline-run",
             "--assignment-file",
@@ -3627,6 +3635,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
             )
         )
     assignment_sha = sha256(assignment.encode()).hexdigest()
+
     def issue_scope(actions):
         return issue_bounded_workflow_job_scope(
             store,

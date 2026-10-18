@@ -47,7 +47,7 @@ id: article-production
 name: Article Production
 description: Creates and independently reviews an article.
 bounded_review:
-  initial_steps: [write-draft]
+  draft_step: write-draft
   review_step: review
   revision_step: revise
   max_revisions: 3

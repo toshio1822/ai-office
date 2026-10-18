@@ -1244,7 +1244,7 @@ def run_bounded_document_job_workflow(
     execution_target: str = typer.Option(..., "--execution-target"),
     execution_destinations: Path = typer.Option(..., "--execution-destinations"),
     execution_model: str = typer.Option(..., "--execution-model"),
-    workflow_id: str = typer.Option("article-production", "--workflow"),
+    workflow_id: str = typer.Option(..., "--workflow"),
     max_revisions: int = typer.Option(1, "--max-revisions", min=0),
     max_retries: int = typer.Option(0, "--max-retries", min=0, max=2),
     retry_interval_seconds: int = typer.Option(

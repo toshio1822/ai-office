@@ -49,11 +49,7 @@ def bounded_review_action_plan(
     flow = definition.bounded_review
     if flow is None or not 0 <= max_revisions <= flow.max_revisions:
         raise WorkflowJobAuthorizationError("document_job_flow")
-    plan = [
-        (step_id, index, "assignment" if index == 1 else "previous_step")
-        for index, step_id in enumerate(flow.initial_steps, start=1)
-    ]
-    plan.append((flow.review_step, 1, "review_input"))
+    plan = [(flow.draft_step, 1, "assignment"), (flow.review_step, 1, "review_input")]
     for _ in range(max_revisions):
         plan.extend(
             (
@@ -70,7 +66,7 @@ def bounded_job_execution_view(
     """Job-private one-step view; never a selectable or stored source definition."""
     source = workflow.definition
     if source.bounded_review is None or step_id not in {
-        *source.bounded_review.initial_steps,
+        source.bounded_review.draft_step,
         source.bounded_review.review_step,
         source.bounded_review.revision_step,
     }:
