@@ -1395,6 +1395,8 @@ def bounded_document_action_input(
                 review.content.decode("utf-8"),
                 review_input=review_manifest.run_input,
             )
+            if verdict == "BLOCKED":
+                raise WorkflowJobAuthorizationError("document_job_review_blocked")
             if verdict == "CHANGES_REQUIRED":
                 changes_requested = True
             review_payloads.append(_artifact_payload(review))
@@ -1524,8 +1526,11 @@ def _dispatches_for_action(
     store: WorkflowRunManifestStore, job_id: str, ordinal: int
 ) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
-    prefix = f"workflow-bounded-job.{job_id}.dispatch.{ordinal}"
-    for path in sorted(store.root.glob(prefix + "*.json")):
+    prefix = f"workflow-bounded-job.{job_id}.dispatch."
+    suffix_pattern = rf"{ordinal}(?:\.retry\.[1-9][0-9]*)?\.json"
+    for path in sorted(store.root.glob(prefix + f"{ordinal}*.json")):
+        if re.fullmatch(suffix_pattern, path.name.removeprefix(prefix)) is None:
+            continue
         payload = _read_regular(path)
         value = json.loads(payload)
         retry_index = value.get("retry_index", 0)
