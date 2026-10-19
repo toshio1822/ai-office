@@ -2327,13 +2327,15 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 "content_sha256": source_artifact.content_sha256,
                 "run_id": source_artifact.run_id,
             },
-            "review_artifact": {
-                "artifact_id": review_artifact.artifact_id,
-                "content": review_artifact.content.decode("utf-8"),
-                "content_length": review_artifact.content_length,
-                "content_sha256": review_artifact.content_sha256,
-                "run_id": review_artifact.run_id,
-            },
+            "review_artifacts": [
+                {
+                    "artifact_id": review_artifact.artifact_id,
+                    "content": review_artifact.content.decode("utf-8"),
+                    "content_length": review_artifact.content_length,
+                    "content_sha256": review_artifact.content_sha256,
+                    "run_id": review_artifact.run_id,
+                }
+            ],
         }
         revision_input = json.dumps(
             revision_input_value,
@@ -2351,10 +2353,13 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             workflows["revise-reviewed-artifact"],
             (employees["article-writer"],),
         )
+        # The revision's predecessor is the Artifact it revises (the latest
+        # producer), not the review action; the engine derives the round's
+        # reviewer outcomes itself.
         predecessor = (
-            review_artifact.run_id,
-            review_artifact.artifact_id,
-            review_artifact.content_sha256,
+            source_artifact.run_id,
+            source_artifact.artifact_id,
+            source_artifact.content_sha256,
         )
         with pytest.raises(WorkflowJobAuthorizationError):
             bounded_document_action_input(store, scope.job_id, 3, predecessor)
@@ -2448,7 +2453,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
             ).run_input
         )
         first_review_artifact = list_run_artifacts(store, review_manifest.run_id)[0]
-        assert revision_input_value["review_artifact"]["artifact_id"] == (
+        assert revision_input_value["review_artifacts"][0]["artifact_id"] == (
             first_review_artifact.artifact_id
         )
         final_review_input = json.loads(
@@ -2457,7 +2462,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-4",
             ).run_input
         )
-        assert final_review_input["revision_artifact"]["artifact_id"] == (
+        assert final_review_input["source_artifact"]["artifact_id"] == (
             outcome.final_artifact_id
         )
     else:
@@ -2824,21 +2829,56 @@ def test_issue_772_personal_history_findings_and_supported_first_person_stay_dis
     assert _review_verdict(supported_pass, review_input=supported_input) == "PASS"
 
 
-def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("reviewer_count", "case"),
+    [(1, "pass"), (1, "revise"), (3, "revise"), (5, "revise"), (3, "blocked")],
+)
+def test_configured_bounded_job_reviewers_execute_and_audit_offline(
+    tmp_path: Path, reviewer_count: int, case: str
 ) -> None:
-    from ai_office.engine.artifact import read_run_artifact
     from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
 
     repository = Path(__file__).resolve().parents[1]
-    workflow = load_workflow_file(repository / "workflows/article-production.yaml")
-    workflows = {workflow.definition.id: workflow}
+    base = load_workflow_file(repository / "workflows/article-production.yaml")
+    raw_workflow = base.definition.model_dump(mode="python")
+    review_ids = ["review-quality", "review-evidence"][:reviewer_count]
     employees = {
         employee_id: load_employee_file(
             repository / "employees" / f"{employee_id}.yaml"
         )
-        for employee_id in ("article-writer", "document-reviewer")
+        for employee_id in ("article-writer", "document-reviewer", "evidence-auditor")
     }
+    raw_steps = raw_workflow["steps"]
+    if reviewer_count == 1:
+        raw_steps[:] = [
+            step
+            for step in raw_steps
+            if step["id"] in {"write-draft", "review-quality", "revise"}
+        ]
+    else:
+        reviewer_template = next(
+            step for step in raw_steps if step["id"] == "review-evidence"
+        )
+        for index in range(3, reviewer_count + 1):
+            reviewer_id = f"review-evidence-{index}"
+            employee_id = f"evidence-auditor-{index}"
+            reviewer_step = dict(reviewer_template)
+            reviewer_step.update(
+                id=reviewer_id, name=f"Evidence Audit {index}", employee=employee_id
+            )
+            raw_steps.insert(-1, reviewer_step)
+            definition = employees["evidence-auditor"].definition.model_copy(
+                update={"id": employee_id, "name": f"Evidence Auditor {index}"}
+            )
+            employees[employee_id] = LoadedEmployee(
+                Path(f"<offline-test:{employee_id}>"), definition
+            )
+            review_ids.append(reviewer_id)
+    raw_workflow["bounded_review"]["review_steps"] = review_ids
+    workflow = LoadedWorkflow(
+        base.source_path, WorkflowDefinition.model_validate(raw_workflow)
+    )
+    workflows = {workflow.definition.id: workflow}
     assignment = (
         "**タイトル案**：複雑な仕事を抱え込まないために、20年SEの私がやっている“外に出す”整理術\n"
         "**サブタイトル案**：ToDoリストではなく、不明点リストから始める\n"
@@ -2860,7 +2900,7 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
     store_root.mkdir(mode=0o700)
     store = WorkflowRunManifestStore(store_root)
     target = DIRECT_OPENAI_EXECUTION_TARGET
-    initial_run_id = "note-multi-finding-initial"
+    initial_run_id = f"note-{reviewer_count}-{case}-initial"
 
     def digest(value: object) -> str:
         return sha256(
@@ -2925,20 +2965,20 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
     assignment_sha = sha256(assignment.encode()).hexdigest()
     scope = issue_bounded_workflow_job_scope(
         store,
-        job_id="note-multi-finding-job",
+        job_id=f"note-{reviewer_count}-{case}",
         initial_run_id=initial_run_id,
         assignment_sha256=assignment_sha,
         initial_input_sha256=assignment_sha,
         actions=tuple(slots),
-        max_provider_attempts=4,
+        max_provider_attempts=2 * (reviewer_count + 1),
         max_revisions=1,
         source_manifest_run_id=source_manifest.run_id,
         source_manifest_digest=source_manifest.digest,
         expires_at_ns=9_999_999_999_999_999_999,
         business_approved_by="offline-test",
-        business_grant_id="note-business",
+        business_grant_id=f"note-business-{reviewer_count}-{case}",
         execution_approved_by="offline-test",
-        execution_grant_id="note-execution",
+        execution_grant_id=f"note-execution-{reviewer_count}-{case}",
         now_ns=1,
     )
     requirement_lines = (
@@ -2968,20 +3008,20 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
         "Impact: 未確認の経験を事実として提示する。\n"
         "Requested correction: 削除するか著者確認事項とする。"
     )
-    responses = iter(
-        (
-            draft,
-            "Verdict: CHANGES_REQUIRED\n\n" + findings,
-            revised,
-            None,
-        )
-    )
     labels = []
 
     def fake_transport(request):
+        index = len(labels)
         labels.append("transport-call")
-        response = next(responses)
-        if response is None:
+        if index == 0:
+            response = draft
+        elif case == "blocked" and index == 2:
+            response = "Verdict: BLOCKED\n\nEvidence cannot be assessed."
+        elif case in {"revise", "blocked"} and index == 1:
+            response = "Verdict: CHANGES_REQUIRED\n\n" + findings
+        elif case == "revise" and index == reviewer_count + 1:
+            response = revised
+        else:
             response = _grounded_pass_for_request(request)
         body = json.dumps(
             {
@@ -3009,21 +3049,165 @@ def test_note_bounded_job_revises_two_findings_on_unchanged_brief_offline(
         transport=fake_transport,
     )
     inspection = inspect_bounded_document_job(store, scope.job_id)
-    assert outcome.status == "reviewed", outcome
-    assert outcome.revisions_used == 1
-    assert len(labels) == inspection["consumed_provider_attempts"] == 4
-    assert inspection["remaining_provider_attempts"] == 0
+    expected_status = {"pass": "candidate", "revise": "reviewed", "blocked": "stopped"}[
+        case
+    ]
+    expected_calls = {
+        "pass": reviewer_count + 1,
+        "revise": 2 * (reviewer_count + 1),
+        "blocked": 3,
+    }[case]
+    assert outcome.status == expected_status, outcome
+    assert outcome.revisions_used == (1 if case == "revise" else 0)
+    assert len(labels) == inspection["consumed_provider_attempts"] == expected_calls
+    assert inspection["status"] == expected_status
+    assert inspection["max_provider_attempts"] == 2 * (reviewer_count + 1)
+    assert inspection["reviewer_count"] == reviewer_count
+    assert (
+        inspection["remaining_provider_attempts"]
+        == 2 * (reviewer_count + 1) - expected_calls
+    )
+    assert inspection["stop_reason"] == (
+        "document_job_review_blocked" if case == "blocked" else None
+    )
     initial_manifest = load_workflow_run_manifest(store, initial_run_id)
     assert initial_manifest.run_input == assignment
     run_prefix = "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-"
-    review_runs = (run_prefix + "1", run_prefix + "3")
-    for run_id in review_runs:
-        run_input = json.loads(load_workflow_run_manifest(store, run_id).run_input)
+    # Both reviewers in a round read the same immutable version, and the second
+    # round is a full re-review of the new Artifact produced by the revision.
+    source_artifact = list_run_artifacts(store, initial_run_id)[0]
+    first_round = min(reviewer_count, 2) if case == "blocked" else reviewer_count
+    first_round_inputs = []
+    for offset in range(first_round):
+        run_input = json.loads(
+            load_workflow_run_manifest(store, run_prefix + str(1 + offset)).run_input
+        )
+        first_round_inputs.append(run_input)
         assert run_input["assignment"] == assignment
-    final_artifact = read_run_artifact(
-        store, outcome.final_artifact_run_id, outcome.final_artifact_id
+        assert (
+            run_input["source_artifact"]["artifact_id"] == source_artifact.artifact_id
+        )
+        assert (
+            run_input["source_artifact"]["content_sha256"]
+            == source_artifact.content_sha256
+        )
+    assert (
+        len({item["source_artifact"]["content_sha256"] for item in first_round_inputs})
+        == 1
     )
-    assert "ToDoリストは作業量" in final_artifact.content.decode()
+    if case == "revise":
+        revision_ordinal = 1 + reviewer_count
+        revision_input = json.loads(
+            load_workflow_run_manifest(
+                store, run_prefix + str(revision_ordinal)
+            ).run_input
+        )
+        assert len(revision_input["review_artifacts"]) == reviewer_count
+        assert "CHANGES_REQUIRED" in revision_input["review_artifacts"][0]["content"]
+        assert all(
+            "Verdict: PASS" in item["content"]
+            for item in revision_input["review_artifacts"][1:]
+        )
+        re_review_inputs = [
+            json.loads(
+                load_workflow_run_manifest(
+                    store, run_prefix + str(revision_ordinal + 1 + offset)
+                ).run_input
+            )
+            for offset in range(reviewer_count)
+        ]
+        assert (
+            len({item["source_artifact"]["artifact_id"] for item in re_review_inputs})
+            == 1
+        )
+        assert all(
+            item["source_artifact"]["artifact_id"] == outcome.final_artifact_id
+            for item in re_review_inputs
+        )
+        final_artifact = read_run_artifact(
+            store, outcome.final_artifact_run_id, outcome.final_artifact_id
+        )
+        assert "ToDoリストは作業量" in final_artifact.content.decode()
+    elif case == "blocked":
+        predecessor = (
+            source_artifact.run_id,
+            source_artifact.artifact_id,
+            source_artifact.content_sha256,
+        )
+        revision_ordinal = 1 + reviewer_count
+        with pytest.raises(WorkflowJobAuthorizationError) as input_error:
+            bounded_document_action_input(
+                store, scope.job_id, revision_ordinal, predecessor
+            )
+        assert input_error.value.classification == "document_job_review_blocked"
+        review_payloads = []
+        for offset in range(2):
+            artifact = list_run_artifacts(store, run_prefix + str(1 + offset))[0]
+            review_payloads.append(
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "content": artifact.content.decode(),
+                    "content_length": artifact.content_length,
+                    "content_sha256": artifact.content_sha256,
+                    "run_id": artifact.run_id,
+                }
+            )
+        forged_input = json.dumps(
+            {
+                "assignment": assignment,
+                "source_artifact": {
+                    "artifact_id": source_artifact.artifact_id,
+                    "content": source_artifact.content.decode(),
+                    "content_length": source_artifact.content_length,
+                    "content_sha256": source_artifact.content_sha256,
+                    "run_id": source_artifact.run_id,
+                },
+                "review_artifacts": review_payloads,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        revision_view = bounded_job_execution_view(workflow, "revise")
+        revision_run_id = run_prefix + str(revision_ordinal)
+        revision_manifest = create_workflow_run_manifest(
+            store,
+            revision_run_id,
+            forged_input,
+            revision_view,
+            (employees["article-writer"],),
+            execution_target=target,
+        )
+        employee = employees["article-writer"].definition
+        request = ModelInvocationRequest(
+            model=employee.model,
+            system_instructions=employee.instructions,
+            task_instructions=revision_view.definition.steps[0].instructions,
+            allowed_tools=(),
+            run_id=revision_run_id,
+            manifest_digest=revision_manifest.digest,
+            run_input=forged_input,
+        )
+        with pytest.raises(WorkflowJobAuthorizationError) as authorization_error:
+            derive_bounded_job_action_authorization(
+                store,
+                scope,
+                ordinal=revision_ordinal,
+                run_id=revision_run_id,
+                request_fingerprint=build_model_invocation_execution_fingerprint(
+                    request, (), target
+                ),
+                predecessor=predecessor,
+            )
+        assert authorization_error.value.classification == "document_job_review_blocked"
+        assert len(labels) == inspection["consumed_provider_attempts"] == 3
+    evidence = [
+        item
+        for dispatch in inspection["dispatch_order"]
+        for item in list_run_execution_evidence(store.root, dispatch["run_id"])
+    ]
+    assert len(evidence) == expected_calls
+    assert all(item.authorization_source == "job_action" for item in evidence)
 
 
 def test_review_verdict_requires_one_unambiguous_declaration() -> None:
@@ -3321,8 +3505,9 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
     )
     assert result.exit_code == 0, result.output
     assert '"workflow_id": "article-production"' in result.output
-    assert '"guaranteed_initial_actions": 2' in result.output
-    assert len(sent) == 2
+    assert '"guaranteed_initial_actions": 3' in result.output
+    assert '"reviewer_count": 2' in result.output
+    assert len(sent) == 3
     inspection = inspect_bounded_document_job(
         WorkflowRunManifestStore(store_root), job_id
     )
@@ -3508,13 +3693,22 @@ def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> No
 
 
 @pytest.mark.parametrize(
-    ("medium", "assignment", "verdict", "expected_status"),
+    (
+        "medium",
+        "assignment",
+        "verdict",
+        "expected_status",
+        "expected_sent",
+        "expected_dispatches",
+    ),
     [
         (
             "note",
             "Medium: note\nAudience: readers\nClaim: start with unknowns",
             "PASS",
             "candidate",
+            3,
+            3,
         ),
         (
             "technical",
@@ -3522,12 +3716,16 @@ def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> No
             "Claim: cite supplied evidence",
             "PASS",
             "candidate",
+            3,
+            3,
         ),
         (
             "note",
             "Medium: note\nAudience: readers\nClaim: start with unknowns",
             "Verdict: BLOCKED",
             "stopped",
+            2,
+            2,
         ),
         (
             "technical",
@@ -3535,18 +3733,24 @@ def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> No
             "Claim: cite supplied evidence",
             "Verdict: MAYBE",
             "stopped",
+            2,
+            2,
         ),
         (
             "revised-note",
             "Medium: note\nAudience: readers\nClaim: start with unknowns",
             "CHANGES_REQUIRED",
             "reviewed",
+            6,
+            6,
         ),
         (
             "no-budget",
             "Medium: note\nAudience: readers\nClaim: start with unknowns",
             "CHANGES_REQUIRED_NO_BUDGET",
             "stopped",
+            3,
+            3,
         ),
         (
             "unknown-send",
@@ -3554,6 +3758,8 @@ def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> No
             "Claim: cite supplied evidence",
             "TIMEOUT",
             "stopped",
+            3,
+            3,
         ),
     ],
 )
@@ -3563,6 +3769,8 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
     assignment: str,
     verdict: str,
     expected_status: str,
+    expected_sent: int,
+    expected_dispatches: int,
 ) -> None:
     """The same source definition plans different briefs and preserves lineage."""
     from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
@@ -3574,7 +3782,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         employee_id: load_employee_file(
             repository / "employees" / f"{employee_id}.yaml"
         )
-        for employee_id in ("article-writer", "document-reviewer")
+        for employee_id in ("article-writer", "document-reviewer", "evidence-auditor")
     }
     store_root = tmp_path / "configured-job"
     store_root.mkdir(mode=0o700)
@@ -3643,7 +3851,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
             assignment_sha256=assignment_sha,
             initial_input_sha256=assignment_sha,
             actions=actions,
-            max_provider_attempts=2 + 2 * max_revisions,
+            max_provider_attempts=3 + 3 * max_revisions,
             max_revisions=max_revisions,
             source_manifest_run_id=source_manifest.run_id,
             source_manifest_digest=source_manifest.digest,
@@ -3664,40 +3872,51 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         with pytest.raises(WorkflowJobAuthorizationError):
             issue_scope(tampered)
     scope = issue_scope(tuple(slots))
-    responses = iter(
-        [
-            "# Draft\n\nGenerated from supplied input only.",
-            verdict,
-            *(
-                ["# Revised draft\n\nOnly supplied claims remain.", "PASS"]
-                if revision_case
-                else []
-            ),
-        ]
-    )
     sent = []
+
+    def grounded_changes(request) -> str:
+        assignment_line = assignment.splitlines()[0]
+        return (
+            "Verdict: CHANGES_REQUIRED\n\n"
+            "### Finding 1\n"
+            f"Requirement: {assignment_line}\n"
+            "Artifact location: `# Draft`\n"
+            f"Evidence source/reference: assignment:L1 `{assignment_line}`\n"
+            "Impact: the requested medium is not clear.\n"
+            "Requested correction: label the revised draft for the stated medium."
+        )
+
+    def describe(request) -> str:
+        index = len(sent)
+        if index == 1:
+            return "# Draft\n\nGenerated from supplied input only."
+        if verdict == "PASS":
+            return _grounded_pass_for_request(request)
+        if verdict == "Verdict: BLOCKED":
+            return "Verdict: BLOCKED\n\nEvidence is insufficient."
+        if verdict == "Verdict: MAYBE":
+            return "Verdict: MAYBE"
+        if verdict == "CHANGES_REQUIRED":
+            if index == 2:
+                return grounded_changes(request)
+            if index == 4:
+                return "# Revised draft\n\nOnly supplied claims remain."
+            return _grounded_pass_for_request(request)
+        if verdict == "CHANGES_REQUIRED_NO_BUDGET":
+            return (
+                grounded_changes(request)
+                if index == 2
+                else _grounded_pass_for_request(request)
+            )
+        # TIMEOUT: the first reviewer returns a valid verdict and the second
+        # reviewer's send has an ambiguous, unknown outcome.
+        return _grounded_pass_for_request(request)
 
     def fake_transport(request):
         sent.append(request)
-        if verdict == "TIMEOUT" and len(sent) == 2:
+        if verdict == "TIMEOUT" and len(sent) == 3:
             raise TimeoutError("offline ambiguous send")
-        output = next(responses)
-        if (
-            verdict in {"CHANGES_REQUIRED", "CHANGES_REQUIRED_NO_BUDGET"}
-            and len(sent) == 2
-        ):
-            assignment_line = assignment.splitlines()[0]
-            output = (
-                "Verdict: CHANGES_REQUIRED\n\n"
-                "### Finding 1\n"
-                f"Requirement: {assignment_line}\n"
-                "Artifact location: `# Draft`\n"
-                f"Evidence source/reference: assignment:L1 `{assignment_line}`\n"
-                "Impact: the requested medium is not clear.\n"
-                "Requested correction: label the revised draft for the stated medium."
-            )
-        if (verdict == "PASS" and len(sent) == 2) or (revision_case and len(sent) == 4):
-            output = _grounded_pass_for_request(request)
+        output = describe(request)
         body = json.dumps(
             {
                 "id": f"offline-{len(sent)}",
@@ -3724,10 +3943,11 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         transport=fake_transport,
     )
     assert outcome.status == expected_status, outcome
-    assert len(sent) == 2 + 2 * max_revisions
+    assert len(sent) == expected_sent
     inspection = inspect_bounded_document_job(store, scope.job_id)
     assert inspection["status"] == expected_status
-    assert inspection["consumed_provider_attempts"] == 2 + 2 * max_revisions
+    assert inspection["consumed_provider_attempts"] == expected_sent
+    assert len(inspection["dispatch_order"]) == expected_dispatches
     if expected_status in {"candidate", "reviewed"}:
         review_manifest = load_workflow_run_manifest(
             store, outcome.review_artifact_run_id
@@ -3738,5 +3958,3 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
             review_input["source_artifact"]["artifact_id"] == outcome.final_artifact_id
         )
         assert review_input["source_artifact"]["content_sha256"]
-    else:
-        assert len(inspection["dispatch_order"]) == 2

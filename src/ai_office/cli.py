@@ -1389,10 +1389,16 @@ def run_bounded_document_job_workflow(
         for index, action in enumerate(action_slots)
         if action.input_source == "review_input"
     )
-    guaranteed_initial_actions = review_action_index + 1
+    reviewer_count = sum(
+        1 for action in action_slots if action.input_source == "review_input"
+    )
+    guaranteed_initial_actions = review_action_index + reviewer_count
     review_limit = 1 + max_revisions
     max_normal_actions = min(
-        len(action_slots), guaranteed_initial_actions + (2 * max_revisions)
+        len(action_slots),
+        review_action_index
+        + reviewer_count * (max_revisions + 1)
+        + max_revisions,
     )
     _emit_json(
         {
@@ -1420,6 +1426,7 @@ def run_bounded_document_job_workflow(
             "action_slots": len(action_slots),
             "guaranteed_initial_actions": guaranteed_initial_actions,
             "max_normal_actions": max_normal_actions,
+            "reviewer_count": reviewer_count,
             "max_retries": max_retries,
             "retry_interval_seconds": retry_interval_seconds,
             "retryable_http_statuses": [429, 503],

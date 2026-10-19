@@ -81,43 +81,60 @@ def test_review_workflow_uses_specialist_and_keeps_business_contract() -> None:
     root = Path(__file__).parents[1]
     workflow = load_workflow_file(root / "workflows/article-production.yaml").definition
     assert workflow.bounded_review is not None
-    assert [step.id for step in workflow.steps] == ["write-draft", "review", "revise"]
-    step = workflow.steps[1]
-    assert step.employee == "document-reviewer"
-    assert step.business_approval_required is True
-    assert step.artifact_content_type == "text/markdown"
+    assert [step.id for step in workflow.steps] == [
+        "write-draft",
+        "review-quality",
+        "review-evidence",
+        "revise",
+    ]
+    # The reviewer count, order, and specialties live only in the Workflow
+    # definition; two independent reviewers are the shipped product example.
+    assert workflow.bounded_review.review_steps == [
+        "review-quality",
+        "review-evidence",
+    ]
+    quality_step, evidence_step = workflow.steps[1], workflow.steps[2]
+    assert quality_step.employee == "document-reviewer"
+    assert evidence_step.employee == "evidence-auditor"
+    for step in (quality_step, evidence_step):
+        assert step.business_approval_required is True
+        assert step.artifact_content_type == "text/markdown"
 
     # Freeze the output/handoff contract, not the Employee's reusable review
     # reasoning or its exact prompt phrasing.
-    instructions = step.instructions
-    assert all(
-        verdict in instructions
-        for verdict in (
-            "Verdict: PASS",
-            "Verdict: CHANGES_REQUIRED",
-            "Verdict: BLOCKED",
+    for step in (quality_step, evidence_step):
+        instructions = step.instructions
+        assert all(
+            verdict in instructions
+            for verdict in (
+                "Verdict: PASS",
+                "Verdict: CHANGES_REQUIRED",
+                "Verdict: BLOCKED",
+            )
         )
-    )
-    assert all(
-        field in instructions
-        for field in (
-            "Requirement:",
-            "Artifact location:",
-            "Evidence source/reference:",
-            "Impact:",
-            "Requested correction:",
-            "Assessment:",
+        assert all(
+            field in instructions
+            for field in (
+                "Requirement:",
+                "Artifact location:",
+                "Evidence source/reference:",
+                "Impact:",
+                "Requested correction:",
+                "Assessment:",
+            )
         )
-    )
-    assert "newest Artifact" in instructions
-    assert "PASS is only a human-acceptance candidate" in instructions
+        assert "newest Artifact" in instructions
+        assert "PASS is only a human-acceptance candidate" in instructions
+    assert "requirement fit" in quality_step.instructions
+    assert "attributed" in evidence_step.instructions
 
 
 def test_article_writer_and_revision_steps_keep_their_assigned_roles() -> None:
     root = Path(__file__).parents[1]
     workflow = load_workflow_file(root / "workflows/article-production.yaml").definition
     assert workflow.steps[0].employee == "article-writer"
-    assert workflow.steps[2].employee == "article-writer"
+    assert workflow.steps[-1].id == "revise"
+    assert workflow.steps[-1].employee == "article-writer"
     assert all(step.business_approval_required for step in workflow.steps)
     assert all(step.artifact_content_type == "text/markdown" for step in workflow.steps)
     assert "language" in workflow.steps[0].instructions

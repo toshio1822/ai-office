@@ -43,14 +43,27 @@ class WorkflowStepDefinition(BaseModel):
 
 
 class BoundedReviewDefinition(BaseModel):
-    """Declarative finite create/review/revise progression for a Job."""
+    """Declarative finite create/review/revise progression for a Job.
+
+    The reviewer set is a finite, ordered, non-empty list declared only in the
+    Workflow definition. The shared engine reads the reviewer count and order
+    from this value; no reviewer count is fixed in Python source.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     draft_step: str
-    review_step: str
+    review_steps: list[str] = Field(min_length=1)
     revision_step: str
     max_revisions: int = Field(ge=0)
+
+    @field_validator("review_steps")
+    @classmethod
+    def review_steps_must_be_distinct(cls, value: list[str]) -> list[str]:
+        """Reject a duplicated reviewer role without reordering the set."""
+        if len(value) != len(set(value)):
+            raise ValueError("review_steps must name distinct reviewer steps")
+        return value
 
 
 class WorkflowDefinition(BaseModel):
@@ -82,11 +95,19 @@ class WorkflowDefinition(BaseModel):
             seen_ids.add(step.id)
         flow = self.bounded_review
         if flow is not None:
-            ordered = [flow.draft_step, flow.review_step, flow.revision_step]
+            ordered = [flow.draft_step, *flow.review_steps, flow.revision_step]
             if len(ordered) != len(set(ordered)) or ordered != [
                 step.id for step in self.steps
             ]:
                 raise ValueError("bounded review steps must name every step in order")
+            reviewer_employees = [
+                next(step.employee for step in self.steps if step.id == reviewer)
+                for reviewer in flow.review_steps
+            ]
+            if len(reviewer_employees) != len(set(reviewer_employees)):
+                raise ValueError(
+                    "bounded review reviewers must be independent employees"
+                )
         return self
 
 
