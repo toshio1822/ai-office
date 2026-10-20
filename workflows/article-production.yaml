@@ -31,158 +31,52 @@ steps:
   - id: review-quality
     name: Review Article Quality And Requirement Fit
     employee: document-reviewer
-    instructions: |
-      You are one of several independent reviewers. Review the exact
-      digest-bound Artifact against the immutable assignment and supplied Run
-      Input, using only your own Run. Do not assume any other reviewer's
-      verdict, and do not treat this step as coordination. Focus on article
-      quality and requirement fit: title, central claim, required points,
-      organization, fit for the stated reader and medium, and natural prose.
-
-      If this is a re-review, assess the newest Artifact against the original
-      assignment and the supplied prior findings; do not substitute a prior
-      review for the Artifact.
+    instructions: &article-review-contract |
+      Review the complete, exact digest-bound Artifact against the immutable
+      assignment and supplied Run Input in this independent Run. Follow the
+      specialist scope of the Employee assigned to this step; do not assume
+      another reviewer's verdict. On re-review, assess the newest Artifact
+      against the original assignment and prior findings.
 
       Return exactly one leading line:
       `Verdict: PASS`, `Verdict: CHANGES_REQUIRED`, or `Verdict: BLOCKED`.
-      A verdict is not a substitute for the review. Use CHANGES_REQUIRED only
-      for a specific correction traceable to an explicitly labeled requirement
-      or source reference in the immutable assignment and a quoted location in
-      the exact Artifact. A correction must be feasible and grounded; it must
-      not invent a replacement fact. Use BLOCKED if a material requirement
-      cannot be assessed reliably. PASS is only a human-acceptance candidate,
-      never acceptance or publication authorization.
+      Use CHANGES_REQUIRED for a specific, material defect traceable to the
+      original assignment and an exact location in the Artifact. Recommend a
+      feasible correction grounded in the supplied material. Use BLOCKED when
+      a material issue cannot be assessed reliably. PASS is only a candidate
+      for human acceptance, never acceptance or publication authorization.
 
-      A CHANGES_REQUIRED result must contain one or more findings in this
-      format. Prefix each finding with its own Markdown heading:
-
-      ### Finding 1
-      Requirement: <relevant requirement, grounded in the original brief>
+      A CHANGES_REQUIRED response has one or more numbered findings:
+      `### Finding 1`
+      Requirement: <assignment requirement or supplied source>
       Artifact location: `<short exact quote from the Artifact>`
-      Evidence source/reference: assignment:L<line-number> `<exact quote from
-      that line of the immutable assignment>`
-      Impact: <concrete effect on meeting the cited requirement>
-      Requested correction: <specific, feasible correction grounded in the
-      cited requirement>
+      Evidence source/reference: assignment:L<number> `<one exact assignment line>`
+      Impact: <concrete effect>
+      Requested correction: <feasible, grounded correction>
 
-      ### Finding 2
-      <repeat the same five fields for each additional finding>
-
-      A PASS must include `Unresolved material issues: none` and individually
-      numbered checks. Cover each material requirement without redundant
-      checks; each check has one requirement, one exact assignment-line
-      citation, and one short exact Artifact quote. Split independent
-      requirements into separate checks:
-
-      Unresolved material issues: none
-
-      ### Check 1
-      Requirement: <material requirement, grounded in the original brief>
+      A PASS response contains `Unresolved material issues: none` and numbered
+      checks, one material item within the assigned specialty per check:
+      `### Check 1`
+      Requirement: <one material requirement or claim>
       Artifact location: `<short exact quote from the Artifact>`
-      Evidence source/reference: assignment:L<line-number> `<exact quote from
-      that line of the immutable assignment>`
-      Assessment: <how the quoted Artifact satisfies that requirement>
+      Evidence source/reference: assignment:L<number> `<one exact assignment line>`
+      Assessment: <how the Artifact addresses the cited item>
 
-      ### Check 2
-      <repeat the same four fields for each additional material requirement>
-
-      Each `Evidence source/reference` must contain exactly one assignment line
-      reference in the existing `assignment:L<number> `<exact line text>`` form.
-      Do not concatenate lines into one field. The engine verifies each PASS
-      check's cited line and Artifact quote against immutable inputs; this does
-      not prove semantic completeness or truth. A bare or malformed PASS is
-      invalid.
-
-      Assignment line numbers are 1-based. Cite original text verbatim; never
-      rewrite the assignment or add identifiers to it. A valid
-      CHANGES_REQUIRED result may advance only through the already-authorized
-      finite revision and independent re-review slot. BLOCKED, malformed
-      findings, and exhausted limits stop safely.
+      Cite the original assignment verbatim; line numbers are 1-based. Keep
+      exactly one assignment-line reference in each evidence field; do not
+      merge independent requirements or claims into one check. The engine
+      verifies output structure, cited-line and Artifact-quote existence,
+      digest, and Run lineage. Those checks do not establish that a source
+      semantically entails a claim or that the review is complete or true.
+      A valid CHANGES_REQUIRED result can use only the existing finite revision
+      and independent re-review slots. BLOCKED, malformed findings, and
+      exhausted limits stop safely.
     business_approval_required: true
     artifact_content_type: text/markdown
   - id: review-evidence
-    name: Audit Author-Attributed Evidence And Facts
+    name: Audit Author-Attributed Meaning And Evidence
     employee: evidence-auditor
-    instructions: |
-      You are one of several independent reviewers. Review the exact
-      digest-bound Artifact against the immutable assignment and supplied Run
-      Input, using only your own Run. Do not assume any other reviewer's
-      verdict, and do not treat this step as coordination. Your specialty is
-      evidence and fact audit.
-
-      Audit every claim the Artifact attributes to an author, speaker, or
-      source against what the immutable assignment and supplied Run Input
-      actually support. This includes claims about personal experience,
-      history, actions, habits, frequency, preferences, numbers, sources, and
-      outcomes. Individually check each such claim: a first-person voice
-      requirement, natural phrasing, plausibility, or one supported personal
-      detail does not support another claim. Do not reject a claim whose
-      underlying fact the assignment or supplied input actually provides. Never
-      infer a missing fact from a single hypothetical example, and do not claim
-      an entire document is fabricated from one example.
-
-      If this is a re-review, assess the newest Artifact against the original
-      assignment and the supplied prior findings; do not substitute a prior
-      review for the Artifact.
-
-      Return exactly one leading line:
-      `Verdict: PASS`, `Verdict: CHANGES_REQUIRED`, or `Verdict: BLOCKED`.
-      A verdict is not a substitute for the review. Use CHANGES_REQUIRED only
-      for a specific correction traceable to an explicitly labeled requirement
-      or source reference in the immutable assignment and a quoted location in
-      the exact Artifact. A correction must be feasible and grounded; it must
-      not invent a replacement fact. Use BLOCKED if a material claim cannot be
-      assessed reliably. PASS is only a human-acceptance candidate, never
-      acceptance or publication authorization.
-
-      A CHANGES_REQUIRED result must contain one or more findings in this
-      format. Prefix each finding with its own Markdown heading:
-
-      ### Finding 1
-      Requirement: <relevant requirement, grounded in the original brief>
-      Artifact location: `<short exact quote from the Artifact>`
-      Evidence source/reference: assignment:L<line-number> `<exact quote from
-      that line of the immutable assignment>`
-      Impact: <concrete effect on meeting the cited requirement>
-      Requested correction: <specific, feasible correction grounded in the
-      cited requirement>
-
-      ### Finding 2
-      <repeat the same five fields for each additional finding>
-
-      A PASS must include `Unresolved material issues: none` and individually
-      numbered checks. Each check audits one attributed claim or one labeled
-      evidence requirement, with one exact assignment-line citation and one
-      short exact Artifact quote:
-
-      Unresolved material issues: none
-
-      ### Check 1
-      Requirement: <material claim or evidence requirement, grounded in the
-      original brief>
-      Artifact location: `<short exact quote from the Artifact>`
-      Evidence source/reference: assignment:L<line-number> `<exact quote from
-      that line of the immutable assignment>`
-      Assessment: <how the quoted assignment line supports the quoted Artifact
-      claim>
-
-      ### Check 2
-      <repeat the same four fields for each additional check>
-
-      Each `Evidence source/reference` must contain exactly one assignment line
-      reference in the existing `assignment:L<number> `<exact line text>`` form.
-      Do not concatenate lines into one field. The engine verifies each PASS
-      check's cited line and Artifact quote against immutable inputs; this does
-      not prove semantic completeness or truth. A bare or malformed PASS is
-      invalid.
-
-      Assignment line numbers are 1-based. Cite original text verbatim; never
-      rewrite the assignment or add identifiers to it. Do not embed concrete
-      article wording or fabrication keywords in logic; ground each finding in
-      the supplied material only. A valid CHANGES_REQUIRED result may advance
-      only through the already-authorized finite revision and independent
-      re-review slot. BLOCKED, malformed findings, and exhausted limits stop
-      safely.
+    instructions: *article-review-contract
     business_approval_required: true
     artifact_content_type: text/markdown
   - id: revise
