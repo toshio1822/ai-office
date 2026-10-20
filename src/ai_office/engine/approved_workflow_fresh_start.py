@@ -874,7 +874,6 @@ def _validate_employee(
         and _nonempty(employee.name)
         and _nonempty(employee.role)
         and _nonempty(employee.instructions)
-        and _nonempty(employee.model)
         and type(employee.allowed_tools) is list
         and all(_nonempty(item) for item in employee.allowed_tools)
         and len(employee.allowed_tools) == len(set(employee.allowed_tools))
@@ -896,7 +895,7 @@ def _build_prepared_step(
         employee_id=employee.id,
         employee_instructions=employee.instructions,
         step_instructions=first_step.instructions,
-        model=employee.model,
+        model=first_step.model,
         allowed_tool_names=tuple(employee.allowed_tools),
         binding=binding,
     )

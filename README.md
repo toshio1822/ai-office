@@ -26,9 +26,10 @@ role: Gathers and organizes information for an assigned task.
 instructions: |
   Work only on the assigned step.
   Separate confirmed facts from assumptions.
-model: codex
 allowed_tools: []
 ```
+
+Employee は再利用可能な職能・指示・tool権限を定義し、モデルは選択しません。モデルは各 Workflow Step が選択し、同じ Employee を使う別の Step で異なるモデルを指定できます。
 
 現行の `article-production` が参照する社員は、執筆・改訂を担う `article-writer`、記事品質・要件適合をレビューする `document-reviewer`、著者に帰属する根拠・事実を監査する `evidence-auditor` です。**レビュー担当の人数・順序・専門分野は Workflow/Employee の設定だけが宣言**し、共通 Engine は人数・業務を知りません。人数を変えても Python 改修は不要です。`general-researcher` は現在どのWorkflowからも参照されておらず、将来の調査付きWorkflow向けに保持しています。
 
@@ -60,18 +61,22 @@ steps:
   - id: write-draft
     name: Write Draft
     employee: article-writer
+    model: gpt-5-mini
     instructions: Write an article from the supplied brief.
   - id: review-quality
     name: Review Quality
     employee: document-reviewer
+    model: gpt-5-mini
     instructions: Return a grounded PASS, CHANGES_REQUIRED, or BLOCKED verdict.
   - id: review-evidence
     name: Audit Evidence
     employee: evidence-auditor
+    model: gpt-5-mini
     instructions: Audit author-attributed claims; return a grounded verdict.
   - id: revise
     name: Revise
     employee: article-writer
+    model: gpt-5-mini
     instructions: Aggregate grounded findings and revise.
 ```
 
@@ -94,7 +99,7 @@ ai-office workflows plan article-production \
   --employees-directory path/to/employees
 ```
 
-`workflows plan` はworkflowを実行しません。AIを呼び出さず、実行状態・履歴・成果物も保存しません。表示する計画には、workflowの順序、stepの担当employee ID、step instructionsのみを含めます。employee instructionsとの結合は行いません。
+`workflows plan` はworkflowを実行しません。AIを呼び出さず、実行状態・履歴・成果物も保存しません。表示する計画には、workflowの順序、stepの担当employee ID、選択されたmodel、step instructionsを含みます。employee instructionsとの結合は行いません。
 
 特定stepの構造化された実行要求を確認するには、1始まりのstep indexを指定します。
 
@@ -3609,8 +3614,11 @@ preview を表示し、その出力を確認してから、同じ step を実行
 ai-office workflows start article-production \
   --run-id article-preview \
   --run-input-file /private/path/article-brief.txt \
+  --step-model write-draft=approved-draft-model \
   --preview-only
 ```
+
+`--step-model STEP_ID=MODEL` は新規Runの選択したStepだけを上書きし、繰り返し指定できます。指定しないStepはWorkflow定義のmodelを使います。有効な選択は他の定義・入力・destination情報とともにRun Manifestに固定され、preview、approval、Evidenceでも同じ値が検証されます。
 
 `article-production` の実実行は `workflows bounded-job-run` を使用します。
 `start` による単独実行および `continue` による同一Run内レビューは拒否されます。

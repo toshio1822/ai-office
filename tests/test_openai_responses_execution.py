@@ -105,6 +105,7 @@ def evidence_fixture(
                     "id": "provider-step",
                     "name": "Provider Step",
                     "employee": "test-employee",
+                    "model": "model",
                     "instructions": "Execute the provider test.",
                     "business_approval_required": False,
                 }
@@ -116,7 +117,6 @@ def evidence_fixture(
         name="Test Employee",
         role="Provider test",
         instructions="Execute the provider test.",
-        model=source.model,
         allowed_tools=list(dict.fromkeys(source.allowed_tools)),
     )
     return create_test_execution_evidence(

@@ -56,6 +56,7 @@ def workflow(steps: int = 6) -> WorkflowDefinition:
                     "id": f"step-{index}",
                     "name": f"Step {index}",
                     "employee": f"e{index}",
+                    "model": "model",
                     "instructions": f"step-{index}",
                 }
                 for index in range(1, steps + 1)

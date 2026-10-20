@@ -112,7 +112,10 @@ ai-office workflows bounded-job-run JOB_ID \
   --employees-directory /path/to/ai-office/employees \
   --execution-target APPROVED_DESTINATION \
   --execution-destinations /private/path/destinations.yaml \
-  --execution-model APPROVED_MODEL \
+  --step-model write-draft=APPROVED_DRAFT_MODEL \
+  --step-model review-quality=APPROVED_QUALITY_REVIEW_MODEL \
+  --step-model review-evidence=APPROVED_EVIDENCE_REVIEW_MODEL \
+  --step-model revise=APPROVED_REVISION_MODEL \
   --max-revisions 3
 ```
 

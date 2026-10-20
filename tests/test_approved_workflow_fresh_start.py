@@ -76,6 +76,7 @@ def workflow(
                     "id": f"step-{index}",
                     "name": f"Step {index}",
                     "employee": f"e{index}",
+                    "model": "model",
                     "instructions": f"instructions-{index}",
                     "business_approval_required": business_approval_required,
                 }
@@ -91,7 +92,6 @@ def employee(index: int = 1, **changes: object) -> EmployeeDefinition:
         "name": f"Employee {index}",
         "role": f"Role {index}",
         "instructions": f"instructions-{index}",
-        "model": "model",
         "allowed_tools": [],
     }
     values.update(changes)
@@ -137,7 +137,7 @@ def context(
     binding = run.binding
     emp = employee(index)
     request = ModelInvocationRequest(
-        emp.model,
+        wf.steps[index - 1].model,
         emp.instructions,
         wf.steps[index - 1].instructions,
         tools,

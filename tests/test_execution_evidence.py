@@ -100,6 +100,7 @@ def _workflow() -> WorkflowDefinition:
                     "id": "step-1",
                     "name": "Evidence Step",
                     "employee": "employee-1",
+                    "model": "evidence-model",
                     "instructions": "Return the safe result.",
                     "business_approval_required": False,
                 },
@@ -107,6 +108,7 @@ def _workflow() -> WorkflowDefinition:
                     "id": "step-2",
                     "name": "Evidence Step Two",
                     "employee": "employee-2",
+                    "model": "evidence-model",
                     "instructions": "Return the second safe result.",
                     "business_approval_required": False,
                 },
@@ -121,7 +123,6 @@ def _employee() -> EmployeeDefinition:
         name="Evidence Employee",
         role="Evidence test employee",
         instructions="Use the evidence fixture instructions.",
-        model="evidence-model",
         allowed_tools=[],
     )
 
@@ -132,7 +133,6 @@ def _employee_two() -> EmployeeDefinition:
         name="Evidence Employee Two",
         role="Second evidence test employee",
         instructions="Use the second evidence fixture instructions.",
-        model="evidence-model",
         allowed_tools=[],
     )
 
@@ -426,8 +426,9 @@ def test_claim_is_durable_before_transport_and_response_is_lossless_but_secret_f
     assert isinstance(result, ModelInvocationSuccess)
     assert len(seen) == 1
     assert seen[0].headers[-1] == ("Authorization", "Bearer synthetic-provider-key")
-    attempts = list_run_execution_evidence(
-        fixture.run.store.root, fixture.run.binding.run_id
+    attempts = sorted(
+        list_run_execution_evidence(fixture.run.store.root, fixture.run.binding.run_id),
+        key=lambda attempt: attempt.step_index,
     )
     assert len(attempts) == 1
     attempt = attempts[0]
@@ -541,8 +542,9 @@ def test_chat_completions_handoff_attempts_store_exact_transport_bodies(
         execution_evidence=second_context,
     )
 
-    attempts = list_run_execution_evidence(
-        fixture.run.store.root, fixture.run.binding.run_id
+    attempts = sorted(
+        list_run_execution_evidence(fixture.run.store.root, fixture.run.binding.run_id),
+        key=lambda attempt: attempt.step_index,
     )
     assert len(transport_bodies) == 2
     assert [attempt.step_index for attempt in attempts] == [1, 2]

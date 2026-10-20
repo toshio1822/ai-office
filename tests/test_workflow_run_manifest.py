@@ -57,7 +57,6 @@ def employee(
             name=employee_id.replace("-", " ").title(),
             role=role,
             instructions=instructions,
-            model="codex",
             allowed_tools=list(allowed_tools),
         ),
     )
@@ -81,6 +80,7 @@ def workflow(
                     id="research",
                     name="Research",
                     employee=employee_id,
+                    model="model",
                     instructions=step_instructions,
                     artifact_content_type=artifact_content_type,
                 )
@@ -178,7 +178,6 @@ def test_semantically_identical_values_have_identical_canonical_bytes() -> None:
                     name="Researcher",
                     role="Researches the assigned subject.",
                     instructions="Work only on the assigned step.",
-                    model="codex",
                     allowed_tools=[],
                 ),
             ),
@@ -252,7 +251,12 @@ def test_artifact_policy_is_pinned_and_changes_manifest_identity() -> None:
 
 
 @pytest.mark.parametrize(
-    "schema_version", ("workflow-run-manifest.v2", "workflow-run-manifest.v3")
+    "schema_version",
+    (
+        "workflow-run-manifest.v2",
+        "workflow-run-manifest.v3",
+        "workflow-run-manifest.v4",
+    ),
 )
 def test_unsupported_preproduction_manifest_versions_are_rejected(
     tmp_path: Path, schema_version: str
@@ -280,7 +284,7 @@ def test_new_run_manifest_always_pins_builtin_destination_and_model() -> None:
     value = manifest()
     encoded = json.loads(workflow_run_manifest_canonical_bytes(value))
 
-    assert value.schema_version == "workflow-run-manifest.v4"
+    assert value.schema_version == "workflow-run-manifest.v5"
     assert value.execution_destination.provider == "openai"
     assert (
         value.execution_destination.endpoint == "https://api.openai.com/v1/responses"
@@ -292,6 +296,32 @@ def test_new_run_manifest_always_pins_builtin_destination_and_model() -> None:
     assert encoded["execution_destination"]["fingerprint"] == (
         value.execution_destination.fingerprint
     )
+
+
+def test_manifest_pins_model_per_step_without_employee_model() -> None:
+    configured_workflow = workflow()
+    configured_workflow.definition.steps.append(
+        WorkflowStepDefinition(
+            id="review",
+            name="Review",
+            employee="researcher",
+            model="review-model",
+            instructions="Review the research.",
+        )
+    )
+
+    value = manifest(workflow_value=configured_workflow)
+    encoded = json.loads(workflow_run_manifest_canonical_bytes(value))
+
+    assert [step.model for step in value.workflow_snapshot.steps] == [
+        "model",
+        "review-model",
+    ]
+    assert "model" not in encoded["employee_snapshots"][0]
+    assert [step["model"] for step in encoded["workflow_snapshot"]["steps"]] == [
+        "model",
+        "review-model",
+    ]
 
 
 def test_unrelated_employee_definitions_do_not_affect_pinned_manifest() -> None:
@@ -324,6 +354,7 @@ def test_source_yaml_changes_after_creation_do_not_reinterpret_loaded_manifest(
                         "id": "research",
                         "name": "Research",
                         "employee": "researcher",
+                        "model": "model",
                         "instructions": "Original step.",
                     }
                 ],
@@ -339,7 +370,6 @@ def test_source_yaml_changes_after_creation_do_not_reinterpret_loaded_manifest(
                 "name": "Researcher",
                 "role": "Original role.",
                 "instructions": "Original employee instructions.",
-                "model": "codex",
                 "allowed_tools": [],
             },
             sort_keys=False,

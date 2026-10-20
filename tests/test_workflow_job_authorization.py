@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from contextlib import contextmanager
@@ -240,6 +241,7 @@ def _workflow() -> WorkflowDefinition:
                     "id": "draft",
                     "name": "Draft",
                     "employee": "writer",
+                    "model": "model",
                     "instructions": "Write the assigned artifact.",
                     "business_approval_required": True,
                     "artifact_content_type": "text/markdown",
@@ -255,7 +257,6 @@ def _employee() -> EmployeeDefinition:
         name="Writer",
         role="Artifact writer",
         instructions="Follow the exact assigned task.",
-        model="job-test-model",
         allowed_tools=[],
     )
 
@@ -274,7 +275,7 @@ def _run_and_authorization(
     run.store.root.chmod(0o700)
     manifest = load_workflow_run_manifest(run.store, run_id)
     request = ModelInvocationRequest(
-        model=employee.model,
+        model=workflow.steps[0].model,
         system_instructions=employee.instructions,
         task_instructions=workflow.steps[0].instructions,
         allowed_tools=(),
@@ -298,7 +299,7 @@ def _run_and_authorization(
         execution_target_fingerprint=execution_target_fingerprint(
             DIRECT_OPENAI_EXECUTION_TARGET
         ),
-        model=employee.model,
+        model=workflow.steps[0].model,
         request_fingerprint=fingerprint,
         expires_at_ns=expires_at_ns,
     )
@@ -332,7 +333,7 @@ def _additional_job_authorization(workflow, employee, run, request, job_id: str)
         execution_target_fingerprint=execution_target_fingerprint(
             DIRECT_OPENAI_EXECUTION_TARGET
         ),
-        model=employee.model,
+        model=workflow.steps[0].model,
         request_fingerprint=build_model_invocation_execution_fingerprint(
             request, (), DIRECT_OPENAI_EXECUTION_TARGET
         ),
@@ -494,7 +495,7 @@ def test_one_root_job_grant_authorizes_two_distinct_runs_through_shared_provider
         execution_target_fingerprint=execution_target_fingerprint(
             DIRECT_OPENAI_EXECUTION_TARGET
         ),
-        model=employee.model,
+        model=workflow.steps[0].model,
         input_source="assignment",
     )
     second_slot = replace(slot, ordinal=1, input_source="previous_artifact")
@@ -558,7 +559,7 @@ def test_one_root_job_grant_authorizes_two_distinct_runs_through_shared_provider
     def execute_action(run, ordinal: int, predecessor=None):
         manifest = load_workflow_run_manifest(run.store, run.binding.run_id)
         request = ModelInvocationRequest(
-            model=employee.model,
+            model=workflow.steps[0].model,
             system_instructions=employee.instructions,
             task_instructions=workflow.steps[0].instructions,
             allowed_tools=(),
@@ -648,7 +649,7 @@ def test_one_root_job_grant_authorizes_two_distinct_runs_through_shared_provider
         forged_run.store, forged_run.binding.run_id
     )
     forged_request = ModelInvocationRequest(
-        model=employee.model,
+        model=workflow.steps[0].model,
         system_instructions=employee.instructions,
         task_instructions=workflow.steps[0].instructions,
         allowed_tools=(),
@@ -749,7 +750,7 @@ def test_one_root_job_grant_authorizes_two_distinct_runs_through_shared_provider
         third_events,
     )
     third_request = ModelInvocationRequest(
-        model=employee.model,
+        model=workflow.steps[0].model,
         system_instructions=employee.instructions,
         task_instructions=workflow.steps[0].instructions,
         allowed_tools=(),
@@ -1420,6 +1421,7 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
                     "id": "first",
                     "name": "First",
                     "employee": "writer-1",
+                    "model": "model",
                     "instructions": "Return a short source note.",
                     "business_approval_required": True,
                 },
@@ -1427,6 +1429,7 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
                     "id": "second",
                     "name": "Second",
                     "employee": "writer-2",
+                    "model": "model",
                     "instructions": "Write the final artifact.",
                     "business_approval_required": True,
                     "artifact_content_type": "text/markdown",
@@ -1440,7 +1443,6 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
             name="Writer 1",
             role="Worker",
             instructions="Write a source note.",
-            model="job-test-model",
             allowed_tools=[],
         ),
         EmployeeDefinition(
@@ -1448,7 +1450,6 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
             name="Writer 2",
             role="Worker",
             instructions="Write a final artifact.",
-            model="job-test-model",
             allowed_tools=[],
         ),
     )
@@ -1472,7 +1473,7 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
     )
     persist_business_approval_evidence(run.store, business)
     first_request = ModelInvocationRequest(
-        model=employees[0].model,
+        model=workflow.steps[0].model,
         system_instructions=employees[0].instructions,
         task_instructions=workflow.steps[0].instructions,
         allowed_tools=(),
@@ -1564,7 +1565,7 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
         execution_target_fingerprint=execution_target_fingerprint(
             DIRECT_OPENAI_EXECUTION_TARGET
         ),
-        model=employees[1].model,
+        model=workflow.steps[1].model,
         request_fingerprint=build_model_invocation_execution_fingerprint(
             second_request, (), DIRECT_OPENAI_EXECUTION_TARGET
         ),
@@ -1636,6 +1637,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
                     "id": "research",
                     "name": "Research",
                     "employee": "researcher",
+                    "model": "model",
                     "instructions": "Return a short source note.",
                     "business_approval_required": True,
                 },
@@ -1643,6 +1645,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
                     "id": "summarize",
                     "name": "Summarize",
                     "employee": "writer",
+                    "model": "model",
                     "instructions": "Write a Markdown report from the note.",
                     "business_approval_required": True,
                     "artifact_content_type": "text/markdown",
@@ -1656,7 +1659,6 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
             name="Researcher",
             role="Research",
             instructions="Analyze the supplied evidence.",
-            model="job-test-model",
             allowed_tools=[],
         ),
         EmployeeDefinition(
@@ -1664,7 +1666,6 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
             name="Writer",
             role="Writer",
             instructions="Write the report.",
-            model="job-test-model",
             allowed_tools=[],
         ),
     )
@@ -1706,7 +1707,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
                 execution_target_fingerprint=execution_target_fingerprint(
                     DIRECT_OPENAI_EXECUTION_TARGET
                 ),
-                model=employee_snapshot.model,
+                model=manifest.workflow_snapshot.steps[step_index - 1].model,
                 input_source="assignment" if ordinal == 0 else "previous_step",
             )
         )
@@ -1756,7 +1757,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
 
     first_employee = employees[0]
     first_request = ModelInvocationRequest(
-        model=first_employee.model,
+        model=workflow.steps[0].model,
         system_instructions=first_employee.instructions,
         task_instructions=workflow.steps[0].instructions,
         allowed_tools=(),
@@ -1984,6 +1985,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                             "id": step_id,
                             "name": step_id,
                             "employee": employee_id,
+                            "model": "model",
                             "instructions": "Use the supplied immutable input only.",
                             "business_approval_required": True,
                             "artifact_content_type": "text/markdown",
@@ -2097,7 +2099,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 ).hexdigest(),
                 provider=target.provider,
                 execution_target_fingerprint=execution_target_fingerprint(target),
-                model=employee_snapshot.model,
+                model=snapshot_manifest.workflow_snapshot.steps[step_index - 1].model,
                 input_source=input_source,
             )
         )
@@ -2274,9 +2276,10 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         final_manifest.execution_destination.fingerprint
         == execution_target_fingerprint(target)
     )
-    assert all(
-        snapshot.model == employees[snapshot.id].definition.model
-        for snapshot in final_manifest.employee_snapshots
+    assert final_manifest.workflow_snapshot.steps[0].model == next(
+        action.model
+        for action in scope.actions
+        if action.step_id == final_manifest.workflow_snapshot.steps[0].id
     )
     final_artifact = read_run_artifact(
         store, outcome.final_artifact_run_id, outcome.final_artifact_id
@@ -2366,7 +2369,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         revision_employee = employees["article-writer"].definition
         revision_step = workflows["revise-reviewed-artifact"].definition.steps[0]
         revision_request = ModelInvocationRequest(
-            model=revision_employee.model,
+            model=revision_step.model,
             system_instructions=revision_employee.instructions,
             task_instructions=revision_step.instructions,
             allowed_tools=(),
@@ -2958,7 +2961,7 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
                 employee_snapshot_sha256=digest(employee_snapshot),
                 provider=target.provider,
                 execution_target_fingerprint=execution_target_fingerprint(target),
-                model=employee_snapshot.model,
+                model=snapshot.workflow_snapshot.steps[step_index - 1].model,
                 input_source=input_source,
             )
         )
@@ -3180,7 +3183,7 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
         )
         employee = employees["article-writer"].definition
         request = ModelInvocationRequest(
-            model=employee.model,
+            model=revision_view.definition.steps[0].model,
             system_instructions=employee.instructions,
             task_instructions=revision_view.definition.steps[0].instructions,
             allowed_tools=(),
@@ -3406,8 +3409,14 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
             "opencode-go-glm-chat",
             "--execution-destinations",
             str(repository / "docs/examples/openai-compatible-destinations.yaml"),
-            "--execution-model",
-            "glm-5.3-flash",
+            "--step-model",
+            "write-draft=glm-5.3-flash",
+            "--step-model",
+            "review-quality=glm-5.3-flash",
+            "--step-model",
+            "review-evidence=glm-5.3-flash",
+            "--step-model",
+            "revise=glm-5.3-flash",
         ],
     )
     assert result.exit_code != 0
@@ -3423,6 +3432,27 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
     from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
 
     repository = Path(__file__).resolve().parents[1]
+    expected_models = {
+        "write-draft": "offline-writer-model",
+        "review-quality": "offline-quality-model",
+        "review-evidence": "offline-evidence-model",
+        "revise": "offline-revision-model",
+    }
+    destinations_file = tmp_path / "destinations.yaml"
+    destinations = (
+        repository / "docs/examples/openai-compatible-destinations.yaml"
+    ).read_text(encoding="utf-8")
+    allowed_model_line = "      - glm-5.3-flash"
+    assert destinations.count(allowed_model_line) == 1
+    destinations_file.write_text(
+        destinations.replace(
+            allowed_model_line,
+            "\n".join(
+                f"      - {model}" for model in expected_models.values()
+            ),
+        ),
+        encoding="utf-8",
+    )
     assignment_file = tmp_path / "brief.md"
     assignment_file.write_text(
         "Medium: technical blog\nAudience: engineers\n"
@@ -3443,9 +3473,11 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
         lambda _target: OpenAIApiKey(value=SecretStr("synthetic-only")),
     )
     sent = []
+    sent_models = []
 
     def fake_transport(request):
         sent.append(request)
+        sent_models.append(json.loads(request.body)["model"])
         content = (
             "# Article\n\nExplain the supplied method."
             if len(sent) == 1
@@ -3495,35 +3527,77 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
             "--execution-target",
             "opencode-go-glm-chat",
             "--execution-destinations",
-            str(repository / "docs/examples/openai-compatible-destinations.yaml"),
-            "--execution-model",
-            "glm-5.3-flash",
+            str(destinations_file),
+            "--step-model",
+            f"write-draft={expected_models['write-draft']}",
+            "--step-model",
+            f"review-quality={expected_models['review-quality']}",
+            "--step-model",
+            f"review-evidence={expected_models['review-evidence']}",
+            "--step-model",
+            f"revise={expected_models['revise']}",
             "--max-revisions",
             "0",
         ],
         input=f"{job_id}\n{job_id}\n",
     )
     assert result.exit_code == 0, result.output
-    assert '"workflow_id": "article-production"' in result.output
-    assert '"guaranteed_initial_actions": 3' in result.output
-    assert '"reviewer_count": 2' in result.output
-    assert len(sent) == 3
+    preview = json.loads(result.output.splitlines()[0])
+    assert preview["workflow_id"] == "article-production"
+    assert preview["guaranteed_initial_actions"] == 3
+    assert preview["reviewer_count"] == 2
+    action_models = {
+        step_id: model
+        for step_id, model in expected_models.items()
+        if step_id != "revise"
+    }
+    assert {
+        item["step_id"]: item["model"] for item in preview["planned_steps"]
+    } == action_models
+    assert {
+        item["step_id"]: item["model"] for item in preview["step_models"]
+    } == expected_models
+    assert len(sent) == 3, result.output
+    assert sent_models == [
+        expected_models["write-draft"],
+        expected_models["review-quality"],
+        expected_models["review-evidence"],
+    ]
+    store = WorkflowRunManifestStore(store_root)
     inspection = inspect_bounded_document_job(
-        WorkflowRunManifestStore(store_root), job_id
+        store, job_id
     )
     assert inspection["status"] == "candidate"
-    scope = load_bounded_workflow_job_scope(
-        WorkflowRunManifestStore(store_root), job_id
-    )
+    assert inspection["consumed_provider_attempts"] == len(sent) == 3
+    scope = load_bounded_workflow_job_scope(store, job_id)
+    assert scope.max_provider_attempts == 3
+    assert {slot.step_id: slot.model for slot in scope.actions} == action_models
+    assert len(inspection["dispatch_order"]) == len(scope.actions) == len(sent)
+    evidence_models = {}
+    for slot, dispatch in zip(scope.actions, inspection["dispatch_order"]):
+        manifest = load_workflow_run_manifest(store, dispatch["run_id"])
+        assert manifest.workflow_snapshot.steps[0].id == slot.step_id
+        assert (
+            manifest.workflow_snapshot.steps[0].model == expected_models[slot.step_id]
+        )
+        attempts = list_run_execution_evidence(store.root, dispatch["run_id"])
+        attempt, = attempts
+        assert attempt.authorization_source == "job_action"
+        assert attempt.job_id == job_id
+        assert attempt.step_id == slot.step_id
+        evidence_models[slot.step_id] = json.loads(
+            base64.b64decode(attempt.request_body_base64)
+        )["model"]
+    assert evidence_models == action_models
     assert scope.source_manifest_run_id is not None
     source = load_workflow_run_manifest(
-        WorkflowRunManifestStore(store_root), scope.source_manifest_run_id
+        store, scope.source_manifest_run_id
     )
     assert source.digest == scope.source_manifest_digest
     assert source.workflow_snapshot.bounded_review is not None
     assert (
         load_workflow_run_manifest(
-            WorkflowRunManifestStore(store_root), "article-initial"
+            store, "article-initial"
         ).workflow_snapshot.bounded_review
         is None
     )
@@ -3603,8 +3677,14 @@ def test_bounded_job_cli_rejects_destination_changed_after_confirmation(
             "internal-chat-gateway",
             "--execution-destinations",
             str(destination_file),
-            "--execution-model",
-            "approved-chat-model",
+            "--step-model",
+            "write-draft=approved-chat-model",
+            "--step-model",
+            "review-quality=approved-chat-model",
+            "--step-model",
+            "review-evidence=approved-chat-model",
+            "--step-model",
+            "revise=approved-chat-model",
         ],
     )
     assert result.exit_code != 0
@@ -3666,8 +3746,14 @@ def test_bounded_job_cli_cancel_does_not_issue_grants_or_load_credential(
             "opencode-go-glm-chat",
             "--execution-destinations",
             str(repository / "docs/examples/openai-compatible-destinations.yaml"),
-            "--execution-model",
-            "glm-5.3-flash",
+            "--step-model",
+            "write-draft=glm-5.3-flash",
+            "--step-model",
+            "review-quality=glm-5.3-flash",
+            "--step-model",
+            "review-evidence=glm-5.3-flash",
+            "--step-model",
+            "revise=glm-5.3-flash",
         ],
         input="cancelled\n",
     )
@@ -3837,7 +3923,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
                 employee_snapshot_sha256=digest_snapshot(employee_snapshot),
                 provider=target.provider,
                 execution_target_fingerprint=execution_target_fingerprint(target),
-                model=employee_snapshot.model,
+                model=manifest.workflow_snapshot.steps[step_index - 1].model,
                 input_source=input_source,
             )
         )

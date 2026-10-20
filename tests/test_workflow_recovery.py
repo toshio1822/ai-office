@@ -109,6 +109,7 @@ def _workflow() -> WorkflowDefinition:
                     "id": "recoverable-step",
                     "name": "Recoverable Step",
                     "employee": "recovery-employee",
+                    "model": "model",
                     "instructions": "Return a short answer.",
                     "business_approval_required": False,
                     "artifact_content_type": "text/plain",
@@ -124,7 +125,6 @@ def _employee() -> EmployeeDefinition:
         name="Recovery Employee",
         role="Recovery test employee",
         instructions="Follow the pinned request exactly.",
-        model="recovery-model",
         allowed_tools=[],
     )
 
@@ -277,6 +277,7 @@ def _two_step_failed_fixture(tmp_path: Path, run_id: str) -> RecoveryFixture:
                     "id": "completed-step",
                     "name": "Completed Step",
                     "employee": "predecessor-employee",
+                    "model": "model",
                     "instructions": "Produce the predecessor output.",
                     "business_approval_required": False,
                 },
@@ -284,6 +285,7 @@ def _two_step_failed_fixture(tmp_path: Path, run_id: str) -> RecoveryFixture:
                     "id": "recoverable-step",
                     "name": "Recoverable Step",
                     "employee": "recovery-employee",
+                    "model": "model",
                     "instructions": "Use the completed predecessor output.",
                     "business_approval_required": False,
                     "artifact_content_type": "text/plain",
@@ -296,7 +298,6 @@ def _two_step_failed_fixture(tmp_path: Path, run_id: str) -> RecoveryFixture:
         name="Predecessor Employee",
         role="Completed predecessor",
         instructions="Return stable predecessor context.",
-        model="recovery-model",
         allowed_tools=[],
     )
     employee = _employee()

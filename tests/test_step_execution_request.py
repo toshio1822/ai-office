@@ -25,7 +25,6 @@ def employees() -> list[LoadedEmployee]:
                 name="General Researcher",
                 role="Organizes information.\nSeparates facts.",
                 instructions="Work on the assigned step.\nKeep facts separate.",
-                model="codex",
                 allowed_tools=["search", "read"],
             ),
         )
@@ -42,6 +41,7 @@ def plan() -> ExecutionPlan:
                 step_id="research",
                 step_name="Research",
                 employee_id="general-researcher",
+                model="research-model",
                 instructions="Gather relevant information.",
             ),
             ExecutionPlanStep(
@@ -49,6 +49,7 @@ def plan() -> ExecutionPlan:
                 step_id="summarize",
                 step_name="Summarize",
                 employee_id="general-researcher",
+                model="summary-model",
                 instructions="Summarize the information.",
             ),
         ),
@@ -105,6 +106,7 @@ def test_build_step_execution_request_copies_values_and_separates_instructions(
     assert request.workflow_id == "research-and-summarize"
     assert request.step_index == 2
     assert request.step_id == "summarize"
+    assert request.model == "summary-model"
     assert request.employee_name == "General Researcher"
     assert request.employee_instructions == (
         "Work on the assigned step.\nKeep facts separate."

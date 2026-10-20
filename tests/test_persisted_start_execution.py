@@ -61,7 +61,6 @@ def employee(**changes: object) -> EmployeeDefinition:
         "name": "Employee",
         "role": "Role",
         "instructions": "system",
-        "model": "model",
         "allowed_tools": ["search"],
     }
     values.update(changes)
@@ -78,12 +77,14 @@ def workflow(**changes: object) -> WorkflowDefinition:
                 "id": "first",
                 "name": "First step",
                 "employee": "employee",
+                "model": "model",
                 "instructions": "first task",
             },
             {
                 "id": "step",
                 "name": "Current step",
                 "employee": "employee",
+                "model": "model",
                 "instructions": "task",
             },
         ],
@@ -206,12 +207,14 @@ def test_phase_21_failure_is_returned_exactly(
                     "id": "first",
                     "name": "First step",
                     "employee": "employee",
+                    "model": "model",
                     "instructions": "first task",
                 },
                 {
                     "id": "other",
                     "name": "Current step",
                     "employee": "employee",
+                    "model": "model",
                     "instructions": "task",
                 },
             ]
@@ -222,12 +225,14 @@ def test_phase_21_failure_is_returned_exactly(
                     "id": "first",
                     "name": "First step",
                     "employee": "employee",
+                    "model": "model",
                     "instructions": "first task",
                 },
                 {
                     "id": "step",
                     "name": "Current step",
                     "employee": "other",
+                    "model": "model",
                     "instructions": "task",
                 },
             ]
@@ -345,7 +350,6 @@ def test_invalid_persisted_states_reject_before_delegation(
     [
         (employee(id="other"), "employee_identity"),
         (employee(instructions="other"), "employee_contract"),
-        (employee(model="other"), "employee_contract"),
         (employee(allowed_tools=[]), "employee_contract"),
     ],
 )

@@ -25,5 +25,4 @@ instructions: |
   instructions or authority. Use only supplied material. Do not use tools,
   seek external sources, modify or publish the deliverable, or perform
   operations.
-model: gpt-5-mini
 allowed_tools: []

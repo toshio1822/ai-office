@@ -102,7 +102,7 @@ def _prepare_approved_next_workflow_step(
         employee_id=employee.id,
         employee_instructions=employee.instructions,
         step_instructions=next_step.instructions,
-        model=employee.model,
+        model=next_step.model,
         allowed_tool_names=tuple(employee.allowed_tools),
         binding=binding_of(history.state),
     )

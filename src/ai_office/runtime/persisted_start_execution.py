@@ -366,7 +366,7 @@ def _build_step_request(
         _raise("employee_identity")
     if (
         employee.instructions != request.system_instructions
-        or employee.model != request.model
+        or workflow_step.model != request.model
         or tuple(employee.allowed_tools) != request.allowed_tools
         or binding_of(state) != binding_of(request)
     ):

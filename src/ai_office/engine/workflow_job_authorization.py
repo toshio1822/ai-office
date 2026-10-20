@@ -262,7 +262,7 @@ def issue_workflow_job_authorization(
     if not (
         step.id == envelope.step_id
         and step.employee == envelope.employee_id
-        and employee.model == envelope.model == request.model
+        and step.model == envelope.model == request.model
         and employee.instructions == request.system_instructions
         and tuple(employee.allowed_tools) == request.allowed_tools
         and request.run_id == envelope.run_id

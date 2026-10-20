@@ -328,15 +328,10 @@ class ExecutionEvidenceContext:
             != self.employee_id
         ):
             _raise_contract("manifest")
-        employee = next(
-            (
-                item
-                for item in manifest.employee_snapshots
-                if item.id == self.employee_id
-            ),
-            None,
-        )
-        if employee is None or employee.model != self.request.model:
+        if (
+            manifest.workflow_snapshot.steps[self.step_index - 1].model
+            != self.request.model
+        ):
             _raise_contract("manifest_model")
         object.__setattr__(self, "target", manifest.execution_destination.target)
         _validate_context(self)
@@ -1298,11 +1293,8 @@ def _validate_context_and_approval(context: ExecutionEvidenceContext):
             != context.step_id
             or manifest.workflow_snapshot.steps[context.step_index - 1].employee
             != context.employee_id
-            or not any(
-                item.id == context.employee_id
-                and item.model == context.request.model
-                for item in manifest.employee_snapshots
-            )
+            or manifest.workflow_snapshot.steps[context.step_index - 1].model
+            != context.request.model
         ):
             _raise_contract("manifest")
         evidence = None

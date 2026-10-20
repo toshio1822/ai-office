@@ -93,7 +93,7 @@ def build_step_execution_request(
         employee_id=definition.id,
         employee_name=definition.name,
         employee_role=definition.role,
-        model=definition.model,
+        model=step.model,
         allowed_tools=tuple(definition.allowed_tools),
         employee_instructions=definition.instructions,
         step_instructions=step.instructions,
