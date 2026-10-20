@@ -34,8 +34,10 @@ steps:
     instructions: &article-review-contract |
       Review the complete, exact digest-bound Artifact against the immutable
       assignment and supplied Run Input in this independent Run. Follow the
-      specialist scope of the Employee assigned to this step; do not assume
-      another reviewer's verdict. On re-review, assess the newest Artifact
+      specialty. In this Workflow, document-reviewer owns article quality and
+      requirement fit; evidence-auditor audits author-attributed claims and
+      evidence. Do not assume another reviewer's verdict. On re-review, assess
+      the newest Artifact
       against the original assignment and prior findings.
 
       Return exactly one leading line:
@@ -43,8 +45,8 @@ steps:
       Use CHANGES_REQUIRED for a specific, material defect traceable to the
       original assignment and an exact location in the Artifact. Recommend a
       feasible correction grounded in the supplied material. Use BLOCKED when
-      a material issue cannot be assessed reliably. PASS is only a candidate
-      for human acceptance, never acceptance or publication authorization.
+      a material issue cannot be assessed reliably.
+      PASS is only a human-acceptance candidate, never authorization to publish.
 
       A CHANGES_REQUIRED response has one or more numbered findings:
       `### Finding 1`
