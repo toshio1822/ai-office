@@ -15,6 +15,7 @@ from ai_office.engine.workflow_run_manifest import (
     load_workflow_run_manifest,
 )
 from ai_office.execution_destination import (
+    ExecutionDestinationError,
     load_execution_destination_registry,
 )
 from ai_office.providers.openai import OpenAIApiKey, OpenAIResponsesRawHttpResponse
@@ -32,7 +33,7 @@ runner = CliRunner()
 
 def _write_registry(path: Path, headers: object | None = None) -> None:
     entry: dict[str, object] = {
-        "endpoint": "https://opencode.ai/zen/go/v1/responses",
+        "endpoint": "https://opencode.ai/inference/go/openai/v1/responses",
         "protocol": "openai-responses",
         "credential": "OPENCODE_API_KEY",
         "models": ["gpt-6-luna"],
@@ -48,9 +49,14 @@ def _write_registry(path: Path, headers: object | None = None) -> None:
     )
 
 
-def _chat_registry(path: Path, headers: object | None = None) -> None:
+def _chat_registry(
+    path: Path,
+    headers: object | None = None,
+    *,
+    endpoint: str = "https://opencode.ai/inference/go/openai/v1/chat/completions",
+) -> None:
     entry: dict[str, object] = {
-        "endpoint": "https://opencode.ai/zen/go/v1/chat/completions",
+        "endpoint": endpoint,
         "protocol": "openai-chat-completions",
         "credential": "OPENCODE_API_KEY",
         "models": ["glm-5.3-flash"],
@@ -378,20 +384,31 @@ def test_header_change_invalidates_preview_before_credential(
 def test_deepseek_go_destination_preview_is_exact_and_offline(
     tmp_path: Path, monkeypatch
 ) -> None:
-    registry_path = ROOT / "docs/examples/openai-compatible-destinations.yaml"
-    registry = load_execution_destination_registry(registry_path)
-    glm = registry.resolve("opencode-go-glm-chat")
-    deepseek = registry.resolve("opencode-go-deepseek-v4-pro-chat")
-
-    assert glm.target.endpoint == deepseek.target.endpoint == (
-        "https://opencode.ai/zen/go/v1/chat/completions"
+    sample_registry = load_execution_destination_registry(
+        ROOT / "docs/examples/openai-compatible-destinations.yaml"
     )
-    assert glm.target.protocol == deepseek.target.protocol == (
+    sample_glm = sample_registry.resolve("opencode-go-glm-chat")
+    sample_deepseek = sample_registry.resolve("opencode-go-deepseek-v4-pro-chat")
+
+    assert sample_glm.target.endpoint == sample_deepseek.target.endpoint == (
+        "https://opencode.ai/inference/go/openai/v1/chat/completions"
+    )
+    assert sample_glm.target.protocol == sample_deepseek.target.protocol == (
         "openai-chat-completions"
     )
-    assert glm.select_model("glm-5.3-flash") == "glm-5.3-flash"
+
+    registry_path = ROOT / "config" / "destinations.yaml"
+    deepseek = load_execution_destination_registry(registry_path).resolve(
+        "opencode-go-deepseek-v4-pro-chat"
+    )
+    assert deepseek.target.endpoint == (
+        "https://opencode.ai/inference/go/openai/v1/chat/completions"
+    )
+    assert deepseek.target.protocol == "openai-chat-completions"
     assert deepseek.select_model("deepseek-v4-pro") == "deepseek-v4-pro"
-    assert deepseek.target.request_headers == glm.target.request_headers
+    with pytest.raises(ExecutionDestinationError):
+        deepseek.select_model("glm-5.3-flash")
+    assert deepseek.target.request_headers == sample_deepseek.target.request_headers
 
     def unexpected_credential_lookup(_target: object) -> object:
         pytest.fail("preview must not load credentials")
@@ -426,6 +443,50 @@ def test_deepseek_go_destination_preview_is_exact_and_offline(
         {"name": "x-opencode-session", "value": SESSION_MARKER},
     ]
     assert not (tmp_path / "runs").exists()
+
+
+def test_chat_endpoint_change_invalidates_preview_before_credential(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry = tmp_path / "destinations.yaml"
+    headers = {"User-Agent": "ai-office/1.0", "x-opencode-session": SESSION_MARKER}
+    _chat_registry(
+        registry,
+        headers,
+        endpoint="https://opencode.ai/zen/go/v1/chat/completions",
+    )
+    args = _start_args(
+        tmp_path / "runs",
+        registry,
+        "endpoint-stale",
+        "opencode-go-chat",
+        "glm-5.3-flash",
+    )
+    preview_result = runner.invoke(app, args + ["--preview-only"])
+    assert preview_result.exit_code == 0, preview_result.stderr
+    preview = json.loads(preview_result.stdout)
+    _chat_registry(registry, headers)
+
+    key_calls: list[int] = []
+    transport_calls: list[int] = []
+    monkeypatch.setattr(
+        cli_module,
+        "load_api_key_for_execution_target",
+        lambda _target: key_calls.append(1),
+    )
+
+    def unexpected_transport(_request: object) -> object:
+        transport_calls.append(1)
+        pytest.fail("stale endpoint approval must stop before transport")
+
+    monkeypatch.setattr(
+        cli_module, "send_openai_responses_http_request", unexpected_transport
+    )
+    result = runner.invoke(app, args + _approval_args(preview, "endpoint-stale"))
+    assert result.exit_code == 2
+    assert "expected preview does not match current step" in result.stderr
+    assert key_calls == []
+    assert transport_calls == []
 
 
 def test_continuation_cannot_switch_header_policy(tmp_path: Path, monkeypatch) -> None:

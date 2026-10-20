@@ -20,7 +20,7 @@ destinations:
   # acceptable use before any live canary.
   opencode-go:
     protocol: openai-responses
-    endpoint: https://opencode.ai/zen/go/v1/responses
+    endpoint: https://opencode.ai/inference/go/openai/v1/responses
     credential: OPENCODE_API_KEY
     models:
       - gpt-6-luna
@@ -32,7 +32,7 @@ destinations:
   # pilot. Confirm model entitlement with the operator at the live-run gate.
   opencode-go-glm-chat:
     protocol: openai-chat-completions
-    endpoint: https://opencode.ai/zen/go/v1/chat/completions
+    endpoint: https://opencode.ai/inference/go/openai/v1/chat/completions
     credential: OPENCODE_API_KEY
     models:
       - glm-5.3-flash
@@ -43,7 +43,7 @@ destinations:
   # Model-only alternative for the separately authorized DeepSeek V4 Pro pilot.
   opencode-go-deepseek-v4-pro-chat:
     protocol: openai-chat-completions
-    endpoint: https://opencode.ai/zen/go/v1/chat/completions
+    endpoint: https://opencode.ai/inference/go/openai/v1/chat/completions
     credential: OPENCODE_API_KEY
     models:
       - deepseek-v4-pro
