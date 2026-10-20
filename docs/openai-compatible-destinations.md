@@ -6,7 +6,9 @@ compatibility subset, not a claim of universal OpenAI API compatibility.
 
 ## Administrator registration
 
-Start from [`examples/openai-compatible-destinations.yaml`](examples/openai-compatible-destinations.yaml).
+The current Git-managed runtime settings are
+[`config/destinations.yaml`](../config/destinations.yaml). The file under
+`examples/` remains illustrative and is not the production registry.
 Each destination has four required administrator-owned fields:
 
 - `endpoint`: the exact HTTPS endpoint;
@@ -20,6 +22,49 @@ request headers. See [Safe request headers](#safe-request-headers).
 Deploy the registry as a regular, non-symlink file and use operating-system
 ownership and permissions to restrict who can replace it or set the referenced
 credential environment variables.
+
+### Git source and operational copy
+
+`config/destinations.yaml` is the reviewed source of truth for non-secret
+destination settings. The host's
+`~/.config/ai-office/destinations.yaml` remains the operational copy consumed
+by the existing loader. GitHub changes do not synchronize or apply themselves:
+there is no pull-triggered deployment, watcher, or new sync service.
+
+After the relevant change has been reviewed and merged, an operator applying
+it must select the approved commit, inspect the exact registry diff, and
+manually copy that file to the host path. Preserve the existing trusted owner
+and directory controls, a regular non-symlink file, and owner-only mode (0600),
+then validate it with the existing destination loader/preview path. For example,
+when run by the intended file owner from the selected checkout:
+
+```console
+install -m 0600 config/destinations.yaml \
+  "$HOME/.config/ai-office/destinations.yaml"
+```
+
+Validate the operational copy using the existing preview-only CLI path (from
+the repository root); this reads settings but does not read the credential or
+contact the provider:
+
+```console
+ai-office workflows start offline-document-draft \
+  --run-id destination-registry-preview \
+  --run-input "Offline destination configuration validation only" \
+  --run-store /tmp/ai-office-destination-registry-preview \
+  --directory tests/fixtures/workflows \
+  --employees-directory employees \
+  --execution-target opencode-go-deepseek-v4-pro-chat \
+  --execution-destinations "$HOME/.config/ai-office/destinations.yaml" \
+  --step-model draft=deepseek-v4-pro \
+  --preview-only
+```
+
+This is an operator procedure, not an action performed by this Issue. Confirm
+the destination fingerprint in a fresh offline preview before considering any
+separately authorized execution. Changing an endpoint changes that fingerprint;
+old previews and approvals cannot be reused, and existing Runs, Manifests,
+Evidence, and Artifacts are not migrated or resent.
 
 Destination names become the evidence `provider` identity. `openai` and
 `omniroute` remain reserved built-ins. The registry rejects extra fields,
@@ -75,11 +120,11 @@ existing transport control and cannot be overridden. Endpoint allowlisting,
 DNS pinning, redirect blocking, HTTPS and SSRF safeguards are unchanged.
 
 The effective header policy is part of the destination configuration
-fingerprint and the Run Manifest v4 snapshot. Changing the headers after a
+fingerprint and the Run Manifest v5 snapshot. Changing the headers after a
 preview/approval invalidates the stale approval before credentials or
 network are consulted, and continuation/recovery cannot silently change
-headers or session identity. Historical v2/v3 Runs and built-in
-`openai` / `omniroute` targets remain readable without header requirements.
+headers or session identity. The application currently supports Manifest v5;
+this settings change adds no legacy-format migration or new Manifest schema.
 
 Example Go Chat Completions destination (see
 `examples/openai-compatible-destinations.yaml`):
@@ -88,7 +133,7 @@ Example Go Chat Completions destination (see
 destinations:
   opencode-go-glm-chat:
     protocol: openai-chat-completions
-    endpoint: https://opencode.ai/zen/go/v1/chat/completions
+    endpoint: https://opencode.ai/inference/go/openai/v1/chat/completions
     credential: OPENCODE_API_KEY
     models:
       - glm-5.3-flash
@@ -97,21 +142,25 @@ destinations:
       x-opencode-session: "{run_session}"
 ```
 
-The registry also includes `opencode-go-deepseek-v4-pro-chat`, which uses the
-same Go Chat Completions endpoint and safe headers with only the model changed
-to `deepseek-v4-pro`. Keep `opencode-go-glm-chat` unchanged so existing Run
-fingerprints and evidence retain their original meaning. Adding this named
-destination is configuration-only: preview it offline, and treat any provider
-execution as a separate, explicitly authorized pilot.
+The example registry also includes `opencode-go-deepseek-v4-pro-chat` with the
+same endpoint and safe headers but only `deepseek-v4-pro` in its model list.
+The canonical runtime registry above retains only the currently approved
+DeepSeek destination; the illustrative GLM entry does not add GLM to the
+runtime allowlist. An endpoint change produces a new fingerprint; historical
+Runs keep their original evidence and are not rewritten. Any provider
+execution remains a separate, explicitly authorized action.
 
 ## OpenCode Go usage caveats
 
-The Go sample is a secret-free, offline-testable destination candidate for a
-code-related technical investigation. The current Go documentation lists
-`glm-5.3-flash` on the OpenAI-compatible Chat Completions endpoint shown above,
-and calls for typical coding-agent traffic, a truthful identifying `User-Agent`,
-and a stable `x-opencode-session` per conversation. Its Go endpoint is separate
-from the Console pay-as-you-go Inference API. Before a live run, an operator
+The Go destination is a secret-free, offline-testable configuration. The
+[official OpenCode Go endpoint table](https://dev.opencode.ai/v2/docs/console/go/)
+lists `deepseek-v4-pro` on
+`/inference/go/openai/v1/chat/completions`; its Responses-compatible models use
+the separate `/inference/go/openai/v1/responses` path. Do not substitute one
+protocol's URL for the other. OpenCode calls for typical coding-agent traffic,
+a truthful identifying `User-Agent`, and a stable `x-opencode-session` per
+conversation. Go is separate from the Console pay-as-you-go Inference API.
+Before a live run, an operator
 must confirm current model entitlement and allowance, use the exact admin
 destination fingerprint across every fixed Job action, and ensure no fallback
 to a separate balance is possible. A provider attempt count is not a monetary
