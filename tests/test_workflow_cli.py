@@ -1,5 +1,6 @@
 """Tests for workflow definition CLI commands."""
 
+import base64
 import hashlib
 import json
 import os
@@ -29,7 +30,10 @@ from ai_office.engine.workflow_approval_evidence import (
     build_execution_approval_evidence_for_tools,
     persist_execution_approval_evidence,
 )
-from ai_office.execution_evidence import build_execution_evidence_context
+from ai_office.execution_evidence import (
+    build_execution_evidence_context,
+    list_run_execution_evidence,
+)
 from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import (
     ModelInvocationRequest,
@@ -73,7 +77,6 @@ def write_valid_employee(
                 "name": "General Researcher",
                 "role": role,
                 "instructions": instructions,
-                "model": "codex",
                 "allowed_tools": allowed_tools,
             },
             sort_keys=False,
@@ -99,12 +102,14 @@ def write_valid_workflow(
                         "id": "research",
                         "name": "Research",
                         "employee": employee,
+                        "model": "codex",
                         "instructions": research_instructions,
                     },
                     {
                         "id": "summarize",
                         "name": "Summarize",
                         "employee": employee,
+                        "model": "codex",
                         "instructions": "Summarize the information.",
                     },
                 ],
@@ -125,6 +130,7 @@ def write_three_step_workflow(directory: Path) -> None:
             "id": "review",
             "name": "Review",
             "employee": "general-researcher",
+            "model": "codex",
             "instructions": "Review the information.",
         }
     )
@@ -147,6 +153,7 @@ def write_single_step_workflow(directory: Path) -> None:
                         "id": "only-step",
                         "name": "Only Step",
                         "employee": "general-researcher",
+                        "model": "codex",
                         "instructions": "Complete the only step.",
                     }
                 ],
@@ -294,12 +301,18 @@ def patch_cli_execution_seams(
 
 
 def preview_command(
-    operation: str, workflow_id: str, paths: dict[str, Path]
+    operation: str,
+    workflow_id: str,
+    paths: dict[str, Path],
+    *,
+    extra_options: list[str] | None = None,
 ) -> tuple[object, dict[str, object]]:
     """Run a preview command and parse its sole JSON line."""
     result = runner.invoke(
         app,
-        workflow_command_args(operation, workflow_id, paths) + ["--preview-only"],
+        workflow_command_args(operation, workflow_id, paths)
+        + (extra_options or [])
+        + ["--preview-only"],
     )
     assert result.exit_code == 0, result.stderr
     assert result.stderr == ""
@@ -345,11 +358,14 @@ def invoke_execution(
     workflow_id: str,
     paths: dict[str, Path],
     preview: dict[str, object],
+    *,
+    extra_options: list[str] | None = None,
 ) -> object:
     """Invoke a command with the exact values returned by its preview."""
     return runner.invoke(
         app,
         workflow_command_args(operation, workflow_id, paths)
+        + (extra_options or [])
         + execution_options(preview),
     )
 
@@ -981,12 +997,14 @@ def test_workflows_plan_displays_execution_plan(tmp_path: Path) -> None:
         "1. research\n"
         "   Name: Research\n"
         "   Employee: general-researcher\n"
+        "   Model: codex\n"
         "   Instructions:\n"
         "     Gather relevant information.\n"
         "\n"
         "2. summarize\n"
         "   Name: Summarize\n"
         "   Employee: general-researcher\n"
+        "   Model: codex\n"
         "   Instructions:\n"
         "     Summarize the information.\n"
     )
@@ -1193,6 +1211,7 @@ def test_workflows_plan_validates_unselected_employee_references(
                         "id": "unrelated-step",
                         "name": "Unrelated Step",
                         "employee": "missing-employee",
+                        "model": "model",
                         "instructions": "Do unrelated work.",
                     }
                 ],
@@ -1425,6 +1444,7 @@ def test_workflows_request_validates_unselected_employee_references(
                         "id": "unrelated-step",
                         "name": "Unrelated Step",
                         "employee": "missing-employee",
+                        "model": "model",
                         "instructions": "Do unrelated work.",
                     }
                 ],
@@ -1681,6 +1701,7 @@ def test_workflows_invocation_validates_unselected_employee_references(
                         "id": "unrelated-step",
                         "name": "Unrelated Step",
                         "employee": "missing-employee",
+                        "model": "model",
                         "instructions": "Do unrelated work.",
                     }
                 ],
@@ -1951,6 +1972,7 @@ def test_workflows_provider_request_reports_definition_errors_without_stdout(
                             "id": "unrelated-step",
                             "name": "Unrelated Step",
                             "employee": "missing-employee",
+                            "model": "model",
                             "instructions": "Do unrelated work.",
                         }
                     ],
@@ -3132,8 +3154,8 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
         "operation": "start",
         "run_id": "run-1",
         "run_input": "Research the requested topic exactly as supplied.",
-            "request_fingerprint": (
-                "fb4bc8d128ed1934af7ac7d7dd69df48c56ca619633ec4ff6ae830079b7a30d2"
+        "request_fingerprint": (
+            "b365306de87e76a04bdcf3acb03b82b2ed257755a754bbd3ca8e7bd7972a3ee2"
         ),
         "manifest_digest": str(ensure_run_manifest(paths).manifest_digest),
         "resolved_tools": [],
@@ -3148,6 +3170,74 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
     assert len(preview["request_fingerprint"]) == 64
     assert not paths["state"].exists()
     assert not paths["events"].exists()
+    assert calls == []
+    assert key_calls == []
+
+
+def test_new_run_step_model_override_is_local_and_manifest_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workflow_command_paths(tmp_path)
+    write_valid_workflow(paths["workflows"])
+    write_valid_employee(paths["employees"])
+    calls: list[object] = []
+    key_calls: list[int] = []
+    patch_cli_execution_seams(monkeypatch, calls, key_calls)
+
+    result, preview = preview_command(
+        "start",
+        "research-and-summarize",
+        paths,
+        extra_options=["--step-model", "research=reviewer-model"],
+    )
+    assert result.exit_code == 0
+    assert preview["model"] == "reviewer-model"
+    assert calls == []
+    assert key_calls == []
+
+    workflows = load_workflows(paths["workflows"])
+    employees = load_employees(paths["employees"])
+    default_manifest = cli_module._build_start_manifest_preview(
+        "research-and-summarize",
+        str(paths["run_id"]),
+        str(paths["run_input"]),
+        workflows,
+        employees,
+        execution_target=DIRECT_OPENAI_EXECUTION_TARGET,
+    )[0]
+    overridden_manifest = cli_module._build_start_manifest_preview(
+        "research-and-summarize",
+        str(paths["run_id"]),
+        str(paths["run_input"]),
+        workflows,
+        employees,
+        ["research=reviewer-model"],
+        DIRECT_OPENAI_EXECUTION_TARGET,
+    )[0]
+
+    assert [step.model for step in default_manifest.workflow_snapshot.steps] == [
+        "codex",
+        "codex",
+    ]
+    assert [step.model for step in overridden_manifest.workflow_snapshot.steps] == [
+        "reviewer-model",
+        "codex",
+    ]
+    assert not hasattr(overridden_manifest.employee_snapshots[0], "model")
+    assert overridden_manifest.digest != default_manifest.digest
+    assert not WorkflowRunManifestStore(paths["run_store"]).manifest_path(
+        str(paths["run_id"])
+    ).exists()
+
+    legacy_override = runner.invoke(
+        app,
+        workflow_command_args("start", "research-and-summarize", paths)
+        + ["--execution-model", "legacy-model", "--preview-only"],
+    )
+    assert legacy_override.exit_code != 0
+    assert "--execution-model no longer overrides an entire Run" in (
+        legacy_override.stderr
+    )
     assert calls == []
     assert key_calls == []
 
@@ -3438,9 +3528,21 @@ def test_workflows_start_success_executes_step1_once_and_returns_next_route(
     calls: list[object] = []
     key_calls: list[int] = []
     patch_cli_execution_seams(monkeypatch, calls, key_calls)
-    _, preview = preview_command("start", "research-and-summarize", paths)
+    step_model_override = ["--step-model", "research=reviewer-model"]
+    _, preview = preview_command(
+        "start",
+        "research-and-summarize",
+        paths,
+        extra_options=step_model_override,
+    )
 
-    result = invoke_execution("start", "research-and-summarize", paths, preview)
+    result = invoke_execution(
+        "start",
+        "research-and-summarize",
+        paths,
+        preview,
+        extra_options=step_model_override,
+    )
     output = json.loads(result.stdout)
 
     assert result.exit_code == 0
@@ -3458,6 +3560,18 @@ def test_workflows_start_success_executes_step1_once_and_returns_next_route(
         "research",
     )
     assert paths["events"].read_text(encoding="utf-8").count("step_succeeded") == 1
+    manifest = load_workflow_run_manifest(
+        WorkflowRunManifestStore(paths["run_store"]), str(paths["run_id"])
+    )
+    assert manifest.workflow_snapshot.steps[0].model == "reviewer-model"
+    assert not hasattr(manifest.employee_snapshots[0], "model")
+    assert json.loads(calls[0].body)["model"] == "reviewer-model"
+    attempt, = list_run_execution_evidence(
+        paths["run_store"], str(paths["run_id"])
+    )
+    assert json.loads(base64.b64decode(attempt.request_body_base64))["model"] == (
+        "reviewer-model"
+    )
 
 
 def test_workflows_start_reuses_exact_durable_business_approval_after_restart(
@@ -3541,7 +3655,7 @@ def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step_fa
     assert preview["step_index"] == 2
     assert preview["employee_id"] == "general-researcher"
     assert preview["request_fingerprint"] == (
-        "527c39bf5f0dea47c56201d750232681ad6799d45cc27294239e2840eebed8b0"
+        "9ef3a461681040e6114ecbc38a02d362ceb36a77802cdaad2ff26e3c73d20949"
     )
     assert [fact["key"] for fact in preview["runtime_facts"]["facts"]] == [
         "predecessor.employee_id",

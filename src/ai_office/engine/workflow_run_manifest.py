@@ -43,7 +43,7 @@ from ai_office.tools import (
     resolve_tool_names,
 )
 
-_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v4"
+_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v5"
 _MANIFEST_ERROR_MESSAGE = "workflow run manifest is invalid"
 _PERSISTENCE_ERROR_MESSAGE = "workflow run manifest persistence failed"
 _LOAD_ERROR_MESSAGE = "workflow run manifest could not be loaded"
@@ -85,12 +85,11 @@ _WORKFLOW_STEP_KEYS = frozenset(
         "employee",
         "id",
         "instructions",
+        "model",
         "name",
     }
 )
-_EMPLOYEE_KEYS = frozenset(
-    {"allowed_tools", "id", "instructions", "model", "name", "role"}
-)
+_EMPLOYEE_KEYS = frozenset({"allowed_tools", "id", "instructions", "name", "role"})
 _TOOL_KEYS = frozenset({"description", "name", "parameters"})
 _TOOL_PARAMETER_KEYS = frozenset({"description", "name", "required", "type"})
 
@@ -103,7 +102,7 @@ class WorkflowRunManifestFailureDetail:
 
 
 class WorkflowRunManifestError(ValueError):
-    """Raised when a Run Manifest value is not the canonical v4 contract."""
+    """Raised when a Run Manifest value is not the canonical v5 contract."""
 
     def __init__(self, classification: str = "contract") -> None:
         super().__init__(_MANIFEST_ERROR_MESSAGE)
@@ -123,7 +122,7 @@ class WorkflowRunManifestConflictError(WorkflowRunManifestPersistenceError):
 
 
 class WorkflowRunManifestLoadError(WorkflowRunManifestError):
-    """Raised when a target is not an exact canonical v4 manifest."""
+    """Raised when a target is not an exact canonical v5 manifest."""
 
     def __init__(self, classification: str = "load") -> None:
         ValueError.__init__(self, _LOAD_ERROR_MESSAGE)
@@ -137,6 +136,7 @@ class WorkflowStepSnapshot:
     id: str
     name: str
     employee: str
+    model: str
     instructions: str
     business_approval_required: bool
     artifact_content_type: str | None = None
@@ -175,7 +175,6 @@ class EmployeeDefinitionSnapshot:
     name: str
     role: str
     instructions: str
-    model: str
     allowed_tools: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -255,7 +254,7 @@ class WorkflowRunManifest:
     each employee's allowed-tool order remain semantic and are preserved.
     """
 
-    schema_version: Literal["workflow-run-manifest.v4"]
+    schema_version: Literal["workflow-run-manifest.v5"]
     run_id: str
     workflow_id: str
     run_input: str
@@ -341,7 +340,6 @@ def build_workflow_run_manifest(
     employees: Sequence[LoadedEmployee],
     *,
     tool_catalog: ToolCatalog = DEFAULT_TOOL_CATALOG,
-    execution_model: str | None = None,
     execution_target: ModelExecutionTarget | None = None,
 ) -> WorkflowRunManifest:
     """Build one detached manifest from validated definition inputs.
@@ -363,12 +361,6 @@ def build_workflow_run_manifest(
         _raise_manifest("employees")
     if any(type(employee) is not LoadedEmployee for employee in employees):
         _raise_manifest("employees")
-    if execution_model is not None and (
-        type(execution_model) is not str or not execution_model.strip()
-    ):
-        _raise_manifest("execution_model")
-    if execution_model is not None and execution_target is None:
-        _raise_manifest("execution_destination")
     if execution_target is None:
         from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 
@@ -424,7 +416,7 @@ def build_workflow_run_manifest(
 
     referenced_employee_ids = {step.employee for step in workflow_definition.steps}
     employee_snapshots = tuple(
-        _employee_snapshot(employee_by_id[employee_id], model=execution_model)
+        _employee_snapshot(employee_by_id[employee_id])
         for employee_id in sorted(referenced_employee_ids)
     )
     required_tool_names = tuple(
@@ -461,7 +453,6 @@ def create_workflow_run_manifest(
     employees: Sequence[LoadedEmployee],
     *,
     tool_catalog: ToolCatalog = DEFAULT_TOOL_CATALOG,
-    execution_model: str | None = None,
     execution_target: ModelExecutionTarget | None = None,
 ) -> WorkflowRunManifest:
     """Build and durably create one Run Manifest before any execution.
@@ -477,7 +468,6 @@ def create_workflow_run_manifest(
         workflow,
         employees,
         tool_catalog=tool_catalog,
-        execution_model=execution_model,
         execution_target=execution_target,
     )
     _persist_workflow_run_manifest(_manifest_path(store, run_id), manifest)
@@ -587,6 +577,7 @@ def workflow_definition_from_run_manifest(
                     "id": step.id,
                     "name": step.name,
                     "employee": step.employee,
+                    "model": step.model,
                     "instructions": step.instructions,
                     "business_approval_required": step.business_approval_required,
                     "artifact_content_type": step.artifact_content_type,
@@ -619,7 +610,6 @@ def employee_definitions_from_run_manifest(
                 "name": employee.name,
                 "role": employee.role,
                 "instructions": employee.instructions,
-                "model": employee.model,
                 "allowed_tools": list(employee.allowed_tools),
             }
         )
@@ -723,6 +713,7 @@ def _workflow_step_snapshot(step: WorkflowStepDefinition) -> WorkflowStepSnapsho
             id=step.id,
             name=step.name,
             employee=step.employee,
+            model=step.model,
             instructions=step.instructions,
             business_approval_required=step.business_approval_required,
             artifact_content_type=step.artifact_content_type,
@@ -733,9 +724,7 @@ def _workflow_step_snapshot(step: WorkflowStepDefinition) -> WorkflowStepSnapsho
         _raise_manifest("workflow_step")
 
 
-def _employee_snapshot(
-    employee: LoadedEmployee, *, model: str | None = None
-) -> EmployeeDefinitionSnapshot:
+def _employee_snapshot(employee: LoadedEmployee) -> EmployeeDefinitionSnapshot:
     definition = employee.definition
     if type(definition) is not EmployeeDefinition:
         _raise_manifest("employee_definition")
@@ -745,7 +734,6 @@ def _employee_snapshot(
             name=definition.name,
             role=definition.role,
             instructions=definition.instructions,
-            model=definition.model if model is None else model,
             allowed_tools=tuple(definition.allowed_tools),
         )
     except WorkflowRunManifestError:
@@ -790,7 +778,6 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
                 "allowed_tools": list(employee.allowed_tools),
                 "id": employee.id,
                 "instructions": employee.instructions,
-                "model": employee.model,
                 "name": employee.name,
                 "role": employee.role,
             }
@@ -861,6 +848,7 @@ def _workflow_step_dict(step: WorkflowStepSnapshot) -> dict[str, object]:
         "employee": step.employee,
         "id": step.id,
         "instructions": step.instructions,
+        "model": step.model,
         "name": step.name,
     }
     value["artifact_content_type"] = step.artifact_content_type
@@ -928,6 +916,7 @@ def _validate_workflow_step_snapshot(snapshot: object) -> None:
     _validate_definition_id(snapshot.id)
     _validate_nonblank_text(snapshot.name, "workflow_step_name")
     _validate_definition_id(snapshot.employee)
+    _validate_nonblank_text(snapshot.model, "workflow_step_model")
     _validate_nonblank_text(snapshot.instructions, "workflow_step_instructions")
     if type(snapshot.business_approval_required) is not bool:
         _raise_manifest("business_approval_policy")
@@ -977,7 +966,6 @@ def _validate_employee_snapshot(snapshot: object) -> None:
     _validate_nonblank_text(snapshot.name, "employee_name")
     _validate_nonblank_text(snapshot.role, "employee_role")
     _validate_nonblank_text(snapshot.instructions, "employee_instructions")
-    _validate_nonblank_text(snapshot.model, "employee_model")
     if type(snapshot.allowed_tools) is not tuple:
         _raise_manifest("employee_tools")
     for tool_name in snapshot.allowed_tools:
@@ -1287,6 +1275,7 @@ def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
             id=value["id"],
             name=value["name"],
             employee=value["employee"],
+            model=value["model"],
             instructions=value["instructions"],
             business_approval_required=value["business_approval_required"],
             artifact_content_type=value["artifact_content_type"],
@@ -1307,7 +1296,6 @@ def _parse_employee(value: object) -> EmployeeDefinitionSnapshot:
             name=value["name"],
             role=value["role"],
             instructions=value["instructions"],
-            model=value["model"],
             allowed_tools=tuple(tools),
         )
     except Exception:

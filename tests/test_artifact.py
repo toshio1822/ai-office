@@ -63,6 +63,7 @@ def _workflow(*, artifact_content_type: str | None = "text/markdown"):
                     "id": "draft",
                     "name": "Draft",
                     "employee": "author",
+                    "model": "model",
                     "instructions": "Write the assigned output.",
                     "business_approval_required": False,
                     "artifact_content_type": artifact_content_type,
@@ -71,6 +72,7 @@ def _workflow(*, artifact_content_type: str | None = "text/markdown"):
                     "id": "review",
                     "name": "Review",
                     "employee": "author",
+                    "model": "model",
                     "instructions": "Review the output.",
                     "business_approval_required": False,
                 },
@@ -85,7 +87,6 @@ def _employee() -> EmployeeDefinition:
         name="Author",
         role="Writes business results.",
         instructions="Write the assigned result.",
-        model="artifact-test-model",
         allowed_tools=[],
     )
 
@@ -118,7 +119,7 @@ def _start_fixture(
     workflow = _workflow(artifact_content_type=artifact_content_type)
     employee = _employee()
     request = ModelInvocationRequest(
-        model=employee.model,
+        model=workflow.steps[0].model,
         system_instructions=employee.instructions,
         task_instructions=workflow.steps[0].instructions,
         allowed_tools=(),

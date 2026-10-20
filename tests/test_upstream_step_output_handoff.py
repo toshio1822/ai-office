@@ -133,12 +133,14 @@ def _workflow() -> WorkflowDefinition:
                     "id": "step-1",
                     "name": "First",
                     "employee": "employee-1",
+                    "model": "model",
                     "instructions": "first task",
                 },
                 {
                     "id": "step-2",
                     "name": "Second",
                     "employee": "employee-2",
+                    "model": "model",
                     "instructions": "second task",
                 },
             ],
@@ -152,7 +154,6 @@ def _employee() -> EmployeeDefinition:
         name="Employee 2",
         role="worker",
         instructions="employee-2 instructions",
-        model="model",
         allowed_tools=[],
     )
 
@@ -164,7 +165,6 @@ def _run_employees() -> tuple[EmployeeDefinition, ...]:
             name="Employee 1",
             role="worker",
             instructions="employee-1 instructions",
-            model="model",
             allowed_tools=[],
         ),
         _employee(),

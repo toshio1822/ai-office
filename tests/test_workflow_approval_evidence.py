@@ -56,6 +56,7 @@ def _workflow(
             "id": f"step-{index}",
             "name": f"Step {index}",
             "employee": f"employee-{index}",
+            "model": "model",
             "instructions": f"Instructions {index}",
         }
         if not omit_policy:
@@ -78,7 +79,6 @@ def _employees(workflow: WorkflowDefinition) -> tuple[EmployeeDefinition, ...]:
             name=step.name,
             role="Approval test employee",
             instructions=f"Employee instructions for {step.id}",
-            model="test-model",
             allowed_tools=[],
         )
         for step in workflow.steps

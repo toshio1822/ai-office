@@ -862,7 +862,7 @@ def _check_prepared(
         and _exact(value.employee_id, step.employee)
         and _exact(value.employee_instructions, employee.instructions)
         and _exact(value.step_instructions, step.instructions)
-        and _exact(value.model, employee.model)
+        and _exact(value.model, step.model)
         and type(value.allowed_tool_names) is tuple
         and all(_nonempty(item) for item in value.allowed_tool_names)
         and value.allowed_tool_names == tuple(employee.allowed_tools)
@@ -1289,6 +1289,7 @@ def _valid_workflow(workflow: WorkflowDefinition) -> bool:
         or not _nonempty(step.id)
         or not _nonempty(step.name)
         or not _nonempty(step.employee)
+        or not _nonempty(step.model)
         or not _nonempty(step.instructions)
         for step in workflow.steps
     ):
@@ -1303,7 +1304,6 @@ def _valid_employee(employee: EmployeeDefinition) -> bool:
         and _nonempty(employee.name)
         and _nonempty(employee.role)
         and _nonempty(employee.instructions)
-        and _nonempty(employee.model)
         and type(employee.allowed_tools) is list
         and all(_nonempty(item) for item in employee.allowed_tools)
         and len(employee.allowed_tools) == len(set(employee.allowed_tools))

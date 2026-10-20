@@ -15,6 +15,7 @@ steps:
   - id: write-draft
     name: Write Draft
     employee: article-writer
+    model: gpt-5-mini
     instructions: |
       Write an article draft in the language, format, and for the medium
       specified by the supplied brief. Preserve its central claim, audience, and
@@ -31,6 +32,7 @@ steps:
   - id: review-quality
     name: Review Article Quality And Requirement Fit
     employee: document-reviewer
+    model: gpt-5-mini
     instructions: &article-review-contract |
       Review the complete, exact digest-bound Artifact against the immutable
       assignment and supplied Run Input in this independent Run. Follow the
@@ -87,12 +89,14 @@ steps:
   - id: review-evidence
     name: Audit Author-Attributed Meaning And Evidence
     employee: evidence-auditor
+    model: gpt-5-mini
     instructions: *article-review-contract
     business_approval_required: true
     artifact_content_type: text/markdown
   - id: revise
     name: Revise Artifact
     employee: article-writer
+    model: gpt-5-mini
     instructions: |
       Revise the exact supplied Artifact only to address actionable
       findings in the supplied independent reviews (one entry per reviewer)

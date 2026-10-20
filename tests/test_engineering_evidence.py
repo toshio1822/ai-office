@@ -387,6 +387,7 @@ def test_cli_writes_private_output_exclusively_and_workflow_preview_is_offline(
         "  - id: analyze-calamares-evidence\n"
         "    name: Analyze Evidence\n"
         "    employee: general-researcher\n"
+        "    model: codex\n"
         "    instructions: Analyze only the supplied snapshot.\n"
         "    business_approval_required: true\n",
         encoding="utf-8",

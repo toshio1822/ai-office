@@ -18,10 +18,10 @@ import typer
 from ai_office.definitions.employee import (
     EmployeeDefinition,
     EmployeeLoadError,
-    LoadedEmployee,
     load_employees,
 )
 from ai_office.definitions.workflow import (
+    LoadedWorkflow,
     WorkflowLoadError,
     load_workflows,
     validate_workflow_employee_references,
@@ -182,7 +182,7 @@ def list_employees(
 
     for employee in employees:
         definition = employee.definition
-        typer.echo(f"{definition.id}\t{definition.name}\t{definition.model}")
+        typer.echo(f"{definition.id}\t{definition.name}\t{definition.role}")
 
 
 @employees_app.command("validate")
@@ -254,6 +254,7 @@ def _display_execution_plan(plan: ExecutionPlan) -> None:
         typer.echo(f"{step.index}. {step.step_id}")
         typer.echo(f"   Name: {step.step_name}")
         typer.echo(f"   Employee: {step.employee_id}")
+        typer.echo(f"   Model: {step.model}")
         typer.echo("   Instructions:")
         for line in step.instructions.splitlines():
             typer.echo(f"     {line}")
@@ -573,21 +574,22 @@ def _build_start_manifest_preview(
     run_input: str | None,
     workflows: list[object],
     employees: list[object],
-    execution_model: str | None = None,
+    step_model_values: list[str] | None = None,
     execution_target: ModelExecutionTarget | None = None,
 ) -> tuple[object, WorkflowRunBinding, object, list[object], object]:
     """Freeze fresh Run meaning in memory before preview or durable creation."""
     if run_id is None or run_input is None:
         _workflow_cli_error("--run-id and --run-input are required")
     try:
-        workflow = find_workflow_by_id(workflows, workflow_id)
+        workflow = _apply_step_model_overrides(
+            find_workflow_by_id(workflows, workflow_id), step_model_values
+        )
         manifest = build_workflow_run_manifest(
             run_id,
             run_input,
             workflow,
             employees,
             tool_catalog=DEFAULT_TOOL_CATALOG,
-            execution_model=execution_model,
             execution_target=execution_target,
         )
         binding = _run_binding_for_manifest(manifest)
@@ -712,32 +714,56 @@ def _resolve_execution_target(
         _workflow_cli_error("execution target is invalid")
 
 
-def _resolve_execution_model(
-    target: ModelExecutionTarget,
-    registry_path: Path | None,
-    model: str | None,
-) -> str | None:
-    """Validate an operator model against the selected registry policy."""
-    if target.provider in {"openai", "omniroute"}:
-        if model is not None:
-            _workflow_cli_error("--execution-model requires a configured destination")
-        return None
-    if registry_path is None or model is None:
-        _workflow_cli_error("configured destinations require --execution-model")
-    try:
-        return (
-            load_execution_destination_registry(registry_path)
-            .resolve(target.provider)
-            .select_model(model)
+def _parse_step_model_overrides(values: list[str] | None) -> dict[str, str]:
+    """Parse repeated STEP_ID=MODEL choices without selecting a destination."""
+    overrides: dict[str, str] = {}
+    for value in values or []:
+        step_id, separator, model = value.partition("=")
+        if (
+            not separator
+            or not step_id
+            or not model.strip()
+            or step_id in overrides
+        ):
+            _workflow_cli_error(
+                "--step-model must be unique STEP_ID=MODEL values"
+            )
+        overrides[step_id] = model
+    return overrides
+
+
+def _apply_step_model_overrides(
+    workflow: LoadedWorkflow, values: list[str] | None
+) -> LoadedWorkflow:
+    """Return a definition whose explicit per-Step choices override defaults."""
+    overrides = _parse_step_model_overrides(values)
+    step_ids = {step.id for step in workflow.definition.steps}
+    if set(overrides) - step_ids:
+        _workflow_cli_error("--step-model names an unknown Workflow Step")
+    if not overrides:
+        return workflow
+    steps = [
+        step.model_copy(update={"model": overrides.get(step.id, step.model)})
+        for step in workflow.definition.steps
+    ]
+    return LoadedWorkflow(
+        source_path=workflow.source_path,
+        definition=workflow.definition.model_copy(update={"steps": steps}),
+    )
+
+
+def _reject_legacy_execution_model(model: str | None) -> None:
+    if model is not None:
+        _workflow_cli_error(
+            "--execution-model no longer overrides an entire Run; use "
+            "--step-model STEP_ID=MODEL (otherwise Workflow Step defaults apply)"
         )
-    except ExecutionDestinationError:
-        _workflow_cli_error("execution model is invalid")
 
 
 def _validate_pinned_models_for_target(
     target: ModelExecutionTarget,
     registry_path: Path | None,
-    employees: list[object],
+    models: list[str],
 ) -> None:
     """Require every manifest-pinned model to remain permitted."""
     if target.provider in {"openai", "omniroute"}:
@@ -748,11 +774,11 @@ def _validate_pinned_models_for_target(
         destination = load_execution_destination_registry(registry_path).resolve(
             target.provider
         )
-        for employee in employees:
-            destination.select_model(employee.definition.model)
+        for model in models:
+            destination.select_model(model)
         if destination.target != target:
             _workflow_cli_error("approved execution destination is no longer permitted")
-    except (AttributeError, ExecutionDestinationError):
+    except ExecutionDestinationError:
         _workflow_cli_error("pinned execution model is no longer permitted")
 
 
@@ -1243,7 +1269,14 @@ def run_bounded_document_job_workflow(
     ),
     execution_target: str = typer.Option(..., "--execution-target"),
     execution_destinations: Path = typer.Option(..., "--execution-destinations"),
-    execution_model: str = typer.Option(..., "--execution-model"),
+    step_model: list[str] = typer.Option(
+        [],
+        "--step-model",
+        help="Override one Workflow Step as STEP_ID=MODEL; repeat for other Steps.",
+    ),
+    legacy_execution_model: str | None = typer.Option(
+        None, "--execution-model", hidden=True
+    ),
     workflow_id: str = typer.Option(..., "--workflow"),
     max_revisions: int = typer.Option(1, "--max-revisions", min=0),
     max_retries: int = typer.Option(0, "--max-retries", min=0, max=2),
@@ -1270,6 +1303,7 @@ def run_bounded_document_job_workflow(
         persist_workflow_run_manifest,
     )
 
+    _reject_legacy_execution_model(legacy_execution_model)
     try:
         if os.geteuid() == 0 or os.geteuid() != os.getuid() or not sys.stdin.isatty():
             raise WorkflowJobAuthorizationError("operator_context")
@@ -1281,40 +1315,35 @@ def run_bounded_document_job_workflow(
             raise WorkflowJobAuthorizationError("pilot_store_parent")
         assignment = _resolve_run_input(None, assignment_file)
         target = _resolve_execution_target(execution_target, execution_destinations)
-        selected_model = _resolve_execution_model(
-            target, execution_destinations, execution_model
-        )
         destination_fingerprint = execution_target_fingerprint(target)
-        registry = load_execution_destination_registry(execution_destinations)
-        destination = registry.resolve(execution_target)
-        destination.select_model(selected_model)
         workflows, employees = _load_workflow_command_inputs(
             directory, employees_directory
         )
         workflow_by_id = {item.definition.id: item for item in workflows}
-        model_employees = {
-            item.definition.id: LoadedEmployee(
-                item.source_path,
-                item.definition.model_copy(update={"model": selected_model}),
-            )
-            for item in employees
-        }
         if workflow_id not in workflow_by_id:
             raise WorkflowJobAuthorizationError("job_workflow_missing")
-        source_workflow = workflow_by_id[workflow_id]
+        source_workflow = _apply_step_model_overrides(
+            workflow_by_id[workflow_id], step_model
+        )
+        workflow_by_id[workflow_id] = source_workflow
+        employees_by_id = {item.definition.id: item for item in employees}
+        _validate_pinned_models_for_target(
+            target,
+            execution_destinations,
+            [step.model for step in source_workflow.definition.steps],
+        )
         plan = bounded_review_action_plan(source_workflow, max_revisions)
         steps_by_id = {step.id: step for step in source_workflow.definition.steps}
         required_employees = tuple(
             dict.fromkeys(steps_by_id[item[0]].employee for item in plan)
         )
-        if any(name not in model_employees for name in required_employees):
+        if any(name not in employees_by_id for name in required_employees):
             raise WorkflowJobAuthorizationError("job_employee_missing")
         source_manifest = build_workflow_run_manifest(
             f"source-{sha256(job_id.encode()).hexdigest()[:16]}",
             assignment,
             source_workflow,
-            tuple(model_employees[name] for name in required_employees),
-            execution_model=selected_model,
+            tuple(employees_by_id[name] for name in required_employees),
             execution_target=target,
         )
         if source_manifest.run_id == initial_run_id:
@@ -1324,8 +1353,7 @@ def run_bounded_document_job_workflow(
             initial_run_id,
             assignment,
             initial_view,
-            (model_employees[initial_view.definition.steps[0].employee],),
-            execution_model=selected_model,
+            (employees_by_id[initial_view.definition.steps[0].employee],),
             execution_target=target,
         )
 
@@ -1349,8 +1377,7 @@ def run_bounded_document_job_workflow(
                     f"snapshot-{sha256(job_id.encode()).hexdigest()[:12]}-{ordinal}",
                     assignment,
                     view,
-                    (model_employees[employee_id],),
-                    execution_model=selected_model,
+                    (employees_by_id[employee_id],),
                     execution_target=target,
                 )
             )
@@ -1370,7 +1397,7 @@ def run_bounded_document_job_workflow(
                     employee_snapshot_sha256=snapshot_digest(employee_snapshot),
                     provider=target.provider,
                     execution_target_fingerprint=destination_fingerprint,
-                    model=selected_model,
+                    model=steps_by_id[step_id].model,
                     input_source=input_source,
                 )
             )
@@ -1414,6 +1441,7 @@ def run_bounded_document_job_workflow(
                 {
                     "step_id": slot.step_id,
                     "employee_id": slot.employee_id,
+                    "model": slot.model,
                     "input_source": slot.input_source,
                 }
                 for slot in action_slots
@@ -1422,7 +1450,10 @@ def run_bounded_document_job_workflow(
             "protocol": target.protocol,
             "endpoint": target.endpoint,
             "destination_fingerprint": destination_fingerprint,
-            "model": selected_model,
+            "step_models": [
+                {"step_id": step.id, "model": step.model}
+                for step in source_workflow.definition.steps
+            ],
             "action_slots": len(action_slots),
             "guaranteed_initial_actions": guaranteed_initial_actions,
             "max_normal_actions": max_normal_actions,
@@ -1463,7 +1494,9 @@ def run_bounded_document_job_workflow(
         # manifest target remains authoritative; the registry cannot select a
         # replacement target or model after confirmation.
         _validate_pinned_models_for_target(
-            target, execution_destinations, list(model_employees.values())
+            target,
+            execution_destinations,
+            [step.model for step in source_workflow.definition.steps],
         )
         now_ns = time.time_ns()
         run_store.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1476,20 +1509,17 @@ def run_bounded_document_job_workflow(
                 f"snapshot-{sha256(job_id.encode()).hexdigest()[:12]}-{slot.ordinal}",
                 assignment,
                 view,
-                tuple(model_employees[step.employee] for step in view.definition.steps),
-                execution_model=selected_model,
+                tuple(employees_by_id[step.employee] for step in view.definition.steps),
                 execution_target=target,
             )
-            employee_snapshot = next(
-                item
-                for item in manifest.employee_snapshots
-                if item.id == slot.employee_id
-            )
+            step_snapshot = manifest.workflow_snapshot.steps[0]
             if (
                 manifest.execution_destination.fingerprint
                 != slot.execution_target_fingerprint
                 or manifest.execution_destination.provider != slot.provider
-                or employee_snapshot.model != slot.model
+                or step_snapshot.id != slot.step_id
+                or step_snapshot.employee != slot.employee_id
+                or step_snapshot.model != slot.model
             ):
                 raise WorkflowJobAuthorizationError("job_manifest_approval_binding")
         if (
@@ -1497,11 +1527,10 @@ def run_bounded_document_job_workflow(
             != action_slots[0].execution_target_fingerprint
             or initial_manifest.execution_destination.provider
             != action_slots[0].provider
-            or not any(
-                item.id == action_slots[0].employee_id
-                and item.model == action_slots[0].model
-                for item in initial_manifest.employee_snapshots
-            )
+            or initial_manifest.workflow_snapshot.steps[0].employee
+            != action_slots[0].employee_id
+            or initial_manifest.workflow_snapshot.steps[0].model
+            != action_slots[0].model
         ):
             raise WorkflowJobAuthorizationError("job_manifest_approval_binding")
         persist_workflow_run_manifest(store, source_manifest)
@@ -1546,7 +1575,7 @@ def run_bounded_document_job_workflow(
             initial_run_id=scope.initial_run_id,
             assignment=initial_manifest.run_input,
             workflows=workflow_by_id,
-            employees=model_employees,
+            employees=employees_by_id,
             api_key=api_key,
             transport=send_openai_responses_http_request,
             execution_destinations=execution_destinations,
@@ -2122,7 +2151,14 @@ def start_workflow(
     execution_destinations: Path | None = typer.Option(
         None, "--execution-destinations"
     ),
-    execution_model: str | None = typer.Option(None, "--execution-model"),
+    step_model: list[str] = typer.Option(
+        [],
+        "--step-model",
+        help="Override one Workflow Step as STEP_ID=MODEL; repeat for other Steps.",
+    ),
+    legacy_execution_model: str | None = typer.Option(
+        None, "--execution-model", hidden=True
+    ),
     approve_business: bool = typer.Option(False, "--approve-business"),
     business_approved_by: str | None = typer.Option(None, "--business-approved-by"),
     business_approval_id: str | None = typer.Option(None, "--business-approval-id"),
@@ -2137,10 +2173,8 @@ def start_workflow(
     ),
 ) -> None:
     """Preview or execute exactly one fresh workflow step."""
+    _reject_legacy_execution_model(legacy_execution_model)
     target = _resolve_execution_target(execution_target, execution_destinations)
-    selected_model = _resolve_execution_model(
-        target, execution_destinations, execution_model
-    )
     if preview_only and _has_approval_fields(
         approve_business,
         business_approved_by,
@@ -2164,9 +2198,14 @@ def start_workflow(
             selected_run_input,
             workflows,
             employees,
-            selected_model,
+            step_model,
             target,
         )
+    )
+    _validate_pinned_models_for_target(
+        target,
+        execution_destinations,
+        [step.model for step in manifest.workflow_snapshot.steps],
     )
     workflow, preview = _build_workflow_step_preview(
         pinned_workflows,
@@ -2275,7 +2314,11 @@ def continue_workflow(
     binding = _run_binding_for_manifest(manifest)
     pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
     target = manifest.execution_destination.target
-    _validate_pinned_models_for_target(target, execution_destinations, pinned_employees)
+    _validate_pinned_models_for_target(
+        target,
+        execution_destinations,
+        [step.model for step in manifest.workflow_snapshot.steps],
+    )
     workflow = _select_workflow_or_exit(pinned_workflows, manifest.workflow_id)
     if workflow.definition.bounded_review is not None:
         _workflow_cli_error("bounded review workflow requires bounded-job-run")
@@ -2804,7 +2847,9 @@ def recover_workflow(
     if requested_target.provider != assessment.provider:
         _workflow_cli_error("recovery evidence differs from the Run Manifest")
     _validate_pinned_models_for_target(
-        requested_target, execution_destinations, pinned_employees
+        requested_target,
+        execution_destinations,
+        [step.model for step in manifest.workflow_snapshot.steps],
     )
     state_path, events_path = store.execution_paths(run_id)
     workflow, preview, history, state_digest, events_digest, attempt = (

@@ -5,6 +5,7 @@ steps:
   - id: draft
     name: Draft
     employee: article-writer
+    model: gpt-5-mini
     instructions: Write the requested Markdown document from the supplied input.
     business_approval_required: true
     artifact_content_type: text/markdown

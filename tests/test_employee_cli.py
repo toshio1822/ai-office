@@ -15,7 +15,6 @@ def write_valid_employee(directory: Path) -> None:
 name: General Researcher
 role: Organizes information.
 instructions: Work on the assigned step.
-model: codex
 allowed_tools: []
 """,
         encoding="utf-8",
@@ -30,7 +29,7 @@ def test_employees_list_displays_validated_definitions(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "general-researcher" in result.stdout
     assert "General Researcher" in result.stdout
-    assert "codex" in result.stdout
+    assert "Organizes information." in result.stdout
 
 
 def test_employees_list_reports_empty_directory(tmp_path: Path) -> None:

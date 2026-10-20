@@ -25,6 +25,7 @@ class ExecutionPlanStep(BaseModel):
     step_id: str
     step_name: str
     employee_id: str
+    model: str
     instructions: str
 
 
@@ -74,6 +75,7 @@ def build_execution_plan(
                 step_id=step.id,
                 step_name=step.name,
                 employee_id=step.employee,
+                model=step.model,
                 instructions=step.instructions,
             )
             for index, step in enumerate(workflow.definition.steps, start=1)

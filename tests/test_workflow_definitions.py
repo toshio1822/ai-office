@@ -30,12 +30,14 @@ def workflow_data(**overrides: object) -> dict[str, object]:
                 "id": "research",
                 "name": "Research",
                 "employee": "general-researcher",
+                "model": "model",
                 "instructions": "Gather relevant information.",
             },
             {
                 "id": "summarize",
                 "name": "Summarize",
                 "employee": "general-researcher",
+                "model": "model",
                 "instructions": "Summarize the information.",
             },
         ],
@@ -58,7 +60,6 @@ def loaded_employee(employee_id: str) -> LoadedEmployee:
             name="Employee",
             role="Handles assigned work.",
             instructions="Work on the assigned step.",
-            model="codex",
             allowed_tools=[],
         ),
     )
@@ -144,6 +145,7 @@ def test_article_writer_and_revision_steps_keep_their_assigned_roles() -> None:
 
 def test_article_writer_definition_is_medium_and_language_agnostic() -> None:
     root = Path(__file__).parents[1]
+    workflow = load_workflow_file(root / "workflows/article-production.yaml").definition
     writer = load_employee_file(root / "employees" / "article-writer.yaml").definition
     assert writer.id == "article-writer"
     text = f"{writer.name}\n{writer.role}\n{writer.instructions}"
@@ -155,7 +157,7 @@ def test_article_writer_definition_is_medium_and_language_agnostic() -> None:
     normalized = writer.instructions.replace("\n", " ")
     assert "personal experiences" in normalized
     assert "grounded review findings" in normalized
-    assert writer.model == "gpt-5-mini"
+    assert workflow.steps[0].model == "gpt-5-mini"
     assert writer.allowed_tools == []
 
 
@@ -296,6 +298,7 @@ def test_load_workflow_file_rejects_non_mapping_yaml(
                         "id": "research",
                         "name": "Research",
                         "employee": "general-researcher",
+                        "model": "model",
                         "instructions": "Gather.",
                         "unexpected": "field",
                     }

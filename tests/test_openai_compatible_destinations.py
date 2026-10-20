@@ -81,8 +81,8 @@ def _start_args(
         destination,
         "--execution-destinations",
         str(registry),
-        "--execution-model",
-        model,
+        "--step-model",
+        "draft=" + model,
     ]
 
 
@@ -271,7 +271,9 @@ def test_same_workflow_executes_both_protocols_offline(
     manifest = json.loads(
         (run_store / f"run-{destination}.manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["schema_version"] == "workflow-run-manifest.v4"
+    assert manifest["schema_version"] == "workflow-run-manifest.v5"
+    assert manifest["workflow_snapshot"]["steps"][0]["model"] == model
+    assert "model" not in manifest["employee_snapshots"][0]
     assert manifest["execution_destination"]["provider"] == destination
     switched = runner.invoke(
         app,

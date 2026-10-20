@@ -97,6 +97,7 @@ def execution_input(
                     "id": value_step.step_id,
                     "name": value_step.step_name,
                     "employee": value_step.employee_id,
+                    "model": "model",
                     "instructions": value_step.step_instructions,
                     "business_approval_required": False,
                 }
@@ -108,7 +109,6 @@ def execution_input(
         name=value_step.employee_name,
         role=value_step.employee_role,
         instructions=value_step.employee_instructions,
-        model=value_step.model,
         allowed_tools=list(dict.fromkeys(tool_names)),
     )
     source_request = ModelInvocationRequest(

@@ -26,7 +26,6 @@ def loaded_employee(employee_id: str = "general-researcher") -> LoadedEmployee:
             name="General Researcher",
             role="Organizes information.",
             instructions="Work on the assigned step.",
-            model="codex",
             allowed_tools=[],
         ),
     )
@@ -44,12 +43,14 @@ def loaded_workflow(source_path: Path = Path("workflow.yaml")) -> LoadedWorkflow
                     "id": "research",
                     "name": "Research",
                     "employee": "general-researcher",
+                    "model": "model",
                     "instructions": "Gather relevant information.",
                 },
                 {
                     "id": "summarize",
                     "name": "Summarize",
                     "employee": "general-researcher",
+                    "model": "summarizer-model",
                     "instructions": "Summarize the information.",
                 },
             ],
@@ -73,6 +74,7 @@ def test_build_execution_plan_copies_ordered_execution_values() -> None:
         "Gather relevant information.",
         "Summarize the information.",
     ]
+    assert [step.model for step in plan.steps] == ["model", "summarizer-model"]
 
 
 def test_build_execution_plan_uses_one_based_index_for_one_step_workflow() -> None:

@@ -36,17 +36,20 @@ ai-office workflows start article-production \
   --run-input "Medium: technical blog; explain the supplied design to engineers" \
   --execution-target opencode-zen \
   --execution-destinations docs/examples/openai-compatible-destinations.yaml \
-  --execution-model replace-with-approved-responses-model \
+  --step-model write-draft=replace-with-approved-responses-model \
   --preview-only
 ```
 
-For an execution, repeat the same destination registry and model and supply
+`article-production` is a bounded Workflow, so this command demonstrates its
+read-only preview only; execute it through `workflows bounded-job-run` as
+documented in the runbook. For a non-bounded Workflow execution, repeat the
+same destination registry and Step model and supply
 the existing Business Approval, Execution Approval, and all preview-bound
 `--expected-*` values. `continue` and `recover` also require the same named
 destination registry. A changed endpoint, protocol, credential reference, or
 model policy changes the configuration fingerprint and invalidates a stale
 preview/approval before credentials or transport are consulted. The selected
-model is frozen in the existing Run Manifest employee snapshot.
+model is frozen in the existing Run Manifest Workflow-Step snapshot.
 
 ## Safe request headers
 
@@ -142,7 +145,7 @@ and vendor-specific authentication are out of scope and fail closed.
 The sample uses the documented Zen Responses endpoint. Before any live run,
 an administrator must re-check the current Zen model list and select a model
 explicitly documented for the Responses API. Do not assume the sample model
-placeholder or an employee's default OpenAI model is available. Review the
+placeholder or a Workflow Step's default model is available. Review the
 chosen model's pricing, retention, and training terms for the intended data.
 See the [OpenCode Zen documentation](https://docs.opencode.ai/docs/zen/).
 

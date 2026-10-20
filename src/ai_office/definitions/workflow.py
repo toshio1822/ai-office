@@ -26,6 +26,7 @@ class WorkflowStepDefinition(BaseModel):
     id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     name: str
     employee: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    model: str
     instructions: str
     business_approval_required: bool = True
     artifact_content_type: str | None = Field(
@@ -33,7 +34,7 @@ class WorkflowStepDefinition(BaseModel):
         pattern=r"^[!#$%&'+.^_`|~%0-9A-Za-z-]+/[!#$%&'+.^_`|~%0-9A-Za-z-]+$",
     )
 
-    @field_validator("name", "instructions")
+    @field_validator("name", "model", "instructions")
     @classmethod
     def must_not_be_blank(cls, value: str) -> str:
         """Reject blank values without changing the supplied definition."""

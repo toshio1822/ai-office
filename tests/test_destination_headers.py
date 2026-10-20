@@ -87,8 +87,8 @@ def _start_args(
         destination,
         "--execution-destinations",
         str(registry),
-        "--execution-model",
-        model,
+        "--step-model",
+        "draft=" + model,
     ]
 
 

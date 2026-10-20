@@ -113,6 +113,7 @@ def execution_evidence_fixture(
                     "id": "provider-step",
                     "name": "Provider Step",
                     "employee": "provider-employee",
+                    "model": invocation.model,
                     "instructions": "Run provider test.",
                     "business_approval_required": False,
                 }
@@ -124,7 +125,6 @@ def execution_evidence_fixture(
         name="Provider Employee",
         role="Provider test",
         instructions="Run provider test.",
-        model=invocation.model,
         allowed_tools=[],
     )
     return create_test_execution_evidence(
@@ -482,7 +482,6 @@ def _write_cli_project(tmp_path: Path, *, step_count: int = 2) -> dict[str, Path
 name: General Researcher
 role: Organizes information.
 instructions: Work on the assigned step.
-model: openClaw
 allowed_tools: []
 """,
         encoding="utf-8",
@@ -491,6 +490,7 @@ allowed_tools: []
         "  - id: step-one\n"
         "    name: Step One\n"
         "    employee: general-researcher\n"
+        "    model: openClaw\n"
         "    instructions: Do step one."
     ]
     if step_count > 1:
@@ -498,6 +498,7 @@ allowed_tools: []
             "  - id: step-two\n"
             "    name: Step Two\n"
             "    employee: general-researcher\n"
+            "    model: openClaw\n"
             "    instructions: Do step two."
         )
     (workflows / "workflow.yaml").write_text(

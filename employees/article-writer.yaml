@@ -13,5 +13,4 @@ instructions: |
   introduce new unsupported claims.
   Keep the document concise, actionable, and suitable for human review
   before publication.
-model: gpt-5-mini
 allowed_tools: []

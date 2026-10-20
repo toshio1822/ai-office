@@ -32,12 +32,14 @@ def workflow() -> WorkflowDefinition:
                     "id": "first",
                     "name": "First",
                     "employee": "one",
+                    "model": "model",
                     "instructions": "First task.",
                 },
                 {
                     "id": "second",
                     "name": "Second",
                     "employee": "two",
+                    "model": "model",
                     "instructions": "Second task.",
                 },
             ],
@@ -52,7 +54,6 @@ def employee() -> EmployeeDefinition:
             "name": "Employee Two",
             "role": "Role",
             "instructions": "Employee instructions.",
-            "model": "model",
             "allowed_tools": ["first-tool", "second-tool"],
         }
     )

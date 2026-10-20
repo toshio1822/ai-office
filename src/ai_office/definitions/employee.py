@@ -18,10 +18,9 @@ class EmployeeDefinition(BaseModel):
     name: str
     role: str
     instructions: str
-    model: str
     allowed_tools: list[str]
 
-    @field_validator("name", "role", "instructions", "model")
+    @field_validator("name", "role", "instructions")
     @classmethod
     def must_not_be_blank(cls, value: str) -> str:
         """Reject blank values without changing the supplied definition."""

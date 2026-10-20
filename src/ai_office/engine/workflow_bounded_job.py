@@ -145,7 +145,6 @@ def _validate_derived_review_plan(
             initial_manifest.run_input,
             view,
             employees,
-            execution_model=slot.model,
             execution_target=initial_manifest.execution_destination.target,
         )
         employee = next(
@@ -157,6 +156,7 @@ def _validate_derived_review_plan(
             and slot.step_index == step_index
             and slot.input_source == input_source
             and slot.employee_id == selected.employee
+            and slot.model == selected.model
             and slot.workflow_snapshot_sha256
             == _digest(_canonical(_workflow_dict(snapshot.workflow_snapshot)))
             and slot.employee_snapshot_sha256
@@ -539,11 +539,11 @@ def issue_bounded_workflow_job_scope(
         ):
             raise WorkflowJobAuthorizationError("job_source_manifest")
         _validate_derived_review_plan(source_manifest, actions, max_revisions)
-    initial_employee = next(
+    initial_step = next(
         (
-            employee
-            for employee in initial_manifest.employee_snapshots
-            if employee.id == actions[0].employee_id
+            step
+            for step in initial_manifest.workflow_snapshot.steps
+            if step.id == actions[0].step_id
         ),
         None,
     )
@@ -551,8 +551,9 @@ def issue_bounded_workflow_job_scope(
         initial_manifest.execution_destination.fingerprint
         != actions[0].execution_target_fingerprint
         or initial_manifest.execution_destination.provider != actions[0].provider
-        or initial_employee is None
-        or initial_employee.model != actions[0].model
+        or initial_step is None
+        or initial_step.employee != actions[0].employee_id
+        or initial_step.model != actions[0].model
     ):
         raise WorkflowJobAuthorizationError("job_initial_manifest_authorization")
     scope = BoundedWorkflowJobScope(
@@ -2535,7 +2536,20 @@ def _execute_bounded_document_job(
         raise WorkflowJobAuthorizationError("document_job_initial_run")
 
     def verify_destination(slot: BoundedJobActionSlot) -> None:
-        if slot.model != employees[slot.employee_id].definition.model:
+        source_workflow = workflows.get(slot.workflow_id)
+        source_step = (
+            next(
+                (
+                    step
+                    for step in source_workflow.definition.steps
+                    if step.id == slot.step_id
+                ),
+                None,
+            )
+            if source_workflow is not None
+            else None
+        )
+        if source_step is None or slot.model != source_step.model:
             raise WorkflowJobAuthorizationError("document_job_model_binding")
         if execution_destinations is None:
             return
@@ -2554,9 +2568,18 @@ def _execute_bounded_document_job(
             ) from None
 
     def verify_run_manifest(manifest, slot: BoundedJobActionSlot) -> None:
-        if not any(
-            employee.id == slot.employee_id and employee.model == slot.model
-            for employee in manifest.employee_snapshots
+        step = next(
+            (
+                item
+                for item in manifest.workflow_snapshot.steps
+                if item.id == slot.step_id
+            ),
+            None,
+        )
+        if (
+            step is None
+            or step.employee != slot.employee_id
+            or step.model != slot.model
         ):
             raise WorkflowJobAuthorizationError("document_job_manifest_destination")
 
@@ -2585,7 +2608,6 @@ def _execute_bounded_document_job(
                     for step in workflow.steps
                     if step.employee in employees
                 ),
-                execution_model=slot.model,
                 execution_target=execution_target,
             )
         )
@@ -2596,7 +2618,7 @@ def _execute_bounded_document_job(
         step = workflow.steps[slot.step_index - 1]
         binding = WorkflowRunBinding(run_id=run_id, manifest_digest=manifest.digest)
         request = ModelInvocationRequest(
-            model=employee.model,
+            model=step.model,
             system_instructions=employee.instructions,
             task_instructions=step.instructions,
             allowed_tools=(),

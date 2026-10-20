@@ -96,6 +96,7 @@ def workflow(count: int = 11) -> WorkflowDefinition:
                     "id": f"step-{i}",
                     "name": f"Step {i}",
                     "employee": f"e{i}",
+                    "model": "model",
                     "instructions": f"instructions-{i}",
                 }
                 for i in range(1, count + 1)
@@ -111,7 +112,6 @@ def employee(wf: WorkflowDefinition, index: int) -> EmployeeDefinition:
         name=f"Employee {index}",
         role="worker",
         instructions=f"employee-instructions-{index}",
-        model="model",
         allowed_tools=[],
     )
 
@@ -510,6 +510,7 @@ def execution_context(
     )
     return {
         "employee": emp,
+        "model": "model",
         "resolved_tools": resolved_tools,
         "api_key": api_key,
         "execution_approval": approval,

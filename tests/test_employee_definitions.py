@@ -18,7 +18,6 @@ def write_employee(path: Path, **overrides: object) -> None:
         "name": "General Researcher",
         "role": "Organizes information.",
         "instructions": "Work on the assigned step.",
-        "model": "codex",
         "allowed_tools": [],
     }
     definition.update(overrides)
@@ -156,7 +155,6 @@ def test_load_employee_file_requires_allowed_tools(tmp_path: Path) -> None:
 name: General Researcher
 role: Organizes information.
 instructions: Work on the assigned step.
-model: codex
 """,
         encoding="utf-8",
     )
@@ -165,7 +163,7 @@ model: codex
         load_employee_file(source)
 
 
-@pytest.mark.parametrize("field", ["name", "role", "instructions", "model"])
+@pytest.mark.parametrize("field", ["name", "role", "instructions"])
 def test_load_employee_file_rejects_blank_required_string(
     tmp_path: Path, field: str
 ) -> None:
@@ -173,6 +171,14 @@ def test_load_employee_file_rejects_blank_required_string(
     write_employee(source, **{field: "   "})
 
     with pytest.raises(EmployeeLoadError, match=field):
+        load_employee_file(source)
+
+
+def test_employee_definition_rejects_legacy_model_field(tmp_path: Path) -> None:
+    source = tmp_path / "employee.yaml"
+    write_employee(source, model="codex")
+
+    with pytest.raises(EmployeeLoadError, match="model"):
         load_employee_file(source)
 
 

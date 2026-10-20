@@ -286,6 +286,7 @@ def _execution_evidence_fixture(
                     "id": "provider-step",
                     "name": "Provider Step",
                     "employee": "provider-employee",
+                    "model": request.model,
                     "instructions": "Run response test.",
                     "business_approval_required": False,
                 }
@@ -297,7 +298,6 @@ def _execution_evidence_fixture(
         name="Provider Employee",
         role="Provider test",
         instructions="Run response test.",
-        model=request.model,
         allowed_tools=[],
     )
     return create_test_execution_evidence(
