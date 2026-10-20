@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from contextlib import contextmanager
@@ -3431,6 +3432,27 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
     from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
 
     repository = Path(__file__).resolve().parents[1]
+    expected_models = {
+        "write-draft": "offline-writer-model",
+        "review-quality": "offline-quality-model",
+        "review-evidence": "offline-evidence-model",
+        "revise": "offline-revision-model",
+    }
+    destinations_file = tmp_path / "destinations.yaml"
+    destinations = (
+        repository / "docs/examples/openai-compatible-destinations.yaml"
+    ).read_text(encoding="utf-8")
+    allowed_model_line = "      - glm-5.3-flash"
+    assert destinations.count(allowed_model_line) == 1
+    destinations_file.write_text(
+        destinations.replace(
+            allowed_model_line,
+            "\n".join(
+                f"      - {model}" for model in expected_models.values()
+            ),
+        ),
+        encoding="utf-8",
+    )
     assignment_file = tmp_path / "brief.md"
     assignment_file.write_text(
         "Medium: technical blog\nAudience: engineers\n"
@@ -3451,9 +3473,11 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
         lambda _target: OpenAIApiKey(value=SecretStr("synthetic-only")),
     )
     sent = []
+    sent_models = []
 
     def fake_transport(request):
         sent.append(request)
+        sent_models.append(json.loads(request.body)["model"])
         content = (
             "# Article\n\nExplain the supplied method."
             if len(sent) == 1
@@ -3503,41 +3527,77 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
             "--execution-target",
             "opencode-go-glm-chat",
             "--execution-destinations",
-            str(repository / "docs/examples/openai-compatible-destinations.yaml"),
+            str(destinations_file),
             "--step-model",
-            "write-draft=glm-5.3-flash",
+            f"write-draft={expected_models['write-draft']}",
             "--step-model",
-            "review-quality=glm-5.3-flash",
+            f"review-quality={expected_models['review-quality']}",
             "--step-model",
-            "review-evidence=glm-5.3-flash",
+            f"review-evidence={expected_models['review-evidence']}",
             "--step-model",
-            "revise=glm-5.3-flash",
+            f"revise={expected_models['revise']}",
             "--max-revisions",
             "0",
         ],
         input=f"{job_id}\n{job_id}\n",
     )
     assert result.exit_code == 0, result.output
-    assert '"workflow_id": "article-production"' in result.output
-    assert '"guaranteed_initial_actions": 3' in result.output
-    assert '"reviewer_count": 2' in result.output
+    preview = json.loads(result.output.splitlines()[0])
+    assert preview["workflow_id"] == "article-production"
+    assert preview["guaranteed_initial_actions"] == 3
+    assert preview["reviewer_count"] == 2
+    action_models = {
+        step_id: model
+        for step_id, model in expected_models.items()
+        if step_id != "revise"
+    }
+    assert {
+        item["step_id"]: item["model"] for item in preview["planned_steps"]
+    } == action_models
+    assert {
+        item["step_id"]: item["model"] for item in preview["step_models"]
+    } == expected_models
     assert len(sent) == 3, result.output
+    assert sent_models == [
+        expected_models["write-draft"],
+        expected_models["review-quality"],
+        expected_models["review-evidence"],
+    ]
+    store = WorkflowRunManifestStore(store_root)
     inspection = inspect_bounded_document_job(
-        WorkflowRunManifestStore(store_root), job_id
+        store, job_id
     )
     assert inspection["status"] == "candidate"
-    scope = load_bounded_workflow_job_scope(
-        WorkflowRunManifestStore(store_root), job_id
-    )
+    assert inspection["consumed_provider_attempts"] == len(sent) == 3
+    scope = load_bounded_workflow_job_scope(store, job_id)
+    assert scope.max_provider_attempts == 3
+    assert {slot.step_id: slot.model for slot in scope.actions} == action_models
+    assert len(inspection["dispatch_order"]) == len(scope.actions) == len(sent)
+    evidence_models = {}
+    for slot, dispatch in zip(scope.actions, inspection["dispatch_order"]):
+        manifest = load_workflow_run_manifest(store, dispatch["run_id"])
+        assert manifest.workflow_snapshot.steps[0].id == slot.step_id
+        assert (
+            manifest.workflow_snapshot.steps[0].model == expected_models[slot.step_id]
+        )
+        attempts = list_run_execution_evidence(store.root, dispatch["run_id"])
+        attempt, = attempts
+        assert attempt.authorization_source == "job_action"
+        assert attempt.job_id == job_id
+        assert attempt.step_id == slot.step_id
+        evidence_models[slot.step_id] = json.loads(
+            base64.b64decode(attempt.request_body_base64)
+        )["model"]
+    assert evidence_models == action_models
     assert scope.source_manifest_run_id is not None
     source = load_workflow_run_manifest(
-        WorkflowRunManifestStore(store_root), scope.source_manifest_run_id
+        store, scope.source_manifest_run_id
     )
     assert source.digest == scope.source_manifest_digest
     assert source.workflow_snapshot.bounded_review is not None
     assert (
         load_workflow_run_manifest(
-            WorkflowRunManifestStore(store_root), "article-initial"
+            store, "article-initial"
         ).workflow_snapshot.bounded_review
         is None
     )
