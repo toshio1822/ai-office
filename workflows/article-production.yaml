@@ -56,6 +56,15 @@ steps:
       Impact: <concrete effect>
       Requested correction: <feasible, grounded correction>
 
+      Before returning PASS, examine every material item within the assigned
+      specialty; do not sample or infer coverage from representative examples.
+      In a PASS response, account for every such item with its own numbered
+      Check and assessment. If any item has a material defect, return
+      CHANGES_REQUIRED with a Finding for it rather than omitting it. Keep
+      checks material and nonredundant. Each Check and Finding must be
+      traceable to an exact Artifact quote and the single assignment-line
+      citation required below.
+
       A PASS response contains `Unresolved material issues: none` and numbered
       checks, one material item within the assigned specialty per check:
       `### Check 1`
