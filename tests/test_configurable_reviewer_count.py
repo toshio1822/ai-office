@@ -220,3 +220,9 @@ def test_shipped_article_workflow_uses_two_declared_reviewers() -> None:
     assert workflow.bounded_review is not None
     assert workflow.bounded_review.review_steps == ["review-quality", "review-evidence"]
     assert (MAX_REVISIONS + 1) * (len(workflow.bounded_review.review_steps) + 1) == 12
+    assert {step.id: step.model for step in workflow.steps} == {
+        "write-draft": "gpt-5-mini",
+        "review-quality": "glm-5.3-flash",
+        "review-evidence": "glm-5.3-flash",
+        "revise": "gpt-5-mini",
+    }
