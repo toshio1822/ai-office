@@ -28,25 +28,16 @@ destinations:
       User-Agent: ai-office/1.0
       x-opencode-session: "{run_session}"
 
-  # Current OpenCode Go Chat Completions candidate for the bounded code-analysis
-  # pilot. Confirm model entitlement with the operator at the live-run gate.
-  opencode-go-glm-chat:
-    protocol: openai-chat-completions
-    endpoint: https://opencode.ai/inference/go/openai/v1/chat/completions
-    credential: OPENCODE_API_KEY
-    models:
-      - glm-5.3-flash
-    headers:
-      User-Agent: ai-office/1.0
-      x-opencode-session: "{run_session}"
-
-  # Model-only alternative for the separately authorized DeepSeek V4 Pro pilot.
-  opencode-go-deepseek-v4-pro-chat:
+  # One OpenCode Go Chat Completions destination supports every listed model;
+  # repeated --step-model assignments can mix them within one bounded Job.
+  opencode-go-chat:
     protocol: openai-chat-completions
     endpoint: https://opencode.ai/inference/go/openai/v1/chat/completions
     credential: OPENCODE_API_KEY
     models:
       - deepseek-v4-pro
+      - deepseek-v4.1-flash
+      - glm-5.3-flash
     headers:
       User-Agent: ai-office/1.0
       x-opencode-session: "{run_session}"

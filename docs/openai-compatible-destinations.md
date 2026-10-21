@@ -54,7 +54,7 @@ ai-office workflows start offline-document-draft \
   --run-store /tmp/ai-office-destination-registry-preview \
   --directory tests/fixtures/workflows \
   --employees-directory employees \
-  --execution-target opencode-go-deepseek-v4-pro-chat \
+  --execution-target opencode-go-chat \
   --execution-destinations "$HOME/.config/ai-office/destinations.yaml" \
   --step-model draft=deepseek-v4-pro \
   --preview-only
@@ -131,24 +131,31 @@ Example Go Chat Completions destination (see
 
 ```yaml
 destinations:
-  opencode-go-glm-chat:
+  opencode-go-chat:
     protocol: openai-chat-completions
     endpoint: https://opencode.ai/inference/go/openai/v1/chat/completions
     credential: OPENCODE_API_KEY
     models:
+      - deepseek-v4-pro
+      - deepseek-v4.1-flash
       - glm-5.3-flash
     headers:
       User-Agent: ai-office/1.0
       x-opencode-session: "{run_session}"
 ```
 
-The example registry also includes `opencode-go-deepseek-v4-pro-chat` with the
-same endpoint and safe headers but only `deepseek-v4-pro` in its model list.
-The canonical runtime registry above retains only the currently approved
-DeepSeek destination; the illustrative GLM entry does not add GLM to the
-runtime allowlist. An endpoint change produces a new fingerprint; historical
-Runs keep their original evidence and are not rewritten. Any provider
-execution remains a separate, explicitly authorized action.
+The canonical Git-managed `opencode-go-chat` is one destination with three
+model choices. This permits `article-production` to assign a different
+allowlisted model to each Step while a bounded Job retains one execution
+target. Its Workflow defaults still need explicit overrides when they are not
+in the selected destination's allowlist. This Issue changes only Git-managed
+settings; the Linux operational registry remains unchanged until a separately
+reviewed manual application. The destination identity is now model-neutral
+(`opencode-go-chat`) rather than DeepSeek-specific; its identifier and broader
+allowlist contribute to the new fingerprint, so previous previews and approvals
+cannot be reused. Historical Runs keep their original evidence and are not
+rewritten. Any provider execution remains a separate, explicitly authorized
+action.
 
 ## OpenCode Go usage caveats
 
