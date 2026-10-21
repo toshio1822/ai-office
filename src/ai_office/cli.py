@@ -576,6 +576,7 @@ def _build_start_manifest_preview(
     employees: list[object],
     step_model_values: list[str] | None = None,
     execution_target: ModelExecutionTarget | None = None,
+    execution_targets: tuple[ModelExecutionTarget, ...] | None = None,
 ) -> tuple[object, WorkflowRunBinding, object, list[object], object]:
     """Freeze fresh Run meaning in memory before preview or durable creation."""
     if run_id is None or run_input is None:
@@ -590,7 +591,10 @@ def _build_start_manifest_preview(
             workflow,
             employees,
             tool_catalog=DEFAULT_TOOL_CATALOG,
-            execution_target=execution_target,
+            execution_target=(
+                execution_target if execution_targets is None else None
+            ),
+            execution_targets=execution_targets,
         )
         binding = _run_binding_for_manifest(manifest)
         pinned_workflows, pinned_employees, catalog = _pinned_run_inputs(manifest)
@@ -712,6 +716,38 @@ def _resolve_execution_target(
         return load_execution_destination_registry(registry_path).resolve(name).target
     except (ExecutionDestinationError, ModelExecutionTargetError, TypeError):
         _workflow_cli_error("execution target is invalid")
+
+
+def _resolve_workflow_execution_targets(
+    workflow: LoadedWorkflow,
+    fallback_name: str,
+    registry_path: Path | None,
+) -> tuple[ModelExecutionTarget, ...]:
+    """Resolve Step, Workflow-default, then legacy CLI destination choices."""
+    targets: list[ModelExecutionTarget] = []
+    for step in workflow.definition.steps:
+        selected_name = (
+            step.execution_destination
+            or workflow.definition.execution_destination
+            or fallback_name
+        )
+        selected_registry = (
+            None if selected_name in {"openai", "omniroute"} else registry_path
+        )
+        targets.append(_resolve_execution_target(selected_name, selected_registry))
+    return tuple(targets)
+
+
+def _validate_manifest_execution_destinations(
+    manifest: object, registry_path: Path | None
+) -> None:
+    """Fail closed if any pinned Step target or its model policy has drifted."""
+    try:
+        for index, step in enumerate(manifest.workflow_snapshot.steps, start=1):
+            target = manifest.execution_destination_for_step(index).target
+            _validate_pinned_models_for_target(target, registry_path, [step.model])
+    except (AttributeError, WorkflowRunManifestError):
+        _workflow_cli_error("Run Manifest execution destinations are invalid")
 
 
 def _parse_step_model_overrides(values: list[str] | None) -> dict[str, str]:
@@ -1267,7 +1303,7 @@ def run_bounded_document_job_workflow(
     employees_directory: Path = typer.Option(
         Path("employees"), "--employees-directory"
     ),
-    execution_target: str = typer.Option(..., "--execution-target"),
+    execution_target: str = typer.Option("openai", "--execution-target"),
     execution_destinations: Path = typer.Option(..., "--execution-destinations"),
     step_model: list[str] = typer.Option(
         [],
@@ -1314,8 +1350,6 @@ def run_bounded_document_job_workflow(
         if run_store.parent.is_symlink():
             raise WorkflowJobAuthorizationError("pilot_store_parent")
         assignment = _resolve_run_input(None, assignment_file)
-        target = _resolve_execution_target(execution_target, execution_destinations)
-        destination_fingerprint = execution_target_fingerprint(target)
         workflows, employees = _load_workflow_command_inputs(
             directory, employees_directory
         )
@@ -1326,12 +1360,28 @@ def run_bounded_document_job_workflow(
             workflow_by_id[workflow_id], step_model
         )
         workflow_by_id[workflow_id] = source_workflow
-        employees_by_id = {item.definition.id: item for item in employees}
-        _validate_pinned_models_for_target(
-            target,
-            execution_destinations,
-            [step.model for step in source_workflow.definition.steps],
+        execution_targets = _resolve_workflow_execution_targets(
+            source_workflow, execution_target, execution_destinations
         )
+        route_models = tuple(
+            (target, step.model)
+            for target, step in zip(
+                execution_targets, source_workflow.definition.steps, strict=True
+            )
+        )
+        for selected_target, selected_model in route_models:
+            _validate_pinned_models_for_target(
+                selected_target, execution_destinations, [selected_model]
+            )
+        target_by_step = {
+            step.id: target
+            for step, target in zip(
+                source_workflow.definition.steps, execution_targets, strict=True
+            )
+        }
+        target = execution_targets[0]
+        destination_fingerprint = execution_target_fingerprint(target)
+        employees_by_id = {item.definition.id: item for item in employees}
         plan = bounded_review_action_plan(source_workflow, max_revisions)
         steps_by_id = {step.id: step for step in source_workflow.definition.steps}
         required_employees = tuple(
@@ -1344,7 +1394,7 @@ def run_bounded_document_job_workflow(
             assignment,
             source_workflow,
             tuple(employees_by_id[name] for name in required_employees),
-            execution_target=target,
+            execution_targets=execution_targets,
         )
         if source_manifest.run_id == initial_run_id:
             raise WorkflowJobAuthorizationError("job_source_identity")
@@ -1354,12 +1404,23 @@ def run_bounded_document_job_workflow(
             assignment,
             initial_view,
             (employees_by_id[initial_view.definition.steps[0].employee],),
-            execution_target=target,
+            execution_targets=(target_by_step[initial_view.definition.steps[0].id],),
         )
 
         def snapshot_digest(value: object) -> str:
+            snapshot = asdict(value)
+            if snapshot.get("execution_destination") is None:
+                snapshot.pop("execution_destination", None)
+            steps = snapshot.get("steps")
+            if type(steps) in {list, tuple}:
+                for step in steps:
+                    if (
+                        type(step) is dict
+                        and step.get("execution_destination") is None
+                    ):
+                        step.pop("execution_destination", None)
             encoded = json.dumps(
-                asdict(value),
+                snapshot,
                 ensure_ascii=False,
                 separators=(",", ":"),
                 sort_keys=True,
@@ -1378,7 +1439,7 @@ def run_bounded_document_job_workflow(
                     assignment,
                     view,
                     (employees_by_id[employee_id],),
-                    execution_target=target,
+                    execution_targets=(target_by_step[step_id],),
                 )
             )
             employee_snapshot = next(
@@ -1395,8 +1456,10 @@ def run_bounded_document_job_workflow(
                         manifest.workflow_snapshot
                     ),
                     employee_snapshot_sha256=snapshot_digest(employee_snapshot),
-                    provider=target.provider,
-                    execution_target_fingerprint=destination_fingerprint,
+                    provider=target_by_step[step_id].provider,
+                    execution_target_fingerprint=execution_target_fingerprint(
+                        target_by_step[step_id]
+                    ),
                     model=steps_by_id[step_id].model,
                     input_source=input_source,
                 )
@@ -1427,6 +1490,28 @@ def run_bounded_document_job_workflow(
         + reviewer_count * (max_revisions + 1)
         + max_revisions,
     )
+    actions_per_destination: dict[str, int] = {}
+    destinations_by_fingerprint: dict[str, ModelExecutionTarget] = {}
+    for slot in action_slots:
+        fingerprint = slot.execution_target_fingerprint
+        actions_per_destination[fingerprint] = (
+            actions_per_destination.get(fingerprint, 0) + 1
+        )
+        destinations_by_fingerprint[fingerprint] = target_by_step[slot.step_id]
+    destination_limits = [
+        {
+            "provider": selected_target.provider,
+            "protocol": selected_target.protocol,
+            "endpoint": selected_target.endpoint,
+            "destination_fingerprint": fingerprint,
+            "credential_environment_variable": (
+                selected_target.credential_environment_variable
+            ),
+            "planned_actions": actions_per_destination[fingerprint],
+            "maximum_attempts": actions_per_destination[fingerprint] + max_retries,
+        }
+        for fingerprint, selected_target in sorted(destinations_by_fingerprint.items())
+    ]
     _emit_json(
         {
             "operation": "bounded-job-launch-confirmation",
@@ -1442,6 +1527,13 @@ def run_bounded_document_job_workflow(
                     "step_id": slot.step_id,
                     "employee_id": slot.employee_id,
                     "model": slot.model,
+                    "provider": slot.provider,
+                    "destination_fingerprint": slot.execution_target_fingerprint,
+                    "endpoint": target_by_step[slot.step_id].endpoint,
+                    "protocol": target_by_step[slot.step_id].protocol,
+                    "credential_environment_variable": (
+                        target_by_step[slot.step_id].credential_environment_variable
+                    ),
                     "input_source": slot.input_source,
                 }
                 for slot in action_slots
@@ -1450,6 +1542,7 @@ def run_bounded_document_job_workflow(
             "protocol": target.protocol,
             "endpoint": target.endpoint,
             "destination_fingerprint": destination_fingerprint,
+            "destinations": destination_limits,
             "step_models": [
                 {"step_id": step.id, "model": step.model}
                 for step in source_workflow.definition.steps
@@ -1491,13 +1584,12 @@ def run_bounded_document_job_workflow(
 
     try:
         # Re-read the administrator policy only as a veto. The approved
-        # manifest target remains authoritative; the registry cannot select a
+        # manifest targets remain authoritative; the registry cannot select a
         # replacement target or model after confirmation.
-        _validate_pinned_models_for_target(
-            target,
-            execution_destinations,
-            [step.model for step in source_workflow.definition.steps],
-        )
+        for selected_target, selected_model in route_models:
+            _validate_pinned_models_for_target(
+                selected_target, execution_destinations, [selected_model]
+            )
         now_ns = time.time_ns()
         run_store.mkdir(mode=0o700, parents=True, exist_ok=True)
         if run_store.stat().st_mode & 0o077:
@@ -1510,22 +1602,23 @@ def run_bounded_document_job_workflow(
                 assignment,
                 view,
                 tuple(employees_by_id[step.employee] for step in view.definition.steps),
-                execution_target=target,
+                execution_targets=(target_by_step[slot.step_id],),
             )
             step_snapshot = manifest.workflow_snapshot.steps[0]
             if (
-                manifest.execution_destination.fingerprint
+                manifest.execution_destination_for_step(1).fingerprint
                 != slot.execution_target_fingerprint
-                or manifest.execution_destination.provider != slot.provider
+                or manifest.execution_destination_for_step(1).provider
+                != slot.provider
                 or step_snapshot.id != slot.step_id
                 or step_snapshot.employee != slot.employee_id
                 or step_snapshot.model != slot.model
             ):
                 raise WorkflowJobAuthorizationError("job_manifest_approval_binding")
         if (
-            initial_manifest.execution_destination.fingerprint
+            initial_manifest.execution_destination_for_step(1).fingerprint
             != action_slots[0].execution_target_fingerprint
-            or initial_manifest.execution_destination.provider
+            or initial_manifest.execution_destination_for_step(1).provider
             != action_slots[0].provider
             or initial_manifest.workflow_snapshot.steps[0].employee
             != action_slots[0].employee_id
@@ -1563,11 +1656,12 @@ def run_bounded_document_job_workflow(
     # Resolve the credential only after exact confirmation and durable scope
     # issuance. The secret value is never emitted or persisted.
     try:
-        api_key = _load_api_key_for_target(
-            initial_manifest.execution_destination.target
-        )
+        api_keys = {
+            selected_target.provider: _load_api_key_for_target(selected_target)
+            for selected_target in execution_targets
+        }
     except Exception:
-        _workflow_cli_error("credential unavailable; this Job cannot be resumed")
+        _workflow_cli_error("a pinned destination credential is unavailable")
     try:
         outcome = run_bounded_document_job(
             store,
@@ -1576,7 +1670,7 @@ def run_bounded_document_job_workflow(
             assignment=initial_manifest.run_input,
             workflows=workflow_by_id,
             employees=employees_by_id,
-            api_key=api_key,
+            api_key=api_keys,
             transport=send_openai_responses_http_request,
             execution_destinations=execution_destinations,
         )
@@ -2174,7 +2268,6 @@ def start_workflow(
 ) -> None:
     """Preview or execute exactly one fresh workflow step."""
     _reject_legacy_execution_model(legacy_execution_model)
-    target = _resolve_execution_target(execution_target, execution_destinations)
     if preview_only and _has_approval_fields(
         approve_business,
         business_approved_by,
@@ -2191,6 +2284,12 @@ def start_workflow(
 
     workflows, employees = _load_workflow_command_inputs(directory, employees_directory)
     selected_run_input = _resolve_run_input(run_input, run_input_file)
+    source_workflow = _apply_step_model_overrides(
+        _select_workflow_or_exit(workflows, workflow_id), step_model
+    )
+    execution_targets = _resolve_workflow_execution_targets(
+        source_workflow, execution_target, execution_destinations
+    )
     manifest, binding, pinned_workflows, pinned_employees, tool_catalog = (
         _build_start_manifest_preview(
             workflow_id,
@@ -2199,14 +2298,11 @@ def start_workflow(
             workflows,
             employees,
             step_model,
-            target,
+            execution_targets=execution_targets,
         )
     )
-    _validate_pinned_models_for_target(
-        target,
-        execution_destinations,
-        [step.model for step in manifest.workflow_snapshot.steps],
-    )
+    _validate_manifest_execution_destinations(manifest, execution_destinations)
+    target = manifest.execution_destination_for_step(1).target
     workflow, preview = _build_workflow_step_preview(
         pinned_workflows,
         pinned_employees,
@@ -2313,12 +2409,7 @@ def continue_workflow(
     manifest = _load_run_manifest_or_exit(store, run_id)
     binding = _run_binding_for_manifest(manifest)
     pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
-    target = manifest.execution_destination.target
-    _validate_pinned_models_for_target(
-        target,
-        execution_destinations,
-        [step.model for step in manifest.workflow_snapshot.steps],
-    )
+    _validate_manifest_execution_destinations(manifest, execution_destinations)
     workflow = _select_workflow_or_exit(pinned_workflows, manifest.workflow_id)
     if workflow.definition.bounded_review is not None:
         _workflow_cli_error("bounded review workflow requires bounded-job-run")
@@ -2386,7 +2477,9 @@ def continue_workflow(
         manifest.workflow_id,
         routed.next_step_index,
         upstream_inputs,
-        execution_target=target,
+        execution_target=manifest.execution_destination_for_step(
+            routed.next_step_index
+        ).target,
         runtime_facts=runtime_facts,
         run_binding=binding,
         run_input=manifest.run_input,
@@ -2843,14 +2936,14 @@ def recover_workflow(
     manifest = _load_run_manifest_or_exit(store, run_id)
     binding = _run_binding_for_manifest(manifest)
     pinned_workflows, pinned_employees, tool_catalog = _pinned_run_inputs(manifest)
-    requested_target = manifest.execution_destination.target
+    if assessment.step_index is None:
+        _workflow_cli_error("recovery attempt does not identify a pinned Step")
+    requested_target = manifest.execution_destination_for_step(
+        assessment.step_index
+    ).target
     if requested_target.provider != assessment.provider:
         _workflow_cli_error("recovery evidence differs from the Run Manifest")
-    _validate_pinned_models_for_target(
-        requested_target,
-        execution_destinations,
-        [step.model for step in manifest.workflow_snapshot.steps],
-    )
+    _validate_manifest_execution_destinations(manifest, execution_destinations)
     state_path, events_path = store.execution_paths(run_id)
     workflow, preview, history, state_digest, events_digest, attempt = (
         _build_recovery_preview(

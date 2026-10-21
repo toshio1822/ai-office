@@ -300,6 +300,7 @@ class ExecutionEvidenceContext:
     resolved_tools: tuple[ToolDefinition, ...]
     approval: ModelInvocationExecutionApproval | None
     target: ModelExecutionTarget = dataclass_field(init=False)
+    request_session_id: str = dataclass_field(init=False, repr=False)
     job_authorization: object | None = None
     job_reservation_sha256: str | None = None
     recovery_assessment: object | None = None
@@ -333,7 +334,18 @@ class ExecutionEvidenceContext:
             != self.request.model
         ):
             _raise_contract("manifest_model")
-        object.__setattr__(self, "target", manifest.execution_destination.target)
+        object.__setattr__(
+            self,
+            "target",
+            manifest.execution_destination_for_step(self.step_index).target,
+        )
+        object.__setattr__(
+            self,
+            "request_session_id",
+            self.binding.run_id
+            if manifest.schema_version == "workflow-run-manifest.v5"
+            else f"{self.binding.run_id}-step-{self.step_index}",
+        )
         _validate_context(self)
 
 
@@ -1287,7 +1299,8 @@ def _validate_context_and_approval(context: ExecutionEvidenceContext):
         if (
             manifest.workflow_id != context.workflow_id
             or manifest.digest != context.binding.manifest_digest
-            or manifest.execution_destination.target != context.target
+            or manifest.execution_destination_for_step(context.step_index).target
+            != context.target
             or context.step_index > len(manifest.workflow_snapshot.steps)
             or manifest.workflow_snapshot.steps[context.step_index - 1].id
             != context.step_id

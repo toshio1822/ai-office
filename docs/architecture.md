@@ -176,8 +176,9 @@ normalized result sidecar は exact attempt と raw-response digest（raw respon
 
 provider transport を所有する実行境界はRun-bound Execution Evidenceを必須とし、request、
 resolved tools、Execution Approval、targetが同じcontextに束縛されない場合はtransportへ
-進めない。targetとmodelは承認済みRun Manifest v4から導出し、既存Runの実行時にCLIやYAMLから
-再選択しない。現在の管理者destination policyは許可・失効の拒否だけを行い、接続先を置換しない。
+進めない。modelと有効なtargetは承認済みRun Manifestから導出し、既存Runの実行時にCLIやYAMLから
+再選択しない。v5 Manifestは単一targetを全Stepに適用し、v6 ManifestはStepごとのtargetをpinする。
+現在の管理者destination policyは許可・失効の拒否だけを行い、接続先を置換しない。
 request/payload生成などprovider-free処理自体はEvidenceを要求しない。normalized
 resultのprovenanceは作成時に固定され、後付けで別attemptへ変更するAPIは提供しない。
 Run-bound terminal persistenceは参照attempt/result/raw evidenceをauthoritative namespaceから
@@ -189,7 +190,7 @@ Artifact、provider failover、generic event-sourcing framework はこの eviden
 
 ## Current workflow Artifacts (Milestone 4)
 
-Workflow step は `artifact_content_type` に具体的な media type を指定して、成功した正規化済み step output を Artifact として保存する。省略した step は Artifact を作らない。単一の `workflow-run-manifest.v5` は各Stepのmodel、このpolicy/content typeと、すべてのRunに必須のdestination snapshotをpinする。
+Workflow step は `artifact_content_type` に具体的な media type を指定して、成功した正規化済み step output を Artifact として保存する。省略した step は Artifact を作らない。`workflow-run-manifest.v5` は各Stepのmodel、このpolicy/content typeと単一のdestination snapshotをpinし、従来RunではそのtargetをすべてのStepに適用する。v6はdestination selectorがある場合または有効なtargetがStep間で異なる場合だけ使い、selectorと各Stepの有効destination snapshotを追加でpinする。旧v5 Manifest・承認・Evidenceは再書込せず、引き続き単一targetとして読む。
 
 Artifact は Run namespace 内の canonical immutable record で、Run/Manifest、workflow/step/index/employee、content bytes の SHA-256 と byte length、execution attempt、attempt evidence、normalized result、該当する raw-response digest、および successful terminal event digest を束縛する。保存済み Manifest と authoritative execution evidence からのみ生成し、同じ Artifact identity の異なる bytes/metadata は拒否する。persisted success の routing 前に required Artifact を確立し、保存が失敗しても成功済み state/event は維持する。再開時は既存 evidence から missing Artifact を完成し、provider を再実行しない。
 

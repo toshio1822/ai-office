@@ -120,11 +120,42 @@ existing transport control and cannot be overridden. Endpoint allowlisting,
 DNS pinning, redirect blocking, HTTPS and SSRF safeguards are unchanged.
 
 The effective header policy is part of the destination configuration
-fingerprint and the Run Manifest v5 snapshot. Changing the headers after a
-preview/approval invalidates the stale approval before credentials or
-network are consulted, and continuation/recovery cannot silently change
-headers or session identity. The application currently supports Manifest v5;
-this settings change adds no legacy-format migration or new Manifest schema.
+fingerprint and the pinned Run Manifest destination snapshot. For a legacy v5
+Run, the session value remains Run-scoped (`ai-office-run-<run-id>`) across
+steps, continuation, and recovery. A v6 Run with per-Step routing uses a
+different Step-scoped session value, stable across continuation/recovery of
+that Step. This separates application-supplied session identities; it cannot
+prove that a provider internally isolates conversation state. Changing headers
+or any other destination setting after preview/approval invalidates the stale
+approval before credentials or transport are consulted.
+
+## Per-Step destination selection and compatibility
+
+Each Workflow Step already owns its model. Destination selection can now be
+declared once as the Workflow's optional `execution_destination` default, then
+overridden by a Step's optional `execution_destination`. Resolution order is
+Step override, Workflow default, then the existing CLI `--execution-target`
+fallback. A CLI `--step-model STEP_ID=MODEL` override affects only a newly
+created Run; the effective model and destination are frozen before approval.
+Employees remain provider/model independent.
+
+The existing Run Manifest remains authoritative. A legacy Workflow with no
+selectors and one CLI destination continues to produce the canonical v5
+Manifest, whose single destination is interpreted for every Step. When a
+Workflow declares destination selectors or resolves to different destinations,
+the additive v6 Manifest records the effective destination snapshot for every
+Step. Existing v5 records are not rewritten or reinterpreted as routed Runs.
+`continue` and `recover` use the exact pinned Step target and current registry
+only as a veto: missing, changed, or no-longer-allowed destinations/models stop
+before credential lookup or provider transport. There is no fallback or
+automatic retry.
+
+The existing approval and Evidence owners remain in use. Each Execution
+Approval, attempt, response, and Artifact lineage remains bound to its exact
+Step request and destination. Homogeneous bounded Jobs keep Scope v2; a
+heterogeneous bounded Job uses additive Scope v3 so its finite action slots
+bind each action to that action's provider and destination fingerprint. Both
+scope versions remain readable; no new grant or Evidence subsystem is added.
 
 Example Go Chat Completions destination (see
 `examples/openai-compatible-destinations.yaml`):
@@ -145,17 +176,13 @@ destinations:
 ```
 
 The canonical Git-managed `opencode-go-chat` is one destination with three
-model choices. This permits `article-production` to assign a different
-allowlisted model to each Step while a bounded Job retains one execution
-target. Its Workflow defaults still need explicit overrides when they are not
-in the selected destination's allowlist. This Issue changes only Git-managed
-settings; the Linux operational registry remains unchanged until a separately
-reviewed manual application. The destination identity is now model-neutral
-(`opencode-go-chat`) rather than DeepSeek-specific; its identifier and broader
-allowlist contribute to the new fingerprint, so previous previews and approvals
-cannot be reused. Historical Runs keep their original evidence and are not
-rewritten. Any provider execution remains a separate, explicitly authorized
-action.
+model choices. A Workflow may route selected Steps to another registered
+destination when its model is in that destination's allowlist. This Issue
+changes only the application code and operator documentation; the Linux
+operational registry remains unchanged until a separately reviewed manual
+application. Historical Runs keep their original manifests and Evidence and
+are not rewritten. Any provider execution remains separately and explicitly
+authorized.
 
 ## OpenCode Go usage caveats
 

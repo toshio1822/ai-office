@@ -170,6 +170,7 @@ def execute_openai_model_invocation(
             body,
             execution_target=selected_target,
             run_id=request.run_id,
+            session_id=execution_evidence.request_session_id,
         )
         authenticated_request = authenticate_openai_responses_http_request(
             http_request,

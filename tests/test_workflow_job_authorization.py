@@ -12,6 +12,7 @@ from multiprocessing import get_context
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
@@ -261,6 +262,25 @@ def _employee() -> EmployeeDefinition:
     )
 
 
+def _snapshot_digest(snapshot: object) -> str:
+    """Hash the pre-v6 workflow snapshot shape used by existing v2 scopes."""
+    value = asdict(snapshot)
+    if "steps" in value:
+        if value.get("execution_destination") is None:
+            value.pop("execution_destination", None)
+        for step in value["steps"]:
+            if step.get("execution_destination") is None:
+                step.pop("execution_destination", None)
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
 def _run_and_authorization(
     root: Path,
     run_id: str,
@@ -468,13 +488,7 @@ def test_one_root_job_grant_authorizes_two_distinct_runs_through_shared_provider
     )
     first.store.root.chmod(0o700)
     first_manifest = load_workflow_run_manifest(first.store, first.binding.run_id)
-    workflow_snapshot_sha = sha256(
-        json.dumps(
-            asdict(first_manifest.workflow_snapshot),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
+    workflow_snapshot_sha = _snapshot_digest(first_manifest.workflow_snapshot)
     employee_snapshot = first_manifest.employee_snapshots[0]
     employee_snapshot_sha = sha256(
         json.dumps(
@@ -1678,11 +1692,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
     )
     run.store.root.chmod(0o700)
     manifest = load_workflow_run_manifest(run.store, run.binding.run_id)
-    workflow_sha = sha256(
-        json.dumps(
-            asdict(manifest.workflow_snapshot), sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
+    workflow_sha = _snapshot_digest(manifest.workflow_snapshot)
     slots = []
     for ordinal, step_index in enumerate((1, 2)):
         employee_snapshot = next(
@@ -2081,14 +2091,9 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 step_id=step_id,
                 step_index=step_index,
                 employee_id=employee_id,
-                workflow_snapshot_sha256=sha256(
-                    json.dumps(
-                        asdict(snapshot_manifest.workflow_snapshot),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode()
-                ).hexdigest(),
+                workflow_snapshot_sha256=_snapshot_digest(
+                    snapshot_manifest.workflow_snapshot
+                ),
                 employee_snapshot_sha256=sha256(
                     json.dumps(
                         asdict(employee_snapshot),
@@ -2906,11 +2911,7 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
     initial_run_id = f"note-{reviewer_count}-{case}-initial"
 
     def digest(value: object) -> str:
-        return sha256(
-            json.dumps(
-                asdict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode()
-        ).hexdigest()
+        return _snapshot_digest(value)
 
     source_manifest = create_workflow_run_manifest(
         store,
@@ -3424,8 +3425,11 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
     assert "operator_context" not in result.output
 
 
-def test_bounded_job_cli_derives_single_workflow_plan_offline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("heterogeneous", [False, True])
+def test_bounded_job_cli_routes_single_workflow_plan_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    heterogeneous: bool,
 ) -> None:
     from types import SimpleNamespace
 
@@ -3439,10 +3443,52 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
         "revise": "deepseek-v4.1-flash",
     }
     destinations_file = tmp_path / "destinations.yaml"
-    destinations = (
-        repository / "config/destinations.yaml"
-    ).read_text(encoding="utf-8")
-    destinations_file.write_text(destinations, encoding="utf-8")
+    workflow_directory = repository / "workflows"
+    if heterogeneous:
+        models = sorted(set(expected_models.values()))
+        destinations_file.write_text(
+            yaml.safe_dump(
+                {
+                    "destinations": {
+                        "opencode-zen": {
+                            "protocol": "openai-responses",
+                            "endpoint": "https://opencode.ai/zen/v1/responses",
+                            "credential": "OPENCODE_API_KEY",
+                            "models": models,
+                        },
+                        "opencode-go-chat": {
+                            "protocol": "openai-chat-completions",
+                            "endpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions",
+                            "credential": "OPENCODE_API_KEY",
+                            "models": models,
+                        },
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        workflow_directory = tmp_path / "workflows"
+        workflow_directory.mkdir()
+        raw_workflow = yaml.safe_load(
+            (repository / "workflows/article-production.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        raw_workflow["execution_destination"] = "opencode-zen"
+        next(
+            step
+            for step in raw_workflow["steps"]
+            if step["id"] == "review-quality"
+        )["execution_destination"] = "opencode-go-chat"
+        (workflow_directory / "article-production.yaml").write_text(
+            yaml.safe_dump(raw_workflow, sort_keys=False), encoding="utf-8"
+        )
+    else:
+        destinations = (repository / "config/destinations.yaml").read_text(
+            encoding="utf-8"
+        )
+        destinations_file.write_text(destinations, encoding="utf-8")
     assignment_file = tmp_path / "brief.md"
     assignment_file.write_text(
         "Medium: technical blog\nAudience: engineers\n"
@@ -3457,39 +3503,62 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
         cli_module, "os", SimpleNamespace(geteuid=lambda: 1001, getuid=lambda: 1001)
     )
     monkeypatch.setattr(cli_module.getpass, "getuser", lambda: "offline-operator")
+    key_providers: list[str] = []
     monkeypatch.setattr(
         cli_module,
         "_load_api_key_for_target",
-        lambda _target: OpenAIApiKey(value=SecretStr("synthetic-only")),
+        lambda target: (
+            key_providers.append(target.provider)
+            or OpenAIApiKey(value=SecretStr("synthetic-only"))
+        ),
     )
     sent = []
     sent_models = []
+    sent_providers = []
 
     def fake_transport(request):
         sent.append(request)
         sent_models.append(json.loads(request.body)["model"])
+        provider = (
+            "opencode-zen"
+            if request.url == "https://opencode.ai/zen/v1/responses"
+            else "opencode-go-chat"
+        )
+        sent_providers.append(provider)
         content = (
             "# Article\n\nExplain the supplied method."
             if len(sent) == 1
             else _grounded_pass_for_request(request)
         )
+        if provider == "opencode-zen":
+            response = {
+                "id": f"offline-{len(sent)}",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": content}],
+                    }
+                ],
+            }
+        else:
+            response = {
+                "id": f"offline-{len(sent)}",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
         return OpenAIResponsesRawHttpResponse(
             200,
             "synthetic",
             (),
-            json.dumps(
-                {
-                    "id": f"offline-{len(sent)}",
-                    "object": "chat.completion",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {"role": "assistant", "content": content},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-            ).encode(),
+            json.dumps(response).encode(),
         )
 
     monkeypatch.setattr(
@@ -3511,7 +3580,7 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
             "--run-store",
             str(store_root),
             "--directory",
-            str(repository / "workflows"),
+            str(workflow_directory),
             "--employees-directory",
             str(repository / "employees"),
             "--execution-target",
@@ -3548,6 +3617,18 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
         item["step_id"]: item["model"] for item in preview["step_models"]
     } == expected_models
     assert len(sent) == 3, result.output
+    expected_providers = (
+        ["opencode-zen", "opencode-go-chat", "opencode-zen"]
+        if heterogeneous
+        else ["opencode-go-chat"] * 3
+    )
+    expected_route_providers = (
+        ["opencode-zen", "opencode-go-chat", "opencode-zen", "opencode-zen"]
+        if heterogeneous
+        else ["opencode-go-chat"] * 4
+    )
+    assert sent_providers == expected_providers
+    assert key_providers == expected_route_providers
     assert sent_models == [
         expected_models["write-draft"],
         expected_models["review-quality"],
@@ -3560,18 +3641,24 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
     assert inspection["status"] == "candidate"
     assert inspection["consumed_provider_attempts"] == len(sent) == 3
     scope = load_bounded_workflow_job_scope(store, job_id)
+    assert scope.schema_version == (
+        "workflow-bounded-job-scope.v3"
+        if heterogeneous
+        else "workflow-bounded-job-scope.v2"
+    )
     assert scope.max_provider_attempts == 3
     assert {slot.step_id: slot.model for slot in scope.actions} == action_models
     assert len(inspection["dispatch_order"]) == len(scope.actions) == len(sent)
     evidence_models = {}
-    evidence_providers = set()
+    evidence_providers = []
     for slot, dispatch in zip(scope.actions, inspection["dispatch_order"]):
         manifest = load_workflow_run_manifest(store, dispatch["run_id"])
         assert manifest.workflow_snapshot.steps[0].id == slot.step_id
         assert (
             manifest.workflow_snapshot.steps[0].model == expected_models[slot.step_id]
         )
-        assert manifest.execution_destination.provider == "opencode-go-chat"
+        expected_provider = expected_providers[slot.ordinal]
+        assert manifest.execution_destination_for_step(1).provider == expected_provider
         attempts = list_run_execution_evidence(store.root, dispatch["run_id"])
         attempt, = attempts
         assert attempt.authorization_source == "job_action"
@@ -3580,15 +3667,19 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
         evidence_models[slot.step_id] = json.loads(
             base64.b64decode(attempt.request_body_base64)
         )["model"]
-        evidence_providers.add(attempt.provider)
+        evidence_providers.append(attempt.provider)
     assert evidence_models == action_models
-    assert evidence_providers == {"opencode-go-chat"}
+    assert evidence_providers == expected_providers
     assert scope.source_manifest_run_id is not None
     source = load_workflow_run_manifest(
         store, scope.source_manifest_run_id
     )
     assert source.digest == scope.source_manifest_digest
     assert source.workflow_snapshot.bounded_review is not None
+    assert [
+        source.execution_destination_for_step(index).provider
+        for index in range(1, len(source.workflow_snapshot.steps) + 1)
+    ] == expected_route_providers
     assert (
         load_workflow_run_manifest(
             store, "article-initial"
@@ -3881,14 +3972,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
     )
 
     def digest_snapshot(snapshot: object) -> str:
-        return sha256(
-            json.dumps(
-                asdict(snapshot),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
+        return _snapshot_digest(snapshot)
 
     slots = []
     for ordinal, (step_id, step_index, input_source) in enumerate(

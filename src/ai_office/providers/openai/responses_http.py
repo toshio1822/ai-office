@@ -37,6 +37,7 @@ def build_openai_responses_http_request(
     execution_target: ModelExecutionTarget | None = None,
     target: ModelExecutionTarget | None = None,
     run_id: str | None = None,
+    session_id: str | None = None,
 ) -> OpenAIResponsesHttpRequest:
     """Place an unchanged JSON string in an unauthenticated request template."""
     if (
@@ -52,7 +53,9 @@ def build_openai_responses_http_request(
     headers = [("Content-Type", OPENAI_RESPONSES_CONTENT_TYPE)]
     if selected_target.request_headers:
         headers.extend(
-            resolve_configured_request_headers(selected_target.request_headers, run_id)
+            resolve_configured_request_headers(
+                selected_target.request_headers, run_id, session_id=session_id
+            )
         )
     return OpenAIResponsesHttpRequest(
         method=OPENAI_RESPONSES_HTTP_METHOD,

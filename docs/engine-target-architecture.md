@@ -455,12 +455,18 @@ Before execution, a Run has an immutable durable manifest or equivalent authorit
 - Run
 - Workflow
 - Workflow Definition snapshot
+- each Workflow Step's model and effective execution destination
 - referenced Employee Definition snapshots
 - required tool contracts
 - Run Input
 - schema/version identity
 
 Credentials are never part of the manifest.
+
+Older single-destination manifests remain interpretable as applying their one
+pinned destination to every Step. New routed Runs pin the effective destination
+per Step; execution must not resolve a replacement target during continuation
+or recovery.
 
 Execution approvals are later evidence, not immutable Run-definition fields.
 

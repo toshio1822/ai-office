@@ -32,9 +32,11 @@ from ai_office.engine.workflow_run_manifest import (
     load_workflow_run_manifest,
     persist_workflow_run_manifest,
     serialize_workflow_run_manifest_canonical,
+    workflow_definition_from_run_manifest,
     workflow_run_manifest_canonical_bytes,
     workflow_run_manifest_digest,
 )
+from ai_office.execution_destination import load_execution_destination_registry
 from ai_office.tools import (
     ToolCatalog,
     ToolDefinition,
@@ -163,6 +165,92 @@ def test_create_load_round_trip_preserves_exact_run_meaning_and_digest(
         "workflow_id",
         "workflow_snapshot",
     }
+
+
+def test_v6_manifest_pins_selector_resolution_for_each_step(
+    tmp_path: Path,
+) -> None:
+    registry_path = tmp_path / "destinations.yaml"
+    registry_path.write_text(
+        yaml.safe_dump(
+            {
+                "destinations": {
+                    "responses-target": {
+                        "endpoint": "https://responses.example.com/v1/responses",
+                        "protocol": "openai-responses",
+                        "credential": "RESPONSES_API_KEY",
+                        "models": ["responses-model"],
+                    },
+                    "chat-target": {
+                        "endpoint": "https://chat.example.com/v1/chat/completions",
+                        "protocol": "openai-chat-completions",
+                        "credential": "CHAT_API_KEY",
+                        "models": ["chat-model"],
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    registry = load_execution_destination_registry(registry_path)
+    responses_target = registry.resolve("responses-target").target
+    chat_target = registry.resolve("chat-target").target
+    loaded = LoadedWorkflow(
+        source_path=Path("source-workflow.yaml"),
+        definition=WorkflowDefinition(
+            id="research-workflow",
+            name="Research Workflow",
+            description="Researches the assigned subject.",
+            execution_destination="responses-target",
+            steps=[
+                WorkflowStepDefinition(
+                    id="research",
+                    name="Research",
+                    employee="researcher",
+                    model="chat-model",
+                    execution_destination="chat-target",
+                    instructions="Gather relevant information.",
+                ),
+                WorkflowStepDefinition(
+                    id="summarize",
+                    name="Summarize",
+                    employee="researcher",
+                    model="responses-model",
+                    instructions="Summarize the findings.",
+                ),
+            ],
+        ),
+    )
+
+    value = build_workflow_run_manifest(
+        "run-routed",
+        "Research Company ABC.",
+        loaded,
+        [employee()],
+        execution_targets=(chat_target, responses_target),
+    )
+    run_root = tmp_path / "runs"
+    run_root.mkdir(mode=0o700)
+    store = WorkflowRunManifestStore(run_root)
+    persisted = create_workflow_run_manifest(
+        store,
+        "run-routed",
+        "Research Company ABC.",
+        loaded,
+        [employee()],
+        execution_targets=(chat_target, responses_target),
+    )
+    restored = load_workflow_run_manifest(store, "run-routed")
+
+    assert value.schema_version == "workflow-run-manifest.v6"
+    assert value.execution_destination_for_step(1).provider == "chat-target"
+    assert value.execution_destination_for_step(2).provider == "responses-target"
+    assert value.workflow_snapshot.execution_destination == "responses-target"
+    assert value.workflow_snapshot.steps[0].execution_destination == "chat-target"
+    assert value.execution_destination == value.execution_destination_for_step(1)
+    assert persisted == restored == value
+    assert workflow_definition_from_run_manifest(restored) == loaded.definition
 
 
 def test_semantically_identical_values_have_identical_canonical_bytes() -> None:

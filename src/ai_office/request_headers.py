@@ -163,16 +163,19 @@ def session_value_for_run(run_id: str) -> str:
 def resolve_configured_request_headers(
     headers: tuple[ConfiguredRequestHeader, ...],
     run_id: str | None,
+    *,
+    session_id: str | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Resolve configured headers into concrete name/value pairs."""
     resolved: list[tuple[str, str]] = []
     for header in headers:
         if header.is_session_marker:
-            if type(run_id) is not str or not run_id:
+            selected_session_id = session_id if session_id is not None else run_id
+            if type(selected_session_id) is not str or not selected_session_id:
                 raise ConfiguredRequestHeaderError(
                     "session header requires a Run identity"
                 )
-            resolved.append((header.name, session_value_for_run(run_id)))
+            resolved.append((header.name, session_value_for_run(selected_session_id)))
         else:
             resolved.append((header.name, header.value))
     return tuple(resolved)
