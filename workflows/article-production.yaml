@@ -15,7 +15,7 @@ steps:
   - id: write-draft
     name: Write Draft
     employee: article-writer
-    model: gpt-5-mini
+    model: deepseek-v4-pro
     instructions: |
       Write an article draft in the language, format, and for the medium
       specified by the supplied brief. Preserve its central claim, audience, and
@@ -96,7 +96,7 @@ steps:
   - id: revise
     name: Revise Artifact
     employee: article-writer
-    model: gpt-5-mini
+    model: deepseek-v4-pro
     instructions: |
       Revise the exact supplied Artifact only to address actionable
       findings in the supplied independent reviews (one entry per reviewer)

@@ -157,7 +157,7 @@ def test_article_writer_definition_is_medium_and_language_agnostic() -> None:
     normalized = writer.instructions.replace("\n", " ")
     assert "personal experiences" in normalized
     assert "grounded review findings" in normalized
-    assert workflow.steps[0].model == "gpt-5-mini"
+    assert workflow.steps[0].model == "deepseek-v4-pro"
     assert writer.allowed_tools == []
 
 
