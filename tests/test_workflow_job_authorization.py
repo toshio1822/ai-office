@@ -3406,7 +3406,7 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
             "--employees-directory",
             str(repository / "employees"),
             "--execution-target",
-            "opencode-go-glm-chat",
+            "opencode-go-chat",
             "--execution-destinations",
             str(repository / "docs/examples/openai-compatible-destinations.yaml"),
             "--step-model",
@@ -3433,26 +3433,16 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
 
     repository = Path(__file__).resolve().parents[1]
     expected_models = {
-        "write-draft": "offline-writer-model",
-        "review-quality": "offline-quality-model",
-        "review-evidence": "offline-evidence-model",
-        "revise": "offline-revision-model",
+        "write-draft": "deepseek-v4.1-flash",
+        "review-quality": "deepseek-v4-pro",
+        "review-evidence": "glm-5.3-flash",
+        "revise": "deepseek-v4.1-flash",
     }
     destinations_file = tmp_path / "destinations.yaml"
     destinations = (
-        repository / "docs/examples/openai-compatible-destinations.yaml"
+        repository / "config/destinations.yaml"
     ).read_text(encoding="utf-8")
-    allowed_model_line = "      - glm-5.3-flash"
-    assert destinations.count(allowed_model_line) == 1
-    destinations_file.write_text(
-        destinations.replace(
-            allowed_model_line,
-            "\n".join(
-                f"      - {model}" for model in expected_models.values()
-            ),
-        ),
-        encoding="utf-8",
-    )
+    destinations_file.write_text(destinations, encoding="utf-8")
     assignment_file = tmp_path / "brief.md"
     assignment_file.write_text(
         "Medium: technical blog\nAudience: engineers\n"
@@ -3525,7 +3515,7 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
             "--employees-directory",
             str(repository / "employees"),
             "--execution-target",
-            "opencode-go-glm-chat",
+            "opencode-go-chat",
             "--execution-destinations",
             str(destinations_file),
             "--step-model",
@@ -3574,12 +3564,14 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
     assert {slot.step_id: slot.model for slot in scope.actions} == action_models
     assert len(inspection["dispatch_order"]) == len(scope.actions) == len(sent)
     evidence_models = {}
+    evidence_providers = set()
     for slot, dispatch in zip(scope.actions, inspection["dispatch_order"]):
         manifest = load_workflow_run_manifest(store, dispatch["run_id"])
         assert manifest.workflow_snapshot.steps[0].id == slot.step_id
         assert (
             manifest.workflow_snapshot.steps[0].model == expected_models[slot.step_id]
         )
+        assert manifest.execution_destination.provider == "opencode-go-chat"
         attempts = list_run_execution_evidence(store.root, dispatch["run_id"])
         attempt, = attempts
         assert attempt.authorization_source == "job_action"
@@ -3588,7 +3580,9 @@ def test_bounded_job_cli_derives_single_workflow_plan_offline(
         evidence_models[slot.step_id] = json.loads(
             base64.b64decode(attempt.request_body_base64)
         )["model"]
+        evidence_providers.add(attempt.provider)
     assert evidence_models == action_models
+    assert evidence_providers == {"opencode-go-chat"}
     assert scope.source_manifest_run_id is not None
     source = load_workflow_run_manifest(
         store, scope.source_manifest_run_id
@@ -3743,7 +3737,7 @@ def test_bounded_job_cli_cancel_does_not_issue_grants_or_load_credential(
             "--employees-directory",
             str(repository / "employees"),
             "--execution-target",
-            "opencode-go-glm-chat",
+            "opencode-go-chat",
             "--execution-destinations",
             str(repository / "docs/examples/openai-compatible-destinations.yaml"),
             "--step-model",
@@ -3769,7 +3763,7 @@ def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> No
     registry = load_execution_destination_registry(
         repository / "docs/examples/openai-compatible-destinations.yaml"
     )
-    go = registry.resolve("opencode-go-glm-chat")
+    go = registry.resolve("opencode-go-chat")
     gateway = registry.resolve("internal-chat-gateway")
     assert go.target.protocol == gateway.target.protocol == "openai-chat-completions"
     assert go.select_model("glm-5.3-flash") == "glm-5.3-flash"

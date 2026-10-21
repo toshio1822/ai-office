@@ -381,34 +381,44 @@ def test_header_change_invalidates_preview_before_credential(
     assert key_calls == []
 
 
-def test_deepseek_go_destination_preview_is_exact_and_offline(
+def test_multimodel_go_destination_preview_is_exact_and_offline(
     tmp_path: Path, monkeypatch
 ) -> None:
     sample_registry = load_execution_destination_registry(
         ROOT / "docs/examples/openai-compatible-destinations.yaml"
     )
-    sample_glm = sample_registry.resolve("opencode-go-glm-chat")
-    sample_deepseek = sample_registry.resolve("opencode-go-deepseek-v4-pro-chat")
+    sample_go = sample_registry.resolve("opencode-go-chat")
 
-    assert sample_glm.target.endpoint == sample_deepseek.target.endpoint == (
+    assert sample_go.target.endpoint == (
         "https://opencode.ai/inference/go/openai/v1/chat/completions"
     )
-    assert sample_glm.target.protocol == sample_deepseek.target.protocol == (
-        "openai-chat-completions"
+    assert sample_go.target.protocol == "openai-chat-completions"
+    assert sample_go.models == (
+        "deepseek-v4-pro",
+        "deepseek-v4.1-flash",
+        "glm-5.3-flash",
     )
+    assert len(
+        [
+            item
+            for item in sample_registry.destinations
+            if item.target.endpoint
+            == "https://opencode.ai/inference/go/openai/v1/chat/completions"
+        ]
+    ) == 1
 
     registry_path = ROOT / "config" / "destinations.yaml"
-    deepseek = load_execution_destination_registry(registry_path).resolve(
-        "opencode-go-deepseek-v4-pro-chat"
-    )
-    assert deepseek.target.endpoint == (
+    go = load_execution_destination_registry(registry_path).resolve("opencode-go-chat")
+    assert go.target.endpoint == (
         "https://opencode.ai/inference/go/openai/v1/chat/completions"
     )
-    assert deepseek.target.protocol == "openai-chat-completions"
-    assert deepseek.select_model("deepseek-v4-pro") == "deepseek-v4-pro"
-    with pytest.raises(ExecutionDestinationError):
-        deepseek.select_model("glm-5.3-flash")
-    assert deepseek.target.request_headers == sample_deepseek.target.request_headers
+    assert go.target.protocol == "openai-chat-completions"
+    for model in sample_go.models:
+        assert go.select_model(model) == model
+    for model in ("gpt-5-mini", "not-in-registry"):
+        with pytest.raises(ExecutionDestinationError):
+            go.select_model(model)
+    assert go.target.request_headers == sample_go.target.request_headers
 
     def unexpected_credential_lookup(_target: object) -> object:
         pytest.fail("preview must not load credentials")
@@ -426,17 +436,15 @@ def test_deepseek_go_destination_preview_is_exact_and_offline(
         tmp_path / "runs",
         registry_path,
         "deepseek-v4-pro-offline-preview",
-        "opencode-go-deepseek-v4-pro-chat",
+        "opencode-go-chat",
         "deepseek-v4-pro",
     )
     result = runner.invoke(app, args + ["--preview-only"])
     assert result.exit_code == 0, (result.stderr, result.stdout)
     preview = json.loads(result.stdout)
-    assert preview["execution_target"]["provider"] == (
-        "opencode-go-deepseek-v4-pro-chat"
-    )
-    assert preview["execution_target"]["endpoint"] == deepseek.target.endpoint
-    assert preview["execution_target"]["protocol"] == deepseek.target.protocol
+    assert preview["execution_target"]["provider"] == "opencode-go-chat"
+    assert preview["execution_target"]["endpoint"] == go.target.endpoint
+    assert preview["execution_target"]["protocol"] == go.target.protocol
     assert preview["model"] == "deepseek-v4-pro"
     assert preview["execution_target"]["request_headers"] == [
         {"name": "User-Agent", "value": "ai-office/1.0"},
