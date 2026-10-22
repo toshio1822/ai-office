@@ -143,6 +143,28 @@ def _grounded_pass_for_request(request) -> str:
     )
 
 
+def _assignment_from_model_request(request) -> str:
+    """Extract the original assignment from a captured provider request."""
+    payload = json.loads(request.body)
+    task_input = (
+        json.loads(payload["input"])
+        if "input" in payload
+        else json.loads(payload["messages"][1]["content"])
+    )
+    run_input = task_input["run_input"]
+    if not isinstance(run_input, str):
+        return ""
+    try:
+        review_input = json.loads(run_input)
+    except json.JSONDecodeError:
+        return run_input
+    if isinstance(review_input, dict) and isinstance(
+        review_input.get("assignment"), str
+    ):
+        return review_input["assignment"]
+    return ""
+
+
 def _competing_reservation_worker(
     authorization, run_binding, request, gate, results
 ) -> None:
@@ -2285,10 +2307,9 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
         assert destination.fingerprint == execution_target_fingerprint(target)
     final_manifest = load_workflow_run_manifest(store, outcome.final_artifact_run_id)
     assert final_manifest.execution_destination_for_step(1).target == target
-    assert (
-        final_manifest.execution_destination_for_step(1).fingerprint
-        == execution_target_fingerprint(target)
-    )
+    assert final_manifest.execution_destination_for_step(
+        1
+    ).fingerprint == execution_target_fingerprint(target)
     assert final_manifest.workflow_snapshot.steps[0].model == next(
         action.model
         for action in scope.actions
@@ -2852,6 +2873,10 @@ def test_issue_772_personal_history_findings_and_supported_first_person_stay_dis
 def test_configured_bounded_job_reviewers_execute_and_audit_offline(
     tmp_path: Path, reviewer_count: int, case: str
 ) -> None:
+    from ai_office.definitions.style_profile import (
+        add_style_profile_to_assignment,
+        load_style_profile,
+    )
     from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
 
     repository = Path(__file__).resolve().parents[1]
@@ -2912,6 +2937,16 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
         "ToDoそのものを否定せず、両者の役割の違いを説明する。\n"
         "著者が実際に経験した障害・顧客・発言・数字・成果・事件などを、与えられていないのに実体験として捏造しない。"
     )
+    style_profile_file = None
+    if reviewer_count == 1 and case == "revise":
+        style_profile_directory = tmp_path / "style_profiles"
+        style_profile_directory.mkdir()
+        style_profile_file = style_profile_directory / "toshio-web.yaml"
+        style_profile_file.write_bytes(
+            (repository / "style_profiles/toshio-web.yaml").read_bytes()
+        )
+        style_profile = load_style_profile("toshio-web", style_profile_directory)
+        assignment = add_style_profile_to_assignment(assignment, style_profile)
     store_root = tmp_path / "note-job"
     store_root.mkdir(mode=0o700)
     store = WorkflowRunManifestStore(store_root)
@@ -2993,6 +3028,8 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
         execution_grant_id=f"note-execution-{reviewer_count}-{case}",
         now_ns=1,
     )
+    if style_profile_file is not None:
+        style_profile_file.unlink()
     requirement_lines = (
         "ToDoそのものを否定せず、両者の役割の違いを説明する。",
         "著者が実際に経験した障害・顧客・発言・数字・成果・事件などを、与えられていないのに実体験として捏造しない。",
@@ -3021,10 +3058,12 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
         "Requested correction: 削除するか著者確認事項とする。"
     )
     labels = []
+    request_assignments = []
 
     def fake_transport(request):
         index = len(labels)
         labels.append("transport-call")
+        request_assignments.append(_assignment_from_model_request(request))
         if index == 0:
             response = draft
         elif case == "blocked" and index == 2:
@@ -3060,6 +3099,7 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
         api_key=OpenAIApiKey(value=SecretStr("offline-only")),
         transport=fake_transport,
     )
+    assert request_assignments == [assignment] * len(request_assignments)
     inspection = inspect_bounded_document_job(store, scope.job_id)
     expected_status = {"pass": "candidate", "revise": "reviewed", "blocked": "stopped"}[
         case
@@ -3114,6 +3154,7 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
                 store, run_prefix + str(revision_ordinal)
             ).run_input
         )
+        assert revision_input["assignment"] == assignment
         assert len(revision_input["review_artifacts"]) == reviewer_count
         assert "CHANGES_REQUIRED" in revision_input["review_artifacts"][0]["content"]
         assert all(
@@ -3128,6 +3169,7 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
             )
             for offset in range(reviewer_count)
         ]
+        assert all(item["assignment"] == assignment for item in re_review_inputs)
         assert (
             len({item["source_artifact"]["artifact_id"] for item in re_review_inputs})
             == 1
@@ -3439,8 +3481,13 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
     monkeypatch: pytest.MonkeyPatch,
     heterogeneous: bool,
 ) -> None:
+    from hashlib import sha256
     from types import SimpleNamespace
 
+    from ai_office.definitions.style_profile import (
+        add_style_profile_to_assignment,
+        load_style_profile,
+    )
     from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
 
     repository = Path(__file__).resolve().parents[1]
@@ -3484,11 +3531,9 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             )
         )
         raw_workflow["execution_destination"] = "opencode-zen"
-        next(
-            step
-            for step in raw_workflow["steps"]
-            if step["id"] == "review-quality"
-        )["execution_destination"] = "opencode-go-chat"
+        next(step for step in raw_workflow["steps"] if step["id"] == "review-quality")[
+            "execution_destination"
+        ] = "opencode-go-chat"
         (workflow_directory / "article-production.yaml").write_text(
             yaml.safe_dump(raw_workflow, sort_keys=False), encoding="utf-8"
         )
@@ -3497,11 +3542,26 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             encoding="utf-8"
         )
         destinations_file.write_text(destinations, encoding="utf-8")
+        workflow_directory = tmp_path / "workflows"
+        workflow_directory.mkdir()
+        (workflow_directory / "article-production.yaml").write_bytes(
+            (repository / "workflows/article-production.yaml").read_bytes()
+        )
     assignment_file = tmp_path / "brief.md"
     assignment_file.write_text(
         "Medium: technical blog\nAudience: engineers\n"
         "Requirement: Explain the supplied method.",
         encoding="utf-8",
+    )
+    style_profile_directory = tmp_path / "style_profiles"
+    style_profile_directory.mkdir()
+    style_profile_file = style_profile_directory / "toshio-web.yaml"
+    style_profile_file.write_bytes(
+        (repository / "style_profiles/toshio-web.yaml").read_bytes()
+    )
+    style_profile = load_style_profile("toshio-web", style_profile_directory)
+    effective_assignment = add_style_profile_to_assignment(
+        assignment_file.read_text(encoding="utf-8"), style_profile
     )
     store_root = tmp_path / "runs"
     monkeypatch.setattr(
@@ -3527,6 +3587,11 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
     def fake_transport(request):
         sent.append(request)
         sent_models.append(json.loads(request.body)["model"])
+        if len(sent) == 1:
+            # The Job has already pinned its effective input before the first
+            # transport call. Removing the source must not alter retries or
+            # any later reviewer Run.
+            style_profile_file.unlink()
         provider = (
             "opencode-zen"
             if request.url == "https://opencode.ai/zen/v1/responses"
@@ -3593,6 +3658,8 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             "article-initial",
             "--assignment-file",
             str(assignment_file),
+            "--style-profile",
+            "toshio-web",
             "--run-store",
             str(store_root),
             "--directory",
@@ -3623,6 +3690,15 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
     assert result.exit_code == 0, result.output
     preview = json.loads(result.output.splitlines()[0])
     assert preview["workflow_id"] == "article-production"
+    assert preview["style_profile"] == {
+        "id": "toshio-web",
+        "version": "0.2",
+        "content_sha256": style_profile.content_sha256,
+    }
+    assert (
+        preview["assignment_sha256"]
+        == sha256(effective_assignment.encode("utf-8")).hexdigest()
+    )
     assert preview["guaranteed_initial_actions"] == 3
     assert preview["reviewer_count"] == 2
     action_models = {
@@ -3659,10 +3735,12 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
         expected_models["review-evidence"],
     ]
     assert sent_models == [expected_action_models[0], *expected_action_models]
+
+    assert [_assignment_from_model_request(request) for request in sent] == [
+        effective_assignment
+    ] * len(sent)
     store = WorkflowRunManifestStore(store_root)
-    inspection = inspect_bounded_document_job(
-        store, job_id
-    )
+    inspection = inspect_bounded_document_job(store, job_id)
     assert inspection["status"] == "candidate"
     assert inspection["consumed_provider_attempts"] == len(sent) == 4
     assert inspection["normal_actions_consumed"] == 3
@@ -3678,11 +3756,23 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
     assert scope.schema_version == "workflow-bounded-job-scope.v3"
     assert scope.max_retries == 1
     assert scope.max_provider_attempts == 4
+    assert scope.assignment_sha256 == preview["assignment_sha256"]
+    assert scope.initial_input_sha256 == preview["assignment_sha256"]
     assert {slot.step_id: slot.model for slot in scope.actions} == action_models
     assert len(inspection["dispatch_order"]) == len(sent)
     assert len(scope.actions) == 3
     evidence_models = {}
     evidence_providers = []
+
+    def manifest_assignment(run_input: str) -> str:
+        try:
+            value = json.loads(run_input)
+        except json.JSONDecodeError:
+            return run_input
+        if isinstance(value, dict) and isinstance(value.get("assignment"), str):
+            return value["assignment"]
+        return run_input
+
     for slot in scope.actions:
         action_dispatches = [
             item
@@ -3694,6 +3784,7 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             range(expected_retries + 1)
         )
         manifest = load_workflow_run_manifest(store, action_dispatches[0]["run_id"])
+        assert manifest_assignment(manifest.run_input) == effective_assignment
         assert manifest.workflow_snapshot.steps[0].id == slot.step_id
         assert (
             manifest.workflow_snapshot.steps[0].model == expected_models[slot.step_id]
@@ -3711,13 +3802,18 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             evidence_models[slot.step_id] = json.loads(
                 base64.b64decode(attempt.request_body_base64)
             )["model"]
+            evidence_request = SimpleNamespace(
+                body=base64.b64decode(attempt.request_body_base64)
+            )
+            assert _assignment_from_model_request(evidence_request) == (
+                effective_assignment
+            )
             evidence_providers.append(attempt.provider)
     assert evidence_models == action_models
     assert evidence_providers == expected_attempt_providers
     assert scope.source_manifest_run_id is not None
-    source = load_workflow_run_manifest(
-        store, scope.source_manifest_run_id
-    )
+    source = load_workflow_run_manifest(store, scope.source_manifest_run_id)
+    assert manifest_assignment(source.run_input) == effective_assignment
     assert source.digest == scope.source_manifest_digest
     assert source.workflow_snapshot.bounded_review is not None
     assert [
@@ -3730,6 +3826,62 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
         ).workflow_snapshot.bounded_review
         is None
     )
+
+
+def test_bounded_job_invalid_style_profile_stops_before_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    repository = Path(__file__).resolve().parents[1]
+    assignment_file = tmp_path / "brief.md"
+    assignment_file.write_text("A short article brief.", encoding="utf-8")
+    store_root = tmp_path / "runs"
+    credential_lookups: list[str] = []
+    transport_calls: list[object] = []
+    monkeypatch.setattr(
+        cli_module, "sys", SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True))
+    )
+    monkeypatch.setattr(
+        cli_module, "os", SimpleNamespace(geteuid=lambda: 1001, getuid=lambda: 1001)
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_load_api_key_for_target",
+        lambda target: credential_lookups.append(target.provider),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "send_openai_responses_http_request",
+        lambda request: transport_calls.append(request),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "workflows",
+            "bounded-job-run",
+            "invalid-style-job",
+            "--workflow",
+            "article-production",
+            "--run-id",
+            "invalid-style-run",
+            "--assignment-file",
+            str(assignment_file),
+            "--style-profile",
+            "../outside",
+            "--run-store",
+            str(store_root),
+            "--execution-destinations",
+            str(repository / "config/destinations.yaml"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "selected style profile is invalid or unavailable" in result.output
+    assert not store_root.exists()
+    assert credential_lookups == []
+    assert transport_calls == []
 
 
 def test_bounded_job_cli_rejects_destination_changed_after_confirmation(

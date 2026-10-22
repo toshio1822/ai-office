@@ -20,6 +20,11 @@ from ai_office.definitions.employee import (
     EmployeeLoadError,
     load_employees,
 )
+from ai_office.definitions.style_profile import (
+    StyleProfileLoadError,
+    add_style_profile_to_assignment,
+    load_style_profile,
+)
 from ai_office.definitions.workflow import (
     LoadedWorkflow,
     WorkflowLoadError,
@@ -591,9 +596,7 @@ def _build_start_manifest_preview(
             workflow,
             employees,
             tool_catalog=DEFAULT_TOOL_CATALOG,
-            execution_target=(
-                execution_target if execution_targets is None else None
-            ),
+            execution_target=(execution_target if execution_targets is None else None),
             execution_targets=execution_targets,
         )
         binding = _run_binding_for_manifest(manifest)
@@ -755,15 +758,8 @@ def _parse_step_model_overrides(values: list[str] | None) -> dict[str, str]:
     overrides: dict[str, str] = {}
     for value in values or []:
         step_id, separator, model = value.partition("=")
-        if (
-            not separator
-            or not step_id
-            or not model.strip()
-            or step_id in overrides
-        ):
-            _workflow_cli_error(
-                "--step-model must be unique STEP_ID=MODEL values"
-            )
+        if not separator or not step_id or not model.strip() or step_id in overrides:
+            _workflow_cli_error("--step-model must be unique STEP_ID=MODEL values")
         overrides[step_id] = model
     return overrides
 
@@ -1298,6 +1294,11 @@ def run_bounded_document_job_workflow(
     job_id: str,
     initial_run_id: str = typer.Option(..., "--run-id"),
     assignment_file: Path = typer.Option(..., "--assignment-file"),
+    style_profile_id: str | None = typer.Option(
+        None,
+        "--style-profile",
+        help="Apply a reviewed style profile by ID to this Job's Run Input.",
+    ),
     run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
     directory: Path = typer.Option(Path("workflows"), "--directory"),
     employees_directory: Path = typer.Option(
@@ -1350,6 +1351,21 @@ def run_bounded_document_job_workflow(
         if run_store.parent.is_symlink():
             raise WorkflowJobAuthorizationError("pilot_store_parent")
         assignment = _resolve_run_input(None, assignment_file)
+        selected_style_profile = None
+        if style_profile_id is not None:
+            try:
+                selected_style_profile = load_style_profile(
+                    style_profile_id, directory.parent / "style_profiles"
+                )
+                assignment = add_style_profile_to_assignment(
+                    assignment, selected_style_profile
+                )
+            except StyleProfileLoadError:
+                _workflow_cli_error("selected style profile is invalid or unavailable")
+            if len(assignment.encode("utf-8")) > MAX_RUN_INPUT_FILE_BYTES:
+                _workflow_cli_error(
+                    "style profile makes the Run Input exceed the size limit"
+                )
         workflows, employees = _load_workflow_command_inputs(
             directory, employees_directory
         )
@@ -1476,9 +1492,7 @@ def run_bounded_document_job_workflow(
     review_limit = 1 + max_revisions
     max_normal_actions = min(
         len(action_slots),
-        review_action_index
-        + reviewer_count * (max_revisions + 1)
-        + max_revisions,
+        review_action_index + reviewer_count * (max_revisions + 1) + max_revisions,
     )
     actions_per_destination: dict[str, int] = {}
     destinations_by_fingerprint: dict[str, ModelExecutionTarget] = {}
@@ -1553,6 +1567,17 @@ def run_bounded_document_job_workflow(
                 for header in target.request_headers
             ],
             "approval_labels_are_not_identity_proofs": True,
+            **(
+                {
+                    "style_profile": {
+                        "id": selected_style_profile.definition.id,
+                        "version": selected_style_profile.definition.version,
+                        "content_sha256": selected_style_profile.content_sha256,
+                    }
+                }
+                if selected_style_profile is not None
+                else {}
+            ),
         }
     )
     confirmation = typer.prompt(
@@ -1598,8 +1623,7 @@ def run_bounded_document_job_workflow(
             if (
                 manifest.execution_destination_for_step(1).fingerprint
                 != slot.execution_target_fingerprint
-                or manifest.execution_destination_for_step(1).provider
-                != slot.provider
+                or manifest.execution_destination_for_step(1).provider != slot.provider
                 or step_snapshot.id != slot.step_id
                 or step_snapshot.employee != slot.employee_id
                 or step_snapshot.model != slot.model
