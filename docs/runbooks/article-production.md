@@ -89,6 +89,47 @@ the new Artifact is re-reviewed by all declared reviewers.
 4. Use offline fake-transport tests for implementation verification. These do
    not prove model judgment or authorize a live provider call.
 
+## Reusable Style Profiles
+
+Human-reviewed writing-style definitions live at the repository root beside the
+selected workflow directory, in `style_profiles/<id>.yaml`. Each file has only
+`id`, a quoted `version`, and `content`; adding another valid definition makes
+it selectable without a Python ID branch. The initial profile
+is [`toshio-web` v0.2](../../style_profiles/toshio-web.yaml). Its text records
+presentation preferences, not facts about the author or products. Its
+provenance is the user-confirmed definition in Issue #791; the referenced
+`https://toshio-web.com/` site is not fetched or treated as factual source
+material.
+
+Select a profile on the existing Job start command with `--style-profile`:
+
+```console
+ai-office workflows bounded-job-run JOB_ID \
+  --workflow article-production \
+  --run-id RUN_ID \
+  --assignment-file /private/path/assignment.txt \
+  --style-profile toshio-web \
+  ...
+```
+
+The original assignment stays first and unchanged, so its line references remain
+stable. A labeled style-only section is appended with the selected ID, version,
+exact content SHA-256, and content. Its digest and the exact combined Run Input
+are included in the existing launch preview and assignment digest; that same
+input is pinned in the existing Run Manifests, bounded Job Scope, provider
+requests, and Evidence. The initial draft, each independent reviewer, revision,
+and re-review therefore use one snapshot. Editing or removing the source file
+after Job start cannot change that Job. Omitting `--style-profile` leaves the
+Run Input unchanged. Unknown IDs, path-like IDs, malformed or oversized files,
+and profiles whose declared ID does not match the selected ID fail before
+approval, persistence, credential access, or provider transport.
+
+The assignment remains authoritative for the article's purpose, facts, sources,
+and constraints. A profile guides expression only: it is not evidence, cannot
+create personal experience or claims, and does not authorize tools, network
+access, provider requests, or publication. Profile changes require a new Job and
+its normal approvals; URLs in a profile or brief are not fetched automatically.
+
 ## Live-operation boundary
 
 A human operator must separately authorize the Business purpose and the exact
@@ -107,6 +148,7 @@ ai-office workflows bounded-job-run JOB_ID \
   --run-id RUN_ID \
   --workflow article-production \
   --assignment-file /private/path/assignment.txt \
+  --style-profile toshio-web \
   --run-store /private/path/ai-office-runs \
   --directory /path/to/ai-office/workflows \
   --employees-directory /path/to/ai-office/employees \
