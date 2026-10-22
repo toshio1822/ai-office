@@ -43,8 +43,7 @@ from ai_office.tools import (
     resolve_tool_names,
 )
 
-_LEGACY_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v5"
-_STEP_DESTINATION_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v6"
+_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v6"
 _MANIFEST_ERROR_MESSAGE = "workflow run manifest is invalid"
 _PERSISTENCE_ERROR_MESSAGE = "workflow run manifest persistence failed"
 _LOAD_ERROR_MESSAGE = "workflow run manifest could not be loaded"
@@ -56,7 +55,7 @@ _CONTENT_TYPE_PATTERN = re.compile(
 _PATH_TYPE = type(Path())
 _MANIFEST_KEYS = frozenset(
     {
-        "execution_destination",
+        "execution_destinations",
         "employee_snapshots",
         "run_id",
         "run_input",
@@ -66,7 +65,6 @@ _MANIFEST_KEYS = frozenset(
         "workflow_snapshot",
     }
 )
-_STEP_DESTINATION_MANIFEST_KEYS = _MANIFEST_KEYS | {"execution_destinations"}
 _EXECUTION_DESTINATION_KEYS = frozenset(
     {
         "allow_loopback_http",
@@ -79,22 +77,21 @@ _EXECUTION_DESTINATION_KEYS = frozenset(
     }
 )
 _OPTIONAL_EXECUTION_DESTINATION_KEYS = frozenset({"request_headers"})
-_WORKFLOW_KEYS = frozenset({"description", "id", "name", "steps"})
-_WORKFLOW_KEYS_WITH_DESTINATION = _WORKFLOW_KEYS | {"execution_destination"}
+_WORKFLOW_KEYS = frozenset(
+    {"description", "execution_destination", "id", "name", "steps"}
+)
 _WORKFLOW_STEP_KEYS = frozenset(
     {
         "artifact_content_type",
         "business_approval_required",
         "employee",
+        "execution_destination",
         "id",
         "instructions",
         "model",
         "name",
     }
 )
-_WORKFLOW_STEP_KEYS_WITH_DESTINATION = _WORKFLOW_STEP_KEYS | {
-    "execution_destination"
-}
 _EMPLOYEE_KEYS = frozenset({"allowed_tools", "id", "instructions", "name", "role"})
 _TOOL_KEYS = frozenset({"description", "name", "parameters"})
 _TOOL_PARAMETER_KEYS = frozenset({"description", "name", "required", "type"})
@@ -262,17 +259,14 @@ class WorkflowRunManifest:
     each employee's allowed-tool order remain semantic and are preserved.
     """
 
-    schema_version: Literal[
-        "workflow-run-manifest.v5", "workflow-run-manifest.v6"
-    ]
+    schema_version: Literal["workflow-run-manifest.v6"]
     run_id: str
     workflow_id: str
     run_input: str
     workflow_snapshot: WorkflowDefinitionSnapshot
     employee_snapshots: tuple[EmployeeDefinitionSnapshot, ...]
     tool_contracts: tuple[ToolContractSnapshot, ...]
-    execution_destination: ExecutionDestinationSnapshot
-    execution_destinations: tuple[ExecutionDestinationSnapshot, ...] | None = None
+    execution_destinations: tuple[ExecutionDestinationSnapshot, ...]
 
     def __post_init__(self) -> None:
         _validate_manifest(self)
@@ -295,13 +289,11 @@ class WorkflowRunManifest:
     def execution_destination_for_step(
         self, step_index: int
     ) -> ExecutionDestinationSnapshot:
-        """Return the pinned target for one 1-based step, preserving v5 scope."""
+        """Return the destination pinned for one 1-based workflow step."""
         if type(step_index) is not int or not 1 <= step_index <= len(
             self.workflow_snapshot.steps
         ):
             _raise_manifest("execution_destination_step")
-        if self.execution_destinations is None:
-            return self.execution_destination
         return self.execution_destinations[step_index - 1]
 
 
@@ -443,12 +435,6 @@ def build_workflow_run_manifest(
         )
     ):
         _raise_manifest("execution_destination_selection")
-    manifest_schema_version = (
-        _STEP_DESTINATION_MANIFEST_SCHEMA_VERSION
-        if has_declared_destinations
-        or len({item.fingerprint for item in destination_snapshots}) > 1
-        else _LEGACY_MANIFEST_SCHEMA_VERSION
-    )
     workflow_snapshot = WorkflowDefinitionSnapshot(
         id=workflow_definition.id,
         name=workflow_definition.name,
@@ -489,19 +475,14 @@ def build_workflow_run_manifest(
     tool_contracts = tuple(_tool_contract_snapshot(tool) for tool in resolved_tools)
 
     return WorkflowRunManifest(
-        schema_version=manifest_schema_version,
+        schema_version=_MANIFEST_SCHEMA_VERSION,
         run_id=run_id,
         workflow_id=workflow_snapshot.id,
         run_input=run_input,
         workflow_snapshot=workflow_snapshot,
         employee_snapshots=employee_snapshots,
         tool_contracts=tool_contracts,
-        execution_destination=destination_snapshots[0],
-        execution_destinations=(
-            destination_snapshots
-            if manifest_schema_version == _STEP_DESTINATION_MANIFEST_SCHEMA_VERSION
-            else None
-        ),
+        execution_destinations=destination_snapshots,
     )
 
 
@@ -837,9 +818,6 @@ def _tool_contract_snapshot(tool: ToolDefinition) -> ToolContractSnapshot:
 
 def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
     workflow = manifest.workflow_snapshot
-    uses_step_destinations = (
-        manifest.schema_version == _STEP_DESTINATION_MANIFEST_SCHEMA_VERSION
-    )
     value: dict[str, object] = {
         "employee_snapshots": [
             {
@@ -873,18 +851,11 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
         "workflow_id": manifest.workflow_id,
         "workflow_snapshot": {
             "description": workflow.description,
+            "execution_destination": workflow.execution_destination,
             "id": workflow.id,
             "name": workflow.name,
-            **(
-                {"execution_destination": workflow.execution_destination}
-                if uses_step_destinations
-                else {}
-            ),
             "steps": [
-                _workflow_step_dict(
-                    step, include_execution_destination=uses_step_destinations
-                )
-                for step in workflow.steps
+                _workflow_step_dict(step) for step in workflow.steps
             ],
             **(
                 {
@@ -900,35 +871,13 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
             ),
         },
     }
-    destination = manifest.execution_destination
-    destination_value: dict[str, object] = {
-        "allow_loopback_http": destination.allow_loopback_http,
-        "configuration_fingerprint": destination.configuration_fingerprint,
-        "credential_environment_variable": (
-            destination.credential_environment_variable
-        ),
-        "endpoint": destination.endpoint,
-        "fingerprint": destination.fingerprint,
-        "protocol": destination.protocol,
-        "provider": destination.provider,
-    }
-    if destination.request_headers:
-        destination_value["request_headers"] = [
-            [header.name, header.value] for header in destination.request_headers
-        ]
-    value["execution_destination"] = destination_value
-    if uses_step_destinations:
-        assert manifest.execution_destinations is not None
-        value["execution_destinations"] = [
-            _execution_destination_dict(item)
-            for item in manifest.execution_destinations
-        ]
+    value["execution_destinations"] = [
+        _execution_destination_dict(item) for item in manifest.execution_destinations
+    ]
     return value
 
 
-def _workflow_step_dict(
-    step: WorkflowStepSnapshot, *, include_execution_destination: bool = False
-) -> dict[str, object]:
+def _workflow_step_dict(step: WorkflowStepSnapshot) -> dict[str, object]:
     value: dict[str, object] = {
         "business_approval_required": step.business_approval_required,
         "employee": step.employee,
@@ -938,8 +887,7 @@ def _workflow_step_dict(
         "name": step.name,
     }
     value["artifact_content_type"] = step.artifact_content_type
-    if include_execution_destination:
-        value["execution_destination"] = step.execution_destination
+    value["execution_destination"] = step.execution_destination
     return value
 
 
@@ -983,19 +931,9 @@ def _validate_manifest(manifest: object) -> None:
     if type(manifest) is not WorkflowRunManifest:
         _raise_manifest("manifest_type")
     assert isinstance(manifest, WorkflowRunManifest)
-    if (
-        type(manifest.schema_version) is not str
-        or manifest.schema_version
-        not in {
-            _LEGACY_MANIFEST_SCHEMA_VERSION,
-            _STEP_DESTINATION_MANIFEST_SCHEMA_VERSION,
-        }
-    ):
+    if manifest.schema_version != _MANIFEST_SCHEMA_VERSION:
         _raise_manifest("schema_version")
     _validate_run_identity(manifest.run_id)
-    if type(manifest.execution_destination) is not ExecutionDestinationSnapshot:
-        _raise_manifest("execution_destination")
-    manifest.execution_destination.__post_init__()
     if type(manifest.run_input) is not str:
         _raise_manifest("run_input")
     _validate_definition_id(manifest.workflow_id)
@@ -1004,37 +942,23 @@ def _validate_manifest(manifest: object) -> None:
     _validate_workflow_snapshot(manifest.workflow_snapshot)
     if manifest.workflow_id != manifest.workflow_snapshot.id:
         _raise_manifest("workflow_identity")
-    if manifest.schema_version == _LEGACY_MANIFEST_SCHEMA_VERSION:
-        if manifest.execution_destinations is not None or (
-            manifest.workflow_snapshot.execution_destination is not None
-            or any(
-                step.execution_destination is not None
-                for step in manifest.workflow_snapshot.steps
-            )
-        ):
-            _raise_manifest("legacy_destination_scope")
-    else:
-        destinations = manifest.execution_destinations
-        if (
-            type(destinations) is not tuple
-            or len(destinations) != len(manifest.workflow_snapshot.steps)
-            or any(
-                type(item) is not ExecutionDestinationSnapshot
-                for item in destinations
-            )
-            or destinations[0] != manifest.execution_destination
-        ):
-            _raise_manifest("execution_destinations")
-        for step, destination in zip(
-            manifest.workflow_snapshot.steps, destinations, strict=True
-        ):
-            destination.__post_init__()
-            selector = (
-                step.execution_destination
-                or manifest.workflow_snapshot.execution_destination
-            )
-            if selector is not None and selector != destination.provider:
-                _raise_manifest("execution_destination_selection")
+    destinations = manifest.execution_destinations
+    if (
+        type(destinations) is not tuple
+        or len(destinations) != len(manifest.workflow_snapshot.steps)
+        or any(type(item) is not ExecutionDestinationSnapshot for item in destinations)
+    ):
+        _raise_manifest("execution_destinations")
+    for step, destination in zip(
+        manifest.workflow_snapshot.steps, destinations, strict=True
+    ):
+        destination.__post_init__()
+        selector = (
+            step.execution_destination
+            or manifest.workflow_snapshot.execution_destination
+        )
+        if selector is not None and selector != destination.provider:
+            _raise_manifest("execution_destination_selection")
     if type(manifest.employee_snapshots) is not tuple:
         _raise_manifest("employee_snapshots")
     if any(
@@ -1345,29 +1269,12 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         _raise_load("keys")
     try:
         schema_version = value.get("schema_version")
-        if schema_version not in {
-            _LEGACY_MANIFEST_SCHEMA_VERSION,
-            _STEP_DESTINATION_MANIFEST_SCHEMA_VERSION,
-        }:
+        if schema_version != _MANIFEST_SCHEMA_VERSION:
             _raise_load("schema_version")
-        expected_manifest_keys = (
-            _MANIFEST_KEYS
-            if schema_version == _LEGACY_MANIFEST_SCHEMA_VERSION
-            else _STEP_DESTINATION_MANIFEST_KEYS
-        )
-        if frozenset(value) != expected_manifest_keys:
+        if frozenset(value) != _MANIFEST_KEYS:
             _raise_load("keys")
         workflow_value = value["workflow_snapshot"]
-        legacy_workflow_keys = {_WORKFLOW_KEYS, _WORKFLOW_KEYS | {"bounded_review"}}
-        routed_workflow_keys = {
-            _WORKFLOW_KEYS_WITH_DESTINATION,
-            _WORKFLOW_KEYS_WITH_DESTINATION | {"bounded_review"},
-        }
-        expected_workflow_keys = (
-            legacy_workflow_keys
-            if schema_version == _LEGACY_MANIFEST_SCHEMA_VERSION
-            else routed_workflow_keys
-        )
+        expected_workflow_keys = {_WORKFLOW_KEYS, _WORKFLOW_KEYS | {"bounded_review"}}
         if (
             type(workflow_value) is not dict
             or frozenset(workflow_value) not in expected_workflow_keys
@@ -1376,15 +1283,7 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         step_values = workflow_value["steps"]
         if type(step_values) is not list:
             _raise_load("workflow_steps")
-        uses_step_destinations = (
-            schema_version == _STEP_DESTINATION_MANIFEST_SCHEMA_VERSION
-        )
-        steps = tuple(
-            _parse_workflow_step(
-                item, include_execution_destination=uses_step_destinations
-            )
-            for item in step_values
-        )
+        steps = tuple(_parse_workflow_step(item) for item in step_values)
 
         employee_values = value["employee_snapshots"]
         if type(employee_values) is not list:
@@ -1396,15 +1295,12 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
             _raise_load("tool_contracts")
         tools = tuple(_parse_tool(item) for item in tool_values)
 
-        destination = _parse_execution_destination(value["execution_destination"])
-        routed_destinations = None
-        if uses_step_destinations:
-            raw_destinations = value["execution_destinations"]
-            if type(raw_destinations) is not list:
-                _raise_load("execution_destinations")
-            routed_destinations = tuple(
-                _parse_execution_destination(item) for item in raw_destinations
-            )
+        raw_destinations = value["execution_destinations"]
+        if type(raw_destinations) is not list:
+            _raise_load("execution_destinations")
+        destinations = tuple(
+            _parse_execution_destination(item) for item in raw_destinations
+        )
 
         return WorkflowRunManifest(
             schema_version=value["schema_version"],
@@ -1416,11 +1312,7 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
                 name=workflow_value["name"],
                 description=workflow_value["description"],
                 steps=steps,
-                execution_destination=(
-                    workflow_value["execution_destination"]
-                    if uses_step_destinations
-                    else None
-                ),
+                execution_destination=workflow_value["execution_destination"],
                 bounded_review=(
                     BoundedReviewSnapshot(
                         workflow_value["bounded_review"]["draft_step"],
@@ -1434,8 +1326,7 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
             ),
             employee_snapshots=employees,
             tool_contracts=tools,
-            execution_destination=destination,
-            execution_destinations=routed_destinations,
+            execution_destinations=destinations,
         )
     except WorkflowRunManifestLoadError:
         raise
@@ -1474,15 +1365,8 @@ def _parse_execution_destination(value: object) -> ExecutionDestinationSnapshot:
         _raise_load("execution_destination")
 
 
-def _parse_workflow_step(
-    value: object, *, include_execution_destination: bool = False
-) -> WorkflowStepSnapshot:
-    expected_keys = (
-        _WORKFLOW_STEP_KEYS_WITH_DESTINATION
-        if include_execution_destination
-        else _WORKFLOW_STEP_KEYS
-    )
-    if type(value) is not dict or frozenset(value) != expected_keys:
+def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
+    if type(value) is not dict or frozenset(value) != _WORKFLOW_STEP_KEYS:
         _raise_load("workflow_step")
     try:
         return WorkflowStepSnapshot(
@@ -1493,11 +1377,7 @@ def _parse_workflow_step(
             instructions=value["instructions"],
             business_approval_required=value["business_approval_required"],
             artifact_content_type=value["artifact_content_type"],
-            execution_destination=(
-                value["execution_destination"]
-                if include_execution_destination
-                else None
-            ),
+            execution_destination=value["execution_destination"],
         )
     except Exception:
         _raise_load("workflow_step")

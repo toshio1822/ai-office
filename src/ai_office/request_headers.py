@@ -4,12 +4,14 @@ Issue #708: named destinations may declare a strict allowlist of request
 headers required by compatible services.  Only two header names are supported:
 
 * ``User-Agent`` — a static, safe identifying string; and
-* ``x-opencode-session`` — the Run-scoped ``{run_session}`` marker.
+* ``x-opencode-session`` — the Step-scoped ``{run_session}`` marker.
 
 Every other header name is rejected.  ``User-Agent`` never accepts the session
 marker or any substitution, and ``x-opencode-session`` accepts only the marker,
-so no secret or arbitrary value can be persisted into the Run Manifest.  This
-module performs no I/O and contains no secret values.
+so no secret or arbitrary value can be persisted into the Run Manifest. The
+session prefix identifies the v6 Step namespace and cannot collide with the
+former ``ai-office-run-{run_id}`` form. This module performs no I/O and contains
+no secret values.
 """
 
 from __future__ import annotations
@@ -17,11 +19,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# The single supported substitution.  Resolving it produces a stable,
-# non-masquerading value derived only from the Run identity, so it stays
-# constant across steps, continuation and recovery.
+# The single supported substitution. Resolving it produces a stable,
+# non-masquerading value derived from the exact Run/Step identity, so it stays
+# constant across continuation and explicit recovery.
 SESSION_MARKER = "{run_session}"
-_SESSION_VALUE_PREFIX = "ai-office-run-"
+_SESSION_VALUE_PREFIX = "ai-office-step-v6-"
 
 _USER_AGENT_NAME = "user-agent"
 _SESSION_HEADER_NAME = "x-opencode-session"
@@ -44,7 +46,7 @@ class ConfiguredRequestHeader:
 
     ``value`` is either a static string (``User-Agent``) or
     :data:`SESSION_MARKER` (``x-opencode-session``), which is resolved at
-    request-build time from the Run identity.
+    request-build time from the exact Run/Step identity.
     """
 
     name: str
@@ -154,7 +156,7 @@ def request_headers_from_records(
 
 
 def session_value_for_run(run_id: str) -> str:
-    """Return the stable, non-masquerading session identity for one Run."""
+    """Return a stable session value for one supplied Run/Step identity."""
     if type(run_id) is not str or not run_id:
         raise ConfiguredRequestHeaderError("session Run identity is invalid")
     return f"{_SESSION_VALUE_PREFIX}{run_id}"
@@ -173,7 +175,7 @@ def resolve_configured_request_headers(
             selected_session_id = session_id if session_id is not None else run_id
             if type(selected_session_id) is not str or not selected_session_id:
                 raise ConfiguredRequestHeaderError(
-                    "session header requires a Run identity"
+                    "session header requires a Run/Step identity"
                 )
             resolved.append((header.name, session_value_for_run(selected_session_id)))
         else:

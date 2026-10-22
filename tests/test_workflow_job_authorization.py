@@ -263,14 +263,8 @@ def _employee() -> EmployeeDefinition:
 
 
 def _snapshot_digest(snapshot: object) -> str:
-    """Hash the pre-v6 workflow snapshot shape used by existing v2 scopes."""
+    """Hash the current immutable Workflow snapshot shape."""
     value = asdict(snapshot)
-    if "steps" in value:
-        if value.get("execution_destination") is None:
-            value.pop("execution_destination", None)
-        for step in value["steps"]:
-            if step.get("execution_destination") is None:
-                step.pop("execution_destination", None)
     return sha256(
         json.dumps(
             value,
@@ -279,6 +273,20 @@ def _snapshot_digest(snapshot: object) -> str:
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
+
+
+def test_legacy_bounded_scope_v2_is_rejected_without_migration(
+    tmp_path: Path,
+) -> None:
+    job_id = "legacy-scope"
+    scope_path = tmp_path / f"workflow-bounded-job.{job_id}.json"
+    scope_path.write_text(
+        json.dumps({"schema_version": "workflow-bounded-job-scope.v2"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WorkflowJobAuthorizationError):
+        load_bounded_workflow_job_scope(WorkflowRunManifestStore(tmp_path), job_id)
 
 
 def _run_and_authorization(
@@ -2272,13 +2280,13 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     assert len(dispatches) == expected_calls
     for dispatch in dispatches:
         action_manifest = load_workflow_run_manifest(store, dispatch["run_id"])
-        destination = action_manifest.execution_destination
+        destination = action_manifest.execution_destination_for_step(1)
         assert destination.target == target
         assert destination.fingerprint == execution_target_fingerprint(target)
     final_manifest = load_workflow_run_manifest(store, outcome.final_artifact_run_id)
-    assert final_manifest.execution_destination.target == target
+    assert final_manifest.execution_destination_for_step(1).target == target
     assert (
-        final_manifest.execution_destination.fingerprint
+        final_manifest.execution_destination_for_step(1).fingerprint
         == execution_target_fingerprint(target)
     )
     assert final_manifest.workflow_snapshot.steps[0].model == next(
@@ -3525,9 +3533,17 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             else "opencode-go-chat"
         )
         sent_providers.append(provider)
+        if len(sent) == 1:
+            return OpenAIResponsesRawHttpResponse(
+                503,
+                "synthetic",
+                (),
+                b'{"error":{"message":"temporary unavailable",'
+                b'"type":"server_error","code":"server_error"}}',
+            )
         content = (
             "# Article\n\nExplain the supplied method."
-            if len(sent) == 1
+            if len(sent) == 2
             else _grounded_pass_for_request(request)
         )
         if provider == "opencode-zen":
@@ -3597,6 +3613,10 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             f"revise={expected_models['revise']}",
             "--max-revisions",
             "0",
+            "--max-retries",
+            "1",
+            "--retry-interval-seconds",
+            "1",
         ],
         input=f"{job_id}\n{job_id}\n",
     )
@@ -3616,60 +3636,84 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
     assert {
         item["step_id"]: item["model"] for item in preview["step_models"]
     } == expected_models
-    assert len(sent) == 3, result.output
+    assert len(sent) == 4, result.output
     expected_providers = (
         ["opencode-zen", "opencode-go-chat", "opencode-zen"]
         if heterogeneous
         else ["opencode-go-chat"] * 3
     )
+    expected_attempt_providers = [
+        expected_providers[0],
+        *expected_providers,
+    ]
     expected_route_providers = (
         ["opencode-zen", "opencode-go-chat", "opencode-zen", "opencode-zen"]
         if heterogeneous
         else ["opencode-go-chat"] * 4
     )
-    assert sent_providers == expected_providers
+    assert sent_providers == expected_attempt_providers
     assert key_providers == expected_route_providers
-    assert sent_models == [
+    expected_action_models = [
         expected_models["write-draft"],
         expected_models["review-quality"],
         expected_models["review-evidence"],
     ]
+    assert sent_models == [expected_action_models[0], *expected_action_models]
     store = WorkflowRunManifestStore(store_root)
     inspection = inspect_bounded_document_job(
         store, job_id
     )
     assert inspection["status"] == "candidate"
-    assert inspection["consumed_provider_attempts"] == len(sent) == 3
+    assert inspection["consumed_provider_attempts"] == len(sent) == 4
+    assert inspection["normal_actions_consumed"] == 3
+    assert inspection["retry_attempts_consumed"] == 1
+    assert [
+        (item["action_ordinal"], item["retry_index"], item["http_status"])
+        for item in sorted(
+            inspection["dispatch_order"],
+            key=lambda item: (item["action_ordinal"], item["retry_index"]),
+        )
+    ] == [(0, 0, 503), (0, 1, 200), (1, 0, 200), (2, 0, 200)]
     scope = load_bounded_workflow_job_scope(store, job_id)
-    assert scope.schema_version == (
-        "workflow-bounded-job-scope.v3"
-        if heterogeneous
-        else "workflow-bounded-job-scope.v2"
-    )
-    assert scope.max_provider_attempts == 3
+    assert scope.schema_version == "workflow-bounded-job-scope.v3"
+    assert scope.max_retries == 1
+    assert scope.max_provider_attempts == 4
     assert {slot.step_id: slot.model for slot in scope.actions} == action_models
-    assert len(inspection["dispatch_order"]) == len(scope.actions) == len(sent)
+    assert len(inspection["dispatch_order"]) == len(sent)
+    assert len(scope.actions) == 3
     evidence_models = {}
     evidence_providers = []
-    for slot, dispatch in zip(scope.actions, inspection["dispatch_order"]):
-        manifest = load_workflow_run_manifest(store, dispatch["run_id"])
+    for slot in scope.actions:
+        action_dispatches = [
+            item
+            for item in inspection["dispatch_order"]
+            if item["action_ordinal"] == slot.ordinal
+        ]
+        expected_retries = 1 if slot.ordinal == 0 else 0
+        assert [item["retry_index"] for item in action_dispatches] == list(
+            range(expected_retries + 1)
+        )
+        manifest = load_workflow_run_manifest(store, action_dispatches[0]["run_id"])
         assert manifest.workflow_snapshot.steps[0].id == slot.step_id
         assert (
             manifest.workflow_snapshot.steps[0].model == expected_models[slot.step_id]
         )
         expected_provider = expected_providers[slot.ordinal]
         assert manifest.execution_destination_for_step(1).provider == expected_provider
-        attempts = list_run_execution_evidence(store.root, dispatch["run_id"])
-        attempt, = attempts
-        assert attempt.authorization_source == "job_action"
-        assert attempt.job_id == job_id
-        assert attempt.step_id == slot.step_id
-        evidence_models[slot.step_id] = json.loads(
-            base64.b64decode(attempt.request_body_base64)
-        )["model"]
-        evidence_providers.append(attempt.provider)
+        attempts = list_run_execution_evidence(
+            store.root, action_dispatches[0]["run_id"]
+        )
+        assert len(attempts) == len(action_dispatches)
+        for attempt in attempts:
+            assert attempt.authorization_source == "job_action"
+            assert attempt.job_id == job_id
+            assert attempt.step_id == slot.step_id
+            evidence_models[slot.step_id] = json.loads(
+                base64.b64decode(attempt.request_body_base64)
+            )["model"]
+            evidence_providers.append(attempt.provider)
     assert evidence_models == action_models
-    assert evidence_providers == expected_providers
+    assert evidence_providers == expected_attempt_providers
     assert scope.source_manifest_run_id is not None
     source = load_workflow_run_manifest(
         store, scope.source_manifest_run_id

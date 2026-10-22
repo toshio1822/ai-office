@@ -342,9 +342,7 @@ class ExecutionEvidenceContext:
         object.__setattr__(
             self,
             "request_session_id",
-            self.binding.run_id
-            if manifest.schema_version == "workflow-run-manifest.v5"
-            else f"{self.binding.run_id}-step-{self.step_index}",
+            f"{self.binding.run_id}-step-{self.step_index}",
         )
         _validate_context(self)
 

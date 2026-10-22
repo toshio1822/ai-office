@@ -339,10 +339,10 @@ def test_same_workflow_executes_both_protocols_offline(
     manifest = json.loads(
         (run_store / f"run-{destination}.manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["schema_version"] == "workflow-run-manifest.v5"
+    assert manifest["schema_version"] == "workflow-run-manifest.v6"
     assert manifest["workflow_snapshot"]["steps"][0]["model"] == model
     assert "model" not in manifest["employee_snapshots"][0]
-    assert manifest["execution_destination"]["provider"] == destination
+    assert manifest["execution_destinations"][0]["provider"] == destination
     switched = runner.invoke(
         app,
         [
@@ -368,7 +368,7 @@ def test_workflow_steps_use_pinned_destinations_and_explicit_recovery_offline(
     workflows = tmp_path / "workflows"
     _write_two_step_workflow(workflows)
     run_store = tmp_path / "runs"
-    run_id = "routed-run"
+    run_id = "report"
     key_providers: list[str] = []
     requests: list[object] = []
     chat_attempts = 0
@@ -583,10 +583,13 @@ def test_workflow_steps_use_pinned_destinations_and_explicit_recovery_offline(
         for request in requests
     ]
     assert session_values == [
-        f"ai-office-run-{run_id}-step-1",
-        f"ai-office-run-{run_id}-step-2",
-        f"ai-office-run-{run_id}-step-2",
+        f"ai-office-step-v6-{run_id}-step-1",
+        f"ai-office-step-v6-{run_id}-step-2",
+        f"ai-office-step-v6-{run_id}-step-2",
     ]
+    # Legacy Run `report-step-1` used this exact v5 session value. The actual
+    # v6 HTTP header must use a disjoint namespace even for that identifier.
+    assert session_values[0] != "ai-office-run-report-step-1"
     evidence_result = runner.invoke(
         app,
         ["workflows", "execution-evidence", run_id, "--run-store", str(run_store)],

@@ -156,7 +156,7 @@ def test_create_load_round_trip_preserves_exact_run_meaning_and_digest(
     assert b"source-workflow.yaml" not in contents
     assert b"source-researcher.yaml" not in contents
     assert set(json.loads(contents)) == {
-        "execution_destination",
+        "execution_destinations",
         "employee_snapshots",
         "run_id",
         "run_input",
@@ -167,7 +167,7 @@ def test_create_load_round_trip_preserves_exact_run_meaning_and_digest(
     }
 
 
-def test_v6_manifest_pins_selector_resolution_for_each_step(
+def test_manifest_pins_selector_resolution_for_each_step(
     tmp_path: Path,
 ) -> None:
     registry_path = tmp_path / "destinations.yaml"
@@ -248,7 +248,13 @@ def test_v6_manifest_pins_selector_resolution_for_each_step(
     assert value.execution_destination_for_step(2).provider == "responses-target"
     assert value.workflow_snapshot.execution_destination == "responses-target"
     assert value.workflow_snapshot.steps[0].execution_destination == "chat-target"
-    assert value.execution_destination == value.execution_destination_for_step(1)
+    assert value.schema_version == "workflow-run-manifest.v6"
+    encoded = json.loads(workflow_run_manifest_canonical_bytes(value))
+    assert "execution_destination" not in encoded
+    assert [item["provider"] for item in encoded["execution_destinations"]] == [
+        "chat-target",
+        "responses-target",
+    ]
     assert persisted == restored == value
     assert workflow_definition_from_run_manifest(restored) == loaded.definition
 
@@ -338,27 +344,18 @@ def test_artifact_policy_is_pinned_and_changes_manifest_identity() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "schema_version",
-    (
-        "workflow-run-manifest.v2",
-        "workflow-run-manifest.v3",
-        "workflow-run-manifest.v4",
-    ),
-)
-def test_unsupported_preproduction_manifest_versions_are_rejected(
-    tmp_path: Path, schema_version: str
-) -> None:
+def test_old_v5_manifest_is_rejected_without_migration(tmp_path: Path) -> None:
     store = WorkflowRunManifestStore(tmp_path)
     create_workflow_run_manifest(
         store, "run-1", "request", workflow(), [employee()]
     )
     value = json.loads(store.manifest_path("run-1").read_text(encoding="utf-8"))
-    value["schema_version"] = schema_version
-    value.pop("execution_destination")
-    if schema_version == "workflow-run-manifest.v2":
-        for step in value["workflow_snapshot"]["steps"]:
-            step.pop("artifact_content_type")
+    value["schema_version"] = "workflow-run-manifest.v5"
+    value["execution_destination"] = value["execution_destinations"][0]
+    del value["execution_destinations"]
+    value["workflow_snapshot"].pop("execution_destination")
+    for step in value["workflow_snapshot"]["steps"]:
+        step.pop("execution_destination")
     store.manifest_path("run-1").write_text(
         json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
         encoding="utf-8",
@@ -372,17 +369,18 @@ def test_new_run_manifest_always_pins_builtin_destination_and_model() -> None:
     value = manifest()
     encoded = json.loads(workflow_run_manifest_canonical_bytes(value))
 
-    assert value.schema_version == "workflow-run-manifest.v5"
-    assert value.execution_destination.provider == "openai"
+    assert value.schema_version == "workflow-run-manifest.v6"
+    destination = value.execution_destination_for_step(1)
+    assert destination.provider == "openai"
     assert (
-        value.execution_destination.endpoint == "https://api.openai.com/v1/responses"
+        destination.endpoint == "https://api.openai.com/v1/responses"
     )
     assert (
-        value.execution_destination.credential_environment_variable
+        destination.credential_environment_variable
         == "OPENAI_API_KEY"
     )
-    assert encoded["execution_destination"]["fingerprint"] == (
-        value.execution_destination.fingerprint
+    assert encoded["execution_destinations"][0]["fingerprint"] == (
+        destination.fingerprint
     )
 
 
@@ -695,5 +693,5 @@ def test_manifest_constructor_rejects_unbound_or_invalid_values() -> None:
             workflow_snapshot=value.workflow_snapshot,
             employee_snapshots=value.employee_snapshots,
             tool_contracts=value.tool_contracts,
-            execution_destination=value.execution_destination,
+            execution_destinations=value.execution_destinations,
         )

@@ -167,7 +167,7 @@ def _validate_derived_review_plan(
             and slot.employee_id == selected.employee
             and slot.model == selected.model
             and slot.workflow_snapshot_sha256
-            == _digest(_canonical(_workflow_dict(snapshot.workflow_snapshot)))
+            == _digest(_canonical(asdict(snapshot.workflow_snapshot)))
             and slot.employee_snapshot_sha256
             == _digest(_canonical(_employee_dict(employee)))
             and slot.execution_target_fingerprint
@@ -250,7 +250,9 @@ class BoundedWorkflowJobScope:
     retry_interval_seconds: int = 30
     source_manifest_run_id: str | None = None
     source_manifest_digest: str | None = None
-    schema_version: str = "workflow-bounded-job-scope.v2"
+    schema_version: Literal["workflow-bounded-job-scope.v3"] = (
+        "workflow-bounded-job-scope.v3"
+    )
 
     def __post_init__(self) -> None:
         if not _identifier(self.job_id):
@@ -326,11 +328,7 @@ class BoundedWorkflowJobScope:
             or type(self.retry_interval_seconds) is not int
             or not 1 <= self.retry_interval_seconds <= 3600
             or self.max_provider_attempts != normal_action_limit + self.max_retries
-            or self.schema_version
-            not in {
-                "workflow-bounded-job-scope.v2",
-                "workflow-bounded-job-scope.v3",
-            }
+            or self.schema_version != "workflow-bounded-job-scope.v3"
             or type(self.expires_at_ns) is not int
             or self.expires_at_ns <= 0
             or self.business_grant.purpose != "job_business"
@@ -351,7 +349,6 @@ class BoundedWorkflowJobScope:
                 self.retry_interval_seconds,
                 self.source_manifest_run_id,
                 self.source_manifest_digest,
-                schema_version=self.schema_version,
             )
             or self.execution_grant.envelope_sha256
             != self.business_grant.envelope_sha256
@@ -373,27 +370,9 @@ class BoundedWorkflowJobScope:
                 "job_id": self.job_id,
                 "max_provider_attempts": self.max_provider_attempts,
                 "max_revisions": self.max_revisions,
-                **(
-                    {"retryable_http_statuses": [429, 503]}
-                    if self.schema_version
-                    in {
-                        "workflow-bounded-job-scope.v2",
-                        "workflow-bounded-job-scope.v3",
-                    }
-                    else {}
-                ),
-                **(
-                    {
-                        "max_retries": self.max_retries,
-                        "retry_interval_seconds": self.retry_interval_seconds,
-                    }
-                    if self.schema_version
-                    in {
-                        "workflow-bounded-job-scope.v2",
-                        "workflow-bounded-job-scope.v3",
-                    }
-                    else {}
-                ),
+                "max_retries": self.max_retries,
+                "retry_interval_seconds": self.retry_interval_seconds,
+                "retryable_http_statuses": [429, 503],
                 "schema_version": self.schema_version,
                 **(
                     {
@@ -518,17 +497,6 @@ def issue_bounded_workflow_job_scope(
         retry_interval_seconds,
         source_manifest_run_id,
         source_manifest_digest,
-        schema_version=(
-            "workflow-bounded-job-scope.v3"
-            if len(
-                {
-                    (item.provider, item.execution_target_fingerprint)
-                    for item in actions
-                }
-            )
-            > 1
-            else "workflow-bounded-job-scope.v2"
-        ),
     )
     business = WorkflowJobGrant(
         "workflow-job-authorization-grant.v1",
@@ -555,7 +523,7 @@ def issue_bounded_workflow_job_scope(
         _digest(initial_manifest.run_input.encode("utf-8")) != initial_input_sha256
         or initial_input_sha256 != assignment_sha256
         or initial_manifest.workflow_id != actions[0].workflow_id
-        or _digest(_canonical(_workflow_dict(initial_manifest.workflow_snapshot)))
+        or _digest(_canonical(asdict(initial_manifest.workflow_snapshot)))
         != actions[0].workflow_snapshot_sha256
     ):
         raise WorkflowJobAuthorizationError("job_initial_run")
@@ -564,8 +532,8 @@ def issue_bounded_workflow_job_scope(
         if (
             source_manifest.digest != source_manifest_digest
             or source_manifest.run_input != initial_manifest.run_input
-            or source_manifest.execution_destination
-            != initial_manifest.execution_destination
+            or source_manifest.execution_destination_for_step(1)
+            != initial_manifest.execution_destination_for_step(1)
             or source_manifest.workflow_id != initial_manifest.workflow_id
             or store.state_path(source_manifest_run_id).exists()
             or store.events_path(source_manifest_run_id).exists()
@@ -605,17 +573,6 @@ def issue_bounded_workflow_job_scope(
         retry_interval_seconds,
         source_manifest_run_id,
         source_manifest_digest,
-        schema_version=(
-            "workflow-bounded-job-scope.v3"
-            if len(
-                {
-                    (item.provider, item.execution_target_fingerprint)
-                    for item in actions
-                }
-            )
-            > 1
-            else "workflow-bounded-job-scope.v2"
-        ),
     )
     # This root-scope digest is distinct from Run-bound authorization records.
     _persist_immutable(_scope_path(store.root, job_id), scope.canonical)
@@ -631,10 +588,7 @@ def load_bounded_workflow_job_scope(
     try:
         value = json.loads(payload)
         schema_version = value.pop("schema_version")
-        if schema_version not in {
-            "workflow-bounded-job-scope.v2",
-            "workflow-bounded-job-scope.v3",
-        }:
+        if schema_version != "workflow-bounded-job-scope.v3":
             raise ValueError
         if value.pop("retryable_http_statuses") != [429, 503]:
             raise ValueError
@@ -698,7 +652,7 @@ def derive_bounded_job_action_authorization(
         _validate_derived_review_plan(
             source_manifest, current.actions, current.max_revisions
         )
-    workflow_snapshot = _canonical(_workflow_dict(manifest.workflow_snapshot))
+    workflow_snapshot = _canonical(asdict(manifest.workflow_snapshot))
     employee = next(
         (item for item in manifest.employee_snapshots if item.id == slot.employee_id),
         None,
@@ -862,8 +816,7 @@ def reserve_bounded_job_attempt(
             raise WorkflowJobAuthorizationError("job_action_replayed")
         if retry_index:
             if (
-                scope.schema_version != "workflow-bounded-job-scope.v2"
-                or retry_index > scope.max_retries
+                retry_index > scope.max_retries
                 or sum(1 for item in records if item.get("retry_index", 0) > 0)
                 >= scope.max_retries
                 or not _prior_job_attempts_are_retryable(
@@ -2306,9 +2259,7 @@ def inspect_bounded_document_job(
         "reviewer_count": reviewer_count,
         "retry_limit": scope.max_retries,
         "retry_interval_seconds": scope.retry_interval_seconds,
-        "retryable_http_statuses": [429, 503]
-        if scope.schema_version == "workflow-bounded-job-scope.v2"
-        else [],
+        "retryable_http_statuses": [429, 503],
         "retry_attempts_consumed": sum(
             1 for item in reservations if item.get("retry_index", 0) > 0
         ),
@@ -2534,8 +2485,8 @@ def _execute_bounded_document_job(
         if (
             source_manifest.digest != scope.source_manifest_digest
             or source_manifest.run_input != initial_manifest.run_input
-            or source_manifest.execution_destination
-            != initial_manifest.execution_destination
+            or source_manifest.execution_destination_for_step(1)
+            != initial_manifest.execution_destination_for_step(1)
         ):
             raise WorkflowJobAuthorizationError("job_source_manifest")
         _validate_derived_review_plan(
@@ -2581,7 +2532,7 @@ def _execute_bounded_document_job(
     if (
         initial_manifest.workflow_id != scope.actions[0].workflow_id
         or initial_manifest.run_input != assignment
-        or _digest(_canonical(_workflow_dict(initial_manifest.workflow_snapshot)))
+        or _digest(_canonical(asdict(initial_manifest.workflow_snapshot)))
         != scope.actions[0].workflow_snapshot_sha256
     ):
         raise WorkflowJobAuthorizationError("document_job_initial_run")
@@ -3085,7 +3036,6 @@ def _scope_intent_digest(
     retry_interval_seconds: int = 30,
     source_manifest_run_id: str | None = None,
     source_manifest_digest: str | None = None,
-    schema_version: str = "workflow-bounded-job-scope.v2",
 ) -> str:
     value = {
         "actions": [_slot_dict(item) for item in actions],
@@ -3099,11 +3049,7 @@ def _scope_intent_digest(
         "max_retries": max_retries,
         "retry_interval_seconds": retry_interval_seconds,
         "retryable_http_statuses": [429, 503],
-        "schema_version": (
-            "workflow-bounded-job-scope-intent.v2"
-            if schema_version == "workflow-bounded-job-scope.v2"
-            else "workflow-bounded-job-scope-intent.v3"
-        ),
+        "schema_version": "workflow-bounded-job-scope-intent.v3",
         **(
             {
                 "source_manifest_run_id": source_manifest_run_id,
@@ -3175,18 +3121,6 @@ def _previous_step_is_verified(store, run_id: str, prior: dict, dispatch: dict) 
         and attempt.get("authorization_source") == "job_action"
         and dispatch.get("attempt_evidence_sha256") == _digest(attempt_payload)
     )
-
-
-def _workflow_dict(value) -> dict[str, object]:
-    result = asdict(value)
-    if result.get("execution_destination") is None:
-        result.pop("execution_destination", None)
-    steps = result.get("steps")
-    if type(steps) in {list, tuple}:
-        for step in steps:
-            if type(step) is dict and step.get("execution_destination") is None:
-                step.pop("execution_destination", None)
-    return result
 
 
 def _employee_dict(value) -> dict[str, object]:
@@ -3454,7 +3388,6 @@ def validate_bounded_job_retry_claim(
     retry_index = value.get("retry_index", 0)
     return bool(
         scope == authorization.scope
-        and scope.schema_version == "workflow-bounded-job-scope.v2"
         and type(retry_index) is int
         and 1 <= retry_index <= scope.max_retries
         and value.get("ordinal") == authorization.ordinal
@@ -3479,7 +3412,6 @@ def bounded_job_retry_budget_remaining(
     consumed = sum(1 for item in records if item.get("retry_index", 0) > 0)
     return bool(
         scope == authorization.scope
-        and scope.schema_version == "workflow-bounded-job-scope.v2"
         and consumed < scope.max_retries
         and len(records) < scope.max_provider_attempts
         and time.time_ns() < scope.expires_at_ns

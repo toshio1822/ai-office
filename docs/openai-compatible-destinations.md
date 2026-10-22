@@ -107,9 +107,10 @@ else is rejected.
 - `User-Agent` accepts only a static, safe identifying string. It never
   accepts `{run_session}` or any substitution.
 - `x-opencode-session` accepts only the single `{run_session}` marker, which
-  resolves to a stable value derived solely from the Run identity
-  (`ai-office-run-<run-id>`). It stays constant across steps, continuation and
-  recovery, and it does not masquerade as OpenCode or a coding agent.
+  resolves to a stable value derived from the exact Run/Step identity in the
+  v6 namespace (`ai-office-step-v6-<run-id>-step-<index>`). It stays constant
+  across continuation and explicit recovery of that Step, and it does not
+  masquerade as OpenCode or a coding agent.
 
 Because no arbitrary header name is allowed, there is no way to set a secret
 value (for example an `X-API-Key`) and have it persisted into the Run
@@ -120,14 +121,13 @@ existing transport control and cannot be overridden. Endpoint allowlisting,
 DNS pinning, redirect blocking, HTTPS and SSRF safeguards are unchanged.
 
 The effective header policy is part of the destination configuration
-fingerprint and the pinned Run Manifest destination snapshot. For a legacy v5
-Run, the session value remains Run-scoped (`ai-office-run-<run-id>`) across
-steps, continuation, and recovery. A v6 Run with per-Step routing uses a
-different Step-scoped session value, stable across continuation/recovery of
-that Step. This separates application-supplied session identities; it cannot
-prove that a provider internally isolates conversation state. Changing headers
-or any other destination setting after preview/approval invalidates the stale
-approval before credentials or transport are consulted.
+fingerprint and each Step's pinned Run Manifest destination snapshot. The v6
+namespace cannot collide with the former `ai-office-run-<run-id>` format and
+distinguishes each Run/Step, while remaining stable across continuation and
+explicit recovery. This separates application-supplied session identities; it
+cannot prove that a provider internally isolates conversation state. Changing
+headers or any other destination setting after preview/approval invalidates
+the stale approval before credentials or transport are consulted.
 
 ## Per-Step destination selection and compatibility
 
@@ -139,23 +139,21 @@ fallback. A CLI `--step-model STEP_ID=MODEL` override affects only a newly
 created Run; the effective model and destination are frozen before approval.
 Employees remain provider/model independent.
 
-The existing Run Manifest remains authoritative. A legacy Workflow with no
-selectors and one CLI destination continues to produce the canonical v5
-Manifest, whose single destination is interpreted for every Step. When a
-Workflow declares destination selectors or resolves to different destinations,
-the additive v6 Manifest records the effective destination snapshot for every
-Step. Existing v5 records are not rewritten or reinterpreted as routed Runs.
-`continue` and `recover` use the exact pinned Step target and current registry
-only as a veto: missing, changed, or no-longer-allowed destinations/models stop
-before credential lookup or provider transport. There is no fallback or
-automatic retry.
+The v6 Run Manifest is the sole authoritative format for all new Runs. A
+legacy Workflow with no selectors and one CLI destination still works: the CLI
+destination is pinned for every Step. The Manifest stores one effective
+destination snapshot per Step; old v5 records are rejected explicitly, without
+migration or reinterpretation. `continue` and `recover` use the exact pinned
+Step target and current registry only as a veto: missing, changed, or
+no-longer-allowed destinations/models stop before credential lookup or
+provider transport. There is no fallback or implicit retry.
 
 The existing approval and Evidence owners remain in use. Each Execution
 Approval, attempt, response, and Artifact lineage remains bound to its exact
-Step request and destination. Homogeneous bounded Jobs keep Scope v2; a
-heterogeneous bounded Job uses additive Scope v3 so its finite action slots
-bind each action to that action's provider and destination fingerprint. Both
-scope versions remain readable; no new grant or Evidence subsystem is added.
+Step request and destination. Every bounded Job uses Scope v3, whose finite
+action slots bind each action to its provider and destination fingerprint;
+old Scope v2 records are rejected rather than migrated. No new grant or
+Evidence subsystem is added.
 
 Example Go Chat Completions destination (see
 `examples/openai-compatible-destinations.yaml`):

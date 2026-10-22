@@ -1409,16 +1409,6 @@ def run_bounded_document_job_workflow(
 
         def snapshot_digest(value: object) -> str:
             snapshot = asdict(value)
-            if snapshot.get("execution_destination") is None:
-                snapshot.pop("execution_destination", None)
-            steps = snapshot.get("steps")
-            if type(steps) in {list, tuple}:
-                for step in steps:
-                    if (
-                        type(step) is dict
-                        and step.get("execution_destination") is None
-                    ):
-                        step.pop("execution_destination", None)
             encoded = json.dumps(
                 snapshot,
                 ensure_ascii=False,
