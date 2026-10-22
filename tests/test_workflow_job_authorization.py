@@ -3475,11 +3475,23 @@ def test_bounded_job_launcher_rejects_operator_context_before_credential_lookup(
     assert "operator_context" not in result.output
 
 
-@pytest.mark.parametrize("heterogeneous", [False, True])
-def test_bounded_job_cli_routes_single_workflow_plan_offline(
+@pytest.mark.parametrize(
+    ("heterogeneous", "retry_scenario"),
+    [
+        (False, "retry_429"),
+        (False, "retry_500"),
+        (False, "retry_503"),
+        (True, "retry_500"),
+        (False, "zero_retry_budget"),
+        (False, "quota_500"),
+        (False, "repeated_500"),
+    ],
+)
+def test_bounded_job_cli_retries_only_scoped_http_failures_offline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     heterogeneous: bool,
+    retry_scenario: str,
 ) -> None:
     from hashlib import sha256
     from types import SimpleNamespace
@@ -3598,13 +3610,31 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             else "opencode-go-chat"
         )
         sent_providers.append(provider)
-        if len(sent) == 1:
+        if len(sent) == 1 or (retry_scenario == "repeated_500" and len(sent) == 2):
+            status_code = (
+                int(retry_scenario.removeprefix("retry_"))
+                if retry_scenario.startswith("retry_")
+                else 500
+            )
+            response_body = (
+                b'{"error":{"message":"insufficient_quota",'
+                b'"type":"insufficient_quota","code":"insufficient_quota"}}'
+                if retry_scenario == "quota_500"
+                else b"synthetic upstream failure"
+                if status_code == 500
+                else b'{"error":{"message":"temporary unavailable",'
+                b'"type":"server_error","code":"server_error"}}'
+            )
+            content_type = (
+                "application/json"
+                if retry_scenario in {"quota_500", "retry_429", "retry_503"}
+                else "text/plain"
+            )
             return OpenAIResponsesRawHttpResponse(
-                503,
+                status_code,
                 "synthetic",
-                (),
-                b'{"error":{"message":"temporary unavailable",'
-                b'"type":"server_error","code":"server_error"}}',
+                (("content-type", content_type),),
+                response_body,
             )
         content = (
             "# Article\n\nExplain the supplied method."
@@ -3681,7 +3711,7 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             "--max-revisions",
             "0",
             "--max-retries",
-            "1",
+            "0" if retry_scenario == "zero_retry_budget" else "1",
             "--retry-interval-seconds",
             "1",
         ],
@@ -3701,6 +3731,9 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
     )
     assert preview["guaranteed_initial_actions"] == 3
     assert preview["reviewer_count"] == 2
+    max_retries = 0 if retry_scenario == "zero_retry_budget" else 1
+    assert preview["max_retries"] == max_retries
+    assert preview["retryable_http_statuses"] == [429, 500, 503]
     action_models = {
         step_id: model
         for step_id, model in expected_models.items()
@@ -3712,16 +3745,21 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
     assert {
         item["step_id"]: item["model"] for item in preview["step_models"]
     } == expected_models
-    assert len(sent) == 4, result.output
+    is_success = retry_scenario.startswith("retry_")
+    expected_send_count = (
+        4 if is_success else 2 if retry_scenario == "repeated_500" else 1
+    )
+    assert len(sent) == expected_send_count, result.output
     expected_providers = (
         ["opencode-zen", "opencode-go-chat", "opencode-zen"]
         if heterogeneous
         else ["opencode-go-chat"] * 3
     )
-    expected_attempt_providers = [
-        expected_providers[0],
-        *expected_providers,
-    ]
+    expected_attempt_providers = (
+        [expected_providers[0], *expected_providers]
+        if is_success
+        else [expected_providers[0]] * expected_send_count
+    )
     expected_route_providers = (
         ["opencode-zen", "opencode-go-chat", "opencode-zen", "opencode-zen"]
         if heterogeneous
@@ -3734,33 +3772,119 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
         expected_models["review-quality"],
         expected_models["review-evidence"],
     ]
-    assert sent_models == [expected_action_models[0], *expected_action_models]
+    expected_sent_models = (
+        [expected_action_models[0], *expected_action_models]
+        if is_success
+        else [expected_action_models[0]] * expected_send_count
+    )
+    assert sent_models == expected_sent_models
 
     assert [_assignment_from_model_request(request) for request in sent] == [
         effective_assignment
     ] * len(sent)
     store = WorkflowRunManifestStore(store_root)
     inspection = inspect_bounded_document_job(store, job_id)
-    assert inspection["status"] == "candidate"
-    assert inspection["consumed_provider_attempts"] == len(sent) == 4
-    assert inspection["normal_actions_consumed"] == 3
-    assert inspection["retry_attempts_consumed"] == 1
+    assert inspection["status"] == ("candidate" if is_success else "stopped")
+    assert inspection["consumed_provider_attempts"] == len(sent)
+    assert inspection["normal_actions_consumed"] == (3 if is_success else 1)
+    expected_retry_count = 1 if is_success or retry_scenario == "repeated_500" else 0
+    first_status = (
+        int(retry_scenario.removeprefix("retry_"))
+        if retry_scenario.startswith("retry_")
+        else 500
+    )
+    assert inspection["retry_attempts_consumed"] == expected_retry_count
+    expected_dispatches = (
+        [(0, 0, first_status), (0, 1, 200), (1, 0, 200), (2, 0, 200)]
+        if is_success
+        else [(0, 0, 500), (0, 1, 500)]
+        if retry_scenario == "repeated_500"
+        else [(0, 0, 500)]
+    )
     assert [
         (item["action_ordinal"], item["retry_index"], item["http_status"])
         for item in sorted(
             inspection["dispatch_order"],
             key=lambda item: (item["action_ordinal"], item["retry_index"]),
         )
-    ] == [(0, 0, 503), (0, 1, 200), (1, 0, 200), (2, 0, 200)]
+    ] == expected_dispatches
+    assert inspection["retryable_http_statuses"] == [429, 500, 503]
     scope = load_bounded_workflow_job_scope(store, job_id)
     assert scope.schema_version == "workflow-bounded-job-scope.v3"
-    assert scope.max_retries == 1
-    assert scope.max_provider_attempts == 4
+    assert scope.max_retries == max_retries
+    assert scope.max_provider_attempts == 3 + max_retries
+    assert scope.retryable_http_statuses == (429, 500, 503)
     assert scope.assignment_sha256 == preview["assignment_sha256"]
     assert scope.initial_input_sha256 == preview["assignment_sha256"]
     assert {slot.step_id: slot.model for slot in scope.actions} == action_models
     assert len(inspection["dispatch_order"]) == len(sent)
     assert len(scope.actions) == 3
+
+    # A v3 scope persisted before HTTP 500 was added remains digest-valid and
+    # retains its original retry semantics when reloaded.
+    legacy_statuses = (429, 503)
+    legacy_digest = bounded_job_module._scope_intent_digest(
+        scope.job_id,
+        scope.assignment_sha256,
+        scope.initial_run_id,
+        scope.initial_input_sha256,
+        scope.actions,
+        scope.max_provider_attempts,
+        scope.max_revisions,
+        scope.expires_at_ns,
+        scope.max_retries,
+        scope.retry_interval_seconds,
+        scope.source_manifest_run_id,
+        scope.source_manifest_digest,
+        legacy_statuses,
+    )
+    legacy_scope = replace(
+        scope,
+        retryable_http_statuses=legacy_statuses,
+        business_grant=replace(scope.business_grant, envelope_sha256=legacy_digest),
+        execution_grant=replace(scope.execution_grant, envelope_sha256=legacy_digest),
+    )
+    legacy_root = tmp_path / "legacy-runs"
+    legacy_root.mkdir(mode=0o700)
+    bounded_job_module._persist_immutable(
+        bounded_job_module._scope_path(legacy_root, job_id), legacy_scope.canonical
+    )
+    legacy_loaded = load_bounded_workflow_job_scope(
+        WorkflowRunManifestStore(legacy_root), job_id
+    )
+    assert legacy_loaded == legacy_scope
+    assert legacy_loaded.retryable_http_statuses == legacy_statuses
+    assert not bounded_job_module._retryable_http_response(
+        500, b"synthetic upstream failure", legacy_loaded.retryable_http_statuses
+    )
+
+    if not is_success:
+        first_action_dispatches = [
+            item for item in inspection["dispatch_order"] if item["action_ordinal"] == 0
+        ]
+        action_run_id = first_action_dispatches[0]["run_id"]
+        attempts = list_run_execution_evidence(store.root, action_run_id)
+        assert len(attempts) == expected_send_count
+        assert len({attempt.request_body_sha256 for attempt in attempts}) == 1
+        for attempt in attempts:
+            raw = load_raw_response_evidence(
+                store.root, action_run_id, attempt.attempt_id
+            )
+            normalized = load_normalized_result_evidence(
+                store.root, action_run_id, attempt.attempt_id
+            )
+            assert raw.status_code == first_status
+            assert normalized.result.category in {"api_error", "invalid_response"}
+            normalized_status = getattr(normalized.result, "status_code", None)
+            if normalized_status is None:
+                normalized_status = getattr(
+                    getattr(normalized.result, "response_diagnostics", None),
+                    "status_code",
+                    None,
+                )
+            assert normalized_status == 500
+        return
+
     evidence_models = {}
     evidence_providers = []
 
@@ -3825,6 +3949,48 @@ def test_bounded_job_cli_routes_single_workflow_plan_offline(
             store, "article-initial"
         ).workflow_snapshot.bounded_review
         is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "statuses", "expected"),
+    [
+        (500, b"upstream unavailable", (429, 500, 503), True),
+        (500, b"upstream unavailable", (429, 503), False),
+        (429, b"rate limited", (429, 500, 503), True),
+        (
+            503,
+            b'{"error":{"type":"server_error","message":"unavailable"}}',
+            (429, 500, 503),
+            True,
+        ),
+        (502, b"bad gateway", (429, 500, 503), False),
+        (504, b"gateway timeout", (429, 500, 503), False),
+        (200, b"not valid output", (429, 500, 503), False),
+        (
+            500,
+            b'{"error":{"code":"insufficient_quota"}}',
+            (429, 500, 503),
+            False,
+        ),
+        (500, b'{"error":{"message":"billing limit reached"}}', (429, 500, 503), False),
+        (
+            500,
+            b'{"error":{"message":"payment required"}}',
+            (429, 500, 503),
+            False,
+        ),
+    ],
+)
+def test_bounded_job_http_retry_status_and_quota_gates(
+    status_code: int,
+    body: bytes,
+    statuses: tuple[int, ...],
+    expected: bool,
+) -> None:
+    assert (
+        bounded_job_module._retryable_http_response(status_code, body, statuses)
+        is expected
     )
 
 

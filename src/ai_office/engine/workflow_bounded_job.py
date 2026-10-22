@@ -65,6 +65,8 @@ _PRODUCER_INPUT_SOURCES = frozenset(
     {"assignment", "previous_step", "previous_artifact", "revision_input"}
 )
 _REVIEW_INPUT_SOURCES = frozenset({"review_input", "re_review_input"})
+_LEGACY_RETRYABLE_HTTP_STATUSES = (429, 503)
+_CURRENT_RETRYABLE_HTTP_STATUSES = (429, 500, 503)
 
 
 def _producer_ordinal(
@@ -250,6 +252,7 @@ class BoundedWorkflowJobScope:
     retry_interval_seconds: int = 30
     source_manifest_run_id: str | None = None
     source_manifest_digest: str | None = None
+    retryable_http_statuses: tuple[int, ...] = _LEGACY_RETRYABLE_HTTP_STATUSES
     schema_version: Literal["workflow-bounded-job-scope.v3"] = (
         "workflow-bounded-job-scope.v3"
     )
@@ -327,6 +330,12 @@ class BoundedWorkflowJobScope:
             or not 0 <= self.max_retries <= 2
             or type(self.retry_interval_seconds) is not int
             or not 1 <= self.retry_interval_seconds <= 3600
+            or type(self.retryable_http_statuses) is not tuple
+            or self.retryable_http_statuses
+            not in {
+                _LEGACY_RETRYABLE_HTTP_STATUSES,
+                _CURRENT_RETRYABLE_HTTP_STATUSES,
+            }
             or self.max_provider_attempts != normal_action_limit + self.max_retries
             or self.schema_version != "workflow-bounded-job-scope.v3"
             or type(self.expires_at_ns) is not int
@@ -349,6 +358,7 @@ class BoundedWorkflowJobScope:
                 self.retry_interval_seconds,
                 self.source_manifest_run_id,
                 self.source_manifest_digest,
+                self.retryable_http_statuses,
             )
             or self.execution_grant.envelope_sha256
             != self.business_grant.envelope_sha256
@@ -372,7 +382,7 @@ class BoundedWorkflowJobScope:
                 "max_revisions": self.max_revisions,
                 "max_retries": self.max_retries,
                 "retry_interval_seconds": self.retry_interval_seconds,
-                "retryable_http_statuses": [429, 503],
+                "retryable_http_statuses": list(self.retryable_http_statuses),
                 "schema_version": self.schema_version,
                 **(
                     {
@@ -497,6 +507,7 @@ def issue_bounded_workflow_job_scope(
         retry_interval_seconds,
         source_manifest_run_id,
         source_manifest_digest,
+        _CURRENT_RETRYABLE_HTTP_STATUSES,
     )
     business = WorkflowJobGrant(
         "workflow-job-authorization-grant.v1",
@@ -573,6 +584,7 @@ def issue_bounded_workflow_job_scope(
         retry_interval_seconds,
         source_manifest_run_id,
         source_manifest_digest,
+        _CURRENT_RETRYABLE_HTTP_STATUSES,
     )
     # This root-scope digest is distinct from Run-bound authorization records.
     _persist_immutable(_scope_path(store.root, job_id), scope.canonical)
@@ -590,7 +602,11 @@ def load_bounded_workflow_job_scope(
         schema_version = value.pop("schema_version")
         if schema_version != "workflow-bounded-job-scope.v3":
             raise ValueError
-        if value.pop("retryable_http_statuses") != [429, 503]:
+        retryable_http_statuses = tuple(value.pop("retryable_http_statuses"))
+        if retryable_http_statuses not in {
+            _LEGACY_RETRYABLE_HTTP_STATUSES,
+            _CURRENT_RETRYABLE_HTTP_STATUSES,
+        }:
             raise ValueError
         business = WorkflowJobGrant(**value.pop("business_grant"))
         execution = WorkflowJobGrant(**value.pop("execution_grant"))
@@ -599,6 +615,7 @@ def load_bounded_workflow_job_scope(
             actions=actions,
             business_grant=business,
             execution_grant=execution,
+            retryable_http_statuses=retryable_http_statuses,
             schema_version=schema_version,
             **value,
         )
@@ -2259,7 +2276,7 @@ def inspect_bounded_document_job(
         "reviewer_count": reviewer_count,
         "retry_limit": scope.max_retries,
         "retry_interval_seconds": scope.retry_interval_seconds,
-        "retryable_http_statuses": [429, 503],
+        "retryable_http_statuses": list(scope.retryable_http_statuses),
         "retry_attempts_consumed": sum(
             1 for item in reservations if item.get("retry_index", 0) > 0
         ),
@@ -3036,6 +3053,7 @@ def _scope_intent_digest(
     retry_interval_seconds: int = 30,
     source_manifest_run_id: str | None = None,
     source_manifest_digest: str | None = None,
+    retryable_http_statuses: tuple[int, ...] = _LEGACY_RETRYABLE_HTTP_STATUSES,
 ) -> str:
     value = {
         "actions": [_slot_dict(item) for item in actions],
@@ -3048,7 +3066,7 @@ def _scope_intent_digest(
         "max_revisions": max_revisions,
         "max_retries": max_retries,
         "retry_interval_seconds": retry_interval_seconds,
-        "retryable_http_statuses": [429, 503],
+        "retryable_http_statuses": list(retryable_http_statuses),
         "schema_version": "workflow-bounded-job-scope-intent.v3",
         **(
             {
@@ -3341,7 +3359,9 @@ def _prior_job_attempts_are_retryable(
             getattr(normalized.result, "category", None)
             in {"api_error", "invalid_response"}
             and normalized_status == raw.status_code
-            and _retryable_http_response(raw.status_code, raw.body)
+            and _retryable_http_response(
+                raw.status_code, raw.body, authorization.scope.retryable_http_statuses
+            )
         ):
             return False
         try:
@@ -3419,8 +3439,12 @@ def bounded_job_retry_budget_remaining(
     )
 
 
-def _retryable_http_response(status_code: int, body: bytes) -> bool:
-    if status_code not in {429, 503}:
+def _retryable_http_response(
+    status_code: int,
+    body: bytes,
+    retryable_http_statuses: tuple[int, ...] = _LEGACY_RETRYABLE_HTTP_STATUSES,
+) -> bool:
+    if status_code not in retryable_http_statuses:
         return False
     try:
         payload = json.loads(body.decode("utf-8"))

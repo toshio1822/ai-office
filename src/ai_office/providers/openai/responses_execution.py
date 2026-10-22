@@ -295,7 +295,9 @@ def execute_openai_model_invocation(
                 or retry_index >= retry_limit
                 or raw_response is None
                 or not _retryable_bounded_response(
-                    raw_response.status_code, raw_response.body
+                    raw_response.status_code,
+                    raw_response.body,
+                    authorization.scope.retryable_http_statuses,
                 )
             ):
                 return normalized.result
@@ -380,10 +382,14 @@ def normalize_openai_compatible_raw_response(
     )
 
 
-def _retryable_bounded_response(status_code: int, body: bytes) -> bool:
+def _retryable_bounded_response(
+    status_code: int,
+    body: bytes,
+    retryable_http_statuses: tuple[int, ...],
+) -> bool:
     from ai_office.engine.workflow_bounded_job import _retryable_http_response
 
-    return _retryable_http_response(status_code, body)
+    return _retryable_http_response(status_code, body, retryable_http_statuses)
 
 
 def _retry_after_seconds(headers: tuple[tuple[str, str], ...]) -> int | None:

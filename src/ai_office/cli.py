@@ -1327,6 +1327,7 @@ def run_bounded_document_job_workflow(
     this confirmation prompt are not an identity or isolation boundary.
     """
     from ai_office.engine.workflow_bounded_job import (
+        _CURRENT_RETRYABLE_HTTP_STATUSES,
         BoundedJobActionSlot,
         WorkflowJobAuthorizationError,
         bounded_job_execution_view,
@@ -1557,7 +1558,7 @@ def run_bounded_document_job_workflow(
             "reviewer_count": reviewer_count,
             "max_retries": max_retries,
             "retry_interval_seconds": retry_interval_seconds,
-            "retryable_http_statuses": [429, 503],
+            "retryable_http_statuses": list(_CURRENT_RETRYABLE_HTTP_STATUSES),
             "provider_attempt_limit": max_normal_actions + max_retries,
             "revision_limit": max_revisions,
             "review_limit": review_limit,
