@@ -2834,7 +2834,9 @@ def _validate_bounded_job_retry_lineage(
             getattr(normalized.result, "category", None)
             in {"api_error", "invalid_response"}
             and status_code == raw.status_code
-            and _retryable_http_response(raw.status_code, raw.body)
+            and _retryable_http_response(
+                raw.status_code, raw.body, scope.retryable_http_statuses
+            )
         ):
             _raise_load("attempt_lineage")
     if pending_reservation:
