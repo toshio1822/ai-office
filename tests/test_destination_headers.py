@@ -273,12 +273,15 @@ def test_oversized_header_values_are_rejected() -> None:
         parse_configured_request_headers({"User-Agent": "x" * 513})
 
 
-def test_session_value_is_stable_run_scoped_and_non_masquerading() -> None:
-    assert session_value_for_run("m1-run-001") == "ai-office-run-m1-run-001"
-    assert session_value_for_run("m1-run-001") == session_value_for_run("m1-run-001")
-    assert session_value_for_run("m1-run-001") != session_value_for_run("m1-run-002")
-    assert "opencode" not in session_value_for_run("m1-run-001").lower()
-    assert "codex" not in session_value_for_run("m1-run-001").lower()
+def test_session_value_is_step_scoped_and_non_masquerading() -> None:
+    first = session_value_for_run("m1-run-001-step-1")
+    assert first == "ai-office-step-v6-m1-run-001-step-1"
+    assert first == session_value_for_run("m1-run-001-step-1")
+    assert first != session_value_for_run("m1-run-001-step-2")
+    assert first != session_value_for_run("m1-run-002-step-1")
+    assert first != "ai-office-run-m1-run-001-step-1"
+    assert "opencode" not in first.lower()
+    assert "codex" not in first.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +349,7 @@ def test_m1_run_sends_configured_headers_for_both_protocols(
     assert len(sent_headers) == 1
     headers = sent_headers[0]
     assert headers["user-agent"] == "ai-office/1.0"
-    assert headers["x-opencode-session"] == f"ai-office-run-{run_id}"
+    assert headers["x-opencode-session"] == f"ai-office-step-v6-{run_id}-step-1"
     assert headers["authorization"] == "Bearer offline-key"
 
 
@@ -581,8 +584,7 @@ def test_manifest_round_trip_preserves_request_headers(
 
     store = WorkflowRunManifestStore(run_store)
     manifest = load_workflow_run_manifest(store, run_id)
-    assert manifest.execution_destination is not None
-    headers = manifest.execution_destination.request_headers
+    headers = manifest.execution_destination_for_step(1).request_headers
     assert [(h.name, h.value) for h in headers] == [
         ("User-Agent", "ai-office/1.0"),
         ("x-opencode-session", SESSION_MARKER),
@@ -591,13 +593,13 @@ def test_manifest_round_trip_preserves_request_headers(
     raw = json.loads(
         (run_store / f"{run_id}.manifest.json").read_text(encoding="utf-8")
     )
-    assert raw["execution_destination"]["request_headers"] == [
+    assert raw["execution_destinations"][0]["request_headers"] == [
         ["User-Agent", "ai-office/1.0"],
         ["x-opencode-session", SESSION_MARKER],
     ]
 
 
-def test_headerless_v4_manifest_still_loads(
+def test_headerless_v6_manifest_still_loads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = tmp_path / "destinations.yaml"
@@ -624,9 +626,8 @@ def test_headerless_v4_manifest_still_loads(
     assert result.exit_code == 0, result.stderr
 
     manifest = load_workflow_run_manifest(WorkflowRunManifestStore(run_store), run_id)
-    assert manifest.execution_destination is not None
-    assert manifest.execution_destination.request_headers == ()
+    assert manifest.execution_destination_for_step(1).request_headers == ()
     raw = json.loads(
         (run_store / f"{run_id}.manifest.json").read_text(encoding="utf-8")
     )
-    assert "request_headers" not in raw["execution_destination"]
+    assert "request_headers" not in raw["execution_destinations"][0]

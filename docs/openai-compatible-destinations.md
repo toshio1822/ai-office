@@ -107,9 +107,10 @@ else is rejected.
 - `User-Agent` accepts only a static, safe identifying string. It never
   accepts `{run_session}` or any substitution.
 - `x-opencode-session` accepts only the single `{run_session}` marker, which
-  resolves to a stable value derived solely from the Run identity
-  (`ai-office-run-<run-id>`). It stays constant across steps, continuation and
-  recovery, and it does not masquerade as OpenCode or a coding agent.
+  resolves to a stable value derived from the exact Run/Step identity in the
+  v6 namespace (`ai-office-step-v6-<run-id>-step-<index>`). It stays constant
+  across continuation and explicit recovery of that Step, and it does not
+  masquerade as OpenCode or a coding agent.
 
 Because no arbitrary header name is allowed, there is no way to set a secret
 value (for example an `X-API-Key`) and have it persisted into the Run
@@ -120,11 +121,39 @@ existing transport control and cannot be overridden. Endpoint allowlisting,
 DNS pinning, redirect blocking, HTTPS and SSRF safeguards are unchanged.
 
 The effective header policy is part of the destination configuration
-fingerprint and the Run Manifest v5 snapshot. Changing the headers after a
-preview/approval invalidates the stale approval before credentials or
-network are consulted, and continuation/recovery cannot silently change
-headers or session identity. The application currently supports Manifest v5;
-this settings change adds no legacy-format migration or new Manifest schema.
+fingerprint and each Step's pinned Run Manifest destination snapshot. The v6
+namespace cannot collide with the former `ai-office-run-<run-id>` format and
+distinguishes each Run/Step, while remaining stable across continuation and
+explicit recovery. This separates application-supplied session identities; it
+cannot prove that a provider internally isolates conversation state. Changing
+headers or any other destination setting after preview/approval invalidates
+the stale approval before credentials or transport are consulted.
+
+## Per-Step destination selection and compatibility
+
+Each Workflow Step already owns its model. Destination selection can now be
+declared once as the Workflow's optional `execution_destination` default, then
+overridden by a Step's optional `execution_destination`. Resolution order is
+Step override, Workflow default, then the existing CLI `--execution-target`
+fallback. A CLI `--step-model STEP_ID=MODEL` override affects only a newly
+created Run; the effective model and destination are frozen before approval.
+Employees remain provider/model independent.
+
+The v6 Run Manifest is the sole authoritative format for all new Runs. A
+legacy Workflow with no selectors and one CLI destination still works: the CLI
+destination is pinned for every Step. The Manifest stores one effective
+destination snapshot per Step; old v5 records are rejected explicitly, without
+migration or reinterpretation. `continue` and `recover` use the exact pinned
+Step target and current registry only as a veto: missing, changed, or
+no-longer-allowed destinations/models stop before credential lookup or
+provider transport. There is no fallback or implicit retry.
+
+The existing approval and Evidence owners remain in use. Each Execution
+Approval, attempt, response, and Artifact lineage remains bound to its exact
+Step request and destination. Every bounded Job uses Scope v3, whose finite
+action slots bind each action to its provider and destination fingerprint;
+old Scope v2 records are rejected rather than migrated. No new grant or
+Evidence subsystem is added.
 
 Example Go Chat Completions destination (see
 `examples/openai-compatible-destinations.yaml`):
@@ -145,17 +174,13 @@ destinations:
 ```
 
 The canonical Git-managed `opencode-go-chat` is one destination with three
-model choices. This permits `article-production` to assign a different
-allowlisted model to each Step while a bounded Job retains one execution
-target. Its Workflow defaults still need explicit overrides when they are not
-in the selected destination's allowlist. This Issue changes only Git-managed
-settings; the Linux operational registry remains unchanged until a separately
-reviewed manual application. The destination identity is now model-neutral
-(`opencode-go-chat`) rather than DeepSeek-specific; its identifier and broader
-allowlist contribute to the new fingerprint, so previous previews and approvals
-cannot be reused. Historical Runs keep their original evidence and are not
-rewritten. Any provider execution remains a separate, explicitly authorized
-action.
+model choices. A Workflow may route selected Steps to another registered
+destination when its model is in that destination's allowlist. This Issue
+changes only the application code and operator documentation; the Linux
+operational registry remains unchanged until a separately reviewed manual
+application. Historical Runs keep their original manifests and Evidence and
+are not rewritten. Any provider execution remains separately and explicitly
+authorized.
 
 ## OpenCode Go usage caveats
 

@@ -3155,7 +3155,7 @@ def test_workflows_start_preview_is_read_only_and_displays_exact_approval_bindin
         "run_id": "run-1",
         "run_input": "Research the requested topic exactly as supplied.",
         "request_fingerprint": (
-            "b365306de87e76a04bdcf3acb03b82b2ed257755a754bbd3ca8e7bd7972a3ee2"
+            "3bc40887b7f611bfe4a1e8dd1ef3350c8a2a28bfe1ff6e321a0074b992745d57"
         ),
         "manifest_digest": str(ensure_run_manifest(paths).manifest_digest),
         "resolved_tools": [],
@@ -3655,7 +3655,7 @@ def test_workflows_continue_preview_is_read_only_and_uses_persisted_next_step_fa
     assert preview["step_index"] == 2
     assert preview["employee_id"] == "general-researcher"
     assert preview["request_fingerprint"] == (
-        "9ef3a461681040e6114ecbc38a02d362ceb36a77802cdaad2ff26e3c73d20949"
+        "d8f970cf6c58828fb770125d66eb0e156dd5b65e0a36b37b03a9ee18adc65e75"
     )
     assert [fact["key"] for fact in preview["runtime_facts"]["facts"]] == [
         "predecessor.employee_id",

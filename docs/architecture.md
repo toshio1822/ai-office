@@ -98,10 +98,10 @@ Business Approval required 動作を維持する。明示的な `false` は Busi
 Publication Approval、Recovery Approval を許可するものではない。
 
 この有効な policy は Run Manifest の workflow snapshot に含まれ、canonical bytes と
-digest に pin される。新規Runは単一の `workflow-run-manifest.v5` 形式を使い、各Stepのmodelと組み込み
-OpenAI/OmniRouteおよび管理者登録済みOpenAI互換destinationについて、宛先・protocol・
-endpoint・credential参照・header policy・fingerprintを同じManifestに固定する。未運用段階
-のv2/v3および旧model所有権を持つv4 Manifestは読み込まず、自動移行もしない。
+digest に pin される。すべての新規Runは単一の `workflow-run-manifest.v6` 形式を使い、
+各Stepのmodelと組み込みOpenAI/OmniRouteおよび管理者登録済みOpenAI互換destination
+について、宛先・protocol・endpoint・credential参照・header policy・fingerprintを
+Step順の配列で固定する。旧Manifest形式は読み込まず、自動移行もしない。
 
 Approval evidence は同じ `WorkflowRunManifestStore` の Run namespace に、目的別の
 canonical JSON sidecar として排他的に保存する。
@@ -176,8 +176,9 @@ normalized result sidecar は exact attempt と raw-response digest（raw respon
 
 provider transport を所有する実行境界はRun-bound Execution Evidenceを必須とし、request、
 resolved tools、Execution Approval、targetが同じcontextに束縛されない場合はtransportへ
-進めない。targetとmodelは承認済みRun Manifest v4から導出し、既存Runの実行時にCLIやYAMLから
-再選択しない。現在の管理者destination policyは許可・失効の拒否だけを行い、接続先を置換しない。
+進めない。modelと有効なtargetは承認済みv6 Run ManifestのStep順snapshotから導出し、
+既存Runの実行時にCLIやYAMLから再選択しない。旧v5 Manifestはfail-closedで拒否する。
+現在の管理者destination policyは許可・失効の拒否だけを行い、接続先を置換しない。
 request/payload生成などprovider-free処理自体はEvidenceを要求しない。normalized
 resultのprovenanceは作成時に固定され、後付けで別attemptへ変更するAPIは提供しない。
 Run-bound terminal persistenceは参照attempt/result/raw evidenceをauthoritative namespaceから
@@ -189,7 +190,7 @@ Artifact、provider failover、generic event-sourcing framework はこの eviden
 
 ## Current workflow Artifacts (Milestone 4)
 
-Workflow step は `artifact_content_type` に具体的な media type を指定して、成功した正規化済み step output を Artifact として保存する。省略した step は Artifact を作らない。単一の `workflow-run-manifest.v5` は各Stepのmodel、このpolicy/content typeと、すべてのRunに必須のdestination snapshotをpinする。
+Workflow step は `artifact_content_type` に具体的な media type を指定して、成功した正規化済み step output を Artifact として保存する。省略した step は Artifact を作らない。`workflow-run-manifest.v6` は各Stepのmodel、policy/content type、宣言selectorと有効なdestination snapshotを同じstep順でpinする。Destination未指定のWorkflowはCLIの既定targetを各Stepに適用する。旧v5 Manifestは読み込まず、保存済みのRun/Evidence/Artifactを変更・移行しない。
 
 Artifact は Run namespace 内の canonical immutable record で、Run/Manifest、workflow/step/index/employee、content bytes の SHA-256 と byte length、execution attempt、attempt evidence、normalized result、該当する raw-response digest、および successful terminal event digest を束縛する。保存済み Manifest と authoritative execution evidence からのみ生成し、同じ Artifact identity の異なる bytes/metadata は拒否する。persisted success の routing 前に required Artifact を確立し、保存が失敗しても成功済み state/event は維持する。再開時は既存 evidence から missing Artifact を完成し、provider を再実行しない。
 

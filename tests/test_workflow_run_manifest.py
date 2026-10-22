@@ -32,9 +32,11 @@ from ai_office.engine.workflow_run_manifest import (
     load_workflow_run_manifest,
     persist_workflow_run_manifest,
     serialize_workflow_run_manifest_canonical,
+    workflow_definition_from_run_manifest,
     workflow_run_manifest_canonical_bytes,
     workflow_run_manifest_digest,
 )
+from ai_office.execution_destination import load_execution_destination_registry
 from ai_office.tools import (
     ToolCatalog,
     ToolDefinition,
@@ -154,7 +156,7 @@ def test_create_load_round_trip_preserves_exact_run_meaning_and_digest(
     assert b"source-workflow.yaml" not in contents
     assert b"source-researcher.yaml" not in contents
     assert set(json.loads(contents)) == {
-        "execution_destination",
+        "execution_destinations",
         "employee_snapshots",
         "run_id",
         "run_input",
@@ -163,6 +165,98 @@ def test_create_load_round_trip_preserves_exact_run_meaning_and_digest(
         "workflow_id",
         "workflow_snapshot",
     }
+
+
+def test_manifest_pins_selector_resolution_for_each_step(
+    tmp_path: Path,
+) -> None:
+    registry_path = tmp_path / "destinations.yaml"
+    registry_path.write_text(
+        yaml.safe_dump(
+            {
+                "destinations": {
+                    "responses-target": {
+                        "endpoint": "https://responses.example.com/v1/responses",
+                        "protocol": "openai-responses",
+                        "credential": "RESPONSES_API_KEY",
+                        "models": ["responses-model"],
+                    },
+                    "chat-target": {
+                        "endpoint": "https://chat.example.com/v1/chat/completions",
+                        "protocol": "openai-chat-completions",
+                        "credential": "CHAT_API_KEY",
+                        "models": ["chat-model"],
+                    },
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    registry = load_execution_destination_registry(registry_path)
+    responses_target = registry.resolve("responses-target").target
+    chat_target = registry.resolve("chat-target").target
+    loaded = LoadedWorkflow(
+        source_path=Path("source-workflow.yaml"),
+        definition=WorkflowDefinition(
+            id="research-workflow",
+            name="Research Workflow",
+            description="Researches the assigned subject.",
+            execution_destination="responses-target",
+            steps=[
+                WorkflowStepDefinition(
+                    id="research",
+                    name="Research",
+                    employee="researcher",
+                    model="chat-model",
+                    execution_destination="chat-target",
+                    instructions="Gather relevant information.",
+                ),
+                WorkflowStepDefinition(
+                    id="summarize",
+                    name="Summarize",
+                    employee="researcher",
+                    model="responses-model",
+                    instructions="Summarize the findings.",
+                ),
+            ],
+        ),
+    )
+
+    value = build_workflow_run_manifest(
+        "run-routed",
+        "Research Company ABC.",
+        loaded,
+        [employee()],
+        execution_targets=(chat_target, responses_target),
+    )
+    run_root = tmp_path / "runs"
+    run_root.mkdir(mode=0o700)
+    store = WorkflowRunManifestStore(run_root)
+    persisted = create_workflow_run_manifest(
+        store,
+        "run-routed",
+        "Research Company ABC.",
+        loaded,
+        [employee()],
+        execution_targets=(chat_target, responses_target),
+    )
+    restored = load_workflow_run_manifest(store, "run-routed")
+
+    assert value.schema_version == "workflow-run-manifest.v6"
+    assert value.execution_destination_for_step(1).provider == "chat-target"
+    assert value.execution_destination_for_step(2).provider == "responses-target"
+    assert value.workflow_snapshot.execution_destination == "responses-target"
+    assert value.workflow_snapshot.steps[0].execution_destination == "chat-target"
+    assert value.schema_version == "workflow-run-manifest.v6"
+    encoded = json.loads(workflow_run_manifest_canonical_bytes(value))
+    assert "execution_destination" not in encoded
+    assert [item["provider"] for item in encoded["execution_destinations"]] == [
+        "chat-target",
+        "responses-target",
+    ]
+    assert persisted == restored == value
+    assert workflow_definition_from_run_manifest(restored) == loaded.definition
 
 
 def test_semantically_identical_values_have_identical_canonical_bytes() -> None:
@@ -250,27 +344,18 @@ def test_artifact_policy_is_pinned_and_changes_manifest_identity() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "schema_version",
-    (
-        "workflow-run-manifest.v2",
-        "workflow-run-manifest.v3",
-        "workflow-run-manifest.v4",
-    ),
-)
-def test_unsupported_preproduction_manifest_versions_are_rejected(
-    tmp_path: Path, schema_version: str
-) -> None:
+def test_old_v5_manifest_is_rejected_without_migration(tmp_path: Path) -> None:
     store = WorkflowRunManifestStore(tmp_path)
     create_workflow_run_manifest(
         store, "run-1", "request", workflow(), [employee()]
     )
     value = json.loads(store.manifest_path("run-1").read_text(encoding="utf-8"))
-    value["schema_version"] = schema_version
-    value.pop("execution_destination")
-    if schema_version == "workflow-run-manifest.v2":
-        for step in value["workflow_snapshot"]["steps"]:
-            step.pop("artifact_content_type")
+    value["schema_version"] = "workflow-run-manifest.v5"
+    value["execution_destination"] = value["execution_destinations"][0]
+    del value["execution_destinations"]
+    value["workflow_snapshot"].pop("execution_destination")
+    for step in value["workflow_snapshot"]["steps"]:
+        step.pop("execution_destination")
     store.manifest_path("run-1").write_text(
         json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
         encoding="utf-8",
@@ -284,17 +369,18 @@ def test_new_run_manifest_always_pins_builtin_destination_and_model() -> None:
     value = manifest()
     encoded = json.loads(workflow_run_manifest_canonical_bytes(value))
 
-    assert value.schema_version == "workflow-run-manifest.v5"
-    assert value.execution_destination.provider == "openai"
+    assert value.schema_version == "workflow-run-manifest.v6"
+    destination = value.execution_destination_for_step(1)
+    assert destination.provider == "openai"
     assert (
-        value.execution_destination.endpoint == "https://api.openai.com/v1/responses"
+        destination.endpoint == "https://api.openai.com/v1/responses"
     )
     assert (
-        value.execution_destination.credential_environment_variable
+        destination.credential_environment_variable
         == "OPENAI_API_KEY"
     )
-    assert encoded["execution_destination"]["fingerprint"] == (
-        value.execution_destination.fingerprint
+    assert encoded["execution_destinations"][0]["fingerprint"] == (
+        destination.fingerprint
     )
 
 
@@ -607,5 +693,5 @@ def test_manifest_constructor_rejects_unbound_or_invalid_values() -> None:
             workflow_snapshot=value.workflow_snapshot,
             employee_snapshots=value.employee_snapshots,
             tool_contracts=value.tool_contracts,
-            execution_destination=value.execution_destination,
+            execution_destinations=value.execution_destinations,
         )

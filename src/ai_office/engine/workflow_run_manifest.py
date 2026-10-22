@@ -43,7 +43,7 @@ from ai_office.tools import (
     resolve_tool_names,
 )
 
-_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v5"
+_MANIFEST_SCHEMA_VERSION = "workflow-run-manifest.v6"
 _MANIFEST_ERROR_MESSAGE = "workflow run manifest is invalid"
 _PERSISTENCE_ERROR_MESSAGE = "workflow run manifest persistence failed"
 _LOAD_ERROR_MESSAGE = "workflow run manifest could not be loaded"
@@ -55,7 +55,7 @@ _CONTENT_TYPE_PATTERN = re.compile(
 _PATH_TYPE = type(Path())
 _MANIFEST_KEYS = frozenset(
     {
-        "execution_destination",
+        "execution_destinations",
         "employee_snapshots",
         "run_id",
         "run_input",
@@ -77,12 +77,15 @@ _EXECUTION_DESTINATION_KEYS = frozenset(
     }
 )
 _OPTIONAL_EXECUTION_DESTINATION_KEYS = frozenset({"request_headers"})
-_WORKFLOW_KEYS = frozenset({"description", "id", "name", "steps"})
+_WORKFLOW_KEYS = frozenset(
+    {"description", "execution_destination", "id", "name", "steps"}
+)
 _WORKFLOW_STEP_KEYS = frozenset(
     {
         "artifact_content_type",
         "business_approval_required",
         "employee",
+        "execution_destination",
         "id",
         "instructions",
         "model",
@@ -102,7 +105,7 @@ class WorkflowRunManifestFailureDetail:
 
 
 class WorkflowRunManifestError(ValueError):
-    """Raised when a Run Manifest value is not the canonical v5 contract."""
+    """Raised when a Run Manifest value violates a supported contract."""
 
     def __init__(self, classification: str = "contract") -> None:
         super().__init__(_MANIFEST_ERROR_MESSAGE)
@@ -122,7 +125,7 @@ class WorkflowRunManifestConflictError(WorkflowRunManifestPersistenceError):
 
 
 class WorkflowRunManifestLoadError(WorkflowRunManifestError):
-    """Raised when a target is not an exact canonical v5 manifest."""
+    """Raised when a target is not an exact canonical Run Manifest."""
 
     def __init__(self, classification: str = "load") -> None:
         ValueError.__init__(self, _LOAD_ERROR_MESSAGE)
@@ -140,6 +143,7 @@ class WorkflowStepSnapshot:
     instructions: str
     business_approval_required: bool
     artifact_content_type: str | None = None
+    execution_destination: str | None = None
 
     def __post_init__(self) -> None:
         _validate_workflow_step_snapshot(self)
@@ -154,6 +158,7 @@ class WorkflowDefinitionSnapshot:
     description: str
     steps: tuple[WorkflowStepSnapshot, ...]
     bounded_review: BoundedReviewSnapshot | None = None
+    execution_destination: str | None = None
 
     def __post_init__(self) -> None:
         _validate_workflow_snapshot(self)
@@ -254,14 +259,14 @@ class WorkflowRunManifest:
     each employee's allowed-tool order remain semantic and are preserved.
     """
 
-    schema_version: Literal["workflow-run-manifest.v5"]
+    schema_version: Literal["workflow-run-manifest.v6"]
     run_id: str
     workflow_id: str
     run_input: str
     workflow_snapshot: WorkflowDefinitionSnapshot
     employee_snapshots: tuple[EmployeeDefinitionSnapshot, ...]
     tool_contracts: tuple[ToolContractSnapshot, ...]
-    execution_destination: ExecutionDestinationSnapshot
+    execution_destinations: tuple[ExecutionDestinationSnapshot, ...]
 
     def __post_init__(self) -> None:
         _validate_manifest(self)
@@ -280,6 +285,16 @@ class WorkflowRunManifest:
     def digest(self) -> str:
         """Return SHA-256 over this manifest's exact canonical UTF-8 bytes."""
         return workflow_run_manifest_digest(self)
+
+    def execution_destination_for_step(
+        self, step_index: int
+    ) -> ExecutionDestinationSnapshot:
+        """Return the destination pinned for one 1-based workflow step."""
+        if type(step_index) is not int or not 1 <= step_index <= len(
+            self.workflow_snapshot.steps
+        ):
+            _raise_manifest("execution_destination_step")
+        return self.execution_destinations[step_index - 1]
 
 
 @dataclass(frozen=True)
@@ -341,6 +356,7 @@ def build_workflow_run_manifest(
     *,
     tool_catalog: ToolCatalog = DEFAULT_TOOL_CATALOG,
     execution_target: ModelExecutionTarget | None = None,
+    execution_targets: Sequence[ModelExecutionTarget] | None = None,
 ) -> WorkflowRunManifest:
     """Build one detached manifest from validated definition inputs.
 
@@ -361,27 +377,6 @@ def build_workflow_run_manifest(
         _raise_manifest("employees")
     if any(type(employee) is not LoadedEmployee for employee in employees):
         _raise_manifest("employees")
-    if execution_target is None:
-        from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
-
-        execution_target = DIRECT_OPENAI_EXECUTION_TARGET
-    try:
-        execution_target = validate_execution_target_for_provider(execution_target)
-        destination_snapshot = ExecutionDestinationSnapshot(
-            provider=execution_target.provider,
-            protocol=execution_target.protocol,
-            endpoint=execution_target.endpoint,
-            credential_environment_variable=(
-                execution_target.credential_environment_variable
-            ),
-            allow_loopback_http=execution_target.allow_loopback_http,
-            configuration_fingerprint=(execution_target.configuration_fingerprint),
-            fingerprint=execution_target_fingerprint(execution_target),
-            request_headers=execution_target.request_headers,
-        )
-    except Exception:
-        _raise_manifest("execution_destination")
-
     # Keep the existing workflow-reference validator as the authoritative
     # lower-level employee-reference check, including its safe error type.
     validate_workflow_employee_references([workflow], list(employees))
@@ -395,6 +390,51 @@ def build_workflow_run_manifest(
     workflow_definition = workflow.definition
     if type(workflow_definition) is not WorkflowDefinition:
         _raise_manifest("workflow_definition")
+    has_declared_destinations = (
+        workflow_definition.execution_destination is not None
+        or any(
+            step.execution_destination is not None
+            for step in workflow_definition.steps
+        )
+    )
+    if execution_targets is None:
+        if has_declared_destinations:
+            _raise_manifest("execution_destinations")
+        if execution_target is None:
+            from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
+
+            execution_target = DIRECT_OPENAI_EXECUTION_TARGET
+        raw_execution_targets = (execution_target,) * len(workflow_definition.steps)
+    else:
+        if execution_target is not None:
+            _raise_manifest("execution_destinations")
+        if (
+            not isinstance(execution_targets, Sequence)
+            or isinstance(execution_targets, (str, bytes))
+            or len(execution_targets) != len(workflow_definition.steps)
+        ):
+            _raise_manifest("execution_destinations")
+        raw_execution_targets = tuple(execution_targets)
+    try:
+        resolved_targets = tuple(
+            validate_execution_target_for_provider(target)
+            for target in raw_execution_targets
+        )
+        destination_snapshots = tuple(
+            _execution_destination_snapshot(target) for target in resolved_targets
+        )
+    except Exception:
+        _raise_manifest("execution_destinations")
+    if any(
+        selector is not None and selector != target.provider
+        for step, target in zip(
+            workflow_definition.steps, resolved_targets, strict=True
+        )
+        for selector in (
+            step.execution_destination or workflow_definition.execution_destination,
+        )
+    ):
+        _raise_manifest("execution_destination_selection")
     workflow_snapshot = WorkflowDefinitionSnapshot(
         id=workflow_definition.id,
         name=workflow_definition.name,
@@ -412,6 +452,7 @@ def build_workflow_run_manifest(
             if workflow_definition.bounded_review is not None
             else None
         ),
+        execution_destination=workflow_definition.execution_destination,
     )
 
     referenced_employee_ids = {step.employee for step in workflow_definition.steps}
@@ -441,7 +482,7 @@ def build_workflow_run_manifest(
         workflow_snapshot=workflow_snapshot,
         employee_snapshots=employee_snapshots,
         tool_contracts=tool_contracts,
-        execution_destination=destination_snapshot,
+        execution_destinations=destination_snapshots,
     )
 
 
@@ -454,6 +495,7 @@ def create_workflow_run_manifest(
     *,
     tool_catalog: ToolCatalog = DEFAULT_TOOL_CATALOG,
     execution_target: ModelExecutionTarget | None = None,
+    execution_targets: Sequence[ModelExecutionTarget] | None = None,
 ) -> WorkflowRunManifest:
     """Build and durably create one Run Manifest before any execution.
 
@@ -469,6 +511,7 @@ def create_workflow_run_manifest(
         employees,
         tool_catalog=tool_catalog,
         execution_target=execution_target,
+        execution_targets=execution_targets,
     )
     _persist_workflow_run_manifest(_manifest_path(store, run_id), manifest)
     return manifest
@@ -572,12 +615,14 @@ def workflow_definition_from_run_manifest(
             "id": snapshot.id,
             "name": snapshot.name,
             "description": snapshot.description,
+            "execution_destination": snapshot.execution_destination,
             "steps": [
                 {
                     "id": step.id,
                     "name": step.name,
                     "employee": step.employee,
                     "model": step.model,
+                    "execution_destination": step.execution_destination,
                     "instructions": step.instructions,
                     "business_approval_required": step.business_approval_required,
                     "artifact_content_type": step.artifact_content_type,
@@ -717,6 +762,7 @@ def _workflow_step_snapshot(step: WorkflowStepDefinition) -> WorkflowStepSnapsho
             instructions=step.instructions,
             business_approval_required=step.business_approval_required,
             artifact_content_type=step.artifact_content_type,
+            execution_destination=step.execution_destination,
         )
     except WorkflowRunManifestError:
         raise
@@ -805,9 +851,12 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
         "workflow_id": manifest.workflow_id,
         "workflow_snapshot": {
             "description": workflow.description,
+            "execution_destination": workflow.execution_destination,
             "id": workflow.id,
             "name": workflow.name,
-            "steps": [_workflow_step_dict(step) for step in workflow.steps],
+            "steps": [
+                _workflow_step_dict(step) for step in workflow.steps
+            ],
             **(
                 {
                     "bounded_review": {
@@ -822,23 +871,9 @@ def _manifest_dict(manifest: WorkflowRunManifest) -> dict[str, object]:
             ),
         },
     }
-    destination = manifest.execution_destination
-    destination_value: dict[str, object] = {
-        "allow_loopback_http": destination.allow_loopback_http,
-        "configuration_fingerprint": destination.configuration_fingerprint,
-        "credential_environment_variable": (
-            destination.credential_environment_variable
-        ),
-        "endpoint": destination.endpoint,
-        "fingerprint": destination.fingerprint,
-        "protocol": destination.protocol,
-        "provider": destination.provider,
-    }
-    if destination.request_headers:
-        destination_value["request_headers"] = [
-            [header.name, header.value] for header in destination.request_headers
-        ]
-    value["execution_destination"] = destination_value
+    value["execution_destinations"] = [
+        _execution_destination_dict(item) for item in manifest.execution_destinations
+    ]
     return value
 
 
@@ -852,22 +887,53 @@ def _workflow_step_dict(step: WorkflowStepSnapshot) -> dict[str, object]:
         "name": step.name,
     }
     value["artifact_content_type"] = step.artifact_content_type
+    value["execution_destination"] = step.execution_destination
     return value
+
+
+def _execution_destination_dict(
+    destination: ExecutionDestinationSnapshot,
+) -> dict[str, object]:
+    value: dict[str, object] = {
+        "allow_loopback_http": destination.allow_loopback_http,
+        "configuration_fingerprint": destination.configuration_fingerprint,
+        "credential_environment_variable": (
+            destination.credential_environment_variable
+        ),
+        "endpoint": destination.endpoint,
+        "fingerprint": destination.fingerprint,
+        "protocol": destination.protocol,
+        "provider": destination.provider,
+    }
+    if destination.request_headers:
+        value["request_headers"] = [
+            [header.name, header.value] for header in destination.request_headers
+        ]
+    return value
+
+
+def _execution_destination_snapshot(
+    target: ModelExecutionTarget,
+) -> ExecutionDestinationSnapshot:
+    return ExecutionDestinationSnapshot(
+        provider=target.provider,
+        protocol=target.protocol,
+        endpoint=target.endpoint,
+        credential_environment_variable=target.credential_environment_variable,
+        allow_loopback_http=target.allow_loopback_http,
+        configuration_fingerprint=target.configuration_fingerprint,
+        fingerprint=execution_target_fingerprint(target),
+        request_headers=target.request_headers,
+    )
 
 
 def _validate_manifest(manifest: object) -> None:
     if type(manifest) is not WorkflowRunManifest:
         _raise_manifest("manifest_type")
     assert isinstance(manifest, WorkflowRunManifest)
-    if (
-        type(manifest.schema_version) is not str
-        or manifest.schema_version != _MANIFEST_SCHEMA_VERSION
-    ):
+    if manifest.schema_version != _MANIFEST_SCHEMA_VERSION:
         _raise_manifest("schema_version")
     _validate_run_identity(manifest.run_id)
-    if type(manifest.execution_destination) is not ExecutionDestinationSnapshot:
-        _raise_manifest("execution_destination")
-    manifest.execution_destination.__post_init__()
     if type(manifest.run_input) is not str:
         _raise_manifest("run_input")
     _validate_definition_id(manifest.workflow_id)
@@ -876,6 +942,23 @@ def _validate_manifest(manifest: object) -> None:
     _validate_workflow_snapshot(manifest.workflow_snapshot)
     if manifest.workflow_id != manifest.workflow_snapshot.id:
         _raise_manifest("workflow_identity")
+    destinations = manifest.execution_destinations
+    if (
+        type(destinations) is not tuple
+        or len(destinations) != len(manifest.workflow_snapshot.steps)
+        or any(type(item) is not ExecutionDestinationSnapshot for item in destinations)
+    ):
+        _raise_manifest("execution_destinations")
+    for step, destination in zip(
+        manifest.workflow_snapshot.steps, destinations, strict=True
+    ):
+        destination.__post_init__()
+        selector = (
+            step.execution_destination
+            or manifest.workflow_snapshot.execution_destination
+        )
+        if selector is not None and selector != destination.provider:
+            _raise_manifest("execution_destination_selection")
     if type(manifest.employee_snapshots) is not tuple:
         _raise_manifest("employee_snapshots")
     if any(
@@ -921,6 +1004,8 @@ def _validate_workflow_step_snapshot(snapshot: object) -> None:
     if type(snapshot.business_approval_required) is not bool:
         _raise_manifest("business_approval_policy")
     _validate_artifact_content_type(snapshot.artifact_content_type)
+    if snapshot.execution_destination is not None:
+        _validate_definition_id(snapshot.execution_destination)
 
 
 def _validate_workflow_snapshot(snapshot: object) -> None:
@@ -930,6 +1015,8 @@ def _validate_workflow_snapshot(snapshot: object) -> None:
     _validate_definition_id(snapshot.id)
     _validate_nonblank_text(snapshot.name, "workflow_name")
     _validate_nonblank_text(snapshot.description, "workflow_description")
+    if snapshot.execution_destination is not None:
+        _validate_definition_id(snapshot.execution_destination)
     if type(snapshot.steps) is not tuple or not snapshot.steps:
         _raise_manifest("workflow_steps")
     if any(type(step) is not WorkflowStepSnapshot for step in snapshot.steps):
@@ -1187,10 +1274,11 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         if frozenset(value) != _MANIFEST_KEYS:
             _raise_load("keys")
         workflow_value = value["workflow_snapshot"]
-        if type(workflow_value) is not dict or frozenset(workflow_value) not in {
-            _WORKFLOW_KEYS,
-            _WORKFLOW_KEYS | {"bounded_review"},
-        }:
+        expected_workflow_keys = {_WORKFLOW_KEYS, _WORKFLOW_KEYS | {"bounded_review"}}
+        if (
+            type(workflow_value) is not dict
+            or frozenset(workflow_value) not in expected_workflow_keys
+        ):
             _raise_load("workflow_snapshot")
         step_values = workflow_value["steps"]
         if type(step_values) is not list:
@@ -1207,31 +1295,11 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
             _raise_load("tool_contracts")
         tools = tuple(_parse_tool(item) for item in tool_values)
 
-        destination_value = value["execution_destination"]
-        if type(destination_value) is not dict or frozenset(destination_value) not in {
-            _EXECUTION_DESTINATION_KEYS,
-            _EXECUTION_DESTINATION_KEYS | _OPTIONAL_EXECUTION_DESTINATION_KEYS,
-        }:
-            _raise_load("execution_destination")
-        request_headers: tuple[ConfiguredRequestHeader, ...] = ()
-        if "request_headers" in destination_value:
-            try:
-                request_headers = request_headers_from_records(
-                    destination_value["request_headers"]
-                )
-            except ConfiguredRequestHeaderError:
-                _raise_load("execution_destination")
-        destination = ExecutionDestinationSnapshot(
-            provider=destination_value["provider"],
-            protocol=destination_value["protocol"],
-            endpoint=destination_value["endpoint"],
-            credential_environment_variable=destination_value[
-                "credential_environment_variable"
-            ],
-            allow_loopback_http=destination_value["allow_loopback_http"],
-            configuration_fingerprint=destination_value["configuration_fingerprint"],
-            fingerprint=destination_value["fingerprint"],
-            request_headers=request_headers,
+        raw_destinations = value["execution_destinations"]
+        if type(raw_destinations) is not list:
+            _raise_load("execution_destinations")
+        destinations = tuple(
+            _parse_execution_destination(item) for item in raw_destinations
         )
 
         return WorkflowRunManifest(
@@ -1244,6 +1312,7 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
                 name=workflow_value["name"],
                 description=workflow_value["description"],
                 steps=steps,
+                execution_destination=workflow_value["execution_destination"],
                 bounded_review=(
                     BoundedReviewSnapshot(
                         workflow_value["bounded_review"]["draft_step"],
@@ -1257,7 +1326,7 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
             ),
             employee_snapshots=employees,
             tool_contracts=tools,
-            execution_destination=destination,
+            execution_destinations=destinations,
         )
     except WorkflowRunManifestLoadError:
         raise
@@ -1265,6 +1334,35 @@ def _parse_manifest(value: object) -> WorkflowRunManifest:
         _raise_load("manifest")
     except Exception:
         _raise_load("manifest")
+
+
+def _parse_execution_destination(value: object) -> ExecutionDestinationSnapshot:
+    if type(value) is not dict or frozenset(value) not in {
+        _EXECUTION_DESTINATION_KEYS,
+        _EXECUTION_DESTINATION_KEYS | _OPTIONAL_EXECUTION_DESTINATION_KEYS,
+    }:
+        _raise_load("execution_destination")
+    request_headers: tuple[ConfiguredRequestHeader, ...] = ()
+    if "request_headers" in value:
+        try:
+            request_headers = request_headers_from_records(value["request_headers"])
+        except ConfiguredRequestHeaderError:
+            _raise_load("execution_destination")
+    try:
+        return ExecutionDestinationSnapshot(
+            provider=value["provider"],
+            protocol=value["protocol"],
+            endpoint=value["endpoint"],
+            credential_environment_variable=value[
+                "credential_environment_variable"
+            ],
+            allow_loopback_http=value["allow_loopback_http"],
+            configuration_fingerprint=value["configuration_fingerprint"],
+            fingerprint=value["fingerprint"],
+            request_headers=request_headers,
+        )
+    except Exception:
+        _raise_load("execution_destination")
 
 
 def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
@@ -1279,6 +1377,7 @@ def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
             instructions=value["instructions"],
             business_approval_required=value["business_approval_required"],
             artifact_content_type=value["artifact_content_type"],
+            execution_destination=value["execution_destination"],
         )
     except Exception:
         _raise_load("workflow_step")

@@ -27,6 +27,9 @@ class WorkflowStepDefinition(BaseModel):
     name: str
     employee: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     model: str
+    execution_destination: str | None = Field(
+        default=None, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    )
     instructions: str
     business_approval_required: bool = True
     artifact_content_type: str | None = Field(
@@ -75,6 +78,9 @@ class WorkflowDefinition(BaseModel):
     id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     name: str
     description: str
+    execution_destination: str | None = Field(
+        default=None, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    )
     steps: list[WorkflowStepDefinition] = Field(min_length=1)
     bounded_review: BoundedReviewDefinition | None = None
 
