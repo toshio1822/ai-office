@@ -3291,6 +3291,11 @@ def test_review_verdict_requires_one_unambiguous_declaration() -> None:
         "Assessment: The quoted sentence states the required boundary."
     )
     assert _review_verdict(grounded_pass, review_input=review_input) == "PASS"
+    inline_code_pass = grounded_pass.replace(
+        "Unresolved material issues: none",
+        "`Unresolved material issues: none`",
+    )
+    assert _review_verdict(inline_code_pass, review_input=review_input) == "PASS"
     with pytest.raises(WorkflowJobAuthorizationError) as caught:
         _review_verdict("Verdict: PASS", review_input=review_input)
     assert caught.value.classification == "document_job_nonactionable_review"
@@ -3312,6 +3317,23 @@ def test_review_verdict_requires_one_unambiguous_declaration() -> None:
             "document_job_nonactionable_review",
             "document_job_unverified_finding",
         }
+
+    invalid_unresolved_declarations = (
+        "`Unresolved material issues: none",
+        "Unresolved material issues: `none`",
+        "`Unresolved material issues: none` with explanation",
+        "> Unresolved material issues: none",
+        "    Unresolved material issues: none",
+        "```text\nUnresolved material issues: none\n```",
+        "Unresolved material issues: none\n`Unresolved material issues: none`",
+    )
+    for declaration in invalid_unresolved_declarations:
+        invalid_pass = grounded_pass.replace(
+            "Unresolved material issues: none", declaration
+        )
+        with pytest.raises(WorkflowJobAuthorizationError) as caught:
+            _review_verdict(invalid_pass, review_input=review_input)
+        assert caught.value.classification == "document_job_nonactionable_review"
 
     quoted_examples_with_verdict = (
         "Assessment summary.\n"
