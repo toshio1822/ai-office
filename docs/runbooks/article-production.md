@@ -89,6 +89,64 @@ the new Artifact is re-reviewed by all declared reviewers.
 4. Use offline fake-transport tests for implementation verification. These do
    not prove model judgment or authorize a live provider call.
 
+## Preparing an article Assignment
+
+Put article-specific requirements in the Assignment (Run Input): purpose,
+reader, content, facts, boundaries, and output. The Style Profile guides
+expression (voice, sentence length, distance, and first-person phrasing only
+when supported by supplied intent); it does not fill in missing facts or
+experience. Workflow and Employees define reusable writing/review work. The
+engine enforces approvals, limits, state, and Evidence—not semantic truth or
+prose quality.
+
+For each brief, specify only what is relevant; this is a checklist, not a fixed
+outline:
+
+1. **Purpose and reader:** Who has what question? Should the article inform,
+   support a decision, or guide an action?
+2. **Main point:** What should the reader take away? Have a human supply the
+   author's actual position or experience; do not invent either.
+3. **Topics and depth:** For each key topic, say whether naming it is enough or
+   readers need a definition, context, conditions, comparison, use case,
+   limitation, or next step.
+4. **Facts and boundaries:** List supplied sources/facts, unknowns, claims to
+   avoid, and any distinction between general explanation and first-hand
+   experience. Do not imply research or testing that was not provided.
+5. **Medium and output:** State format and an approximate length when useful.
+   A target is not permission to pad; use exact limits only when important.
+6. **Acceptance:** Check coverage separately from depth: can this reader
+   understand the key points and decide or act as intended, within the supplied
+   evidence and author intent?
+
+An optional planning prompt is **what must be explained, why it matters to this
+reader, and what they can then decide or do?** Use only the parts the brief
+needs.
+
+- Shallow: “Introduce Xfce and LXQt as lightweight desktop environments.”
+- Deeper: “Briefly explain that a desktop environment provides the graphical
+  workspace, give Xfce and LXQt as examples, and note that comfort depends on
+  the computer and workload; help readers try their own setup.”
+
+The deeper instruction adds context and a reader-facing implication without
+inventing a benchmark or personal test. This is not a mandatory three-part
+structure, topic count, first-person voice, or minimum word count.
+
+One observed comparison motivates this guidance but does not prove causation:
+Issues [#796](https://github.com/toshio1822/ai-office/issues/796) and
+[#799](https://github.com/toshio1822/ai-office/issues/799) used the same topic
+and Style Profile v0.2. The reported #796 draft was about 832 characters after
+excluding spaces and line breaks; the #799 final was about 991 on that basis
+(about 980 after also removing Markdown heading markers). The more specific
+Assignment coincided with fuller explanations and reader-oriented context in
+that single comparison. It is evidence for a useful hypothesis, not a quality
+guarantee or a general causal result.
+
+Keep review responsibilities distinct: `document-reviewer` checks both topic
+coverage and sufficient depth for the stated reader, without padding or
+departing from supplied author intent. `evidence-auditor` checks factual claims,
+attribution, and experience against supplied material. A reviewer `PASS` is not
+human acceptance or publication approval; a person still decides suitability.
+
 ## Reusable Style Profiles
 
 Human-reviewed writing-style definitions live at the repository root beside the
