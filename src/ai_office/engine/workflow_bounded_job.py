@@ -1762,7 +1762,13 @@ def _review_verdict(
                     check = {}
                 check_numbers.append(int(heading.group(1)))
                 continue
-            label, separator, value = line.partition(":")
+            unresolved_line = line[indentation:].strip()
+            inline_code_line = re.fullmatch(
+                r"`(Unresolved material issues: none)`", unresolved_line
+            )
+            if inline_code_line is not None:
+                unresolved_line = inline_code_line.group(1)
+            label, separator, value = unresolved_line.partition(":")
             normalized_label = label.strip().casefold()
             if normalized_label == "unresolved material issues":
                 unresolved_count += 1
