@@ -38,6 +38,7 @@ def create_test_run(
     *,
     with_business_approvals: bool = True,
     execution_target: ModelExecutionTarget | None = None,
+    run_input: str | None = None,
 ) -> TestRun:
     """Create or reload one exact Manifest-backed test Run.
 
@@ -54,7 +55,7 @@ def create_test_run(
         manifest = create_workflow_run_manifest(
             store,
             run_id,
-            f"input-{run_id}",
+            f"input-{run_id}" if run_input is None else run_input,
             LoadedWorkflow(root / "workflow.yaml", workflow),
             tuple(
                 LoadedEmployee(root / f"{employee.id}.yaml", employee)
