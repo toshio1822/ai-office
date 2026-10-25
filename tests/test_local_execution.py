@@ -46,6 +46,73 @@ _SAMPLE_ROOT = Path(__file__).parents[1]
 _CLI_RUNNER = CliRunner()
 
 
+def _sandbox_namespaces_available() -> bool:
+    bwrap = Path("/usr/bin/bwrap")
+    prlimit = Path("/usr/bin/prlimit")
+    if any(
+        not executable.is_file() or not os.access(executable, os.X_OK)
+        for executable in (bwrap, prlimit)
+    ):
+        return False
+    argv = [
+        str(bwrap),
+        "--unshare-user",
+        "--uid",
+        "0",
+        "--gid",
+        "0",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-net",
+        "--new-session",
+        "--die-with-parent",
+        "--disable-userns",
+        "--assert-userns-disabled",
+        "--cap-drop",
+        "ALL",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--clearenv",
+        "--",
+        "/usr/bin/true",
+    ]
+    try:
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={},
+            shell=False,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+@pytest.fixture(scope="module")
+def require_local_sandbox() -> None:
+    if not _sandbox_namespaces_available():
+        pytest.skip("host cannot enforce required bwrap namespaces; no fallback")
+
+
 def test_redaction_covers_common_secret_assignments() -> None:
     value = _redact(
         "API_KEY=first AWS_SECRET_ACCESS_KEY:second password:third TOKEN=fourth"
@@ -89,6 +156,11 @@ def test_cli_requires_and_persists_explicit_local_effect_approval(
     assert not list(store.root.glob("*.local-effect-authorization.*.json"))
 
     approved = _CLI_RUNNER.invoke(app, [*arguments, "--approve-local-effect"])
+    if not _sandbox_namespaces_available():
+        assert approved.exit_code == 2
+        assert "local-effect approval could not be persisted" in approved.output
+        assert not list(store.root.glob("*.local-effect-authorization.*.json"))
+        return
     assert approved.exit_code == 0, approved.output
     result = json.loads(approved.stdout)
     assert result["artifact_id"] == artifact.artifact_id
@@ -268,7 +340,9 @@ def _policy(
 
 
 def test_fake_provider_patch_is_run_bound_and_only_verified_in_bwrap_tmpfs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    require_local_sandbox: None,
 ) -> None:
     repository, revision, source = _temporary_repo(tmp_path)
     os.chmod(repository / "calculator.py", 0o600)
@@ -414,6 +488,7 @@ def test_fake_provider_patch_is_run_bound_and_only_verified_in_bwrap_tmpfs(
 def test_invalid_change_set_is_rejected_before_any_attempt_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    require_local_sandbox: None,
     path: str,
     extra: dict[str, object] | None,
 ) -> None:
@@ -461,7 +536,9 @@ def test_invalid_change_set_is_rejected_before_any_attempt_claim(
     assert (repository / "calculator.py").read_bytes() == source
 
 
-def test_expired_grant_is_rejected_before_claim(tmp_path: Path) -> None:
+def test_expired_grant_is_rejected_before_claim(
+    tmp_path: Path, require_local_sandbox: None
+) -> None:
     repository, revision, source = _temporary_repo(tmp_path)
     store, artifact = _candidate(tmp_path, revision, source)
     expired = _policy(
@@ -495,7 +572,7 @@ def test_expired_grant_is_rejected_before_claim(tmp_path: Path) -> None:
 
 
 def test_git_preflight_contains_repository_filters_and_supports_worktrees(
-    tmp_path: Path,
+    tmp_path: Path, require_local_sandbox: None
 ) -> None:
     repository, revision, _source = _temporary_repo(tmp_path)
     linked_worktree = tmp_path / "linked-worktree"
@@ -538,7 +615,9 @@ def test_git_preflight_contains_repository_filters_and_supports_worktrees(
     assert not marker.exists()
 
 
-def test_symlink_source_is_rejected_before_attempt_claim(tmp_path: Path) -> None:
+def test_symlink_source_is_rejected_before_attempt_claim(
+    tmp_path: Path, require_local_sandbox: None
+) -> None:
     repository, _revision, _source = _temporary_repo(tmp_path)
     calculator = repository / "calculator.py"
     calculator.unlink()
@@ -582,7 +661,9 @@ def test_symlink_source_is_rejected_before_attempt_claim(tmp_path: Path) -> None
     assert not claim.exists()
 
 
-def test_timeout_is_durable_and_not_replayed(tmp_path: Path) -> None:
+def test_timeout_is_durable_and_not_replayed(
+    tmp_path: Path, require_local_sandbox: None
+) -> None:
     repository, revision, source = _temporary_repo(tmp_path)
     store, artifact = _candidate(tmp_path, revision, source)
     policy = _policy(
@@ -620,7 +701,9 @@ def test_timeout_is_durable_and_not_replayed(tmp_path: Path) -> None:
         )
 
 
-def test_output_limit_is_durable_and_redacted(tmp_path: Path) -> None:
+def test_output_limit_is_durable_and_redacted(
+    tmp_path: Path, require_local_sandbox: None
+) -> None:
     repository, revision, source = _temporary_repo(tmp_path)
     store, artifact = _candidate(tmp_path, revision, source)
     policy = _policy(
@@ -660,7 +743,7 @@ def test_output_limit_is_durable_and_redacted(tmp_path: Path) -> None:
 
 
 def test_configured_independent_reviewers_receive_identical_exact_evidence(
-    tmp_path: Path,
+    tmp_path: Path, require_local_sandbox: None
 ) -> None:
     repository, revision, source = _temporary_repo(tmp_path)
     store, artifact = _candidate(tmp_path, revision, source)
