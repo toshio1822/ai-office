@@ -9,7 +9,7 @@ import socket
 import subprocess
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -57,6 +57,7 @@ from tests._offline_git_delivery import (
     FakeDraftPullRequestAPI,
     OfflineDeliveryError,
     SimulatedEffectCrash,
+    _optional_git,
     _validate_attributes,
     create_fake_bare_remote,
     issue_test_delivery_grant,
@@ -932,8 +933,13 @@ def test_output_limit_is_durable_and_redacted(
         )
 
 
+@pytest.mark.parametrize(
+    "needs_revision",
+    [True, False],
+    ids=["reviewed-after-revision", "candidate-no-revision"],
+)
 def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
-    tmp_path: Path, require_local_sandbox: None
+    tmp_path: Path, require_local_sandbox: None, needs_revision: bool
 ) -> None:
     from ai_office.engine.artifact import read_run_artifact
 
@@ -1134,13 +1140,17 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             output = _change_set(
                 revision,
                 source,
-                replacement=b"def answer():\n    return 2  # unnecessary comment\n",
+                replacement=(
+                    b"def answer():\n    return 2  # unnecessary comment\n"
+                    if needs_revision
+                    else b"def answer():\n    return 2\n"
+                ),
             )
-        elif index == 1:
+        elif needs_revision and index == 1:
             output = findings
-        elif index == 2:
+        elif needs_revision and index == 2:
             output = pass_review()
-        elif index == 3:
+        elif needs_revision and index == 3:
             output = _change_set(revision, source)
         else:
             output = pass_review()
@@ -1183,38 +1193,44 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         local_effect_handler=authorize_and_validate,
     )
 
-    assert outcome.status == "reviewed", outcome
-    assert outcome.revisions_used == 1
-    assert len(calls) == 6
-    assert len(authorizations) == 2
-    assert len(reviewer_inputs) == 4
-    first_round = reviewer_inputs[:2]
-    second_round = reviewer_inputs[2:]
-    assert first_round[0]["local_execution_evidence"] == first_round[1][
-        "local_execution_evidence"
-    ]
-    assert second_round[0]["local_execution_evidence"] == second_round[1][
-        "local_execution_evidence"
-    ]
-    first_evidence = first_round[0]["local_execution_evidence"]
-    second_evidence = second_round[0]["local_execution_evidence"]
-    assert first_evidence["status"] == second_evidence["status"] == "verified"
-    assert first_evidence["artifact_id"] != second_evidence["artifact_id"]
-    assert first_evidence["diff"] != second_evidence["diff"]
-    assert "# unnecessary comment" in first_evidence["diff"]
-    assert "# unnecessary comment" not in second_evidence["diff"]
-    assert len(
-        {
-            item["source_artifact"]["content_sha256"]
-            for item in first_round
-        }
-    ) == 1
-    assert len(
-        {
-            item["source_artifact"]["content_sha256"]
-            for item in second_round
-        }
-    ) == 1
+    assert outcome.status == ("reviewed" if needs_revision else "candidate"), outcome
+    assert outcome.revisions_used == (1 if needs_revision else 0)
+    assert len(calls) == (6 if needs_revision else 3)
+    assert len(authorizations) == (2 if needs_revision else 1)
+    assert len(reviewer_inputs) == (4 if needs_revision else 2)
+    if needs_revision:
+        first_round = reviewer_inputs[:2]
+        second_round = reviewer_inputs[2:]
+        assert first_round[0]["local_execution_evidence"] == first_round[1][
+            "local_execution_evidence"
+        ]
+        assert second_round[0]["local_execution_evidence"] == second_round[1][
+            "local_execution_evidence"
+        ]
+        first_evidence = first_round[0]["local_execution_evidence"]
+        second_evidence = second_round[0]["local_execution_evidence"]
+        assert first_evidence["status"] == second_evidence["status"] == "verified"
+        assert first_evidence["artifact_id"] != second_evidence["artifact_id"]
+        assert first_evidence["diff"] != second_evidence["diff"]
+        assert "# unnecessary comment" in first_evidence["diff"]
+        assert "# unnecessary comment" not in second_evidence["diff"]
+        assert len(
+            {
+                item["source_artifact"]["content_sha256"]
+                for item in first_round
+            }
+        ) == 1
+        assert len(
+            {
+                item["source_artifact"]["content_sha256"]
+                for item in second_round
+            }
+        ) == 1
+    else:
+        assert all(
+            item["local_execution_evidence"]["status"] == "verified"
+            for item in reviewer_inputs
+        )
     final_artifact = read_run_artifact(
         store,
         outcome.final_artifact_run_id,
@@ -1238,6 +1254,35 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     target_ref = "refs/heads/codex/issue-805-offline-proof"
     expiry = time.time_ns() + 30 * 60 * 1_000_000_000
     api = FakeDraftPullRequestAPI()
+
+    if needs_revision:
+        # The first candidate was locally verified but rejected by review.
+        # Supplying its old Artifact and Evidence must fail before a grant or
+        # any of the three delivery effects can be recorded.
+        stale_source = reviewer_inputs[0]["source_artifact"]
+        stale_outcome = replace(
+            outcome,
+            final_artifact_run_id=stale_source["run_id"],
+            final_artifact_id=stale_source["artifact_id"],
+        )
+        grants_before = set(store.root.glob("*.offline-delivery.*.grant.json"))
+        stale_ref = "refs/heads/codex/issue-805-rejected-candidate"
+        with pytest.raises(OfflineDeliveryError, match="terminal_outcome_mismatch"):
+            issue_test_delivery_grant(
+                store,
+                scope,
+                stale_outcome,
+                workspace=repository,
+                remote=remote,
+                target_ref=stale_ref,
+                verification_authorization_id=authorizations[0],
+                expires_at_ns=expiry,
+            )
+        assert set(store.root.glob("*.offline-delivery.*.grant.json")) == grants_before
+        assert not list(store.root.glob("*.offline-delivery.*.attempt.json"))
+        assert _optional_git(repository, "rev-parse", stale_ref) is None
+        assert _optional_git(remote, "rev-parse", stale_ref) is None
+        assert api.posts == 0
 
     # Protected refs and unexpired/revoked grants fail before an Attempt exists.
     with pytest.raises(OfflineDeliveryError):

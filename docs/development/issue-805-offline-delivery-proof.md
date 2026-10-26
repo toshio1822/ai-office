@@ -15,11 +15,16 @@ available:
 PYTHONPATH=src pytest -q tests/test_local_execution.py::test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts
 ```
 
-The same test first runs the configured author/reviewer loop through the
-existing fake provider transport. It rejects the initial candidate, validates
-the revision in the configured sandbox, and requires every configured
-reviewer to pass before the final Artifact and Evidence are accepted. The
-offline delivery portion then checks that:
+The same parametrized test runs the configured author/reviewer loop through the
+existing fake provider transport in both normal terminal forms: all reviewers
+PASS with no revision (`candidate`) and all reviewers PASS after a revision
+(`reviewed`). The engine's read-only inspection reconstructs the terminal
+Artifact, final reviewer Artifact, PASS history, and revision count from the
+persisted Job; the delivery proof accepts only those exact IDs and binds the
+terminal status/revision count alongside the Artifact and Evidence. A locally
+verified but review-rejected earlier Artifact is explicitly rejected before a
+grant or delivery Attempt is written. The offline delivery portion then checks
+that:
 
 - the grant binds the Run, final Artifact and digest, verification Evidence,
   base revision, repository, exact changed paths, fake remote, and new ref;
@@ -34,10 +39,18 @@ offline delivery portion then checks that:
   PR creation. The resulting PR record is Draft and points to the exact
   verified commit.
 
+Crash/resume is simulated in one test process using the same in-memory fake PR
+API object. This proves read-only reconciliation against its currently
+available state, not persistence or recovery after an OS-process restart.
+
 The test's grant issuer is deliberately synthetic. Its `approved_by` value is
 not authenticated human identity or authorization to publish. The fake API
 has no credentials or network transport, and the helper rejects any other API
 object. Passing this proof does not establish a production trust/credential
 boundary and does not authorize an AI employee to publish to GitHub. Real
 delivery, credential handling, and any live canary remain out of scope and
-require separate design approval and explicit authorization.
+require separate design approval and explicit authorization. The test helper
+is not a product delivery capability: a future implementation should consume
+the existing Workflow terminal inspection, Run-bound authorization, and
+Evidence rather than duplicate those owners or treat this proof as a completed
+publisher.

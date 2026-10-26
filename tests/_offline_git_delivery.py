@@ -258,9 +258,11 @@ def run_offline_delivery(
             "review_artifact_sha256",
             "run_id",
             "target_ref",
+            "terminal_status",
             "verification_evidence_sha256",
             "verification_authorization_id",
             "scope_sha256",
+            "revisions_used",
         ):
             if grant.get(key) != binding.get(key):
                 raise OfflineDeliveryError("grant_binding")
@@ -351,25 +353,47 @@ def _validate_candidate(
     now_ns: int,
     require_target_absent: bool,
 ) -> dict[str, object]:
-    if now_ns <= 0 or outcome.status != "reviewed":
+    if now_ns <= 0 or type(outcome) is not BoundedDocumentJobOutcome:
         raise OfflineDeliveryError("job_not_reviewed")
     try:
         inspected = inspect_bounded_document_job(store, scope.job_id)
         persisted_scope = load_bounded_workflow_job_scope(store, scope.job_id)
+        status = inspected.get("status")
+        final_run_id = inspected.get("final_artifact_run_id")
+        final_artifact_id = inspected.get("final_artifact_id")
+        review_run_id = inspected.get("review_artifact_run_id")
+        review_artifact_id = inspected.get("review_artifact_id")
+        revisions_used = inspected.get("revisions_used")
         if (
-            inspected.get("status") != "reviewed"
+            status not in {"candidate", "reviewed"}
             or persisted_scope != scope
-            or outcome.final_artifact_run_id is None
-            or outcome.final_artifact_id is None
-            or outcome.review_artifact_run_id is None
-            or outcome.review_artifact_id is None
+            or type(final_run_id) is not str
+            or type(final_artifact_id) is not str
+            or type(review_run_id) is not str
+            or type(review_artifact_id) is not str
+            or type(revisions_used) is not int
+            or (status == "candidate") != (revisions_used == 0)
+            or (status == "reviewed") != (revisions_used > 0)
         ):
             raise OfflineDeliveryError("job_not_reviewed")
+        # `inspect_bounded_document_job` rebuilds this terminal result from
+        # immutable Job history, including every final-round PASS. A returned
+        # outcome is only a consistency check; never use it as the artifact
+        # selector or permission source.
+        if (
+            outcome.status != status
+            or outcome.final_artifact_run_id != final_run_id
+            or outcome.final_artifact_id != final_artifact_id
+            or outcome.review_artifact_run_id != review_run_id
+            or outcome.review_artifact_id != review_artifact_id
+            or outcome.revisions_used != revisions_used
+        ):
+            raise OfflineDeliveryError("terminal_outcome_mismatch")
         artifact = read_run_artifact(
-            store, outcome.final_artifact_run_id, outcome.final_artifact_id
+            store, final_run_id, final_artifact_id
         )
         review_artifact = read_run_artifact(
-            store, outcome.review_artifact_run_id, outcome.review_artifact_id
+            store, review_run_id, review_artifact_id
         )
         manifest = load_workflow_run_manifest(store, artifact.run_id)
         source_manifest = load_workflow_run_manifest(store, scope.initial_run_id)
@@ -542,6 +566,8 @@ def _validate_candidate(
         "run_id": artifact.run_id,
         "scope_sha256": scope.digest,
         "target_ref": target_ref,
+        "terminal_status": status,
+        "revisions_used": revisions_used,
         "verification_evidence_sha256": _digest(_canonical(evidence)),
         "verification_authorization_id": verification_authorization_id,
         "review_artifact_id": review_artifact.artifact_id,
@@ -863,17 +889,15 @@ def _matches_fake_pr(
 
 def _artifact_for_scope(store, scope, artifact_id):
     inspected = inspect_bounded_document_job(store, scope.job_id)
-    if inspected.get("status") != "reviewed":
+    if (
+        inspected.get("status") not in {"candidate", "reviewed"}
+        or artifact_id != inspected.get("final_artifact_id")
+        or type(inspected.get("final_artifact_run_id")) is not str
+    ):
         raise OfflineDeliveryError("job_not_reviewed")
-    for path in store.root.glob("*.artifact.*.json"):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if type(value) is dict and value.get("artifact_id") == artifact_id:
-            return read_run_artifact(store, value.get("run_id"), artifact_id)
-    else:
-        raise OfflineDeliveryError("artifact_missing")
+    return read_run_artifact(
+        store, inspected["final_artifact_run_id"], inspected["final_artifact_id"]
+    )
 
 
 def _tree_entries(workspace: Path, revision: str) -> dict[str, tuple[str, str]]:
