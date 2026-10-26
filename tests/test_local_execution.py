@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -54,12 +55,14 @@ from ai_office.providers.openai import (
     OpenAIResponsesRawHttpResponse,
 )
 from tests._offline_git_delivery import (
-    FakeDraftPullRequestAPI,
+    FakeGitHubDeliveryAPI,
     OfflineDeliveryError,
     SimulatedEffectCrash,
     _optional_git,
+    _repository_identity,
     _validate_attributes,
     create_fake_bare_remote,
+    fake_github_credential_for_test,
     issue_test_delivery_grant,
     revoke_test_delivery_grant,
     run_offline_delivery,
@@ -302,9 +305,7 @@ def test_expiry_during_preflight_stops_before_attempt_claim(
         revision,
         commands=(("/usr/bin/python3", "-B", "-c", "pass"),),
     )
-    monkeypatch.setattr(
-        local_execution_module, "_git_identity", lambda _root: revision
-    )
+    monkeypatch.setattr(local_execution_module, "_git_identity", lambda _root: revision)
     monkeypatch.setattr(local_execution_module, "_git_status", lambda _root: "")
     authorization = issue_local_execution_authorization(
         store,
@@ -337,8 +338,9 @@ def test_expiry_during_preflight_stops_before_attempt_claim(
     monkeypatch.setattr(
         local_execution_module.os,
         "access",
-        lambda path, mode: os.fspath(path) == "/usr/bin/bwrap"
-        or original_access(path, mode),
+        lambda path, mode: (
+            os.fspath(path) == "/usr/bin/bwrap" or original_access(path, mode)
+        ),
     )
     monkeypatch.setattr(local_execution_module, "_require_tmpfs", lambda _path: None)
 
@@ -968,9 +970,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     store_root = tmp_path / "bounded-workflow-runs"
     store_root.mkdir(mode=0o700)
     store = WorkflowRunManifestStore(store_root)
-    workflow = load_workflow_file(
-        _SAMPLE_ROOT / "workflows/bounded-change-review.yaml"
-    )
+    workflow = load_workflow_file(_SAMPLE_ROOT / "workflows/bounded-change-review.yaml")
     employees = {
         loaded.definition.id: loaded
         for loaded in load_employees(_SAMPLE_ROOT / "employees")
@@ -981,9 +981,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         assignment,
         workflow,
         tuple(employees.values()),
-        execution_targets=tuple(
-            target for _ in workflow.definition.steps
-        ),
+        execution_targets=tuple(target for _ in workflow.definition.steps),
     )
     first_step_id = workflow.definition.bounded_review.draft_step
     initial_view = bounded_job_execution_view(workflow, first_step_id)
@@ -1024,9 +1022,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             )
         )
         employee_snapshot = next(
-            item
-            for item in manifest.employee_snapshots
-            if item.id == employee_id
+            item for item in manifest.employee_snapshots if item.id == employee_id
         )
         slots.append(
             BoundedJobActionSlot(
@@ -1130,10 +1126,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         task_input = json.loads(payload["input"])
         run_input = json.loads(task_input["run_input"])
         calls.append({"request": request, "run_input": run_input})
-        if (
-            "source_artifact" in run_input
-            and "review_artifacts" not in run_input
-        ):
+        if "source_artifact" in run_input and "review_artifacts" not in run_input:
             reviewer_inputs.append(run_input)
         index = len(calls) - 1
         if index == 0:
@@ -1158,9 +1151,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
 
     authorizations: list[str] = []
 
-    def authorize_and_validate(
-        run_id: str, artifact_id: str, ordinal: int
-    ) -> str:
+    def authorize_and_validate(run_id: str, artifact_id: str, ordinal: int) -> str:
         authorization = issue_local_execution_authorization(
             store,
             run_id=run_id,
@@ -1201,12 +1192,14 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     if needs_revision:
         first_round = reviewer_inputs[:2]
         second_round = reviewer_inputs[2:]
-        assert first_round[0]["local_execution_evidence"] == first_round[1][
-            "local_execution_evidence"
-        ]
-        assert second_round[0]["local_execution_evidence"] == second_round[1][
-            "local_execution_evidence"
-        ]
+        assert (
+            first_round[0]["local_execution_evidence"]
+            == first_round[1]["local_execution_evidence"]
+        )
+        assert (
+            second_round[0]["local_execution_evidence"]
+            == second_round[1]["local_execution_evidence"]
+        )
         first_evidence = first_round[0]["local_execution_evidence"]
         second_evidence = second_round[0]["local_execution_evidence"]
         assert first_evidence["status"] == second_evidence["status"] == "verified"
@@ -1214,18 +1207,14 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         assert first_evidence["diff"] != second_evidence["diff"]
         assert "# unnecessary comment" in first_evidence["diff"]
         assert "# unnecessary comment" not in second_evidence["diff"]
-        assert len(
-            {
-                item["source_artifact"]["content_sha256"]
-                for item in first_round
-            }
-        ) == 1
-        assert len(
-            {
-                item["source_artifact"]["content_sha256"]
-                for item in second_round
-            }
-        ) == 1
+        assert (
+            len({item["source_artifact"]["content_sha256"] for item in first_round})
+            == 1
+        )
+        assert (
+            len({item["source_artifact"]["content_sha256"] for item in second_round})
+            == 1
+        )
     else:
         assert all(
             item["local_execution_evidence"]["status"] == "verified"
@@ -1243,17 +1232,23 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     )
     assert final_source == b"def answer():\n    return 2\n"
 
-    # #805 offline proof: the reviewed, verified Artifact is admitted only to
-    # a new local branch, a local bare remote and the in-memory fake PR API.
+    # #807 offline proof: the reviewed Artifact is admitted only to a new
+    # local branch, local bare remote, and persistent fake GitHub API.
     remote = tmp_path / "fake-remote.git"
     create_fake_bare_remote(remote, repository, revision)
     hook_marker = tmp_path / "pre-push-hook-ran"
     hook = repository / ".git" / "hooks" / "pre-push"
     hook.write_text(f"#!/bin/sh\n/usr/bin/touch {hook_marker}\n", encoding="utf-8")
     hook.chmod(0o700)
-    target_ref = "refs/heads/codex/issue-805-offline-proof"
+    target_ref = "refs/heads/codex/issue-807-offline-proof"
     expiry = time.time_ns() + 30 * 60 * 1_000_000_000
-    api = FakeDraftPullRequestAPI()
+    repository_id = _repository_identity(repository)
+    api_state = tmp_path / "fake-github-api" / "state.json"
+    api = FakeGitHubDeliveryAPI(
+        remote=remote,
+        state_path=api_state,
+        credential=fake_github_credential_for_test(repository_id, expires_at_ns=expiry),
+    )
 
     if needs_revision:
         # The first candidate was locally verified but rejected by review.
@@ -1266,7 +1261,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             final_artifact_id=stale_source["artifact_id"],
         )
         grants_before = set(store.root.glob("*.offline-delivery.*.grant.json"))
-        stale_ref = "refs/heads/codex/issue-805-rejected-candidate"
+        stale_ref = "refs/heads/codex/issue-807-rejected-candidate"
         with pytest.raises(OfflineDeliveryError, match="terminal_outcome_mismatch"):
             issue_test_delivery_grant(
                 store,
@@ -1302,7 +1297,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         outcome,
         workspace=repository,
         remote=remote,
-        target_ref="refs/heads/codex/issue-805-expired",
+        target_ref="refs/heads/codex/issue-807-expired",
         verification_authorization_id=authorizations[-1],
         expires_at_ns=expiry,
     )
@@ -1313,7 +1308,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             outcome,
             workspace=repository,
             remote=remote,
-            target_ref="refs/heads/codex/issue-805-expired",
+            target_ref="refs/heads/codex/issue-807-expired",
             verification_authorization_id=authorizations[-1],
             grant_id=expired,
             fake_pr_api=api,
@@ -1325,7 +1320,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         outcome,
         workspace=repository,
         remote=remote,
-        target_ref="refs/heads/codex/issue-805-revoked",
+        target_ref="refs/heads/codex/issue-807-revoked",
         verification_authorization_id=authorizations[-1],
         expires_at_ns=expiry,
     )
@@ -1337,7 +1332,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             outcome,
             workspace=repository,
             remote=remote,
-            target_ref="refs/heads/codex/issue-805-revoked",
+            target_ref="refs/heads/codex/issue-807-revoked",
             verification_authorization_id=authorizations[-1],
             grant_id=revoked,
             fake_pr_api=api,
@@ -1351,6 +1346,23 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     assert not list(expired_attempts)
     assert not list(revoked_attempts)
 
+    grants_before = set(store.root.glob("*.offline-delivery.*.grant.json"))
+    with pytest.raises(OfflineDeliveryError, match="synthetic_human_approval"):
+        issue_test_delivery_grant(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref="refs/heads/codex/issue-807-forged-approval",
+            verification_authorization_id=authorizations[-1],
+            expires_at_ns=expiry,
+            approval={"approved_by": "pytest-offline-trust-boundary"},
+        )
+    assert set(store.root.glob("*.offline-delivery.*.grant.json")) == grants_before
+    assert not list(store.root.glob("*.offline-delivery.*.attempt.json"))
+    assert api.posts == 0
+
     grant_id = issue_test_delivery_grant(
         store,
         scope,
@@ -1361,6 +1373,31 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         verification_authorization_id=authorizations[-1],
         expires_at_ns=expiry,
     )
+
+    wrong_api = FakeGitHubDeliveryAPI(
+        remote=remote,
+        state_path=tmp_path / "wrong-repository-api" / "state.json",
+        credential=fake_github_credential_for_test(
+            "wrong-repository", expires_at_ns=expiry
+        ),
+    )
+    with pytest.raises(OfflineDeliveryError, match="fake_credential_scope"):
+        run_offline_delivery(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref=target_ref,
+            verification_authorization_id=authorizations[-1],
+            grant_id=grant_id,
+            fake_pr_api=wrong_api,
+        )
+    assert not list(
+        store.root.glob(f"{scope.job_id}.offline-delivery.{grant_id}.*.attempt.json")
+    )
+    assert _optional_git(repository, "rev-parse", target_ref) is None
+    assert wrong_api.posts == 0
     # A crash after each effect leaves an Attempt. Resumption reconciles the
     # existing state read-only; it never sends the same push or POST again.
     with pytest.raises(SimulatedEffectCrash):
@@ -1389,35 +1426,97 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             fake_pr_api=api,
             crash_after="remote_ref_create",
         )
-    api.drop_next_response = True
-    with pytest.raises(SimulatedEffectCrash):
-        run_offline_delivery(
-            store,
-            scope,
-            outcome,
-            workspace=repository,
-            remote=remote,
-            target_ref=target_ref,
-            verification_authorization_id=authorizations[-1],
-            grant_id=grant_id,
-            fake_pr_api=api,
+
+    payload = {
+        "api_state": str(api_state),
+        "grant_id": grant_id,
+        "job_id": scope.job_id,
+        "remote": str(remote),
+        "repository_id": repository_id,
+        "store_root": str(store.root),
+        "target_ref": target_ref,
+        "verification_authorization_id": authorizations[-1],
+        "workspace": str(repository),
+    }
+    child_home = tmp_path / "restart-home"
+    child_home.mkdir(mode=0o700)
+    driver = """\
+import json
+import sys
+from tests._offline_git_delivery import (
+    SimulatedEffectCrash,
+    resume_offline_delivery_process,
+)
+
+try:
+    result = resume_offline_delivery_process(json.loads(sys.argv[1]))
+except SimulatedEffectCrash:
+    raise SystemExit(86)
+print(json.dumps(result, sort_keys=True))
+"""
+    child_env = {
+        "HOME": str(child_home),
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": f"{_SAMPLE_ROOT / 'src'}:{_SAMPLE_ROOT}",
+        "AI_OFFICE_TEST_FAKE_GITHUB_TOKEN": ("offline-only-fake-installation-token"),
+    }
+
+    def restart_process(*, lose_pr_response: bool):
+        env = dict(child_env)
+        if lose_pr_response:
+            env["AI_OFFICE_TEST_DROP_PR_RESPONSE"] = "1"
+        return subprocess.run(
+            [sys.executable, "-c", driver, json.dumps(payload)],
+            capture_output=True,
+            check=False,
+            env=env,
+            shell=False,
+            text=True,
+            timeout=60,
         )
-    receipt = run_offline_delivery(
-        store,
-        scope,
-        outcome,
-        workspace=repository,
-        remote=remote,
-        target_ref=target_ref,
-        verification_authorization_id=authorizations[-1],
-        grant_id=grant_id,
-        fake_pr_api=api,
+
+    first_process = restart_process(lose_pr_response=True)
+    assert first_process.returncode == 86, first_process.stderr
+    assert "offline-only-fake-installation-token" not in (
+        first_process.stdout + first_process.stderr
     )
+    assert api.posts == 5
+    second_process = restart_process(lose_pr_response=False)
+    assert second_process.returncode == 0, second_process.stderr
+    assert "offline-only-fake-installation-token" not in (
+        second_process.stdout + second_process.stderr
+    )
+    receipt = json.loads(second_process.stdout)
     assert receipt["artifact_id"] == final_artifact.artifact_id
     assert receipt["draft_pr"]["draft"] is True
     assert receipt["draft_pr"]["url"].startswith("https://fake.invalid/")
-    assert all(item["reconciled_read_only"] for item in receipt["effects"])
-    assert api.posts == 1
+    assert receipt["draft_pr"]["base_sha"] == revision
+    assert receipt["draft_pr"]["head_sha"] == receipt["commit_sha"]
+    assert receipt["draft_pr"]["diff_sha256"]
+    effects = {item["effect"]: item for item in receipt["effects"]}
+    assert effects["local_commit"]["reconciled_read_only"] is True
+    assert effects["remote_ref_create"]["reconciled_read_only"] is True
+    assert effects["draft_pr"]["reconciled_read_only"] is True
+    assert all(
+        effects[name]["reconciled_read_only"] is False
+        for name in (
+            "remote_blob_create",
+            "remote_tree_create",
+            "remote_commit_create",
+        )
+    )
+    post_endpoints = [
+        item["endpoint"] for item in api.requests if item["method"] == "POST"
+    ]
+    assert post_endpoints == [
+        "/git/blobs",
+        "/git/trees",
+        "/git/commits",
+        "/git/refs",
+        "/pulls",
+    ]
+    assert api.posts == 5
     assert not hook_marker.exists()
     assert _git(repository, "rev-parse", "HEAD") == revision
     assert _git(remote, "rev-parse", "refs/heads/main") == revision
@@ -1438,7 +1537,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     attempts = store.root.glob(
         f"{scope.job_id}.offline-delivery.{grant_id}.*.attempt.json"
     )
-    assert len(list(attempts)) == 3
+    assert len(list(attempts)) == 6
 
     # A repeated completed call is read-only and produces no second PR POST.
     replay = run_offline_delivery(
@@ -1453,7 +1552,12 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         fake_pr_api=api,
     )
     assert replay == receipt
-    assert api.posts == 1
+    assert api.posts == 5
+    fake_token = b"offline-only-fake-installation-token"
+    assert all(
+        fake_token not in path.read_bytes() for path in store.root.glob("*.json")
+    )
+    assert fake_token not in api_state.read_bytes()
 
     # The same Run binding cannot be reused after its source base has moved.
     _git(repository, "checkout", "--quiet", target_ref)
@@ -1464,7 +1568,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             outcome,
             workspace=repository,
             remote=remote,
-            target_ref="refs/heads/codex/issue-805-wrong-base",
+            target_ref="refs/heads/codex/issue-807-wrong-base",
             verification_authorization_id=authorizations[-1],
             expires_at_ns=expiry,
         )
