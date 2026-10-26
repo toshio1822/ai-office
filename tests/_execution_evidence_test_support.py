@@ -43,6 +43,7 @@ def create_test_execution_evidence(
     resolved_tools: tuple[ToolDefinition, ...],
     step_id: str,
     target: ModelExecutionTarget,
+    run_input: str | None = None,
     approved_by: str = "test-execution-reviewer",
     approval_id: str = "test-execution-approval",
 ) -> TestExecutionEvidence:
@@ -54,6 +55,7 @@ def create_test_execution_evidence(
         employees,
         with_business_approvals=False,
         execution_target=target,
+        run_input=run_input,
     )
     step_index, step = next(
         (index, step)
@@ -70,7 +72,7 @@ def create_test_execution_evidence(
         upstream_inputs=request.upstream_inputs,
         runtime_facts=request.runtime_facts,
         binding=run.binding,
-        run_input=f"input-{run_id}",
+        run_input=f"input-{run_id}" if run_input is None else run_input,
     )
     approval = approve_model_invocation_execution(
         bound_request,

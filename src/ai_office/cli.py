@@ -60,6 +60,14 @@ from ai_office.engine.artifact import (
     list_run_artifacts,
     read_run_artifact,
 )
+from ai_office.engine.local_execution import (
+    FILE_CHANGE_SET_CONTENT_TYPE,
+    LocalExecutionError,
+    LocalExecutionPolicy,
+    execute_local_change,
+    issue_local_execution_authorization,
+    validate_local_execution_scope,
+)
 from ai_office.engine.persisted_execution_outcome_reentry import (
     PersistedExecutionOutcome,
 )
@@ -856,6 +864,16 @@ def _emit_json(value: dict[str, object]) -> None:
     typer.echo(json.dumps(value, ensure_ascii=False, sort_keys=True))
 
 
+def _unique_json_object(items: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate keys in operator-supplied JSON policy files."""
+    result: dict[str, object] = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
 @workflows_app.command("snapshot-github-change")
 def snapshot_github_change(
     repository: str = typer.Option(..., "--repository"),
@@ -1320,6 +1338,13 @@ def run_bounded_document_job_workflow(
     retry_interval_seconds: int = typer.Option(
         30, "--retry-interval-seconds", min=1, max=3600
     ),
+    local_effect_policy_file: Path | None = typer.Option(
+        None, "--local-effect-policy"
+    ),
+    local_effect_workspace: Path | None = typer.Option(
+        None, "--local-effect-workspace"
+    ),
+    approve_local_effect: bool = typer.Option(False, "--approve-local-effect"),
 ) -> None:
     """Issue and start a finite configured Workflow review Job after confirmation.
 
@@ -1340,7 +1365,6 @@ def run_bounded_document_job_workflow(
         build_workflow_run_manifest,
         persist_workflow_run_manifest,
     )
-
     _reject_legacy_execution_model(legacy_execution_model)
     try:
         if os.geteuid() == 0 or os.geteuid() != os.getuid() or not sys.stdin.isatty():
@@ -1401,6 +1425,49 @@ def run_bounded_document_job_workflow(
         employees_by_id = {item.definition.id: item for item in employees}
         plan = bounded_review_action_plan(source_workflow, max_revisions)
         steps_by_id = {step.id: step for step in source_workflow.definition.steps}
+        local_effect_required = any(
+            input_source in {"assignment", "revision_input"}
+            and steps_by_id[step_id].artifact_content_type
+            == FILE_CHANGE_SET_CONTENT_TYPE
+            for step_id, _, input_source in plan
+        )
+        local_effect_policy = None
+        if local_effect_required:
+            if not (
+                local_effect_policy_file is not None
+                and local_effect_workspace is not None
+                and approve_local_effect
+            ):
+                _workflow_cli_error(
+                    "file-change Workflow requires --local-effect-policy, "
+                    "--local-effect-workspace, and --approve-local-effect"
+                )
+            policy_bytes = local_effect_policy_file.read_bytes()
+            if len(policy_bytes) > 65_536:
+                _workflow_cli_error("local-effect policy is too large")
+            policy_value = json.loads(
+                policy_bytes, object_pairs_hook=_unique_json_object
+            )
+            if not isinstance(policy_value, dict):
+                _workflow_cli_error("local-effect policy must be an object")
+            policy_value["expires_at_ns"] = (
+                time.time_ns() + 2 * 60 * 60 * 1_000_000_000
+            )
+            local_effect_policy = LocalExecutionPolicy.model_validate_json(
+                json.dumps(policy_value, ensure_ascii=False, sort_keys=True).encode()
+            )
+            validate_local_execution_scope(
+                assignment, local_effect_workspace, local_effect_policy
+            )
+        elif (
+            local_effect_policy_file is not None
+            or local_effect_workspace is not None
+            or approve_local_effect
+        ):
+            _workflow_cli_error(
+                "local-effect options apply only to a Workflow configured to "
+                "produce file-change Artifacts"
+            )
         required_employees = tuple(
             dict.fromkeys(steps_by_id[item[0]].employee for item in plan)
         )
@@ -1597,6 +1664,28 @@ def run_bounded_document_job_workflow(
     )
     if execution_confirmation != job_id:
         _workflow_cli_error("Execution grant was not confirmed", code=1)
+    if local_effect_policy is not None:
+        _emit_json(
+            {
+                "operation": "bounded-job-local-effect-confirmation",
+                "job_id": job_id,
+                "workspace": str(local_effect_workspace),
+                "base_revision": local_effect_policy.base_revision,
+                "read_paths": list(local_effect_policy.read_paths),
+                "write_paths": list(local_effect_policy.write_paths),
+                "commands": [list(command) for command in local_effect_policy.commands],
+                "limits": local_effect_policy.limits.model_dump(mode="json"),
+                "max_candidates": max_revisions + 1,
+                "approval_is_separate_from_provider_grants": True,
+            }
+        )
+        local_confirmation = typer.prompt(
+            "Type the Job ID to separately approve this finite local-effect policy",
+            default="",
+            show_default=False,
+        )
+        if local_confirmation != job_id:
+            _workflow_cli_error("local-effect grant was not confirmed", code=1)
 
     try:
         # Re-read the administrator policy only as a veto. The approved
@@ -1677,6 +1766,33 @@ def run_bounded_document_job_workflow(
         }
     except Exception:
         _workflow_cli_error("a pinned destination credential is unavailable")
+
+    def local_effect_handler(run_id: str, artifact_id: str, ordinal: int) -> str:
+        if local_effect_policy is None or local_effect_workspace is None:
+            raise LocalExecutionError("approval")
+        approval = issue_local_execution_authorization(
+            store,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            workspace=local_effect_workspace,
+            policy=local_effect_policy,
+            approved_by=operator_label,
+            approval_id=(
+                "bounded-local-"
+                + sha256(f"{job_id}:{ordinal}".encode()).hexdigest()[:32]
+            ),
+        )
+        evidence = execute_local_change(
+            store,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            authorization_id=approval.authorization_id,
+            workspace=local_effect_workspace,
+        )
+        if evidence.get("status") != "verified":
+            raise LocalExecutionError("local_effect_failed")
+        return approval.authorization_id
+
     try:
         outcome = run_bounded_document_job(
             store,
@@ -1688,6 +1804,9 @@ def run_bounded_document_job_workflow(
             api_key=api_keys,
             transport=send_openai_responses_http_request,
             execution_destinations=execution_destinations,
+            local_effect_handler=(
+                local_effect_handler if local_effect_policy is not None else None
+            ),
         )
     except Exception:
         _workflow_cli_error("bounded Job stopped; inspect its durable evidence")
@@ -1807,6 +1926,92 @@ def export_workflow_artifact(
             "run_id": run_id,
         }
     )
+
+
+@workflows_app.command("local-effect-authorize")
+def authorize_local_effect(
+    run_id: str,
+    artifact_id: str,
+    policy_file: Path = typer.Option(..., "--policy"),
+    workspace: Path = typer.Option(..., "--workspace"),
+    approved_by: str = typer.Option(..., "--approved-by"),
+    approval_id: str = typer.Option(..., "--approval-id"),
+    expires_in_seconds: int = typer.Option(900, "--expires-in-seconds"),
+    approve_local_effect: bool = typer.Option(False, "--approve-local-effect"),
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Explicitly approve one exact, bounded local candidate verification."""
+    if not approve_local_effect:
+        _workflow_cli_error("--approve-local-effect is required")
+    if not 1 <= expires_in_seconds <= 900:
+        _workflow_cli_error("local-effect expiry must be between 1 and 900 seconds")
+    try:
+        raw = policy_file.read_bytes()
+        if len(raw) > 65_536:
+            _workflow_cli_error("local-effect policy is too large")
+        policy_value = json.loads(raw, object_pairs_hook=_unique_json_object)
+        if not isinstance(policy_value, dict):
+            _workflow_cli_error("local-effect policy must be an object")
+        policy_value["expires_at_ns"] = time.time_ns() + (
+            expires_in_seconds * 1_000_000_000
+        )
+        policy = LocalExecutionPolicy.model_validate_json(
+            json.dumps(policy_value, ensure_ascii=False, sort_keys=True).encode()
+        )
+        store = _load_run_store_or_exit(run_store)
+        authorization = issue_local_execution_authorization(
+            store,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            workspace=workspace,
+            policy=policy,
+            approved_by=approved_by,
+            approval_id=approval_id,
+        )
+    except (OSError, TypeError, ValueError):
+        _workflow_cli_error("local-effect approval could not be persisted")
+    _emit_json(
+        {
+            "approval_id": authorization.approval_id,
+            "approved_by": authorization.approved_by,
+            "artifact_id": authorization.artifact_id,
+            "artifact_sha256": authorization.artifact_sha256,
+            "authorization_id": authorization.authorization_id,
+            "base_revision": authorization.policy.base_revision,
+            "commands": authorization.policy.commands,
+            "expires_at_ns": authorization.policy.expires_at_ns,
+            "manifest_digest": authorization.manifest_digest,
+            "read_paths": authorization.policy.read_paths,
+            "run_id": authorization.run_id,
+            "write_paths": authorization.policy.write_paths,
+            "workspace_sha256": authorization.workspace_sha256,
+        }
+    )
+
+
+@workflows_app.command("local-effect-run")
+def run_local_effect(
+    run_id: str,
+    artifact_id: str,
+    authorization_id: str = typer.Option(..., "--authorization-id"),
+    workspace: Path = typer.Option(..., "--workspace"),
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+) -> None:
+    """Verify one explicitly authorized candidate in the required sandbox."""
+    store = _load_run_store_or_exit(run_store)
+    try:
+        evidence = execute_local_change(
+            store,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            authorization_id=authorization_id,
+            workspace=workspace,
+        )
+    except (OSError, ValueError):
+        _workflow_cli_error("local-effect attempt was unavailable or already claimed")
+    _emit_json(evidence)
+    if evidence.get("status") != "verified":
+        raise typer.Exit(code=1)
 
 
 def _has_approval_fields(

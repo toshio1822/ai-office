@@ -115,6 +115,8 @@ def _start_fixture(
     artifact_content_type: str | None = "text/markdown",
     output: str = "# Exact\n\nResult ✓",
     status_code: int = 200,
+    run_input: str | None = None,
+    captured_requests: list[object] | None = None,
 ):
     workflow = _workflow(artifact_content_type=artifact_content_type)
     employee = _employee()
@@ -133,6 +135,7 @@ def _start_fixture(
         resolved_tools=(),
         step_id="draft",
         target=DIRECT_OPENAI_EXECUTION_TARGET,
+        run_input=run_input,
     )
     calls: list[int] = []
     response = OpenAIResponsesRawHttpResponse(
@@ -150,8 +153,10 @@ def _start_fixture(
         ),
     )
 
-    def transport(_request: object) -> OpenAIResponsesRawHttpResponse:
+    def transport(request: object) -> OpenAIResponsesRawHttpResponse:
         calls.append(1)
+        if captured_requests is not None:
+            captured_requests.append(request)
         return response
 
     result = execute_openai_model_invocation(
@@ -245,8 +250,7 @@ def test_configured_success_creates_exact_immutable_artifact_from_result_evidenc
     assert artifact.employee_id == "author"
     assert artifact.normalized_result_evidence_sha256 == normalized.digest
     assert (
-        artifact.raw_response_evidence_sha256
-        == normalized.raw_response_evidence_sha256
+        artifact.raw_response_evidence_sha256 == normalized.raw_response_evidence_sha256
     )
     assert artifact.raw_response_body_sha256 == normalized.raw_response_body_sha256
     assert workflow_artifact_path(
@@ -394,9 +398,7 @@ def test_non_artifact_success_keeps_normal_progression_without_artifact(
 def test_failed_configured_step_does_not_create_artifact(
     tmp_path: Path,
 ) -> None:
-    workflow, evidence, calls, result = _start_fixture(
-        tmp_path, status_code=500
-    )
+    workflow, evidence, calls, result = _start_fixture(tmp_path, status_code=500)
     assert result.category == "api_error"
 
     # A failed step has no successful business result to commit as an Artifact.
@@ -624,8 +626,7 @@ def test_cross_run_artifact_lineage_is_rejected(tmp_path: Path) -> None:
         first.artifact_id,
     )
     copied_path = (
-        second_evidence.run.store.root
-        / f"run-other.artifact.{first.artifact_id}.json"
+        second_evidence.run.store.root / f"run-other.artifact.{first.artifact_id}.json"
     )
     copied_path.write_bytes(first_record.read_bytes())
 
