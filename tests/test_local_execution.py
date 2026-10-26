@@ -316,6 +316,20 @@ def test_expiry_during_preflight_stops_before_attempt_claim(
     monkeypatch.setattr(
         local_execution_module, "_read_sources", expire_after_source_read
     )
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: path == Path("/usr/bin/bwrap") or original_is_file(path),
+    )
+    original_access = os.access
+    monkeypatch.setattr(
+        local_execution_module.os,
+        "access",
+        lambda path, mode: os.fspath(path) == "/usr/bin/bwrap"
+        or original_access(path, mode),
+    )
+    monkeypatch.setattr(local_execution_module, "_require_tmpfs", lambda _path: None)
 
     with pytest.raises(LocalExecutionError) as error:
         execute_local_change(
