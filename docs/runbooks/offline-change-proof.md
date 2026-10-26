@@ -48,7 +48,8 @@ example:
   "request": "Change answer() to return 2 without changing the test.",
   "repository": {
     "identity": "temporary offline-proof repository",
-    "base_revision": "<40- or 64-character Git SHA>"
+    "base_revision": "<40- or 64-character Git SHA>",
+    "path": "/absolute/path/to/clean/repository"
   },
   "allowed_paths": {
     "read": ["calculator.py", "test_calculator.py"],
@@ -65,9 +66,10 @@ example:
 }
 ```
 
-Inspect the exact Manifest, Artifact, and workspace revision before creating a
-policy. A policy file has this shape (replace paths, commands, and limits with
-the exact reviewed values):
+The local policy must be no broader than `allowed_paths`, use the exact fixed
+base revision, and match every selected source file in `source_context`. Inspect
+the exact Run Input, workspace revision, commands, and limits before creating a
+policy file with this shape:
 
 ```json
 {
@@ -91,35 +93,32 @@ the exact reviewed values):
 }
 ```
 
-Then authorize and execute the same Run-bound Artifact:
+Run the configured finite Workflow with a separate local-effect approval. The
+bounded Job generates a candidate, validates it in the isolated runner, then
+passes that exact Artifact and immutable Evidence to every configured reviewer.
+If reviewers request a revision, the new Artifact is validated and independently
+reviewed through the same configured loop. The CLI asks for separate Business,
+Execution, and local-effect confirmations; the latter covers at most one initial
+candidate plus the configured revision budget.
 
 ```sh
-ai-office workflows local-effect-authorize RUN_ID ARTIFACT_ID \
-  --policy ./local-effect-policy.json \
-  --workspace /absolute/path/to/clean/repository \
-  --approved-by OPERATOR_ID --approval-id CHANGE_APPROVAL_ID \
-  --expires-in-seconds 300 --approve-local-effect \
-  --run-store /private/path/ai-office-runs
-
-ai-office workflows local-effect-run RUN_ID ARTIFACT_ID \
-  --authorization-id AUTHORIZATION_SHA256 \
-  --workspace /absolute/path/to/clean/repository \
+ai-office workflows bounded-job-run JOB_ID \
+  --run-id INITIAL_RUN_ID \
+  --assignment-file ./run-input.json \
+  --workflow bounded-change-review \
+  --max-revisions 1 \
+  --local-effect-policy ./local-effect-policy.json \
+  --local-effect-workspace /absolute/path/to/clean/repository \
+  --approve-local-effect \
+  --execution-destinations ./config/execution-destinations.yaml \
   --run-store /private/path/ai-office-runs
 ```
 
-Only `status: verified` is eligible for review. Supply the exact output of
-`local-effect-review-input` as the Run Input of each independently configured
-reviewer Run; the sample config declares two distinct reviewer Employees.
-Reviewers use the normal Workflow/Run and provider transport, and their
-count/order remain configuration data. This proof's tests use only an
-in-memory fake provider transport; the runbook does not authorize a real model
-call.
-
-```sh
-ai-office workflows local-effect-review-input RUN_ID ARTIFACT_ID \
-  --authorization-id AUTHORIZATION_SHA256 \
-  --run-store /private/path/ai-office-runs
-```
+Only a `verified` local result is passed to reviewers; other outcomes stop the
+Job before review or revision. Reviewer count/order remain configuration data,
+and the common bounded Workflow parser enforces the shared structured verdict
+contract. Automated proof tests use an in-memory fake provider transport and
+never authorize a real model call.
 
 Keep the Run store for author/reviewer Runs and local-effect Evidence outside
 the target repository; local-effect authorization fails closed if the store

@@ -48,6 +48,7 @@ _MAX_SOURCE_BYTES = 2_097_152
 _MAX_CHANGE_BYTES = 1_048_576
 _MAX_RESULT_BYTES = 8_388_608
 _PATH_TYPE = type(Path())
+FILE_CHANGE_SET_CONTENT_TYPE = "application/vnd.ai-office.file-change-set+json"
 
 
 class LocalExecutionLimits(BaseModel):
@@ -165,10 +166,9 @@ def issue_local_execution_authorization(
     _require_run_store_outside_workspace(store, root)
     if artifact.content_type != _FILE_CHANGE_TYPE:
         _raise("artifact_type")
-    if _git_identity(root) != policy.base_revision:
-        _raise("base_revision")
-    if _git_status(root) != "":
-        _raise("workspace_not_clean")
+    validate_local_execution_scope(
+        _fixed_run_input_for_effect(manifest.run_input), root, policy
+    )
     value = {
         "approval_id": approval_id,
         "approved_by": approved_by,
@@ -199,6 +199,34 @@ def issue_local_execution_authorization(
         _canonical({**value, "authorization_id": authorization_id}),
     )
     return authorization
+
+
+def validate_local_execution_scope(
+    run_input: str, workspace: Path, policy: LocalExecutionPolicy
+) -> Path:
+    """Read-only preflight tying a proposed local grant to its fixed Run Input."""
+    root = _workspace_root(workspace)
+    _validate_run_input_scope(run_input, root, policy)
+    if _git_identity(root) != policy.base_revision:
+        _raise("base_revision")
+    if _git_status(root) != "":
+        _raise("workspace_not_clean")
+    return root
+
+
+def _fixed_run_input_for_effect(run_input: str) -> str:
+    """Unwrap the fixed assignment from a bounded review/revision handoff."""
+    try:
+        value = json.loads(run_input)
+    except (json.JSONDecodeError, TypeError):
+        return run_input
+    if (
+        type(value) is dict
+        and type(value.get("assignment")) is str
+        and type(value.get("source_artifact")) is dict
+    ):
+        return value["assignment"]
+    return run_input
 
 
 def load_local_execution_authorization(
@@ -275,21 +303,24 @@ def execute_local_change(
         or authorization.workspace_sha256 != _path_digest(root)
     ):
         _raise("authorization_binding")
-    if _git_identity(root) != authorization.policy.base_revision:
-        _raise("base_revision")
-    if _git_status(root) != "":
-        _raise("workspace_not_clean")
+    fixed_run_input = _fixed_run_input_for_effect(manifest.run_input)
+    validate_local_execution_scope(fixed_run_input, root, authorization.policy)
     changes = _parse_change_set(artifact, authorization.policy)
     try:
         sources = _read_sources(root, authorization.policy)
     except OSError:
         _raise("source_file")
+    _validate_run_input_scope(
+        fixed_run_input, root, authorization.policy, sources=sources
+    )
     _validate_change_preimages(changes, sources, authorization.policy)
     bwrap = Path("/usr/bin/bwrap")
     if not bwrap.is_file() or not os.access(bwrap, os.X_OK):
         _raise("sandbox_unavailable")
     tmpfs_root = Path("/dev/shm")
     _require_tmpfs(tmpfs_root)
+    if time.time_ns() >= authorization.policy.expires_at_ns:
+        _raise("authorization_expired")
     attempt_id = str(uuid.uuid4())
     claim = {
         "artifact_id": artifact.artifact_id,
@@ -389,41 +420,6 @@ def execute_local_change(
         _raise("evidence_limit")
     _write_immutable(_result_path(store, run_id, authorization_id), evidence_bytes)
     return evidence
-
-
-def build_local_review_input(
-    store: WorkflowRunManifestStore,
-    *,
-    run_id: str,
-    artifact_id: str,
-    authorization_id: str,
-) -> str:
-    """Prepare exact, bounded evidence for a separately configured reviewer Run."""
-    authorization = load_local_execution_authorization(store, run_id, authorization_id)
-    artifact = _load_bound_artifact(
-        store, run_id, artifact_id, authorization.manifest_digest
-    )
-    if (
-        artifact.artifact_id != authorization.artifact_id
-        or artifact.content_sha256 != authorization.artifact_sha256
-    ):
-        _raise("review_artifact_binding")
-    evidence = load_local_execution_evidence(store, run_id, authorization_id)
-    if evidence.get("status") != "verified":
-        _raise("review_requires_verified_candidate")
-    value = {
-        "applied_candidate": {
-            "artifact_id": artifact.artifact_id,
-            "artifact_sha256": artifact.content_sha256,
-            "content_base64": base64.b64encode(artifact.content).decode("ascii"),
-        },
-        "local_execution_evidence": evidence,
-        "run_input": load_workflow_run_manifest(store, run_id).run_input,
-    }
-    encoded = _canonical(value)
-    if len(encoded) > 1_048_576:
-        _raise("review_input_size")
-    return encoded.decode("utf-8")
 
 
 def load_local_execution_evidence(
@@ -650,19 +646,84 @@ def _run_sandbox(
         close_fds=True,
         start_new_session=True,
     )
-    try:
-        stdout, stderr = process.communicate(timeout=limits.wall_timeout_seconds + 5)
-        status = "completed" if process.returncode == 0 else "sandbox_failed"
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        stdout, stderr = process.communicate()
-        status = "sandbox_timeout"
-    if len(stdout) > _MAX_RESULT_BYTES or len(stderr) > 65_536:
-        return {"status": "sandbox_output_limit", "stdout": b"", "stderr": b""}
+    status, stdout, stderr = _capture_bounded_output(
+        process,
+        timeout_seconds=limits.wall_timeout_seconds + 5,
+        stdout_limit=_MAX_RESULT_BYTES,
+        stderr_limit=65_536,
+    )
+    if status == "completed" and process.returncode != 0:
+        status = "sandbox_failed"
     return {"status": status, "stdout": stdout, "stderr": stderr}
+
+
+def _capture_bounded_output(
+    process: subprocess.Popen[bytes],
+    *,
+    timeout_seconds: int,
+    stdout_limit: int,
+    stderr_limit: int,
+) -> tuple[str, bytes, bytes]:
+    """Capture fixed-size output and kill the process group on overflow/timeout."""
+    streams = {
+        process.stdout: (bytearray(), stdout_limit),
+        process.stderr: (bytearray(), stderr_limit),
+    }
+    if any(stream is None for stream in streams):
+        _terminate_process_group(process)
+        _raise("sandbox_output_pipe")
+    selector = selectors.DefaultSelector()
+    outputs = list(streams.items())
+    try:
+        for stream, _ in outputs:
+            assert stream is not None
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+        deadline = time.monotonic() + timeout_seconds
+        status = "completed"
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                status = "sandbox_timeout"
+                _terminate_process_group(process)
+                break
+            for key, _ in selector.select(min(remaining, 0.1)):
+                stream = key.fileobj
+                output, limit = streams[stream]
+                chunk = os.read(stream.fileno(), min(65_536, limit - len(output) + 1))
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    continue
+                if len(output) + len(chunk) > limit:
+                    status = "sandbox_output_limit"
+                    _terminate_process_group(process)
+                    break
+                output.extend(chunk)
+            if status != "completed":
+                break
+        if status != "completed":
+            for stream, _ in outputs:
+                if stream is not None and not stream.closed:
+                    stream.close()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(process)
+            process.wait()
+        return (
+            status,
+            bytes(streams[process.stdout][0]) if status == "completed" else b"",
+            bytes(streams[process.stderr][0]) if status == "completed" else b"",
+        )
+    except OSError:
+        _terminate_process_group(process)
+        _raise("sandbox_output_capture")
+    finally:
+        selector.close()
+        for stream, _ in outputs:
+            if stream is not None and not stream.closed:
+                stream.close()
 
 
 def _parse_sandbox_result(
@@ -777,6 +838,62 @@ def _workspace_root(workspace: Path) -> Path:
     if not contents.startswith("gitdir: ") or not contents[8:]:
         _raise("workspace_not_repository")
     return root
+
+
+def _validate_run_input_scope(
+    run_input: str,
+    root: Path,
+    policy: LocalExecutionPolicy,
+    *,
+    sources: dict[str, tuple[bytes, int]] | None = None,
+) -> None:
+    """Require local authority and source bytes to stay inside fixed Run Input."""
+    def unique_object(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(run_input, object_pairs_hook=unique_object)
+        repository = value["repository"]
+        allowed = value["allowed_paths"]
+        source_context = value["source_context"]
+        if (
+            type(value) is not dict
+            or type(repository) is not dict
+            or type(allowed) is not dict
+            or type(source_context) is not dict
+            or repository.get("path") != str(root)
+            or repository.get("base_revision") != policy.base_revision
+            or type(allowed.get("read")) is not list
+            or type(allowed.get("write")) is not list
+            or not all(
+                type(path) is str
+                for path in (*allowed["read"], *allowed["write"])
+            )
+            or not set(policy.read_paths) <= set(allowed["read"])
+            or not set(policy.write_paths) <= set(allowed["write"])
+            or not set(policy.read_paths) <= set(source_context)
+            or any(type(source_context[path]) is not str for path in policy.read_paths)
+        ):
+            _raise("run_input_scope")
+        for paths in (allowed["read"], allowed["write"]):
+            for path in paths:
+                _validate_relative_path(path)
+    except (KeyError, TypeError, json.JSONDecodeError, ValueError):
+        _raise("run_input_scope")
+    try:
+        actual_sources = sources if sources is not None else _read_sources(root, policy)
+        if any(
+            source_context[path] != content.decode("utf-8")
+            for path, (content, _) in actual_sources.items()
+        ):
+            _raise("run_input_source_context")
+    except (OSError, UnicodeDecodeError):
+        _raise("run_input_source_context")
 
 
 def _require_run_store_outside_workspace(

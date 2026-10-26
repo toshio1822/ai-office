@@ -15,6 +15,7 @@ import os
 import re
 import stat
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from hashlib import sha256
@@ -1398,6 +1399,12 @@ def bounded_document_action_input(
         "assignment": assignment_manifest.run_input,
         "source_artifact": _artifact_payload(source_artifact),
     }
+    from ai_office.engine.local_execution import FILE_CHANGE_SET_CONTENT_TYPE
+
+    if source_artifact.content_type == FILE_CHANGE_SET_CONTENT_TYPE:
+        values["local_execution_evidence"] = _load_local_execution_evidence_for_action(
+            store, scope, source_ordinal, source_artifact
+        )
     if slot.input_source == "revision_input":
         # Aggregate every reviewer's outcome from this round. A PASS never
         # cancels another reviewer's grounded findings, and at least one
@@ -1588,6 +1595,113 @@ def _artifact_payload(artifact) -> dict[str, object]:
         "content_sha256": artifact.content_sha256,
         "run_id": artifact.run_id,
     }
+
+
+def _local_execution_evidence_path(
+    root: Path, job_id: str, ordinal: int
+) -> Path:
+    if not _identifier(job_id) or type(ordinal) is not int or ordinal < 0:
+        raise WorkflowJobAuthorizationError("job_local_effect_identity")
+    return root / f"workflow-bounded-job.{job_id}.local-effect.{ordinal}.json"
+
+
+def _persist_local_execution_evidence_link(
+    store: WorkflowRunManifestStore,
+    scope: BoundedWorkflowJobScope,
+    ordinal: int,
+    artifact,
+    authorization_id: str,
+) -> dict[str, object]:
+    from ai_office.engine.local_execution import (
+        LocalExecutionError,
+        load_local_execution_authorization,
+        load_local_execution_evidence,
+    )
+
+    try:
+        authorization = load_local_execution_authorization(
+            store, artifact.run_id, authorization_id
+        )
+        evidence = load_local_execution_evidence(
+            store, artifact.run_id, authorization_id
+        )
+    except (LocalExecutionError, OSError, ValueError):
+        raise WorkflowJobAuthorizationError("job_local_effect_evidence") from None
+    if not (
+        authorization.artifact_id == artifact.artifact_id
+        and authorization.artifact_sha256 == artifact.content_sha256
+        and authorization.manifest_digest == artifact.manifest_digest
+        and evidence.get("status") == "verified"
+        and evidence.get("run_id") == artifact.run_id
+        and evidence.get("artifact_id") == artifact.artifact_id
+        and evidence.get("artifact_sha256") == artifact.content_sha256
+    ):
+        raise WorkflowJobAuthorizationError("job_local_effect_unverified")
+    payload = _canonical(
+        {
+            "action_ordinal": ordinal,
+            "artifact_id": artifact.artifact_id,
+            "artifact_sha256": artifact.content_sha256,
+            "authorization_id": authorization_id,
+            "evidence_sha256": _digest(_canonical(evidence)),
+            "job_id": scope.job_id,
+            "run_id": artifact.run_id,
+            "schema_version": "workflow-bounded-job-local-effect-link.v1",
+            "scope_sha256": scope.digest,
+        }
+    )
+    _persist_immutable(
+        _local_execution_evidence_path(store.root, scope.job_id, ordinal), payload
+    )
+    return evidence
+
+
+def _load_local_execution_evidence_for_action(
+    store: WorkflowRunManifestStore,
+    scope: BoundedWorkflowJobScope,
+    ordinal: int,
+    artifact,
+) -> dict[str, object]:
+    from ai_office.engine.local_execution import (
+        LocalExecutionError,
+        load_local_execution_authorization,
+        load_local_execution_evidence,
+    )
+
+    try:
+        path = _local_execution_evidence_path(store.root, scope.job_id, ordinal)
+        payload = _read_regular(path)
+        link = json.loads(payload)
+        if type(link) is not dict or payload != _canonical(link):
+            raise ValueError
+        authorization_id = link["authorization_id"]
+        authorization = load_local_execution_authorization(
+            store, artifact.run_id, authorization_id
+        )
+        evidence = load_local_execution_evidence(
+            store, artifact.run_id, authorization_id
+        )
+    except (LocalExecutionError, OSError, ValueError, KeyError, TypeError):
+        raise WorkflowJobAuthorizationError("job_local_effect_evidence") from None
+    if not (
+        link.get("schema_version") == "workflow-bounded-job-local-effect-link.v1"
+        and link.get("scope_sha256") == scope.digest
+        and link.get("job_id") == scope.job_id
+        and link.get("action_ordinal") == ordinal
+        and link.get("run_id") == artifact.run_id
+        and link.get("artifact_id") == artifact.artifact_id
+        and link.get("artifact_sha256") == artifact.content_sha256
+        and authorization.artifact_id == artifact.artifact_id
+        and authorization.artifact_sha256 == artifact.content_sha256
+        and authorization.manifest_digest == artifact.manifest_digest
+        and evidence.get("status") == "verified"
+        and evidence.get("run_id") == artifact.run_id
+        and evidence.get("artifact_id") == artifact.artifact_id
+        and evidence.get("artifact_sha256") == artifact.content_sha256
+        and link.get("evidence_sha256") == _digest(_canonical(evidence))
+    ):
+        raise WorkflowJobAuthorizationError("job_local_effect_binding")
+    return evidence
 
 
 def validate_bounded_document_job_scope(scope: BoundedWorkflowJobScope) -> None:
@@ -1796,25 +1910,8 @@ def _review_verdict(
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
 
         try:
-            input_value = json.loads(review_input)
-            assignment_text = input_value["assignment"]
-            source_artifact = input_value.get("source_artifact") or input_value.get(
-                "revision_artifact"
-            )
-            source_content = source_artifact["content"]
-            source_bytes = source_content.encode("utf-8")
-            source_is_bound = (
-                type(source_artifact) is dict
-                and type(assignment_text) is str
-                and type(source_content) is str
-                and source_artifact.get("content_length") == len(source_bytes)
-                and source_artifact.get("content_sha256") == _digest(source_bytes)
-            )
-        except Exception:
-            assignment_text = ""
-            source_content = ""
-            source_is_bound = False
-        if not source_is_bound:
+            assignment_text, source_content = _review_source_context(review_input)
+        except WorkflowJobAuthorizationError:
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
         for item in checks:
             evidence_reference = item["Evidence source/reference"]
@@ -1895,21 +1992,12 @@ def _review_verdict(
         assignment_text = json.loads(review_input)["assignment"]
         assignment_reference_ids = _reference_ids(assignment_text, line_start_only=True)
         try:
-            input_value = json.loads(review_input)
-            source_artifact = input_value.get("source_artifact") or input_value.get(
-                "revision_artifact"
-            )
-            source_content = source_artifact.get("content")
-            source_bytes = source_content.encode("utf-8")
-            source_is_bound = (
-                type(source_artifact) is dict
-                and type(source_content) is str
-                and source_artifact.get("content_length") == len(source_bytes)
-                and source_artifact.get("content_sha256") == _digest(source_bytes)
-            )
-        except Exception:
+            assignment_text, source_content = _review_source_context(review_input)
+            source_is_bound = True
+        except WorkflowJobAuthorizationError:
             source_content = ""
             source_is_bound = False
+            assignment_text = ""
         for item in findings:
             evidence_reference = _normalized_reference(
                 item["Evidence source/reference"]
@@ -1948,6 +2036,46 @@ def _review_verdict(
                 continue
             raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     return verdict
+
+
+def _review_source_context(review_input: str) -> tuple[str, str]:
+    """Verify exact source Artifact and optional local evidence for citations."""
+    try:
+        input_value = json.loads(review_input)
+        assignment = input_value["assignment"]
+        artifact = input_value.get("source_artifact") or input_value.get(
+            "revision_artifact"
+        )
+        content = artifact["content"]
+        content_bytes = content.encode("utf-8")
+    except Exception:
+        raise WorkflowJobAuthorizationError("document_job_unverified_finding") from None
+    if not (
+        type(input_value) is dict
+        and type(assignment) is str
+        and type(artifact) is dict
+        and type(content) is str
+        and artifact.get("content_length") == len(content_bytes)
+        and artifact.get("content_sha256") == _digest(content_bytes)
+    ):
+        raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+    evidence = input_value.get("local_execution_evidence")
+    if evidence is None:
+        return assignment, content
+    if type(evidence) is not dict:
+        raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+    diff = evidence.get("diff")
+    if not (
+        evidence.get("schema_version") == "local-execution-evidence.v1"
+        and evidence.get("status") == "verified"
+        and evidence.get("run_id") == artifact.get("run_id")
+        and evidence.get("artifact_id") == artifact.get("artifact_id")
+        and evidence.get("artifact_sha256") == artifact.get("content_sha256")
+        and type(diff) is str
+        and evidence.get("diff_sha256") == _digest(diff.encode("utf-8"))
+    ):
+        raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+    return assignment, f"{content}\n{diff}"
 
 
 def _assignment_line_reference_matches(reference: str, assignment: str) -> bool:
@@ -2110,6 +2238,7 @@ def run_bounded_document_job(
     api_key,
     transport,
     execution_destinations: Path | None = None,
+    local_effect_handler: Callable[[str, str, int], str] | None = None,
 ) -> BoundedDocumentJobOutcome:
     """Run the configured finite Job once and persist its terminal result."""
     current = load_bounded_workflow_job_scope(store, scope.job_id)
@@ -2148,6 +2277,7 @@ def run_bounded_document_job(
             api_key=api_key,
             transport=transport,
             execution_destinations=execution_destinations,
+            local_effect_handler=local_effect_handler,
         )
     except WorkflowJobAuthorizationError as error:
         outcome = _stopped_document_job_outcome(store, scope, error.classification)
@@ -2446,6 +2576,7 @@ def _execute_bounded_document_job(
     api_key,
     transport,
     execution_destinations: Path | None,
+    local_effect_handler: Callable[[str, str, int], str] | None,
 ) -> BoundedDocumentJobOutcome:
     """Execute only the approved finite creator/review/action plan.
 
@@ -2828,6 +2959,27 @@ def _execute_bounded_document_job(
         store, scope.job_id, creator_action_count - 1
     )
 
+    def verify_local_effect(ordinal: int, artifact) -> None:
+        from ai_office.engine.local_execution import FILE_CHANGE_SET_CONTENT_TYPE
+
+        if artifact.content_type != FILE_CHANGE_SET_CONTENT_TYPE:
+            return
+        if local_effect_handler is None:
+            raise WorkflowJobAuthorizationError("job_local_effect_not_authorized")
+        try:
+            authorization_id = local_effect_handler(
+                artifact.run_id, artifact.artifact_id, ordinal
+            )
+        except Exception:
+            raise WorkflowJobAuthorizationError("job_local_effect_failed") from None
+        if type(authorization_id) is not str or not _valid_digest(authorization_id):
+            raise WorkflowJobAuthorizationError("job_local_effect_authorization")
+        _persist_local_execution_evidence_link(
+            store, scope, ordinal, artifact, authorization_id
+        )
+
+    verify_local_effect(creator_action_count - 1, source_artifact)
+
     def materialize(ordinal: int, predecessor):
         # Each predecessor is selected from an Artifact that was just loaded
         # through _artifact_for_action (full lineage validation). Rebind it to
@@ -2921,6 +3073,7 @@ def _execute_bounded_document_job(
         ):
             raise WorkflowJobAuthorizationError("document_job_revision_stopped")
         current_artifact = _artifact_for_action(store, scope.job_id, revision_ordinal)
+        verify_local_effect(revision_ordinal, current_artifact)
         revisions_used += 1
         ordinal = revision_ordinal + 1
     raise WorkflowJobAuthorizationError("document_job_review_missing")

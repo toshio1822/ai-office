@@ -9,6 +9,7 @@ import socket
 import subprocess
 import time
 import uuid
+from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
 
@@ -21,25 +22,38 @@ from ai_office.definitions.employee import load_employees
 from ai_office.definitions.workflow import load_workflow_file
 from ai_office.engine.artifact import list_run_artifacts
 from ai_office.engine.local_execution import (
+    FILE_CHANGE_SET_CONTENT_TYPE,
     LocalExecutionError,
     LocalExecutionLimits,
     LocalExecutionPolicy,
+    _capture_bounded_output,
     _git_identity,
     _git_status,
     _redact,
-    build_local_review_input,
     execute_local_change,
     issue_local_execution_authorization,
 )
-from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
-from ai_office.invocation import ModelInvocationRequest
+from ai_office.engine.workflow_bounded_job import (
+    BoundedJobActionSlot,
+    bounded_job_execution_view,
+    bounded_review_action_plan,
+    issue_bounded_workflow_job_scope,
+    run_bounded_document_job,
+)
+from ai_office.engine.workflow_run_manifest import (
+    WorkflowRunManifestStore,
+    build_workflow_run_manifest,
+    persist_workflow_run_manifest,
+)
+from ai_office.execution_target import (
+    DIRECT_OPENAI_EXECUTION_TARGET,
+    execution_target_fingerprint,
+)
 from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesRawHttpResponse,
-    execute_openai_model_invocation,
 )
-from tests._execution_evidence_test_support import create_test_execution_evidence
-from tests.test_artifact import _commit_success, _route, _start_fixture, _success_body
+from tests.test_artifact import _commit_success, _route, _start_fixture
 
 _CHANGE_TYPE = "application/vnd.ai-office.file-change-set+json"
 _SAMPLE_ROOT = Path(__file__).parents[1]
@@ -194,6 +208,151 @@ def test_run_store_inside_target_repository_is_rejected(tmp_path: Path) -> None:
     assert not list(store.root.glob("*.local-effect-authorization.*.json"))
 
 
+@pytest.mark.parametrize(
+    ("mismatch", "expected_classification"),
+    [
+        ("write_scope", "run_input_scope"),
+        ("base_revision", "run_input_scope"),
+        ("repository_path", "run_input_scope"),
+        ("source_context", "run_input_source_context"),
+    ],
+)
+def test_local_authority_cannot_exceed_fixed_run_input(
+    tmp_path: Path, mismatch: str, expected_classification: str
+) -> None:
+    repository, revision, source = _temporary_repo(tmp_path)
+    read_paths = ["calculator.py", "test_calculator.py"]
+    write_paths = ["calculator.py"]
+    run_revision = revision
+    run_repository_path = str(repository)
+    context = {
+        "calculator.py": source.decode("utf-8"),
+        "test_calculator.py": (repository / "test_calculator.py").read_text(
+            encoding="utf-8"
+        ),
+    }
+    policy_revision = revision
+    policy_read_paths = ("calculator.py", "test_calculator.py")
+    policy_write_paths = ("calculator.py",)
+    if mismatch == "write_scope":
+        policy_write_paths = ("calculator.py", "test_calculator.py")
+    elif mismatch == "base_revision":
+        policy_revision = "f" * 40
+    elif mismatch == "repository_path":
+        run_repository_path = str(tmp_path / "another-repository")
+    elif mismatch == "source_context":
+        context["calculator.py"] = "def answer():\n    return 99\n"
+    run_input = _run_input(
+        tmp_path,
+        run_revision,
+        source,
+        repository_path=run_repository_path,
+        read_paths=read_paths,
+        write_paths=write_paths,
+        source_context=context,
+    )
+    store, artifact = _candidate(
+        tmp_path,
+        revision,
+        source,
+        run_id=f"run-scope-{mismatch}",
+        run_input_override=run_input,
+    )
+    policy = _policy(
+        policy_revision,
+        commands=(("/usr/bin/python3", "-B", "-c", "pass"),),
+    ).model_copy(
+        update={"read_paths": policy_read_paths, "write_paths": policy_write_paths}
+    )
+
+    with pytest.raises(LocalExecutionError) as error:
+        issue_local_execution_authorization(
+            store,
+            run_id=artifact.run_id,
+            artifact_id=artifact.artifact_id,
+            workspace=repository,
+            policy=policy,
+            approved_by="offline-proof-operator",
+            approval_id=f"mismatch-{mismatch}",
+        )
+
+    assert error.value.classification == expected_classification
+    assert not list(store.root.glob("*.local-effect-authorization.*.json"))
+
+
+def test_expiry_during_preflight_stops_before_attempt_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ai_office.engine.local_execution as local_execution_module
+
+    repository, revision, source = _temporary_repo(tmp_path)
+    store, artifact = _candidate(tmp_path, revision, source)
+    policy = _policy(
+        revision,
+        commands=(("/usr/bin/python3", "-B", "-c", "pass"),),
+    )
+    monkeypatch.setattr(
+        local_execution_module, "_git_identity", lambda _root: revision
+    )
+    monkeypatch.setattr(local_execution_module, "_git_status", lambda _root: "")
+    authorization = issue_local_execution_authorization(
+        store,
+        run_id=artifact.run_id,
+        artifact_id=artifact.artifact_id,
+        workspace=repository,
+        policy=policy,
+        approved_by="offline-proof-operator",
+        approval_id="expiry-during-preflight",
+    )
+    clock = [time.time_ns()]
+    read_sources = local_execution_module._read_sources
+
+    def expire_after_source_read(root: Path, selected_policy: LocalExecutionPolicy):
+        result = read_sources(root, selected_policy)
+        clock[0] = policy.expires_at_ns
+        return result
+
+    monkeypatch.setattr(local_execution_module.time, "time_ns", lambda: clock[0])
+    monkeypatch.setattr(
+        local_execution_module, "_read_sources", expire_after_source_read
+    )
+
+    with pytest.raises(LocalExecutionError) as error:
+        execute_local_change(
+            store,
+            run_id=artifact.run_id,
+            artifact_id=artifact.artifact_id,
+            authorization_id=authorization.authorization_id,
+            workspace=repository,
+        )
+
+    assert error.value.classification == "authorization_expired"
+    assert not list(store.root.glob("*.local-effect-attempt.*.json"))
+
+
+def test_sandbox_parent_captures_only_bounded_output() -> None:
+    process = subprocess.Popen(
+        [
+            "/usr/bin/python3",
+            "-c",
+            "import os\nwhile True: os.write(1, b'x' * 65536)",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    status, stdout, stderr = _capture_bounded_output(
+        process,
+        timeout_seconds=5,
+        stdout_limit=4096,
+        stderr_limit=1024,
+    )
+    assert status == "sandbox_output_limit"
+    assert stdout == stderr == b""
+    assert process.returncode is not None
+
+
 def _git(root: Path, *args: str) -> str:
     result = subprocess.run(
         ["/usr/bin/git", "-C", str(root), *args],
@@ -256,6 +415,44 @@ def _change_set(
     )
 
 
+def _run_input(
+    root: Path,
+    revision: str,
+    source: bytes,
+    *,
+    repository_path: str | None = None,
+    read_paths: list[str] | None = None,
+    write_paths: list[str] | None = None,
+    source_context: dict[str, str] | None = None,
+) -> str:
+    paths_to_read = read_paths or ["calculator.py", "test_calculator.py"]
+    paths_to_write = write_paths or ["calculator.py"]
+    context = source_context or {
+        "calculator.py": source.decode("utf-8"),
+        "test_calculator.py": (root / "repository" / "test_calculator.py").read_text(
+            encoding="utf-8"
+        ),
+    }
+    return json.dumps(
+        {
+            "acceptance_criteria": [
+                "answer() returns 2",
+                "the supplied unittest suite passes",
+            ],
+            "allowed_paths": {"read": paths_to_read, "write": paths_to_write},
+            "repository": {
+                "base_revision": revision,
+                "identity": "temporary offline-proof repository",
+                "path": repository_path or str(root / "repository"),
+            },
+            "request": "Change answer() to return 2 without changing the test.",
+            "source_context": context,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 def _candidate(
     root: Path,
     revision: str,
@@ -264,39 +461,15 @@ def _candidate(
     run_id: str = "run-local-effect",
     change_set: str | None = None,
     store_root: Path | None = None,
+    run_input_override: str | None = None,
 ):
     store_root = store_root or root / f"runs-{run_id}"
-    source_context = {
-        "calculator.py": source.decode("utf-8"),
-        "test_calculator.py": (root / "repository" / "test_calculator.py").read_text(
-            encoding="utf-8"
-        ),
-    }
-    run_input = json.dumps(
-        {
-            "acceptance_criteria": [
-                "answer() returns 2",
-                "the supplied unittest suite passes",
-            ],
-            "allowed_paths": {
-                "read": ["calculator.py", "test_calculator.py"],
-                "write": ["calculator.py"],
-            },
-            "repository": {
-                "base_revision": revision,
-                "identity": "temporary offline-proof repository",
-            },
-            "request": "Change answer() to return 2 without changing the test.",
-            "source_context": source_context,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    )
+    run_input = run_input_override or _run_input(root, revision, source)
     captured_requests: list[object] = []
     workflow, evidence, calls, result = _start_fixture(
         store_root,
         run_id=run_id,
-        artifact_content_type=_CHANGE_TYPE,
+        artifact_content_type=FILE_CHANGE_SET_CONTENT_TYPE,
         output=(_change_set(revision, source) if change_set is None else change_set),
         run_input=run_input,
         captured_requests=captured_requests,
@@ -615,9 +788,7 @@ def test_git_preflight_contains_repository_filters_and_supports_worktrees(
     assert not marker.exists()
 
 
-def test_symlink_source_is_rejected_before_attempt_claim(
-    tmp_path: Path, require_local_sandbox: None
-) -> None:
+def test_symlink_source_is_rejected_before_attempt_claim(tmp_path: Path) -> None:
     repository, _revision, _source = _temporary_repo(tmp_path)
     calculator = repository / "calculator.py"
     calculator.unlink()
@@ -637,28 +808,18 @@ def test_symlink_source_is_rejected_before_attempt_claim(
         revision,
         commands=(("/usr/bin/python3", "-B", "-c", "pass"),),
     )
-    authorization = issue_local_execution_authorization(
-        store,
-        run_id=artifact.run_id,
-        artifact_id=artifact.artifact_id,
-        workspace=repository,
-        policy=policy,
-        approved_by="offline-proof-operator",
-        approval_id="symlink-grant",
-    )
-
     with pytest.raises(LocalExecutionError):
-        execute_local_change(
+        issue_local_execution_authorization(
             store,
             run_id=artifact.run_id,
             artifact_id=artifact.artifact_id,
-            authorization_id=authorization.authorization_id,
             workspace=repository,
+            policy=policy,
+            approved_by="offline-proof-operator",
+            approval_id="symlink-grant",
         )
-    claim = store.root / (
-        f"{artifact.run_id}.local-effect-attempt.{authorization.authorization_id}.json"
-    )
-    assert not claim.exists()
+    assert not list(store.root.glob("*.local-effect-authorization.*.json"))
+    assert not list(store.root.glob("*.local-effect-attempt.*.json"))
 
 
 def test_timeout_is_durable_and_not_replayed(
@@ -742,11 +903,130 @@ def test_output_limit_is_durable_and_redacted(
         )
 
 
-def test_configured_independent_reviewers_receive_identical_exact_evidence(
+def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     tmp_path: Path, require_local_sandbox: None
 ) -> None:
+    from ai_office.engine.artifact import read_run_artifact
+
     repository, revision, source = _temporary_repo(tmp_path)
-    store, artifact = _candidate(tmp_path, revision, source)
+    source_context = {
+        "calculator.py": source.decode("utf-8"),
+        "test_calculator.py": (repository / "test_calculator.py").read_text(
+            encoding="utf-8"
+        ),
+    }
+    assignment = json.dumps(
+        {
+            "acceptance_criteria": ["answer() returns 2", "tests pass"],
+            "allowed_paths": {
+                "read": ["calculator.py", "test_calculator.py"],
+                "write": ["calculator.py"],
+            },
+            "repository": {"base_revision": revision, "path": str(repository)},
+            "request": "Change answer() to return 2 without changing the test.",
+            "source_context": source_context,
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    store_root = tmp_path / "bounded-workflow-runs"
+    store_root.mkdir(mode=0o700)
+    store = WorkflowRunManifestStore(store_root)
+    workflow = load_workflow_file(
+        _SAMPLE_ROOT / "workflows/bounded-change-review.yaml"
+    )
+    employees = {
+        loaded.definition.id: loaded
+        for loaded in load_employees(_SAMPLE_ROOT / "employees")
+    }
+    target = DIRECT_OPENAI_EXECUTION_TARGET
+    source_manifest = build_workflow_run_manifest(
+        "offline-source-definition",
+        assignment,
+        workflow,
+        tuple(employees.values()),
+        execution_targets=tuple(
+            target for _ in workflow.definition.steps
+        ),
+    )
+    first_step_id = workflow.definition.bounded_review.draft_step
+    initial_view = bounded_job_execution_view(workflow, first_step_id)
+    initial_manifest = build_workflow_run_manifest(
+        "offline-integrated-initial",
+        assignment,
+        initial_view,
+        (employees["change-author"],),
+        execution_targets=(target,),
+    )
+    persist_workflow_run_manifest(store, source_manifest)
+    persist_workflow_run_manifest(store, initial_manifest)
+
+    def digest(value: object) -> str:
+        encoded = json.dumps(
+            asdict(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return sha256(encoded).hexdigest()
+
+    slots = []
+    for ordinal, (step_id, step_index, input_source) in enumerate(
+        bounded_review_action_plan(workflow, 1)
+    ):
+        view = bounded_job_execution_view(workflow, step_id)
+        employee_id = view.definition.steps[step_index - 1].employee
+        manifest = (
+            initial_manifest
+            if ordinal == 0
+            else build_workflow_run_manifest(
+                f"offline-template-{ordinal}",
+                assignment,
+                view,
+                (employees[employee_id],),
+                execution_targets=(target,),
+            )
+        )
+        employee_snapshot = next(
+            item
+            for item in manifest.employee_snapshots
+            if item.id == employee_id
+        )
+        slots.append(
+            BoundedJobActionSlot(
+                ordinal=ordinal,
+                workflow_id=workflow.definition.id,
+                step_id=step_id,
+                step_index=step_index,
+                employee_id=employee_id,
+                workflow_snapshot_sha256=digest(manifest.workflow_snapshot),
+                employee_snapshot_sha256=digest(employee_snapshot),
+                provider=target.provider,
+                execution_target_fingerprint=execution_target_fingerprint(target),
+                model=manifest.workflow_snapshot.steps[0].model,
+                input_source=input_source,
+            )
+        )
+    assignment_sha = sha256(assignment.encode("utf-8")).hexdigest()
+    scope = issue_bounded_workflow_job_scope(
+        store,
+        job_id="offline-integrated-job",
+        initial_run_id=initial_manifest.run_id,
+        assignment_sha256=assignment_sha,
+        initial_input_sha256=assignment_sha,
+        actions=tuple(slots),
+        max_provider_attempts=6,
+        max_revisions=1,
+        source_manifest_run_id=source_manifest.run_id,
+        source_manifest_digest=source_manifest.digest,
+        expires_at_ns=9_999_999_999_999_999_999,
+        business_approved_by="offline-proof-operator",
+        business_grant_id="offline-integrated-business",
+        execution_approved_by="offline-proof-operator",
+        execution_grant_id="offline-integrated-execution",
+        now_ns=1,
+    )
     policy = _policy(
         revision,
         commands=(
@@ -760,108 +1040,160 @@ def test_configured_independent_reviewers_receive_identical_exact_evidence(
                 "/workspace",
             ),
         ),
+    ).model_copy(update={"expires_at_ns": time.time_ns() + 600_000_000_000})
+    citation_line = next(
+        (index, line)
+        for index, line in enumerate(assignment.splitlines(), start=1)
+        if "answer() returns 2" in line
     )
-    authorization = issue_local_execution_authorization(
-        store,
-        run_id=artifact.run_id,
-        artifact_id=artifact.artifact_id,
-        workspace=repository,
-        policy=policy,
-        approved_by="offline-proof-operator",
-        approval_id="review-grant",
+    citation = f"assignment:L{citation_line[0]} `{citation_line[1]}`"
+    calls: list[dict[str, object]] = []
+    reviewer_inputs: list[dict[str, object]] = []
+
+    def response(text: str) -> OpenAIResponsesRawHttpResponse:
+        return OpenAIResponsesRawHttpResponse(
+            200,
+            "synthetic",
+            (("content-type", "application/json"),),
+            json.dumps(
+                {
+                    "id": f"offline-response-{len(calls)}",
+                    "object": "response",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": text}],
+                        }
+                    ],
+                }
+            ).encode(),
+        )
+
+    def pass_review() -> str:
+        return (
+            "Verdict: PASS\n\n### Check 1\n"
+            "Requirement: answer() returns 2.\n"
+            "Artifact location: `return 2`\n"
+            f"Evidence source/reference: {citation}\n"
+            "Assessment: The exact diff and successful test evidence meet the "
+            "request.\n"
+            "Unresolved material issues: none"
+        )
+
+    findings = (
+        "Verdict: CHANGES_REQUIRED\n\n### Finding 1\n"
+        "Requirement: Keep the implementation minimal.\n"
+        "Artifact location: `return 2  # unnecessary comment`\n"
+        f"Evidence source/reference: {citation}\n"
+        "Impact: The candidate adds an unnecessary comment.\n"
+        "Requested correction: Remove the comment."
     )
-    local_evidence = execute_local_change(
-        store,
-        run_id=artifact.run_id,
-        artifact_id=artifact.artifact_id,
-        authorization_id=authorization.authorization_id,
-        workspace=repository,
-    )
-    review_input = build_local_review_input(
-        store,
-        run_id=artifact.run_id,
-        artifact_id=artifact.artifact_id,
-        authorization_id=authorization.authorization_id,
-    )
-    packet = json.loads(review_input)
-    assert packet["applied_candidate"]["artifact_sha256"] == artifact.content_sha256
-    assert packet["local_execution_evidence"] == local_evidence
-    with pytest.raises(LocalExecutionError):
-        build_local_review_input(
+
+    def fake_transport(request: object) -> OpenAIResponsesRawHttpResponse:
+        payload = json.loads(request.body)
+        task_input = json.loads(payload["input"])
+        run_input = json.loads(task_input["run_input"])
+        calls.append({"request": request, "run_input": run_input})
+        if (
+            "source_artifact" in run_input
+            and "review_artifacts" not in run_input
+        ):
+            reviewer_inputs.append(run_input)
+        index = len(calls) - 1
+        if index == 0:
+            output = _change_set(
+                revision,
+                source,
+                replacement=b"def answer():\n    return 2  # unnecessary comment\n",
+            )
+        elif index == 1:
+            output = findings
+        elif index == 2:
+            output = pass_review()
+        elif index == 3:
+            output = _change_set(revision, source)
+        else:
+            output = pass_review()
+        return response(output)
+
+    authorizations: list[str] = []
+
+    def authorize_and_validate(
+        run_id: str, artifact_id: str, ordinal: int
+    ) -> str:
+        authorization = issue_local_execution_authorization(
             store,
-            run_id=artifact.run_id,
-            artifact_id="0" * 64,
-            authorization_id=authorization.authorization_id,
-        )
-    run_input = json.loads(packet["run_input"])
-    assert run_input["repository"]["base_revision"] == revision
-    assert run_input["allowed_paths"] == {
-        "read": ["calculator.py", "test_calculator.py"],
-        "write": ["calculator.py"],
-    }
-    assert run_input["source_context"]["calculator.py"] == source.decode("utf-8")
-
-    sample = load_workflow_file(_SAMPLE_ROOT / "workflows/bounded-change-review.yaml")
-    workflow = sample.definition
-    employees = tuple(
-        loaded.definition for loaded in load_employees(_SAMPLE_ROOT / "employees")
-    )
-    employee_by_id = {employee.id: employee for employee in employees}
-    assert workflow.bounded_review is not None
-    reviewer_ids = workflow.bounded_review.review_steps
-    reviewer_employees = [
-        next(step.employee for step in workflow.steps if step.id == step_id)
-        for step_id in reviewer_ids
-    ]
-    assert len(reviewer_ids) == 2
-    assert len(set(reviewer_employees)) == len(reviewer_employees)
-
-    seen_runs: list[tuple[str, dict[str, object]]] = []
-    for step_id in reviewer_ids:
-        step = next(item for item in workflow.steps if item.id == step_id)
-        employee = employee_by_id[step.employee]
-        run_id = f"review-{step_id}"
-        execution = create_test_execution_evidence(
-            tmp_path / f"runs-{run_id}",
             run_id=run_id,
-            workflow=workflow,
-            employees=employees,
-            request=ModelInvocationRequest(
-                model=step.model,
-                system_instructions=employee.instructions,
-                task_instructions=step.instructions,
-                allowed_tools=(),
-            ),
-            resolved_tools=(),
-            step_id=step.id,
-            target=DIRECT_OPENAI_EXECUTION_TARGET,
-            run_input=review_input,
+            artifact_id=artifact_id,
+            workspace=repository,
+            policy=policy,
+            approved_by="offline-proof-operator",
+            approval_id=f"integrated-local-effect-{ordinal}",
         )
-        response = OpenAIResponsesRawHttpResponse(
-            status_code=200,
-            reason="synthetic",
-            headers=(("content-type", "application/json"),),
-            body=_success_body("Verdict: PASS"),
+        evidence = execute_local_change(
+            store,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            authorization_id=authorization.authorization_id,
+            workspace=repository,
         )
-        seen: list[object] = []
+        assert evidence["status"] == "verified"
+        authorizations.append(authorization.authorization_id)
+        return authorization.authorization_id
 
-        def fake_transport(request: object) -> OpenAIResponsesRawHttpResponse:
-            seen.append(request)
-            return response
+    outcome = run_bounded_document_job(
+        store,
+        scope,
+        initial_run_id=initial_manifest.run_id,
+        assignment=assignment,
+        workflows={workflow.definition.id: workflow},
+        employees=employees,
+        api_key=OpenAIApiKey(value=SecretStr("offline-only")),
+        transport=fake_transport,
+        local_effect_handler=authorize_and_validate,
+    )
 
-        result = execute_openai_model_invocation(
-            execution.request,
-            (),
-            OpenAIApiKey(value=SecretStr("offline-review-test-key")),
-            execution.approval,
-            transport=fake_transport,
-            execution_evidence=execution.context,
-        )
-        assert result.text == "Verdict: PASS"
-        payload = json.loads(seen[0].body)
-        rendered_input = json.loads(payload["input"])
-        assert rendered_input["run_input"] == review_input
-        seen_runs.append((run_id, rendered_input))
-
-    assert len({run_id for run_id, _ in seen_runs}) == 2
-    assert all(item["run_input"] == review_input for _, item in seen_runs)
+    assert outcome.status == "reviewed", outcome
+    assert outcome.revisions_used == 1
+    assert len(calls) == 6
+    assert len(authorizations) == 2
+    assert len(reviewer_inputs) == 4
+    first_round = reviewer_inputs[:2]
+    second_round = reviewer_inputs[2:]
+    assert first_round[0]["local_execution_evidence"] == first_round[1][
+        "local_execution_evidence"
+    ]
+    assert second_round[0]["local_execution_evidence"] == second_round[1][
+        "local_execution_evidence"
+    ]
+    first_evidence = first_round[0]["local_execution_evidence"]
+    second_evidence = second_round[0]["local_execution_evidence"]
+    assert first_evidence["status"] == second_evidence["status"] == "verified"
+    assert first_evidence["artifact_id"] != second_evidence["artifact_id"]
+    assert first_evidence["diff"] != second_evidence["diff"]
+    assert "# unnecessary comment" in first_evidence["diff"]
+    assert "# unnecessary comment" not in second_evidence["diff"]
+    assert len(
+        {
+            item["source_artifact"]["content_sha256"]
+            for item in first_round
+        }
+    ) == 1
+    assert len(
+        {
+            item["source_artifact"]["content_sha256"]
+            for item in second_round
+        }
+    ) == 1
+    final_artifact = read_run_artifact(
+        store,
+        outcome.final_artifact_run_id,
+        outcome.final_artifact_id,
+    )
+    assert final_artifact.content_type == FILE_CHANGE_SET_CONTENT_TYPE
+    final_change = json.loads(final_artifact.content)
+    final_source = base64.b64decode(
+        final_change["changes"][0]["content_base64"], validate=True
+    )
+    assert final_source == b"def answer():\n    return 2\n"
