@@ -53,6 +53,16 @@ from ai_office.providers.openai import (
     OpenAIApiKey,
     OpenAIResponsesRawHttpResponse,
 )
+from tests._offline_git_delivery import (
+    FakeDraftPullRequestAPI,
+    OfflineDeliveryError,
+    SimulatedEffectCrash,
+    _validate_attributes,
+    create_fake_bare_remote,
+    issue_test_delivery_grant,
+    revoke_test_delivery_grant,
+    run_offline_delivery,
+)
 from tests.test_artifact import _commit_success, _route, _start_fixture
 
 _CHANGE_TYPE = "application/vnd.ai-office.file-change-set+json"
@@ -382,9 +392,6 @@ def _temporary_repo(root: Path) -> tuple[Path, str, bytes]:
     repository.mkdir()
     source = b"def answer():\n    return 1 + 1\n"
     (repository / "calculator.py").write_bytes(source)
-    (repository / ".gitattributes").write_text(
-        "calculator.py filter=offlineprobe\n", encoding="utf-8"
-    )
     (repository / "test_calculator.py").write_text(
         "import unittest\n\n"
         "from calculator import answer\n\n\n"
@@ -396,7 +403,7 @@ def _temporary_repo(root: Path) -> tuple[Path, str, bytes]:
     _git(repository, "init", "--quiet")
     _git(repository, "config", "user.name", "Offline Proof")
     _git(repository, "config", "user.email", "offline-proof@example.invalid")
-    _git(repository, "add", ".gitattributes", "calculator.py", "test_calculator.py")
+    _git(repository, "add", "calculator.py", "test_calculator.py")
     _git(repository, "commit", "--quiet", "-m", "baseline")
     revision = _git(repository, "rev-parse", "HEAD")
     return repository, revision, source
@@ -761,7 +768,15 @@ def test_expired_grant_is_rejected_before_claim(
 def test_git_preflight_contains_repository_filters_and_supports_worktrees(
     tmp_path: Path, require_local_sandbox: None
 ) -> None:
-    repository, revision, _source = _temporary_repo(tmp_path)
+    repository, _revision, _source = _temporary_repo(tmp_path)
+    (repository / ".gitattributes").write_text(
+        "calculator.py filter=offlineprobe\n", encoding="utf-8"
+    )
+    _git(repository, "add", ".gitattributes")
+    _git(repository, "commit", "--quiet", "-m", "declare test filter")
+    revision = _git(repository, "rev-parse", "HEAD")
+    with pytest.raises(OfflineDeliveryError):
+        _validate_attributes(repository, ["calculator.py"])
     linked_worktree = tmp_path / "linked-worktree"
     _git(
         repository,
@@ -1211,3 +1226,200 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         final_change["changes"][0]["content_base64"], validate=True
     )
     assert final_source == b"def answer():\n    return 2\n"
+
+    # #805 offline proof: the reviewed, verified Artifact is admitted only to
+    # a new local branch, a local bare remote and the in-memory fake PR API.
+    remote = tmp_path / "fake-remote.git"
+    create_fake_bare_remote(remote, repository, revision)
+    hook_marker = tmp_path / "pre-push-hook-ran"
+    hook = repository / ".git" / "hooks" / "pre-push"
+    hook.write_text(f"#!/bin/sh\n/usr/bin/touch {hook_marker}\n", encoding="utf-8")
+    hook.chmod(0o700)
+    target_ref = "refs/heads/codex/issue-805-offline-proof"
+    expiry = time.time_ns() + 30 * 60 * 1_000_000_000
+    api = FakeDraftPullRequestAPI()
+
+    # Protected refs and unexpired/revoked grants fail before an Attempt exists.
+    with pytest.raises(OfflineDeliveryError):
+        issue_test_delivery_grant(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref="refs/heads/main",
+            verification_authorization_id=authorizations[-1],
+            expires_at_ns=expiry,
+        )
+    expired = issue_test_delivery_grant(
+        store,
+        scope,
+        outcome,
+        workspace=repository,
+        remote=remote,
+        target_ref="refs/heads/codex/issue-805-expired",
+        verification_authorization_id=authorizations[-1],
+        expires_at_ns=expiry,
+    )
+    with pytest.raises(OfflineDeliveryError):
+        run_offline_delivery(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref="refs/heads/codex/issue-805-expired",
+            verification_authorization_id=authorizations[-1],
+            grant_id=expired,
+            fake_pr_api=api,
+            now_ns=expiry,
+        )
+    revoked = issue_test_delivery_grant(
+        store,
+        scope,
+        outcome,
+        workspace=repository,
+        remote=remote,
+        target_ref="refs/heads/codex/issue-805-revoked",
+        verification_authorization_id=authorizations[-1],
+        expires_at_ns=expiry,
+    )
+    revoke_test_delivery_grant(store, scope.job_id, revoked)
+    with pytest.raises(OfflineDeliveryError):
+        run_offline_delivery(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref="refs/heads/codex/issue-805-revoked",
+            verification_authorization_id=authorizations[-1],
+            grant_id=revoked,
+            fake_pr_api=api,
+        )
+    expired_attempts = store.root.glob(
+        f"{scope.job_id}.offline-delivery.{expired}.*.attempt.json"
+    )
+    revoked_attempts = store.root.glob(
+        f"{scope.job_id}.offline-delivery.{revoked}.*.attempt.json"
+    )
+    assert not list(expired_attempts)
+    assert not list(revoked_attempts)
+
+    grant_id = issue_test_delivery_grant(
+        store,
+        scope,
+        outcome,
+        workspace=repository,
+        remote=remote,
+        target_ref=target_ref,
+        verification_authorization_id=authorizations[-1],
+        expires_at_ns=expiry,
+    )
+    # A crash after each effect leaves an Attempt. Resumption reconciles the
+    # existing state read-only; it never sends the same push or POST again.
+    with pytest.raises(SimulatedEffectCrash):
+        run_offline_delivery(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref=target_ref,
+            verification_authorization_id=authorizations[-1],
+            grant_id=grant_id,
+            fake_pr_api=api,
+            crash_after="local_commit",
+        )
+    with pytest.raises(SimulatedEffectCrash):
+        run_offline_delivery(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref=target_ref,
+            verification_authorization_id=authorizations[-1],
+            grant_id=grant_id,
+            fake_pr_api=api,
+            crash_after="remote_ref_create",
+        )
+    api.drop_next_response = True
+    with pytest.raises(SimulatedEffectCrash):
+        run_offline_delivery(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref=target_ref,
+            verification_authorization_id=authorizations[-1],
+            grant_id=grant_id,
+            fake_pr_api=api,
+        )
+    receipt = run_offline_delivery(
+        store,
+        scope,
+        outcome,
+        workspace=repository,
+        remote=remote,
+        target_ref=target_ref,
+        verification_authorization_id=authorizations[-1],
+        grant_id=grant_id,
+        fake_pr_api=api,
+    )
+    assert receipt["artifact_id"] == final_artifact.artifact_id
+    assert receipt["draft_pr"]["draft"] is True
+    assert receipt["draft_pr"]["url"].startswith("https://fake.invalid/")
+    assert all(item["reconciled_read_only"] for item in receipt["effects"])
+    assert api.posts == 1
+    assert not hook_marker.exists()
+    assert _git(repository, "rev-parse", "HEAD") == revision
+    assert _git(remote, "rev-parse", "refs/heads/main") == revision
+    assert _git(remote, "rev-parse", target_ref) == receipt["commit_sha"]
+    assert (
+        _git(
+            repository,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            revision,
+            receipt["commit_sha"],
+        )
+        == "M\tcalculator.py"
+    )
+    assert (repository / "calculator.py").read_bytes() == source
+    attempts = store.root.glob(
+        f"{scope.job_id}.offline-delivery.{grant_id}.*.attempt.json"
+    )
+    assert len(list(attempts)) == 3
+
+    # A repeated completed call is read-only and produces no second PR POST.
+    replay = run_offline_delivery(
+        store,
+        scope,
+        outcome,
+        workspace=repository,
+        remote=remote,
+        target_ref=target_ref,
+        verification_authorization_id=authorizations[-1],
+        grant_id=grant_id,
+        fake_pr_api=api,
+    )
+    assert replay == receipt
+    assert api.posts == 1
+
+    # The same Run binding cannot be reused after its source base has moved.
+    _git(repository, "checkout", "--quiet", target_ref)
+    with pytest.raises(OfflineDeliveryError):
+        issue_test_delivery_grant(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref="refs/heads/codex/issue-805-wrong-base",
+            verification_authorization_id=authorizations[-1],
+            expires_at_ns=expiry,
+        )
