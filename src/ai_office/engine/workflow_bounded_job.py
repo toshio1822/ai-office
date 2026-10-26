@@ -2429,6 +2429,18 @@ def inspect_bounded_document_job(
             if item.get("ordinal") in consumed_revision_ordinals
             and item.get("retry_index", 0) > 0
         ),
+        "final_artifact_run_id": terminal_outcome.final_artifact_run_id
+        if terminal_outcome
+        else None,
+        "final_artifact_id": terminal_outcome.final_artifact_id
+        if terminal_outcome
+        else None,
+        "review_artifact_run_id": terminal_outcome.review_artifact_run_id
+        if terminal_outcome
+        else None,
+        "review_artifact_id": terminal_outcome.review_artifact_id
+        if terminal_outcome
+        else None,
         "status": status.get("status", "in_progress")
         if status
         else "interrupted_or_in_progress"
