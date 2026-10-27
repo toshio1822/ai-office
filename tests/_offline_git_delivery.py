@@ -226,36 +226,46 @@ class FakeGitHubDeliveryAPI:
         self,
         *,
         repository_id: str,
-        commit_sha: str,
-        raw_commit: bytes,
+        message: str,
         tree_sha: str,
-        parent_sha: str,
+        parents: list[str],
     ) -> str:
         self._authorize(repository_id, {"contents:write"})
-        headers = raw_commit.split(b"\n\n", 1)[0].splitlines()
-        fields = {line.split(b" ", 1)[0]: line.split(b" ", 1)[1] for line in headers}
-        if fields.get(b"tree", b"").decode("ascii", "ignore") != tree_sha or [
-            item[7:].decode("ascii", "ignore")
-            for item in headers
-            if item.startswith(b"parent ")
-        ] != [parent_sha]:
+        if (
+            type(message) is not str
+            or not message
+            or not re.fullmatch(r"[0-9a-f]{40}", tree_sha)
+            or type(parents) is not list
+            or len(parents) != 1
+            or not re.fullmatch(r"[0-9a-f]{40}", parents[0])
+        ):
             raise OfflineDeliveryError("fake_commit_binding")
-        actual_sha = (
-            _git_bytes(
-                self.remote,
-                "hash-object",
-                "-w",
-                "-t",
-                "commit",
-                "--stdin",
-                env=_git_env(),
-                input=raw_commit,
-            )
-            .decode("ascii")
-            .strip()
+        # Model POST /git/commits: the request contains structured GitHub REST
+        # fields, not raw bytes or a caller-selected SHA. Omitted author and
+        # committer use API-side identity/date defaults, so the returned SHA
+        # can differ from the locally-built candidate commit.
+        date = f"@{time.time_ns() // 1_000_000_000} +0000"
+        env = {
+            **_git_env(),
+            "GIT_AUTHOR_NAME": "Fake GitHub REST API",
+            "GIT_AUTHOR_EMAIL": "github-rest-fake@example.invalid",
+            "GIT_AUTHOR_DATE": date,
+            "GIT_COMMITTER_NAME": "Fake GitHub REST API",
+            "GIT_COMMITTER_EMAIL": "github-rest-fake@example.invalid",
+            "GIT_COMMITTER_DATE": date,
+        }
+        actual_sha = _git(
+            self.remote,
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            tree_sha,
+            "-p",
+            parents[0],
+            "-m",
+            message,
+            env=env,
         )
-        if actual_sha != commit_sha:
-            raise OfflineDeliveryError("fake_commit_identity")
         self._record("POST", "/git/commits", actual_sha)
         return actual_sha
 
@@ -646,6 +656,12 @@ def run_offline_delivery(
                 artifact_id=str(grant_binding["artifact_id"]),
                 artifact_sha256=str(grant_binding["artifact_sha256"]),
                 diff_sha256=str(grant_binding["verification_diff_sha256"]),
+                remote_commit_sha=(
+                    str(results["remote_commit_create"]["commit_sha"])
+                    if effect in {"remote_ref_create", "draft_pr"}
+                    and "remote_commit_create" in results
+                    else None
+                ),
                 store=store,
                 scope=scope,
             )
@@ -755,38 +771,56 @@ def run_offline_delivery(
                 grant_id, effect, commit_sha=commit_sha, tree_sha=tree_sha
             )
         elif effect == "remote_commit_create":
-            commit_sha = str(results["local_commit"]["commit_sha"])
+            local_commit_sha = str(results["local_commit"]["commit_sha"])
             tree_sha = str(results["remote_tree_create"]["tree_sha"])
-            raw_commit = _git_bytes(workspace, "cat-file", "commit", commit_sha)
             actual_sha = fake_pr_api.create_commit(
                 repository_id=str(grant_binding["repository_id"]),
-                commit_sha=commit_sha,
-                raw_commit=raw_commit,
+                message=_git(workspace, "show", "-s", "--format=%B", local_commit_sha),
                 tree_sha=tree_sha,
-                parent_sha=str(grant_binding["base_revision"]),
+                parents=[str(grant_binding["base_revision"])],
             )
-            result = _effect_result(grant_id, effect, commit_sha=actual_sha)
+            result = _effect_result(
+                grant_id,
+                effect,
+                commit_sha=actual_sha,
+                local_commit_sha=local_commit_sha,
+            )
+            _verify_effect_result(
+                effect,
+                result,
+                workspace=workspace,
+                remote=remote,
+                target_ref=target_ref,
+                fake_pr_api=fake_pr_api,
+                repository_id=str(grant_binding["repository_id"]),
+                base_revision=str(grant_binding["base_revision"]),
+                diff_sha256=str(grant_binding["verification_diff_sha256"]),
+            )
         elif effect == "remote_ref_create":
-            commit_sha = str(results["remote_commit_create"]["commit_sha"])
+            local_commit_sha = str(results["local_commit"]["commit_sha"])
+            remote_commit_sha = str(results["remote_commit_create"]["commit_sha"])
             fake_pr_api.create_ref(
                 repository_id=str(grant_binding["repository_id"]),
                 target_ref=target_ref,
-                commit_sha=commit_sha,
+                commit_sha=remote_commit_sha,
                 base_sha=str(grant_binding["base_revision"]),
             )
             result = _effect_result(
-                grant_id, effect, commit_sha=commit_sha, remote_ref=target_ref
+                grant_id,
+                effect,
+                commit_sha=remote_commit_sha,
+                local_commit_sha=local_commit_sha,
+                remote_ref=target_ref,
             )
         else:
-            commit_sha = str(results["local_commit"]["commit_sha"])
-            remote_commit = str(results["remote_commit_create"]["commit_sha"])
+            local_commit_sha = str(results["local_commit"]["commit_sha"])
+            remote_commit_sha = str(results["remote_commit_create"]["commit_sha"])
             if (
-                remote_commit != commit_sha
-                or fake_pr_api.get_ref(
+                fake_pr_api.get_ref(
                     repository_id=str(grant_binding["repository_id"]),
                     target_ref=target_ref,
                 )
-                != commit_sha
+                != remote_commit_sha
             ):
                 raise OfflineDeliveryError("remote_ref_mismatch")
             try:
@@ -795,7 +829,7 @@ def run_offline_delivery(
                     base_ref="refs/heads/main",
                     base_sha=str(grant_binding["base_revision"]),
                     head_ref=target_ref,
-                    head_sha=commit_sha,
+                    head_sha=remote_commit_sha,
                     diff_sha256=str(grant_binding["verification_diff_sha256"]),
                 )
             except AmbiguousFakeResponse as exc:
@@ -803,7 +837,8 @@ def run_offline_delivery(
             result = _effect_result(
                 grant_id,
                 effect,
-                commit_sha=commit_sha,
+                commit_sha=remote_commit_sha,
+                local_commit_sha=local_commit_sha,
                 draft_pr=record,
                 diff_sha256=str(grant_binding["verification_diff_sha256"]),
             )
@@ -816,6 +851,8 @@ def run_offline_delivery(
     return {
         "artifact_id": grant_binding["artifact_id"],
         "commit_sha": results["remote_commit_create"]["commit_sha"],
+        "local_commit_sha": results["local_commit"]["commit_sha"],
+        "remote_commit_sha": results["remote_commit_create"]["commit_sha"],
         "draft_pr": results["draft_pr"]["draft_pr"],
         "effects": [results[item] for item in _EFFECTS],
         "remote_ref": target_ref,
@@ -1066,8 +1103,17 @@ def _validate_candidate(
     local_ref = _optional_git(workspace, "rev-parse", target_ref)
     if require_target_absent and (remote_ref is not None or local_ref is not None):
         raise OfflineDeliveryError("target_ref_exists")
-    if remote_ref not in {None, local_ref}:
-        raise OfflineDeliveryError("remote_ref_mismatch")
+    if remote_ref is not None:
+        if (
+            local_ref is None
+            or _git(remote_path, "show", "-s", "--format=%P", remote_ref)
+            != authorization.policy.base_revision
+            or _git(remote_path, "rev-parse", f"{remote_ref}^{{tree}}")
+            != _git(workspace, "rev-parse", f"{local_ref}^{{tree}}")
+            or _tree_entries(remote_path, remote_ref)
+            != _tree_entries(workspace, local_ref)
+        ):
+            raise OfflineDeliveryError("remote_ref_mismatch")
     # This record is deliberately a synthetic offline capability. No authentic
     # human identity or credential is represented by approved_by.
     return {
@@ -1348,6 +1394,7 @@ def _reconcile_effect(
     artifact_id: str,
     artifact_sha256: str,
     diff_sha256: str,
+    remote_commit_sha: str | None,
     store: WorkflowRunManifestStore,
     scope: BoundedWorkflowJobScope,
 ) -> dict[str, object]:
@@ -1417,9 +1464,15 @@ def _reconcile_effect(
         ):
             raise OfflineDeliveryError("git_commit_outcome_ambiguous")
         return _effect_result(
-            grant_id, effect, commit_sha=local_commit, reconciled=True
+            grant_id,
+            effect,
+            commit_sha=str(record["commit_sha"]),
+            local_commit_sha=local_commit,
+            reconciled=True,
         )
     if effect == "remote_ref_create":
+        if remote_commit_sha is None:
+            raise OfflineDeliveryError("push_outcome_ambiguous")
         remote_commit = fake_pr_api.get_ref(
             repository_id=repository_id, target_ref=target_ref
         )
@@ -1428,34 +1481,41 @@ def _reconcile_effect(
         )
         if (
             local_commit is None
-            or remote_commit != local_commit
+            or remote_commit != remote_commit_sha
             or remote_base != base_revision
         ):
             raise OfflineDeliveryError("push_outcome_ambiguous")
         return _effect_result(
             grant_id,
             effect,
-            commit_sha=local_commit,
+            commit_sha=remote_commit_sha,
+            local_commit_sha=local_commit,
             remote_ref=target_ref,
             reconciled=True,
         )
+    if remote_commit_sha is None:
+        raise OfflineDeliveryError("draft_pr_outcome_ambiguous")
     record = fake_pr_api.get_draft(repository_id=repository_id, head_ref=target_ref)
-    expected_commit = fake_pr_api.get_ref(
+    remote_ref_commit = fake_pr_api.get_ref(
         repository_id=repository_id, target_ref=target_ref
     )
-    if not _matches_fake_pr(
-        record,
-        repository_id,
-        target_ref,
-        expected_commit,
-        base_revision,
-        diff_sha256,
+    if (
+        not _matches_fake_pr(
+            record,
+            repository_id,
+            target_ref,
+            remote_commit_sha,
+            base_revision,
+            diff_sha256,
+        )
+        or remote_ref_commit != remote_commit_sha
     ):
         raise OfflineDeliveryError("draft_pr_outcome_ambiguous")
     return _effect_result(
         grant_id,
         effect,
-        commit_sha=str(expected_commit),
+        commit_sha=remote_commit_sha,
+        local_commit_sha=local_commit,
         draft_pr=record,
         reconciled=True,
     )
@@ -1473,8 +1533,8 @@ def _verify_effect_result(
     base_revision: str,
     diff_sha256: str,
 ) -> None:
-    commit = _optional_git(workspace, "rev-parse", target_ref)
-    if effect == "local_commit" and commit != result.get("commit_sha"):
+    local_commit = _optional_git(workspace, "rev-parse", target_ref)
+    if effect == "local_commit" and local_commit != result.get("commit_sha"):
         raise OfflineDeliveryError("commit_result_mismatch")
     if effect == "remote_blob_create":
         for update in result.get("blobs", []):
@@ -1498,15 +1558,21 @@ def _verify_effect_result(
         )
         if (
             remote_commit is None
+            or local_commit != result.get("local_commit_sha")
+            or remote_commit.get("commit_sha") != result.get("commit_sha")
             or remote_commit.get("parent_sha") != base_revision
             or remote_commit.get("tree_sha")
-            != _git(workspace, "rev-parse", f"{commit}^{{tree}}")
+            != _git(workspace, "rev-parse", f"{local_commit}^{{tree}}")
         ):
             raise OfflineDeliveryError("commit_result_mismatch")
+        if fake_pr_api.get_tree(
+            repository_id=repository_id, tree_sha=remote_commit["tree_sha"]
+        ) != _tree_entries(workspace, local_commit):
+            raise OfflineDeliveryError("commit_result_mismatch")
     if effect == "remote_ref_create" and (
-        commit != result.get("commit_sha")
+        local_commit != result.get("local_commit_sha")
         or fake_pr_api.get_ref(repository_id=repository_id, target_ref=target_ref)
-        != commit
+        != result.get("commit_sha")
     ):
         raise OfflineDeliveryError("push_result_mismatch")
     if effect == "draft_pr":
@@ -1515,13 +1581,17 @@ def _verify_effect_result(
         base = fake_pr_api.get_ref(
             repository_id=repository_id, target_ref="refs/heads/main"
         )
-        if record != result.get("draft_pr") or not _matches_fake_pr(
-            record,
-            repository_id,
-            target_ref,
-            head,
-            base_revision,
-            diff_sha256,
+        if (
+            record != result.get("draft_pr")
+            or not _matches_fake_pr(
+                record,
+                repository_id,
+                target_ref,
+                str(result.get("commit_sha")),
+                base_revision,
+                diff_sha256,
+            )
+            or head != result.get("commit_sha")
         ):
             raise OfflineDeliveryError("draft_pr_result_mismatch")
         if base != base_revision:
@@ -1533,6 +1603,7 @@ def _effect_result(
     effect: str,
     *,
     commit_sha: str,
+    local_commit_sha: str | None = None,
     remote_ref: str | None = None,
     draft_pr: dict[str, object] | None = None,
     blobs: list[dict[str, str]] | None = None,
@@ -1542,6 +1613,7 @@ def _effect_result(
 ) -> dict[str, object]:
     return {
         "commit_sha": commit_sha,
+        "local_commit_sha": local_commit_sha,
         "draft_pr": draft_pr,
         "blobs": blobs,
         "tree_sha": tree_sha,

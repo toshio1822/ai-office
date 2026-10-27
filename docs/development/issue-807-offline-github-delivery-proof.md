@@ -35,6 +35,12 @@ checks that:
 - fake GitHub blob, tree, commit, ref, and Draft PR writes each have a one-shot
   Attempt/result in the existing Run store, and the Draft's repository,
   base/head/ref and diff digest match the verified candidate;
+- the fake `POST /git/commits` accepts the REST-shaped `message`, `tree`, and
+  `parents` fields (not raw commit bytes or a requested SHA). Its API-side
+  author/committer defaults produce a remote commit SHA distinct from the
+  local candidate SHA; the remote commit's parent and tree, and therefore its
+  changed paths/modes/content, are checked against the candidate before its
+  SHA is used for the ref and Draft PR;
 - the local bare fake remote and separate persistent fake API state contain
   Git objects, refs, Draft records and request audit metadata, but no synthetic
   credential; and
@@ -46,7 +52,18 @@ store, local bare remote, and fake API state; it does not reuse an API object or
 process memory. After an ambiguous Draft creation response, the next process
 locates the exact persisted Draft by repository and head and verifies its base,
 head and diff digest without another POST. A completed replay also adds no
-write.
+write. A second fresh-process case crashes after the remote commit write but
+before its SHA result is durable. Because the REST response's remote SHA is not
+the local candidate SHA and no idempotency key/list operation can recover it,
+a GET by the local SHA cannot prove the write; recovery stops explicitly and
+does not repeat the commit POST or continue to ref/PR effects. This is the
+expected fail-closed behavior for an external write whose result cannot be
+confirmed.
+
+The earlier [#805 offline proof](issue-805-offline-delivery-proof.md) remains
+the preceding same-process/local-bare stage. This #807 proof extends it with
+persistent fake API state and fresh-process recovery; neither document
+describes a production publisher.
 
 The grant issuer is deliberately synthetic. Its `approved_by` value is not
 authenticated human identity or authorization to publish; a fixed test-only

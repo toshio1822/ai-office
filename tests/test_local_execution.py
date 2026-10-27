@@ -1444,6 +1444,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
 import json
 import sys
 from tests._offline_git_delivery import (
+    OfflineDeliveryError,
     SimulatedEffectCrash,
     resume_offline_delivery_process,
 )
@@ -1452,6 +1453,9 @@ try:
     result = resume_offline_delivery_process(json.loads(sys.argv[1]))
 except SimulatedEffectCrash:
     raise SystemExit(86)
+except OfflineDeliveryError as exc:
+    print(json.dumps({"stopped": str(exc)}, sort_keys=True))
+    raise SystemExit(87)
 print(json.dumps(result, sort_keys=True))
 """
     child_env = {
@@ -1462,14 +1466,15 @@ print(json.dumps(result, sort_keys=True))
         "AI_OFFICE_TEST_FAKE_GITHUB_TOKEN": ("offline-only-fake-installation-token"),
     }
 
-    def restart_process(*, lose_pr_response: bool):
+    def restart_process(*, lose_pr_response: bool, process_payload=payload):
         env = dict(child_env)
         if lose_pr_response:
             env["AI_OFFICE_TEST_DROP_PR_RESPONSE"] = "1"
         return subprocess.run(
-            [sys.executable, "-c", driver, json.dumps(payload)],
+            [sys.executable, "-c", driver, json.dumps(process_payload)],
             capture_output=True,
             check=False,
+            cwd=_SAMPLE_ROOT,
             env=env,
             shell=False,
             text=True,
@@ -1492,7 +1497,9 @@ print(json.dumps(result, sort_keys=True))
     assert receipt["draft_pr"]["draft"] is True
     assert receipt["draft_pr"]["url"].startswith("https://fake.invalid/")
     assert receipt["draft_pr"]["base_sha"] == revision
-    assert receipt["draft_pr"]["head_sha"] == receipt["commit_sha"]
+    assert receipt["local_commit_sha"] != receipt["remote_commit_sha"]
+    assert receipt["commit_sha"] == receipt["remote_commit_sha"]
+    assert receipt["draft_pr"]["head_sha"] == receipt["remote_commit_sha"]
     assert receipt["draft_pr"]["diff_sha256"]
     effects = {item["effect"]: item for item in receipt["effects"]}
     assert effects["local_commit"]["reconciled_read_only"] is True
@@ -1520,7 +1527,7 @@ print(json.dumps(result, sort_keys=True))
     assert not hook_marker.exists()
     assert _git(repository, "rev-parse", "HEAD") == revision
     assert _git(remote, "rev-parse", "refs/heads/main") == revision
-    assert _git(remote, "rev-parse", target_ref) == receipt["commit_sha"]
+    assert _git(remote, "rev-parse", target_ref) == receipt["remote_commit_sha"]
     assert (
         _git(
             repository,
@@ -1529,7 +1536,7 @@ print(json.dumps(result, sort_keys=True))
             "--name-status",
             "-r",
             revision,
-            receipt["commit_sha"],
+            receipt["local_commit_sha"],
         )
         == "M\tcalculator.py"
     )
@@ -1553,6 +1560,66 @@ print(json.dumps(result, sort_keys=True))
     )
     assert replay == receipt
     assert api.posts == 5
+
+    # A lost REST create-commit response can be unresolvable because GitHub may
+    # assign a different SHA from the local candidate. A fresh process must
+    # stop after a read miss rather than repeat the POST or create a ref/PR.
+    ambiguous_ref = "refs/heads/codex/issue-807-unconfirmed-commit"
+    ambiguous_grant = issue_test_delivery_grant(
+        store,
+        scope,
+        outcome,
+        workspace=repository,
+        remote=remote,
+        target_ref=ambiguous_ref,
+        verification_authorization_id=authorizations[-1],
+        expires_at_ns=expiry,
+    )
+    with pytest.raises(SimulatedEffectCrash, match="remote_commit_create"):
+        run_offline_delivery(
+            store,
+            scope,
+            outcome,
+            workspace=repository,
+            remote=remote,
+            target_ref=ambiguous_ref,
+            verification_authorization_id=authorizations[-1],
+            grant_id=ambiguous_grant,
+            fake_pr_api=api,
+            crash_after="remote_commit_create",
+        )
+    posts_before_resume = api.posts
+    request_count_before_resume = len(api.requests)
+    ambiguous_payload = {
+        **payload,
+        "grant_id": ambiguous_grant,
+        "target_ref": ambiguous_ref,
+    }
+    stopped_process = restart_process(
+        lose_pr_response=False, process_payload=ambiguous_payload
+    )
+    assert stopped_process.returncode == 87, stopped_process.stderr
+    assert json.loads(stopped_process.stdout) == {
+        "stopped": "git_commit_outcome_ambiguous"
+    }
+    assert "offline-only-fake-installation-token" not in (
+        stopped_process.stdout + stopped_process.stderr
+    )
+    assert api.posts == posts_before_resume
+    assert not [
+        item
+        for item in api.requests[request_count_before_resume:]
+        if item["method"] == "POST"
+    ]
+    assert _optional_git(remote, "rev-parse", ambiguous_ref) is None
+    ambiguous_prefix = f"{scope.job_id}.offline-delivery.{ambiguous_grant}"
+    assert not (
+        store.root / f"{ambiguous_prefix}.remote_commit_create.result.json"
+    ).exists()
+    assert not (
+        store.root / f"{ambiguous_prefix}.remote_ref_create.attempt.json"
+    ).exists()
+    assert not (store.root / f"{ambiguous_prefix}.draft_pr.attempt.json").exists()
     fake_token = b"offline-only-fake-installation-token"
     assert all(
         fake_token not in path.read_bytes() for path in store.root.glob("*.json")
