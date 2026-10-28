@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import base64
 import difflib
+import hmac
 import json
 import os
 import re
 import stat
 import subprocess
 import time
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -33,10 +35,20 @@ from ai_office.engine.workflow_run_manifest import (
     load_workflow_run_manifest,
 )
 
-_EFFECTS = ("local_commit", "remote_ref_create", "draft_pr")
+_EFFECTS = (
+    "local_commit",
+    "remote_blob_create",
+    "remote_tree_create",
+    "remote_commit_create",
+    "remote_ref_create",
+    "draft_pr",
+)
 _REF_COMPONENT = re.compile(r"^[A-Za-z0-9._/-]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PATH_TYPE = type(Path())
+_TEST_APPROVAL_KEY = b"offline-only-synthetic-issuer-key"
+_FAKE_CREDENTIAL_ENV = "AI_OFFICE_TEST_FAKE_GITHUB_TOKEN"
+_FAKE_CREDENTIAL_VALUE = "offline-only-fake-installation-token"
 
 
 class OfflineDeliveryError(RuntimeError):
@@ -51,47 +63,384 @@ class AmbiguousFakeResponse(RuntimeError):
     """The fake API stored the PR but intentionally lost its response."""
 
 
-class FakeDraftPullRequestAPI:
-    """In-memory GET/POST fake; it has no credentials or network transport."""
+@dataclass(frozen=True)
+class SyntheticDeliveryApproval:
+    """Test-only signed claim; it is not an authenticated human identity."""
 
-    def __init__(self) -> None:
-        self.records: dict[tuple[str, str], dict[str, object]] = {}
-        self.posts = 0
-        self.reads = 0
-        self.drop_next_response = False
+    issuer: str
+    principal: str
+    approval_id: str
+    binding_sha256: str
+    signature: str
+
+
+@dataclass(frozen=True)
+class FakeGitHubCredential:
+    """Ephemeral fixture credential, deliberately absent from persisted state."""
+
+    token: str
+    repository_id: str
+    permissions: frozenset[str]
+    expires_at_ns: int
+
+
+class FakeGitHubDeliveryAPI:
+    """Persistent local fake for Git Database, ref and Draft PR REST effects."""
+
+    def __init__(
+        self,
+        *,
+        remote: Path,
+        state_path: Path,
+        credential: FakeGitHubCredential,
+        drop_next_pr_response: bool = False,
+    ) -> None:
+        if (
+            type(remote) is not _PATH_TYPE
+            or type(state_path) is not _PATH_TYPE
+            or type(credential) is not FakeGitHubCredential
+            or not remote.is_absolute()
+            or not state_path.is_absolute()
+            or remote.resolve() == state_path.resolve()
+        ):
+            raise OfflineDeliveryError("fake_api_configuration")
+        self.remote = remote.resolve(strict=True)
+        self.state_path = state_path
+        self.credential = credential
+        self.drop_next_pr_response = drop_next_pr_response
+        self.state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if stat.S_IMODE(self.state_path.parent.stat().st_mode) & 0o077:
+            raise OfflineDeliveryError("fake_api_state_permissions")
+        if self.state_path.exists():
+            self._state()
+        else:
+            self._save_state(
+                {"drafts": [], "requests": [], "schema_version": "fake-github.v1"}
+            )
+
+    @property
+    def repository_id(self) -> str:
+        return self.credential.repository_id
+
+    @property
+    def requests(self) -> list[dict[str, object]]:
+        return list(self._state()["requests"])
+
+    @property
+    def posts(self) -> int:
+        return sum(item["method"] == "POST" for item in self.requests)
+
+    @property
+    def reads(self) -> int:
+        return sum(item["method"] == "GET" for item in self.requests)
+
+    def ensure_scope(self, repository_id: str) -> None:
+        self._authorize(repository_id, {"contents:write", "pull_requests:write"})
+
+    def create_blob(self, *, repository_id: str, content: bytes) -> str:
+        self._authorize(repository_id, {"contents:write"})
+        if type(content) is not bytes:
+            raise OfflineDeliveryError("fake_blob_content")
+        # The Git command must consume the exact bytes, not text-normalized data.
+        blob_sha = (
+            _git_bytes(
+                self.remote,
+                "hash-object",
+                "-w",
+                "--stdin",
+                env=_git_env(),
+                input=content,
+            )
+            .decode("ascii")
+            .strip()
+        )
+        self._record("POST", "/git/blobs", blob_sha)
+        return blob_sha
+
+    def get_blob(self, *, repository_id: str, blob_sha: str) -> bytes | None:
+        self._authorize(repository_id, {"contents:write"})
+        if not re.fullmatch(r"[0-9a-f]{40}", blob_sha):
+            raise OfflineDeliveryError("fake_blob_identity")
+        if _optional_git(self.remote, "cat-file", "-e", f"{blob_sha}^{{blob}}") is None:
+            self._record("GET", f"/git/blobs/{blob_sha}", None)
+            return None
+        content = _git_bytes(self.remote, "cat-file", "blob", blob_sha)
+        self._record("GET", f"/git/blobs/{blob_sha}", blob_sha)
+        return content
+
+    def create_tree(
+        self,
+        *,
+        repository_id: str,
+        base_revision: str,
+        updates: list[dict[str, str]],
+    ) -> str:
+        self._authorize(repository_id, {"contents:write"})
+        index = self.state_path.parent / f".fake-index-{os.getpid()}-{time.time_ns()}"
+        env = _git_env()
+        env["GIT_INDEX_FILE"] = str(index)
+        try:
+            _git(self.remote, "read-tree", base_revision, env=env)
+            for update in updates:
+                path = update["path"]
+                mode = update["mode"]
+                blob_sha = update["sha"]
+                if (
+                    not _relative_path(path)
+                    or mode not in {"100644", "100755"}
+                    or self.get_blob(repository_id=repository_id, blob_sha=blob_sha)
+                    is None
+                ):
+                    raise OfflineDeliveryError("fake_tree_entry")
+                _git(
+                    self.remote,
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    mode,
+                    blob_sha,
+                    path,
+                    env=env,
+                )
+            tree_sha = _git(self.remote, "write-tree", env=env)
+        finally:
+            index.unlink(missing_ok=True)
+            Path(f"{index}.lock").unlink(missing_ok=True)
+        self._record("POST", "/git/trees", tree_sha)
+        return tree_sha
+
+    def get_tree(
+        self, *, repository_id: str, tree_sha: str
+    ) -> dict[str, tuple[str, str]] | None:
+        self._authorize(repository_id, {"contents:write"})
+        if not re.fullmatch(r"[0-9a-f]{40}", tree_sha):
+            raise OfflineDeliveryError("fake_tree_identity")
+        if _optional_git(self.remote, "cat-file", "-e", f"{tree_sha}^{{tree}}") is None:
+            self._record("GET", f"/git/trees/{tree_sha}", None)
+            return None
+        entries = _tree_entries(self.remote, tree_sha)
+        self._record("GET", f"/git/trees/{tree_sha}", tree_sha)
+        return entries
+
+    def create_commit(
+        self,
+        *,
+        repository_id: str,
+        message: str,
+        tree_sha: str,
+        parents: list[str],
+    ) -> str:
+        self._authorize(repository_id, {"contents:write"})
+        if (
+            type(message) is not str
+            or not message
+            or not re.fullmatch(r"[0-9a-f]{40}", tree_sha)
+            or type(parents) is not list
+            or len(parents) != 1
+            or not re.fullmatch(r"[0-9a-f]{40}", parents[0])
+        ):
+            raise OfflineDeliveryError("fake_commit_binding")
+        # Model POST /git/commits: the request contains structured GitHub REST
+        # fields, not raw bytes or a caller-selected SHA. Omitted author and
+        # committer use API-side identity/date defaults, so the returned SHA
+        # can differ from the locally-built candidate commit.
+        date = f"@{time.time_ns() // 1_000_000_000} +0000"
+        env = {
+            **_git_env(),
+            "GIT_AUTHOR_NAME": "Fake GitHub REST API",
+            "GIT_AUTHOR_EMAIL": "github-rest-fake@example.invalid",
+            "GIT_AUTHOR_DATE": date,
+            "GIT_COMMITTER_NAME": "Fake GitHub REST API",
+            "GIT_COMMITTER_EMAIL": "github-rest-fake@example.invalid",
+            "GIT_COMMITTER_DATE": date,
+        }
+        actual_sha = _git(
+            self.remote,
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            tree_sha,
+            "-p",
+            parents[0],
+            "-m",
+            message,
+            env=env,
+        )
+        self._record("POST", "/git/commits", actual_sha)
+        return actual_sha
+
+    def get_commit(
+        self, *, repository_id: str, commit_sha: str
+    ) -> dict[str, str] | None:
+        self._authorize(repository_id, {"contents:write"})
+        if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+            raise OfflineDeliveryError("fake_commit_identity")
+        if (
+            _optional_git(self.remote, "cat-file", "-e", f"{commit_sha}^{{commit}}")
+            is None
+        ):
+            self._record("GET", f"/git/commits/{commit_sha}", None)
+            return None
+        raw = _git_bytes(self.remote, "cat-file", "commit", commit_sha)
+        headers = raw.split(b"\n\n", 1)[0].splitlines()
+        trees = [
+            item[5:].decode("ascii") for item in headers if item.startswith(b"tree ")
+        ]
+        parents = [
+            item[7:].decode("ascii") for item in headers if item.startswith(b"parent ")
+        ]
+        if len(trees) != 1 or len(parents) != 1:
+            raise OfflineDeliveryError("fake_commit_shape")
+        self._record("GET", f"/git/commits/{commit_sha}", commit_sha)
+        return {
+            "commit_sha": commit_sha,
+            "parent_sha": parents[0],
+            "tree_sha": trees[0],
+        }
+
+    def create_ref(
+        self, *, repository_id: str, target_ref: str, commit_sha: str, base_sha: str
+    ) -> None:
+        self._authorize(repository_id, {"contents:write"})
+        if (
+            not target_ref.startswith("refs/heads/codex/")
+            or _optional_git(self.remote, "rev-parse", target_ref) is not None
+            or _git(self.remote, "rev-parse", "refs/heads/main") != base_sha
+        ):
+            raise OfflineDeliveryError("fake_ref_scope")
+        _git(self.remote, "update-ref", target_ref, commit_sha, "0" * len(commit_sha))
+        self._record("POST", "/git/refs", target_ref)
+
+    def get_ref(self, *, repository_id: str, target_ref: str) -> str | None:
+        self._authorize(repository_id, {"contents:write"})
+        commit_sha = _optional_git(self.remote, "rev-parse", target_ref)
+        self._record("GET", f"/git/ref/{target_ref}", commit_sha)
+        return commit_sha
 
     def create_draft(
         self,
         *,
         repository_id: str,
         base_ref: str,
+        base_sha: str,
         head_ref: str,
         head_sha: str,
+        diff_sha256: str,
     ) -> dict[str, object]:
-        self.posts += 1
-        key = (repository_id, head_ref)
-        if key in self.records:
+        self._authorize(repository_id, {"pull_requests:write"})
+        if (
+            base_ref != "refs/heads/main"
+            or self.get_ref(repository_id=repository_id, target_ref=base_ref)
+            != base_sha
+            or self.get_ref(repository_id=repository_id, target_ref=head_ref)
+            != head_sha
+        ):
+            raise OfflineDeliveryError("fake_pr_binding")
+        state = self._state()
+        if any(
+            item.get("repository_id") == repository_id
+            and item.get("head_ref") == head_ref
+            for item in state["drafts"]
+        ):
             raise OfflineDeliveryError("draft_pr_already_exists")
         record = {
             "base_ref": base_ref,
+            "base_sha": base_sha,
             "draft": True,
             "head_ref": head_ref,
             "head_sha": head_sha,
+            "diff_sha256": diff_sha256,
             "repository_id": repository_id,
-            "url": f"https://fake.invalid/pulls/{len(self.records) + 1}",
+            "url": f"https://fake.invalid/pulls/{len(state['drafts']) + 1}",
         }
-        self.records[key] = record
-        if self.drop_next_response:
-            self.drop_next_response = False
+        state["drafts"].append(record)
+        state["requests"].append(
+            {"method": "POST", "endpoint": "/pulls", "object_id": head_sha}
+        )
+        self._save_state(state)
+        if self.drop_next_pr_response:
+            self.drop_next_pr_response = False
             raise AmbiguousFakeResponse
         return dict(record)
 
     def get_draft(
         self, *, repository_id: str, head_ref: str
     ) -> dict[str, object] | None:
-        self.reads += 1
-        record = self.records.get((repository_id, head_ref))
+        self._authorize(repository_id, {"pull_requests:write"})
+        state = self._state()
+        record = next(
+            (
+                item
+                for item in state["drafts"]
+                if item.get("repository_id") == repository_id
+                and item.get("head_ref") == head_ref
+            ),
+            None,
+        )
+        state["requests"].append(
+            {"method": "GET", "endpoint": "/pulls", "object_id": head_ref}
+        )
+        self._save_state(state)
         return dict(record) if record is not None else None
+
+    def _authorize(self, repository_id: str, required: set[str]) -> None:
+        credential = self.credential
+        if (
+            type(credential) is not FakeGitHubCredential
+            or credential.repository_id != repository_id
+            or not credential.token
+            or credential.token != _FAKE_CREDENTIAL_VALUE
+            or not required <= credential.permissions
+            or credential.permissions
+            != frozenset({"contents:write", "pull_requests:write"})
+            or credential.expires_at_ns <= time.time_ns()
+        ):
+            raise OfflineDeliveryError("fake_credential_scope")
+
+    def _record(self, method: str, endpoint: str, object_id: str | None) -> None:
+        state = self._state()
+        state["requests"].append(
+            {"method": method, "endpoint": endpoint, "object_id": object_id}
+        )
+        self._save_state(state)
+
+    def _state(self) -> dict[str, Any]:
+        if not self.state_path.exists():
+            return {"drafts": [], "requests": [], "schema_version": "fake-github.v1"}
+        if stat.S_IMODE(self.state_path.stat().st_mode) & 0o077:
+            raise OfflineDeliveryError("fake_api_state_permissions")
+        state = _read_record(self.state_path)
+        if (
+            state.get("schema_version") != "fake-github.v1"
+            or type(state.get("drafts")) is not list
+            or type(state.get("requests")) is not list
+        ):
+            raise OfflineDeliveryError("fake_api_state")
+        return state
+
+    def _save_state(self, state: dict[str, Any]) -> None:
+        self.state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = self.state_path.with_name(
+            f".{self.state_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+        )
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(_canonical(state))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.state_path)
+            directory = os.open(
+                self.state_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
 
 
 def issue_test_delivery_grant(
@@ -104,6 +453,7 @@ def issue_test_delivery_grant(
     target_ref: str,
     verification_authorization_id: str,
     expires_at_ns: int,
+    approval: object | None = None,
     now_ns: int | None = None,
 ) -> str:
     """Persist a synthetic grant under the existing Run store namespace."""
@@ -121,9 +471,12 @@ def issue_test_delivery_grant(
     )
     if expires_at_ns <= now or expires_at_ns - now > 60 * 60 * 1_000_000_000:
         raise OfflineDeliveryError("grant_expiry")
+    if approval is None:
+        approval = _synthetic_human_approval(binding)
+    approval_record = _validate_synthetic_approval(approval, binding)
     grant_body = {
-        **binding,
-        "approved_by": "pytest-offline-trust-boundary",
+        "approval": approval_record,
+        "binding": binding,
         "effects": list(_EFFECTS),
         "expires_at_ns": expires_at_ns,
         "job_id": scope.job_id,
@@ -135,6 +488,70 @@ def issue_test_delivery_grant(
     grant = {**grant_body, "grant_id": grant_id}
     _write_once(_grant_path(store, scope.job_id, grant_id), _canonical(grant))
     return grant_id
+
+
+def _synthetic_human_approval(
+    binding: dict[str, object],
+) -> SyntheticDeliveryApproval:
+    approval_id = "synthetic-approval-" + _digest(_canonical(binding))[:20]
+    payload = {
+        "approval_id": approval_id,
+        "binding_sha256": _digest(_canonical(binding)),
+        "issuer": "offline-test-human-issuer",
+        "principal": "test:authenticated-human-fixture",
+    }
+    signature = hmac.new(_TEST_APPROVAL_KEY, _canonical(payload), sha256).hexdigest()
+    return SyntheticDeliveryApproval(**payload, signature=signature)
+
+
+def _validate_synthetic_approval(
+    approval: object, binding: dict[str, object]
+) -> dict[str, str]:
+    if type(approval) is SyntheticDeliveryApproval:
+        record = {
+            "approval_id": approval.approval_id,
+            "binding_sha256": approval.binding_sha256,
+            "issuer": approval.issuer,
+            "principal": approval.principal,
+            "signature": approval.signature,
+        }
+    elif type(approval) is dict:
+        record = approval
+    else:
+        raise OfflineDeliveryError("synthetic_human_approval")
+    expected_payload = {
+        "approval_id": "synthetic-approval-" + _digest(_canonical(binding))[:20],
+        "binding_sha256": _digest(_canonical(binding)),
+        "issuer": "offline-test-human-issuer",
+        "principal": "test:authenticated-human-fixture",
+    }
+    signature = hmac.new(
+        _TEST_APPROVAL_KEY, _canonical(expected_payload), sha256
+    ).hexdigest()
+    if (
+        type(record) is not dict
+        or set(record) != {*expected_payload, "signature"}
+        or any(record.get(key) != value for key, value in expected_payload.items())
+        or type(record.get("signature")) is not str
+        or not hmac.compare_digest(record["signature"], signature)
+    ):
+        raise OfflineDeliveryError("synthetic_human_approval")
+    return {**expected_payload, "signature": signature}
+
+
+def fake_github_credential_for_test(
+    repository_id: str, *, expires_at_ns: int
+) -> FakeGitHubCredential:
+    """Build a fixed fake token with only the fake repo's required permissions."""
+    token = os.environ.get(_FAKE_CREDENTIAL_ENV, _FAKE_CREDENTIAL_VALUE)
+    if token != _FAKE_CREDENTIAL_VALUE:
+        raise OfflineDeliveryError("fake_credential_scope")
+    return FakeGitHubCredential(
+        token=token,
+        repository_id=repository_id,
+        permissions=frozenset({"contents:write", "pull_requests:write"}),
+        expires_at_ns=expires_at_ns,
+    )
 
 
 def revoke_test_delivery_grant(
@@ -162,7 +579,7 @@ def run_offline_delivery(
     target_ref: str,
     verification_authorization_id: str,
     grant_id: str,
-    fake_pr_api: FakeDraftPullRequestAPI,
+    fake_pr_api: FakeGitHubDeliveryAPI,
     now_ns: int | None = None,
     crash_after: str | None = None,
 ) -> dict[str, object]:
@@ -170,6 +587,7 @@ def run_offline_delivery(
     now = time.time_ns() if now_ns is None else now_ns
     grant_path = _grant_path(store, scope.job_id, grant_id)
     grant = _read_record(grant_path)
+    grant_binding = grant.get("binding")
     if (
         grant.get("schema_version") != "offline-git-delivery-test-grant.v1"
         or _digest(_canonical({k: v for k, v in grant.items() if k != "grant_id"}))
@@ -177,12 +595,26 @@ def run_offline_delivery(
         or grant.get("grant_id") != grant_id
         or grant.get("job_id") != scope.job_id
         or tuple(grant.get("effects", ())) != _EFFECTS
-        or grant.get("scope_sha256") != scope.digest
+        or type(grant_binding) is not dict
+        or grant_binding.get("scope_sha256") != scope.digest
         or grant.get("max_calls_per_effect") != 1
     ):
         raise OfflineDeliveryError("grant_binding")
-    if type(fake_pr_api) is not FakeDraftPullRequestAPI:
-        raise OfflineDeliveryError("live_pr_api_forbidden")
+    _validate_synthetic_approval(grant.get("approval"), grant_binding)
+    if type(fake_pr_api) is not FakeGitHubDeliveryAPI:
+        raise OfflineDeliveryError("live_github_api_forbidden")
+    fake_pr_api.ensure_scope(str(grant_binding["repository_id"]))
+    if (
+        fake_pr_api.remote.resolve()
+        != Path(str(grant_binding["remote_path"])).resolve()
+        or _paths_overlap(fake_pr_api.state_path, workspace)
+        or _paths_overlap(fake_pr_api.state_path, store.root)
+        or _paths_overlap(fake_pr_api.state_path, remote)
+        or _paths_overlap(store.root, workspace)
+        or _paths_overlap(store.root, remote)
+        or _paths_overlap(workspace, remote)
+    ):
+        raise OfflineDeliveryError("offline_state_location")
 
     results: dict[str, dict[str, object]] = {}
     for effect in _EFFECTS:
@@ -199,7 +631,9 @@ def run_offline_delivery(
                 remote=remote,
                 target_ref=target_ref,
                 fake_pr_api=fake_pr_api,
-                repository_id=str(grant["repository_id"]),
+                repository_id=str(grant_binding["repository_id"]),
+                base_revision=str(grant_binding["base_revision"]),
+                diff_sha256=str(grant_binding["verification_diff_sha256"]),
             )
             results[effect] = result
             continue
@@ -217,10 +651,17 @@ def run_offline_delivery(
                 remote=remote,
                 target_ref=target_ref,
                 fake_pr_api=fake_pr_api,
-                repository_id=str(grant["repository_id"]),
-                base_revision=str(grant["base_revision"]),
-                artifact_id=str(grant["artifact_id"]),
-                artifact_sha256=str(grant["artifact_sha256"]),
+                repository_id=str(grant_binding["repository_id"]),
+                base_revision=str(grant_binding["base_revision"]),
+                artifact_id=str(grant_binding["artifact_id"]),
+                artifact_sha256=str(grant_binding["artifact_sha256"]),
+                diff_sha256=str(grant_binding["verification_diff_sha256"]),
+                remote_commit_sha=(
+                    str(results["remote_commit_create"]["commit_sha"])
+                    if effect in {"remote_ref_create", "draft_pr"}
+                    and "remote_commit_create" in results
+                    else None
+                ),
                 store=store,
                 scope=scope,
             )
@@ -236,7 +677,7 @@ def run_offline_delivery(
             raise OfflineDeliveryError("grant_expired_or_revoked")
         # Only unseen effects need a full revalidation: all reviewers, the
         # final Artifact/Evidence chain, clean pinned base, paths and fake ref.
-        binding = _validate_candidate(
+        current_binding = _validate_candidate(
             store,
             scope,
             outcome,
@@ -260,18 +701,19 @@ def run_offline_delivery(
             "target_ref",
             "terminal_status",
             "verification_evidence_sha256",
+            "verification_diff_sha256",
             "verification_authorization_id",
             "scope_sha256",
             "revisions_used",
         ):
-            if grant.get(key) != binding.get(key):
+            if grant_binding.get(key) != current_binding.get(key):
                 raise OfflineDeliveryError("grant_binding")
         _write_once(
             attempt_path,
             _canonical(
                 {
-                    "artifact_id": grant["artifact_id"],
-                    "artifact_sha256": grant["artifact_sha256"],
+                    "artifact_id": grant["binding"]["artifact_id"],
+                    "artifact_sha256": grant["binding"]["artifact_sha256"],
                     "effect": effect,
                     "grant_id": grant_id,
                     "job_id": scope.job_id,
@@ -291,40 +733,114 @@ def run_offline_delivery(
         if effect == "local_commit":
             commit_sha = _create_candidate_commit(
                 workspace,
-                base_revision=str(grant["base_revision"]),
+                base_revision=str(grant_binding["base_revision"]),
                 target_ref=target_ref,
                 scope=scope,
                 store=store,
-                artifact_id=str(grant["artifact_id"]),
+                artifact_id=str(grant_binding["artifact_id"]),
             )
             result = _effect_result(grant_id, effect, commit_sha=commit_sha)
-        elif effect == "remote_ref_create":
+        elif effect == "remote_blob_create":
             commit_sha = str(results["local_commit"]["commit_sha"])
-            _push_new_ref(workspace, remote, target_ref, commit_sha)
+            blob_ids = _create_fake_git_blobs(
+                workspace,
+                remote=fake_pr_api.remote,
+                fake_api=fake_pr_api,
+                repository_id=str(grant_binding["repository_id"]),
+                target_ref=target_ref,
+                store=store,
+                scope=scope,
+                artifact_id=str(grant_binding["artifact_id"]),
+                base_revision=str(grant_binding["base_revision"]),
+            )
             result = _effect_result(
-                grant_id, effect, commit_sha=commit_sha, remote_ref=target_ref
+                grant_id, effect, commit_sha=commit_sha, blobs=blob_ids
+            )
+        elif effect == "remote_tree_create":
+            commit_sha = str(results["local_commit"]["commit_sha"])
+            updates = results["remote_blob_create"]["blobs"]
+            tree_sha = fake_pr_api.create_tree(
+                repository_id=str(grant_binding["repository_id"]),
+                base_revision=str(grant_binding["base_revision"]),
+                updates=updates,
+            )
+            expected_tree = _git(workspace, "rev-parse", f"{commit_sha}^{{tree}}")
+            if tree_sha != expected_tree:
+                raise OfflineDeliveryError("remote_tree_mismatch")
+            result = _effect_result(
+                grant_id, effect, commit_sha=commit_sha, tree_sha=tree_sha
+            )
+        elif effect == "remote_commit_create":
+            local_commit_sha = str(results["local_commit"]["commit_sha"])
+            tree_sha = str(results["remote_tree_create"]["tree_sha"])
+            actual_sha = fake_pr_api.create_commit(
+                repository_id=str(grant_binding["repository_id"]),
+                message=_git(workspace, "show", "-s", "--format=%B", local_commit_sha),
+                tree_sha=tree_sha,
+                parents=[str(grant_binding["base_revision"])],
+            )
+            result = _effect_result(
+                grant_id,
+                effect,
+                commit_sha=actual_sha,
+                local_commit_sha=local_commit_sha,
+            )
+            _verify_effect_result(
+                effect,
+                result,
+                workspace=workspace,
+                remote=remote,
+                target_ref=target_ref,
+                fake_pr_api=fake_pr_api,
+                repository_id=str(grant_binding["repository_id"]),
+                base_revision=str(grant_binding["base_revision"]),
+                diff_sha256=str(grant_binding["verification_diff_sha256"]),
+            )
+        elif effect == "remote_ref_create":
+            local_commit_sha = str(results["local_commit"]["commit_sha"])
+            remote_commit_sha = str(results["remote_commit_create"]["commit_sha"])
+            fake_pr_api.create_ref(
+                repository_id=str(grant_binding["repository_id"]),
+                target_ref=target_ref,
+                commit_sha=remote_commit_sha,
+                base_sha=str(grant_binding["base_revision"]),
+            )
+            result = _effect_result(
+                grant_id,
+                effect,
+                commit_sha=remote_commit_sha,
+                local_commit_sha=local_commit_sha,
+                remote_ref=target_ref,
             )
         else:
-            commit_sha = str(results["remote_ref_create"]["commit_sha"])
+            local_commit_sha = str(results["local_commit"]["commit_sha"])
+            remote_commit_sha = str(results["remote_commit_create"]["commit_sha"])
             if (
-                _optional_git(workspace, "rev-parse", target_ref) != commit_sha
-                or _optional_git(remote, "rev-parse", target_ref) != commit_sha
+                fake_pr_api.get_ref(
+                    repository_id=str(grant_binding["repository_id"]),
+                    target_ref=target_ref,
+                )
+                != remote_commit_sha
             ):
                 raise OfflineDeliveryError("remote_ref_mismatch")
             try:
                 record = fake_pr_api.create_draft(
-                    repository_id=str(grant["repository_id"]),
+                    repository_id=str(grant_binding["repository_id"]),
                     base_ref="refs/heads/main",
+                    base_sha=str(grant_binding["base_revision"]),
                     head_ref=target_ref,
-                    head_sha=commit_sha,
+                    head_sha=remote_commit_sha,
+                    diff_sha256=str(grant_binding["verification_diff_sha256"]),
                 )
             except AmbiguousFakeResponse as exc:
                 raise SimulatedEffectCrash("fake PR response lost") from exc
             result = _effect_result(
                 grant_id,
                 effect,
-                commit_sha=commit_sha,
+                commit_sha=remote_commit_sha,
+                local_commit_sha=local_commit_sha,
                 draft_pr=record,
+                diff_sha256=str(grant_binding["verification_diff_sha256"]),
             )
         if crash_after == effect:
             # Model process death after the external/local effect but before
@@ -333,12 +849,51 @@ def run_offline_delivery(
         _write_once(result_path, _canonical(result))
         results[effect] = result
     return {
-        "artifact_id": grant["artifact_id"],
-        "commit_sha": results["local_commit"]["commit_sha"],
+        "artifact_id": grant_binding["artifact_id"],
+        "commit_sha": results["remote_commit_create"]["commit_sha"],
+        "local_commit_sha": results["local_commit"]["commit_sha"],
+        "remote_commit_sha": results["remote_commit_create"]["commit_sha"],
         "draft_pr": results["draft_pr"]["draft_pr"],
         "effects": [results[item] for item in _EFFECTS],
         "remote_ref": target_ref,
     }
+
+
+def resume_offline_delivery_process(payload: dict[str, str]) -> dict[str, object]:
+    """Reopen persisted Run/API state as a fresh test process would."""
+    store = WorkflowRunManifestStore(Path(payload["store_root"]))
+    job_id = payload["job_id"]
+    scope = load_bounded_workflow_job_scope(store, job_id)
+    inspected = inspect_bounded_document_job(store, job_id)
+    outcome = BoundedDocumentJobOutcome(
+        status=inspected["status"],
+        final_artifact_run_id=inspected["final_artifact_run_id"],
+        final_artifact_id=inspected["final_artifact_id"],
+        review_artifact_run_id=inspected["review_artifact_run_id"],
+        review_artifact_id=inspected["review_artifact_id"],
+        revisions_used=inspected["revisions_used"],
+    )
+    repository_id = payload["repository_id"]
+    credential = fake_github_credential_for_test(
+        repository_id, expires_at_ns=time.time_ns() + 60 * 60 * 1_000_000_000
+    )
+    api = FakeGitHubDeliveryAPI(
+        remote=Path(payload["remote"]),
+        state_path=Path(payload["api_state"]),
+        credential=credential,
+        drop_next_pr_response=os.environ.get("AI_OFFICE_TEST_DROP_PR_RESPONSE") == "1",
+    )
+    return run_offline_delivery(
+        store,
+        scope,
+        outcome,
+        workspace=Path(payload["workspace"]),
+        remote=Path(payload["remote"]),
+        target_ref=payload["target_ref"],
+        verification_authorization_id=payload["verification_authorization_id"],
+        grant_id=payload["grant_id"],
+        fake_pr_api=api,
+    )
 
 
 def _validate_candidate(
@@ -389,12 +944,8 @@ def _validate_candidate(
             or outcome.revisions_used != revisions_used
         ):
             raise OfflineDeliveryError("terminal_outcome_mismatch")
-        artifact = read_run_artifact(
-            store, final_run_id, final_artifact_id
-        )
-        review_artifact = read_run_artifact(
-            store, review_run_id, review_artifact_id
-        )
+        artifact = read_run_artifact(store, final_run_id, final_artifact_id)
+        review_artifact = read_run_artifact(store, review_run_id, review_artifact_id)
         manifest = load_workflow_run_manifest(store, artifact.run_id)
         source_manifest = load_workflow_run_manifest(store, scope.initial_run_id)
         assignment = json.loads(source_manifest.run_input)
@@ -552,8 +1103,17 @@ def _validate_candidate(
     local_ref = _optional_git(workspace, "rev-parse", target_ref)
     if require_target_absent and (remote_ref is not None or local_ref is not None):
         raise OfflineDeliveryError("target_ref_exists")
-    if remote_ref not in {None, local_ref}:
-        raise OfflineDeliveryError("remote_ref_mismatch")
+    if remote_ref is not None:
+        if (
+            local_ref is None
+            or _git(remote_path, "show", "-s", "--format=%P", remote_ref)
+            != authorization.policy.base_revision
+            or _git(remote_path, "rev-parse", f"{remote_ref}^{{tree}}")
+            != _git(workspace, "rev-parse", f"{local_ref}^{{tree}}")
+            or _tree_entries(remote_path, remote_ref)
+            != _tree_entries(workspace, local_ref)
+        ):
+            raise OfflineDeliveryError("remote_ref_mismatch")
     # This record is deliberately a synthetic offline capability. No authentic
     # human identity or credential is represented by approved_by.
     return {
@@ -569,6 +1129,7 @@ def _validate_candidate(
         "terminal_status": status,
         "revisions_used": revisions_used,
         "verification_evidence_sha256": _digest(_canonical(evidence)),
+        "verification_diff_sha256": evidence.get("diff_sha256"),
         "verification_authorization_id": verification_authorization_id,
         "review_artifact_id": review_artifact.artifact_id,
         "review_artifact_sha256": review_artifact.content_sha256,
@@ -736,20 +1297,64 @@ def _verify_commit_candidate(
             raise OfflineDeliveryError("commit_content_mismatch")
 
 
-def _push_new_ref(
-    workspace: Path, remote: Path, target_ref: str, commit_sha: str
-) -> None:
-    if _optional_git(remote, "rev-parse", target_ref) is not None:
-        raise OfflineDeliveryError("remote_ref_exists")
-    _git(
+def _candidate_blob_updates(
+    workspace: Path, base_revision: str, commit_sha: str
+) -> list[dict[str, str]]:
+    entries = _tree_entries(workspace, commit_sha)
+    rows = _git(
         workspace,
-        "push",
-        "--no-verify",
-        "--porcelain",
-        "--",
-        str(remote),
-        f"{commit_sha}:{target_ref}",
-    )
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "--no-renames",
+        "-r",
+        base_revision,
+        commit_sha,
+    ).splitlines()
+    updates = []
+    for row in rows:
+        parts = row.split("\t", 1)
+        if len(parts) != 2 or parts[0] != "M" or parts[1] not in entries:
+            raise OfflineDeliveryError("commit_diff_mismatch")
+        mode, blob_sha = entries[parts[1]]
+        if mode not in {"100644", "100755"}:
+            raise OfflineDeliveryError("commit_mode_mismatch")
+        updates.append({"mode": mode, "path": parts[1], "sha": blob_sha})
+    if not updates:
+        raise OfflineDeliveryError("commit_diff_mismatch")
+    return sorted(updates, key=lambda item: item["path"])
+
+
+def _create_fake_git_blobs(
+    workspace: Path,
+    *,
+    remote: Path,
+    fake_api: FakeGitHubDeliveryAPI,
+    repository_id: str,
+    target_ref: str,
+    store: WorkflowRunManifestStore,
+    scope: BoundedWorkflowJobScope,
+    artifact_id: str,
+    base_revision: str,
+) -> list[dict[str, str]]:
+    artifact = _artifact_for_scope(store, scope, artifact_id)
+    _verify_commit_candidate(workspace, base_revision, target_ref, artifact)
+    commit_sha = _git(workspace, "rev-parse", target_ref)
+    updates = _candidate_blob_updates(workspace, base_revision, commit_sha)
+    for update in updates:
+        content = _git_bytes(workspace, "cat-file", "blob", update["sha"])
+        remote_sha = fake_api.create_blob(repository_id=repository_id, content=content)
+        if remote_sha != update["sha"]:
+            raise OfflineDeliveryError("remote_blob_mismatch")
+    if _git(remote, "rev-parse", "refs/heads/main") != base_revision:
+        raise OfflineDeliveryError("remote_base_mismatch")
+    return updates
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    left = first.resolve()
+    right = second.resolve()
+    return left == right or left in right.parents or right in left.parents
 
 
 def create_fake_bare_remote(remote: Path, workspace: Path, base_revision: str) -> None:
@@ -783,11 +1388,13 @@ def _reconcile_effect(
     workspace: Path,
     remote: Path,
     target_ref: str,
-    fake_pr_api: FakeDraftPullRequestAPI,
+    fake_pr_api: FakeGitHubDeliveryAPI,
     repository_id: str,
     base_revision: str,
     artifact_id: str,
     artifact_sha256: str,
+    diff_sha256: str,
+    remote_commit_sha: str | None,
     store: WorkflowRunManifestStore,
     scope: BoundedWorkflowJobScope,
 ) -> dict[str, object]:
@@ -800,22 +1407,115 @@ def _reconcile_effect(
             raise OfflineDeliveryError("artifact_changed")
         _verify_commit_candidate(workspace, base_revision, target_ref, artifact)
         return _effect_result(grant_id, effect, commit_sha=commit_sha, reconciled=True)
+    local_commit = _optional_git(workspace, "rev-parse", target_ref)
+    if effect == "remote_blob_create":
+        if local_commit is None:
+            raise OfflineDeliveryError("git_blob_outcome_ambiguous")
+        artifact = _artifact_for_scope(store, scope, artifact_id)
+        _verify_commit_candidate(workspace, base_revision, target_ref, artifact)
+        updates = _candidate_blob_updates(workspace, base_revision, local_commit)
+        for update in updates:
+            content = _git_bytes(workspace, "cat-file", "blob", update["sha"])
+            if (
+                fake_pr_api.get_blob(
+                    repository_id=repository_id, blob_sha=update["sha"]
+                )
+                != content
+            ):
+                raise OfflineDeliveryError("git_blob_outcome_ambiguous")
+        return _effect_result(
+            grant_id,
+            effect,
+            commit_sha=local_commit,
+            blobs=updates,
+            reconciled=True,
+        )
+    expected_tree = (
+        _git(workspace, "rev-parse", f"{local_commit}^{{tree}}")
+        if local_commit
+        else None
+    )
+    if effect == "remote_tree_create":
+        entries = (
+            fake_pr_api.get_tree(repository_id=repository_id, tree_sha=expected_tree)
+            if expected_tree is not None
+            else None
+        )
+        if local_commit is None or entries != _tree_entries(workspace, local_commit):
+            raise OfflineDeliveryError("git_tree_outcome_ambiguous")
+        return _effect_result(
+            grant_id,
+            effect,
+            commit_sha=local_commit,
+            tree_sha=expected_tree,
+            reconciled=True,
+        )
+    if effect == "remote_commit_create":
+        record = (
+            fake_pr_api.get_commit(repository_id=repository_id, commit_sha=local_commit)
+            if local_commit is not None
+            else None
+        )
+        if (
+            record is None
+            or record.get("commit_sha") != local_commit
+            or record.get("parent_sha") != base_revision
+            or record.get("tree_sha") != expected_tree
+        ):
+            raise OfflineDeliveryError("git_commit_outcome_ambiguous")
+        return _effect_result(
+            grant_id,
+            effect,
+            commit_sha=str(record["commit_sha"]),
+            local_commit_sha=local_commit,
+            reconciled=True,
+        )
     if effect == "remote_ref_create":
-        commit = _optional_git(workspace, "rev-parse", target_ref)
-        remote_commit = _optional_git(remote, "rev-parse", target_ref)
-        if commit is None or remote_commit != commit:
+        if remote_commit_sha is None:
+            raise OfflineDeliveryError("push_outcome_ambiguous")
+        remote_commit = fake_pr_api.get_ref(
+            repository_id=repository_id, target_ref=target_ref
+        )
+        remote_base = fake_pr_api.get_ref(
+            repository_id=repository_id, target_ref="refs/heads/main"
+        )
+        if (
+            local_commit is None
+            or remote_commit != remote_commit_sha
+            or remote_base != base_revision
+        ):
             raise OfflineDeliveryError("push_outcome_ambiguous")
         return _effect_result(
-            grant_id, effect, commit_sha=commit, remote_ref=target_ref, reconciled=True
+            grant_id,
+            effect,
+            commit_sha=remote_commit_sha,
+            local_commit_sha=local_commit,
+            remote_ref=target_ref,
+            reconciled=True,
         )
+    if remote_commit_sha is None:
+        raise OfflineDeliveryError("draft_pr_outcome_ambiguous")
     record = fake_pr_api.get_draft(repository_id=repository_id, head_ref=target_ref)
-    expected_commit = _optional_git(remote, "rev-parse", target_ref)
-    if not _matches_fake_pr(record, repository_id, target_ref, expected_commit):
+    remote_ref_commit = fake_pr_api.get_ref(
+        repository_id=repository_id, target_ref=target_ref
+    )
+    if (
+        not _matches_fake_pr(
+            record,
+            repository_id,
+            target_ref,
+            remote_commit_sha,
+            base_revision,
+            diff_sha256,
+        )
+        or remote_ref_commit != remote_commit_sha
+    ):
         raise OfflineDeliveryError("draft_pr_outcome_ambiguous")
     return _effect_result(
         grant_id,
         effect,
-        commit_sha=str(expected_commit),
+        commit_sha=remote_commit_sha,
+        local_commit_sha=local_commit,
         draft_pr=record,
         reconciled=True,
     )
@@ -828,22 +1528,73 @@ def _verify_effect_result(
     workspace: Path,
     remote: Path,
     target_ref: str,
-    fake_pr_api: FakeDraftPullRequestAPI,
+    fake_pr_api: FakeGitHubDeliveryAPI,
     repository_id: str,
+    base_revision: str,
+    diff_sha256: str,
 ) -> None:
-    commit = _optional_git(workspace, "rev-parse", target_ref)
-    remote_commit = _optional_git(remote, "rev-parse", target_ref)
-    if effect == "local_commit" and commit != result.get("commit_sha"):
+    local_commit = _optional_git(workspace, "rev-parse", target_ref)
+    if effect == "local_commit" and local_commit != result.get("commit_sha"):
         raise OfflineDeliveryError("commit_result_mismatch")
+    if effect == "remote_blob_create":
+        for update in result.get("blobs", []):
+            expected = _git_bytes(workspace, "cat-file", "blob", update["sha"])
+            if (
+                fake_pr_api.get_blob(
+                    repository_id=repository_id, blob_sha=update["sha"]
+                )
+                != expected
+            ):
+                raise OfflineDeliveryError("blob_result_mismatch")
+    if effect == "remote_tree_create":
+        tree_sha = str(result.get("tree_sha"))
+        if fake_pr_api.get_tree(
+            repository_id=repository_id, tree_sha=tree_sha
+        ) != _tree_entries(workspace, str(result.get("commit_sha"))):
+            raise OfflineDeliveryError("tree_result_mismatch")
+    if effect == "remote_commit_create":
+        remote_commit = fake_pr_api.get_commit(
+            repository_id=repository_id, commit_sha=str(result.get("commit_sha"))
+        )
+        if (
+            remote_commit is None
+            or local_commit != result.get("local_commit_sha")
+            or remote_commit.get("commit_sha") != result.get("commit_sha")
+            or remote_commit.get("parent_sha") != base_revision
+            or remote_commit.get("tree_sha")
+            != _git(workspace, "rev-parse", f"{local_commit}^{{tree}}")
+        ):
+            raise OfflineDeliveryError("commit_result_mismatch")
+        if fake_pr_api.get_tree(
+            repository_id=repository_id, tree_sha=remote_commit["tree_sha"]
+        ) != _tree_entries(workspace, local_commit):
+            raise OfflineDeliveryError("commit_result_mismatch")
     if effect == "remote_ref_create" and (
-        commit != result.get("commit_sha") or remote_commit != commit
+        local_commit != result.get("local_commit_sha")
+        or fake_pr_api.get_ref(repository_id=repository_id, target_ref=target_ref)
+        != result.get("commit_sha")
     ):
         raise OfflineDeliveryError("push_result_mismatch")
     if effect == "draft_pr":
         record = fake_pr_api.get_draft(repository_id=repository_id, head_ref=target_ref)
-        if record != result.get("draft_pr") or not _matches_fake_pr(
-            record, repository_id, target_ref, remote_commit
+        head = fake_pr_api.get_ref(repository_id=repository_id, target_ref=target_ref)
+        base = fake_pr_api.get_ref(
+            repository_id=repository_id, target_ref="refs/heads/main"
+        )
+        if (
+            record != result.get("draft_pr")
+            or not _matches_fake_pr(
+                record,
+                repository_id,
+                target_ref,
+                str(result.get("commit_sha")),
+                base_revision,
+                diff_sha256,
+            )
+            or head != result.get("commit_sha")
         ):
+            raise OfflineDeliveryError("draft_pr_result_mismatch")
+        if base != base_revision:
             raise OfflineDeliveryError("draft_pr_result_mismatch")
 
 
@@ -852,13 +1603,21 @@ def _effect_result(
     effect: str,
     *,
     commit_sha: str,
+    local_commit_sha: str | None = None,
     remote_ref: str | None = None,
     draft_pr: dict[str, object] | None = None,
+    blobs: list[dict[str, str]] | None = None,
+    tree_sha: str | None = None,
+    diff_sha256: str | None = None,
     reconciled: bool = False,
 ) -> dict[str, object]:
     return {
         "commit_sha": commit_sha,
+        "local_commit_sha": local_commit_sha,
         "draft_pr": draft_pr,
+        "blobs": blobs,
+        "tree_sha": tree_sha,
+        "diff_sha256": diff_sha256,
         "effect": effect,
         "grant_id": grant_id,
         "reconciled_read_only": reconciled,
@@ -873,14 +1632,18 @@ def _matches_fake_pr(
     repository_id: str,
     head_ref: str,
     head_sha: str | None,
+    base_sha: str,
+    diff_sha256: str,
 ) -> bool:
     return bool(
         type(record) is dict
         and head_sha is not None
         and record.get("repository_id") == repository_id
         and record.get("base_ref") == "refs/heads/main"
+        and record.get("base_sha") == base_sha
         and record.get("head_ref") == head_ref
         and record.get("head_sha") == head_sha
+        and record.get("diff_sha256") == diff_sha256
         and record.get("draft") is True
         and type(record.get("url")) is str
         and record["url"].startswith("https://fake.invalid/")
