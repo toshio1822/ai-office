@@ -61,6 +61,13 @@ from ai_office.engine.prepared_step_execution_start import (
     PreparedStepExecutionStartError,
     prepare_prepared_step_execution_start,
 )
+from ai_office.engine.publication_intent import (
+    PUBLICATION_INTENT_EFFECTS,
+    PublicationIntent,
+    PublicationIntentError,
+    build_publication_intent_handoff,
+    verify_publication_intent_handoff,
+)
 from ai_office.engine.runtime_result_to_progression_orchestration_boundary import (  # noqa: E501
     RuntimeResultToProgressionOrchestrationBoundaryCompatibilityError,
     RuntimeResultToProgressionOrchestrationBoundaryError,
@@ -216,6 +223,11 @@ __all__ = [
     "read_run_artifact",
     "workflow_artifact_canonical_bytes",
     "workflow_artifact_path",
+    "PUBLICATION_INTENT_EFFECTS",
+    "PublicationIntent",
+    "PublicationIntentError",
+    "build_publication_intent_handoff",
+    "verify_publication_intent_handoff",
     "build_workflow_run_manifest",
     "create_workflow_run_manifest",
     "employee_definitions_from_run_manifest",

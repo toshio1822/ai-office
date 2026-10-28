@@ -1402,9 +1402,12 @@ def bounded_document_action_input(
     from ai_office.engine.local_execution import FILE_CHANGE_SET_CONTENT_TYPE
 
     if source_artifact.content_type == FILE_CHANGE_SET_CONTENT_TYPE:
-        values["local_execution_evidence"] = _load_local_execution_evidence_for_action(
-            store, scope, source_ordinal, source_artifact
+        _, local_execution_evidence = (
+            _load_local_execution_link_and_evidence_for_action(
+                store, scope, source_ordinal, source_artifact
+            )
         )
+        values["local_execution_evidence"] = local_execution_evidence
     if slot.input_source == "revision_input":
         # Aggregate every reviewer's outcome from this round. A PASS never
         # cancels another reviewer's grounded findings, and at least one
@@ -1656,12 +1659,12 @@ def _persist_local_execution_evidence_link(
     return evidence
 
 
-def _load_local_execution_evidence_for_action(
+def _load_local_execution_link_and_evidence_for_action(
     store: WorkflowRunManifestStore,
     scope: BoundedWorkflowJobScope,
     ordinal: int,
     artifact,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], dict[str, object]]:
     from ai_office.engine.local_execution import (
         LocalExecutionError,
         load_local_execution_authorization,
@@ -1701,7 +1704,7 @@ def _load_local_execution_evidence_for_action(
         and link.get("evidence_sha256") == _digest(_canonical(evidence))
     ):
         raise WorkflowJobAuthorizationError("job_local_effect_binding")
-    return evidence
+    return link, evidence
 
 
 def validate_bounded_document_job_scope(scope: BoundedWorkflowJobScope) -> None:
@@ -2292,9 +2295,18 @@ def run_bounded_document_job(
 
 
 def inspect_bounded_document_job(
-    store: WorkflowRunManifestStore, job_id: str
+    store: WorkflowRunManifestStore,
+    job_id: str,
+    *,
+    include_local_effect: bool = False,
 ) -> dict[str, object]:
-    """Read-only owner view of assignment, bounded quota, action and stop record."""
+    """Read-only owner view of assignment, quota, actions and terminal status.
+
+    ``include_local_effect`` additionally resolves the final file-change
+    Artifact's existing local-verification link for a trusted handoff builder.
+    """
+    if type(include_local_effect) is not bool:
+        raise WorkflowJobAuthorizationError("document_job_local_effect_option")
     scope = load_bounded_workflow_job_scope(store, job_id)
     manifest = load_workflow_run_manifest(store, scope.initial_run_id)
     if (
@@ -2389,6 +2401,50 @@ def inspect_bounded_document_job(
     terminal_outcome = (
         _verify_positive_terminal_status(store, scope, status) if status else None
     )
+    final_local_effect = None
+    if (
+        include_local_effect
+        and status is not None
+        and status.get("status") in {"candidate", "reviewed"}
+        and terminal_outcome is not None
+        and terminal_outcome.final_artifact_run_id
+    ):
+        matching_ordinals = {
+            item.get("action_ordinal")
+            for item in dispatch_order
+            if item.get("run_id") == terminal_outcome.final_artifact_run_id
+        }
+        matching_artifacts = []
+        for ordinal in matching_ordinals:
+            if type(ordinal) is not int or not 0 <= ordinal < len(scope.actions):
+                continue
+            try:
+                artifact = _artifact_for_action(store, job_id, ordinal)
+            except WorkflowJobAuthorizationError:
+                continue
+            if (
+                artifact.run_id == terminal_outcome.final_artifact_run_id
+                and artifact.artifact_id == terminal_outcome.final_artifact_id
+            ):
+                matching_artifacts.append((ordinal, artifact))
+        if len(matching_artifacts) != 1:
+            raise WorkflowJobAuthorizationError("document_job_local_effect")
+        final_ordinal, final_artifact = matching_artifacts[0]
+        from ai_office.engine.local_execution import FILE_CHANGE_SET_CONTENT_TYPE
+
+        if final_artifact.content_type == FILE_CHANGE_SET_CONTENT_TYPE:
+            link, evidence = _load_local_execution_link_and_evidence_for_action(
+                store, scope, final_ordinal, final_artifact
+            )
+            final_local_effect = {
+                "action_ordinal": final_ordinal,
+                "artifact_id": final_artifact.artifact_id,
+                "artifact_sha256": final_artifact.content_sha256,
+                "authorization_id": link["authorization_id"],
+                "evidence_sha256": link["evidence_sha256"],
+                "run_id": final_artifact.run_id,
+                "scope_sha256": scope.digest,
+            }
     review_index = next(
         index
         for index, item in enumerate(scope.actions)
@@ -2435,6 +2491,7 @@ def inspect_bounded_document_job(
         "final_artifact_id": terminal_outcome.final_artifact_id
         if terminal_outcome
         else None,
+        "final_local_effect": final_local_effect,
         "review_artifact_run_id": terminal_outcome.review_artifact_run_id
         if terminal_outcome
         else None,

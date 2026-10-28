@@ -15,6 +15,8 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
@@ -33,6 +35,12 @@ from ai_office.engine.local_execution import (
     _redact,
     execute_local_change,
     issue_local_execution_authorization,
+)
+from ai_office.engine.publication_intent import (
+    PUBLICATION_INTENT_EFFECTS,
+    PublicationIntentError,
+    build_publication_intent_handoff,
+    verify_publication_intent_handoff,
 )
 from ai_office.engine.workflow_bounded_job import (
     BoundedJobActionSlot,
@@ -959,7 +967,17 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 "read": ["calculator.py", "test_calculator.py"],
                 "write": ["calculator.py"],
             },
-            "repository": {"base_revision": revision, "path": str(repository)},
+            "repository": {
+                "base_ref": "refs/heads/main",
+                "base_revision": revision,
+                "full_name": "offline-owner/offline-repository",
+                "id": 805001,
+                "path": str(repository),
+            },
+            "publication": {
+                "requested_effects": list(PUBLICATION_INTENT_EFFECTS),
+                "target_ref": "refs/heads/codex/issue-805-intent-handoff",
+            },
             "request": "Change answer() to return 2 without changing the test.",
             "source_context": source_context,
         },
@@ -1231,6 +1249,142 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         final_change["changes"][0]["content_base64"], validate=True
     )
     assert final_source == b"def answer():\n    return 2\n"
+
+    # Publication intent is a signed, authority-free handoff derived from the
+    # canonical Run/Job/Artifact/Evidence owners. No Run data is written.
+    intent_now = time.time_ns()
+    intent_expires = intent_now + 30 * 60 * 1_000_000_000
+    workflow_run_id = 805_000_001
+    workflow_run_attempt = 1
+    signing_key = Ed25519PrivateKey.generate()
+    public_key = signing_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    trusted_keys = {sha256(public_key).hexdigest(): public_key}
+    run_snapshot_before = {
+        path.name: path.read_bytes() for path in store.root.iterdir() if path.is_file()
+    }
+    handoff = build_publication_intent_handoff(
+        store,
+        job_id=scope.job_id,
+        workflow_run_id=workflow_run_id,
+        workflow_run_attempt=workflow_run_attempt,
+        expires_at_ns=intent_expires,
+        signing_key=signing_key,
+        now_ns=intent_now,
+    )
+    expected_handoff_context = {
+        "expected_workflow_run_id": workflow_run_id,
+        "expected_workflow_run_attempt": workflow_run_attempt,
+        "expected_repository_id": 805001,
+        "expected_repository_full_name": "offline-owner/offline-repository",
+        "expected_base_ref": "refs/heads/main",
+        "expected_base_revision": revision,
+        "expected_target_ref": "refs/heads/codex/issue-805-intent-handoff",
+        "now_ns": intent_now,
+    }
+    intent = verify_publication_intent_handoff(
+        handoff, trusted_keys, **expected_handoff_context
+    )
+    assert intent.authority == "intent_only"
+    assert intent.job_status == ("reviewed" if needs_revision else "candidate")
+    assert intent.revisions_used == (1 if needs_revision else 0)
+    assert intent.artifact_id == final_artifact.artifact_id
+    assert intent.artifact_sha256 == final_artifact.content_sha256
+    assert base64.b64decode(intent.artifact_content_base64, validate=True) == (
+        final_artifact.content
+    )
+    handoff_record = json.loads(handoff)
+    assert "approved_by" not in handoff_record["intent"]
+    assert "approval" not in handoff_record["intent"]
+    assert (
+        handoff_record["intent"]["verification_authorization_id"] == authorizations[-1]
+    )
+    assert {
+        path.name: path.read_bytes() for path in store.root.iterdir() if path.is_file()
+    } == run_snapshot_before
+
+    # Handoff bytes cannot be replaced, reused for another run/attempt, or
+    # turned into a human approval by adding caller-controlled metadata.
+    tampered_signature = json.loads(handoff)
+    signature_bytes = bytearray(
+        base64.b64decode(tampered_signature["signature_base64"], validate=True)
+    )
+    signature_bytes[0] ^= 1
+    tampered_signature["signature_base64"] = base64.b64encode(signature_bytes).decode(
+        "ascii"
+    )
+    with pytest.raises(PublicationIntentError):
+        verify_publication_intent_handoff(
+            json.dumps(
+                tampered_signature,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            trusted_keys,
+            **expected_handoff_context,
+        )
+
+    tampered_content = json.loads(handoff)
+    tampered_content["intent"]["artifact_content_base64"] = base64.b64encode(
+        b"different candidate"
+    ).decode("ascii")
+    with pytest.raises(PublicationIntentError):
+        verify_publication_intent_handoff(
+            json.dumps(
+                tampered_content,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            trusted_keys,
+            **expected_handoff_context,
+        )
+    for context_change in (
+        {"expected_workflow_run_id": workflow_run_id + 1},
+        {"expected_workflow_run_attempt": workflow_run_attempt + 1},
+        {"expected_repository_id": 805002},
+        {"expected_repository_full_name": "other-owner/other-repository"},
+        {"expected_base_revision": "0" * 40},
+        {"expected_target_ref": "refs/heads/codex/other-intent"},
+    ):
+        with pytest.raises(PublicationIntentError):
+            verify_publication_intent_handoff(
+                handoff,
+                trusted_keys,
+                **{**expected_handoff_context, **context_change},
+            )
+    forged_approval = json.loads(handoff)
+    forged_approval["intent"]["approved_by"] = "pytest-forged-human"
+    forged_approval["signature_base64"] = base64.b64encode(
+        signing_key.sign(
+            json.dumps(
+                forged_approval["intent"],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    ).decode("ascii")
+    with pytest.raises(PublicationIntentError):
+        verify_publication_intent_handoff(
+            json.dumps(
+                forged_approval,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            trusted_keys,
+            **expected_handoff_context,
+        )
+    with pytest.raises(PublicationIntentError):
+        verify_publication_intent_handoff(
+            handoff,
+            trusted_keys,
+            **{**expected_handoff_context, "now_ns": intent_expires},
+        )
 
     # #807 offline proof: the reviewed Artifact is admitted only to a new
     # local branch, local bare remote, and persistent fake GitHub API.

@@ -9,6 +9,7 @@ description = "A text-defined workflow foundation for AI-assisted work."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=41.0",
     "pydantic>=2.0",
     "PyYAML>=6.0",
     "typer>=0.12",
