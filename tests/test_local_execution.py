@@ -8,6 +8,7 @@ import os
 import socket
 import subprocess
 import sys
+import textwrap
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -949,7 +950,10 @@ def test_output_limit_is_durable_and_redacted(
     ids=["reviewed-after-revision", "candidate-no-revision"],
 )
 def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
-    tmp_path: Path, require_local_sandbox: None, needs_revision: bool
+    tmp_path: Path,
+    require_local_sandbox: None,
+    needs_revision: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ai_office.engine.artifact import read_run_artifact
 
@@ -1445,6 +1449,299 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             verification_authorization_id=authorizations[-1],
             expires_at_ns=expiry,
         )
+
+    # Product CLI proof: standard Git writes only to a local bare fake remote;
+    # every gh operation is served by this test executable, never GitHub.
+    product_remote = tmp_path / "product-fake-remote.git"
+    create_fake_bare_remote(product_remote, repository, revision)
+    remote_url = "https://github.com/offline-owner/offline-repository.git"
+    _git(repository, "remote", "add", "origin", remote_url)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    git_wrapper = fake_bin / "git"
+    git_wrapper.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent(
+            """\
+            import os
+            import sys
+
+            args = sys.argv[1:]
+            url = os.environ['AI_OFFICE_TEST_REMOTE_URL']
+            for index, arg in enumerate(args):
+                if arg == url:
+                    args[index] = os.environ['AI_OFFICE_TEST_REMOTE_PATH']
+            if 'push' in args:
+                with open(os.environ['AI_OFFICE_TEST_PUSH_LOG'], 'a') as stream:
+                    stream.write('push\\n')
+            os.execv('/usr/bin/git', ['/usr/bin/git', *args])
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent(
+            """\
+            import json
+            import os
+            import subprocess
+            import sys
+
+            args = sys.argv[1:]
+            state_path = os.environ['AI_OFFICE_TEST_GH_STATE']
+            remote = os.environ['AI_OFFICE_TEST_REMOTE_PATH']
+
+            def state():
+                try:
+                    with open(state_path) as stream:
+                        return json.load(stream)
+                except FileNotFoundError:
+                    return {'prs': [], 'events': [], 'queries': []}
+
+            def save(value):
+                with open(state_path, 'w') as stream:
+                    json.dump(value, stream)
+
+            def git(*parts):
+                command = ['/usr/bin/git', '--git-dir', remote, *parts]
+                return subprocess.check_output(command, text=True).strip()
+
+            def option(name):
+                return args[args.index(name) + 1]
+
+            if args[:2] == ['auth', 'status']:
+                print('Logged in to github.com')
+            elif args[0] == 'api':
+                endpoint = args[1]
+                if endpoint == 'repos/offline-owner/offline-repository':
+                    print(json.dumps({
+                        'id': 805001,
+                        'full_name': 'offline-owner/offline-repository',
+                        'default_branch': 'main',
+                    }))
+                elif endpoint == (
+                    'repos/offline-owner/offline-repository/branches/main'
+                ):
+                    print(json.dumps({'protected': False}))
+                else:
+                    raise SystemExit(2)
+            elif args[:2] == ['pr', 'list']:
+                data = state()
+                branch = option('--head')
+                if ':' in branch:
+                    raise SystemExit(2)
+                matches = [
+                    item for item in data['prs']
+                    if item['headRefName'] == branch
+                ]
+                data.setdefault('queries', []).append({
+                    'head': branch,
+                    'matches': len(matches),
+                })
+                save(data)
+                print(json.dumps(matches))
+            elif args[:2] == ['pr', 'create']:
+                data = state()
+                branch = option('--head')
+                base = option('--base')
+                head_sha = git('rev-parse', 'refs/heads/' + branch)
+                base_sha = git('rev-parse', 'refs/heads/' + base)
+                changed = git(
+                    'diff-tree', '--no-commit-id', '--name-only', '-r',
+                    base_sha, head_sha,
+                ).splitlines()
+                number = len(data['prs']) + 1
+                url = (
+                    'https://github.com/offline-owner/offline-repository/'
+                    f'pull/{number}'
+                )
+                with open(option('--body-file')) as stream:
+                    body = stream.read()
+                record = {
+                    'number': number,
+                    'url': url,
+                    'state': 'OPEN',
+                    'isDraft': True,
+                    'baseRefName': base,
+                    'baseRefOid': base_sha,
+                    'headRefName': branch,
+                    'headRefOid': head_sha,
+                    'headRepository': {
+                        'nameWithOwner': 'offline-owner/offline-repository',
+                    },
+                    'body': body,
+                    'files': [{'path': path} for path in changed],
+                }
+                data['prs'].append(record)
+                data['events'].append('create')
+                save(data)
+                if os.environ.get('AI_OFFICE_TEST_DROP_PR_RESPONSE') == '1':
+                    data['events'].append('create_response_dropped')
+                    save(data)
+                    raise SystemExit(1)
+                print(url)
+            elif args[:2] == ['pr', 'view']:
+                data = state()
+                url = args[2]
+                record = next(item for item in data['prs'] if item['url'] == url)
+                print(json.dumps(record))
+            else:
+                raise SystemExit(2)
+            """
+        ),
+        encoding="utf-8",
+    )
+    git_wrapper.chmod(0o700)
+    fake_gh.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}")
+    monkeypatch.setenv("AI_OFFICE_TEST_REMOTE_URL", remote_url)
+    monkeypatch.setenv("AI_OFFICE_TEST_REMOTE_PATH", str(product_remote))
+    monkeypatch.setenv("AI_OFFICE_TEST_PUSH_LOG", str(tmp_path / "push.log"))
+    gh_state_path = tmp_path / "gh-state.json"
+    monkeypatch.setenv("AI_OFFICE_TEST_GH_STATE", str(gh_state_path))
+    monkeypatch.setenv(
+        "AI_OFFICE_TEST_DROP_PR_RESPONSE", "1" if needs_revision else "0"
+    )
+
+    product_branch = (
+        f"ai-office/{scope.job_id}-{'reviewed' if needs_revision else 'candidate'}"
+    )
+    worktree_before = _git(
+        repository, "status", "--porcelain=v1", "--untracked-files=all"
+    )
+    head_before = _git(repository, "rev-parse", "HEAD")
+    command = [
+        "workflows",
+        "draft-pr",
+        scope.job_id,
+        "--run-store",
+        str(store.root),
+        "--git-repository",
+        str(repository),
+        "--repository",
+        "offline-owner/offline-repository",
+        "--base-ref",
+        "main",
+        "--branch",
+        product_branch,
+        "--yes",
+    ]
+
+    # A pre-existing PR from this exact head repository is a safe conflict;
+    # the fake rejects the unsupported OWNER:BRANCH filter syntax.
+    gh_state_path.write_text(
+        json.dumps(
+            {
+                "events": [],
+                "prs": [
+                    {
+                        "number": 99,
+                        "url": "https://github.com/offline-owner/offline-repository/pull/99",
+                        "state": "OPEN",
+                        "isDraft": True,
+                        "baseRefName": "main",
+                        "baseRefOid": revision,
+                        "headRefName": product_branch,
+                        "headRefOid": revision,
+                        "headRepository": {
+                            "nameWithOwner": "offline-owner/offline-repository"
+                        },
+                    }
+                ],
+                "queries": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    collision = _CLI_RUNNER.invoke(app, command)
+    assert collision.exit_code != 0
+    assert "target_pull_request_already_exists" in collision.output
+    collision_state = json.loads(gh_state_path.read_text(encoding="utf-8"))
+    assert collision_state["queries"] == [{"head": product_branch, "matches": 1}]
+    assert not (tmp_path / "push.log").exists()
+    assert not (store.root / f"{scope.job_id}.draft-pr-delivery.attempt.json").exists()
+
+    # Reset the fake remote's PR state for the successful delivery scenario.
+    gh_state_path.write_text(
+        json.dumps(
+            {
+                "events": [],
+                "prs": [
+                    {
+                        "number": 98,
+                        "url": "https://github.com/offline-owner/offline-repository/pull/98",
+                        "state": "OPEN",
+                        "isDraft": True,
+                        "baseRefName": "main",
+                        "baseRefOid": revision,
+                        "headRefName": product_branch,
+                        "headRefOid": revision,
+                        "headRepository": {
+                            "nameWithOwner": "offline-fork/offline-repository"
+                        },
+                    }
+                ],
+                "queries": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    delivered = _CLI_RUNNER.invoke(app, command)
+    assert delivered.exit_code == 0, delivered.output
+    delivery_result = json.loads(delivered.stdout.splitlines()[-1])
+    assert delivery_result["status"] == "completed"
+    assert delivery_result["artifact_id"] == outcome.final_artifact_id
+    assert delivery_result["base_sha"] == revision
+    assert delivery_result["branch"] == product_branch
+    assert delivery_result["pr_url"].endswith("/pull/2")
+    assert delivery_result["reconciled_read_only"] is needs_revision
+    assert "protected=false" in delivered.output
+    assert (
+        _git(product_remote, "rev-parse", f"refs/heads/{product_branch}")
+        == delivery_result["commit_sha"]
+    )
+    assert (
+        _git(product_remote, "show", "-s", "--format=%P", delivery_result["commit_sha"])
+        == revision
+    )
+    assert _git(product_remote, "rev-parse", "refs/heads/main") == revision
+    assert (repository / "calculator.py").read_bytes() == source
+    assert (
+        _git(repository, "status", "--porcelain=v1", "--untracked-files=all")
+        == worktree_before
+    )
+    assert _git(repository, "rev-parse", "HEAD") == head_before
+    gh_state = json.loads((tmp_path / "gh-state.json").read_text(encoding="utf-8"))
+    assert gh_state["events"] == (
+        ["create", "create_response_dropped"] if needs_revision else ["create"]
+    )
+    assert [query["matches"] for query in gh_state["queries"]] == [1, 1, 2]
+    assert all(query["head"] == product_branch for query in gh_state["queries"])
+    pull_request = gh_state["prs"][1]
+    assert pull_request["isDraft"] is True
+    assert pull_request["baseRefName"] == "main"
+    assert pull_request["baseRefOid"] == revision
+    assert pull_request["headRefName"] == product_branch
+    assert pull_request["headRefOid"] == delivery_result["commit_sha"]
+    assert pull_request["headRepository"]["nameWithOwner"] == (
+        "offline-owner/offline-repository"
+    )
+    assert "Closes #805" not in pull_request["body"]
+    assert "Fixes #805" not in pull_request["body"]
+    assert (tmp_path / "push.log").read_text(encoding="utf-8").splitlines() == ["push"]
+
+    # Re-running proves the exact recorded result with reads only.
+    replay = _CLI_RUNNER.invoke(app, command)
+    assert replay.exit_code == 0, replay.output
+    replay_result = json.loads(replay.stdout.splitlines()[-1])
+    assert replay_result["commit_sha"] == delivery_result["commit_sha"]
+    assert replay_result["reconciled_read_only"] is True
+    replay_state = json.loads(gh_state_path.read_text(encoding="utf-8"))
+    assert replay_state["events"] == gh_state["events"]
+    assert [query["matches"] for query in replay_state["queries"]] == [1, 1, 2, 2]
+    assert (tmp_path / "push.log").read_text(encoding="utf-8").splitlines() == ["push"]
     expired = issue_test_delivery_grant(
         store,
         scope,

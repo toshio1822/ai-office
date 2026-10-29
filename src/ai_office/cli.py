@@ -1,10 +1,14 @@
 """Command-line interface for AI Office."""
 
 import base64
+import difflib
 import getpass
 import json
 import os
+import re
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -12,6 +16,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import NoReturn
+from urllib.parse import quote, urlsplit
 
 import typer
 
@@ -64,8 +69,11 @@ from ai_office.engine.local_execution import (
     FILE_CHANGE_SET_CONTENT_TYPE,
     LocalExecutionError,
     LocalExecutionPolicy,
+    _parse_change_set,
     execute_local_change,
     issue_local_execution_authorization,
+    load_local_execution_authorization,
+    load_local_execution_evidence,
     validate_local_execution_scope,
 )
 from ai_office.engine.persisted_execution_outcome_reentry import (
@@ -1338,9 +1346,7 @@ def run_bounded_document_job_workflow(
     retry_interval_seconds: int = typer.Option(
         30, "--retry-interval-seconds", min=1, max=3600
     ),
-    local_effect_policy_file: Path | None = typer.Option(
-        None, "--local-effect-policy"
-    ),
+    local_effect_policy_file: Path | None = typer.Option(None, "--local-effect-policy"),
     local_effect_workspace: Path | None = typer.Option(
         None, "--local-effect-workspace"
     ),
@@ -1365,6 +1371,7 @@ def run_bounded_document_job_workflow(
         build_workflow_run_manifest,
         persist_workflow_run_manifest,
     )
+
     _reject_legacy_execution_model(legacy_execution_model)
     try:
         if os.geteuid() == 0 or os.geteuid() != os.getuid() or not sys.stdin.isatty():
@@ -1450,9 +1457,7 @@ def run_bounded_document_job_workflow(
             )
             if not isinstance(policy_value, dict):
                 _workflow_cli_error("local-effect policy must be an object")
-            policy_value["expires_at_ns"] = (
-                time.time_ns() + 2 * 60 * 60 * 1_000_000_000
-            )
+            policy_value["expires_at_ns"] = time.time_ns() + 2 * 60 * 60 * 1_000_000_000
             local_effect_policy = LocalExecutionPolicy.model_validate_json(
                 json.dumps(policy_value, ensure_ascii=False, sort_keys=True).encode()
             )
@@ -1855,6 +1860,1245 @@ def _artifact_metadata_json(artifact: WorkflowArtifact) -> dict[str, object]:
         "step_index": artifact.step_index,
         "workflow_id": artifact.workflow_id,
     }
+
+
+class _DraftPRDeliveryError(ValueError):
+    """Safe stop classification for the local Git/gh Draft PR command."""
+
+    def __init__(self, classification: str) -> None:
+        super().__init__(classification)
+        self.classification = classification
+
+
+def _draft_pr_canonical(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _draft_pr_git(
+    repository: Path,
+    *arguments: str,
+    input_bytes: bytes | None = None,
+    env_updates: dict[str, str] | None = None,
+    timeout: int = 30,
+) -> bytes:
+    """Run standard Git with hooks and external diff/textconv disabled."""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": "/bin/false",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TRACE": "0",
+            "GIT_TRACE_CURL": "0",
+            "GIT_TRACE_PACKET": "0",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        }
+    )
+    if env_updates:
+        environment.update(env_updates)
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "commit.gpgsign=false",
+                *arguments,
+            ],
+            input=input_bytes,
+            capture_output=True,
+            check=False,
+            env=environment,
+            shell=False,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise _DraftPRDeliveryError("git_unavailable_or_timed_out") from None
+    if result.returncode != 0:
+        raise _DraftPRDeliveryError("git_command_failed")
+    return result.stdout
+
+
+def _draft_pr_gh(*arguments: str, timeout: int = 30) -> bytes:
+    """Run GitHub CLI without prompting and never expose captured diagnostics."""
+    environment = os.environ.copy()
+    environment["GH_PROMPT_DISABLED"] = "1"
+    try:
+        result = subprocess.run(
+            ["gh", *arguments],
+            capture_output=True,
+            check=False,
+            env=environment,
+            shell=False,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise _DraftPRDeliveryError("gh_unavailable_or_timed_out") from None
+    if result.returncode != 0:
+        raise _DraftPRDeliveryError("gh_command_failed")
+    return result.stdout
+
+
+def _draft_pr_repo_from_url(value: str) -> str:
+    """Accept only credential-free github.com remotes for the target repo."""
+    scp_remote = r"git@github\.com:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?"
+    if re.fullmatch(scp_remote, value):
+        path = value.removeprefix("git@github.com:")
+    else:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"https", "ssh"}
+            or parsed.hostname != "github.com"
+            or parsed.username not in {None, "git"}
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise _DraftPRDeliveryError("remote_is_not_target_github_repository")
+        path = parsed.path.lstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", path):
+        raise _DraftPRDeliveryError("remote_is_not_target_github_repository")
+    return path
+
+
+def _draft_pr_repository_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
+        raise _DraftPRDeliveryError("invalid_repository_name")
+    return value
+
+
+def _draft_pr_branch_name(value: str, *, allow_heads_prefix: bool = False) -> str:
+    if allow_heads_prefix and value.startswith("refs/heads/"):
+        value = value.removeprefix("refs/heads/")
+    if (
+        not value
+        or value.startswith(("-", "refs/"))
+        or "\n" in value
+        or "\r" in value
+        or "\x00" in value
+    ):
+        raise _DraftPRDeliveryError("invalid_branch_name")
+    return value
+
+
+def _draft_pr_ls_remote(repository: Path, remote_url: str, ref: str) -> str | None:
+    output = _draft_pr_git(repository, "ls-remote", remote_url, ref).decode(
+        "ascii", "strict"
+    )
+    rows = [line.split() for line in output.splitlines() if line.strip()]
+    if not rows:
+        return None
+    if (
+        len(rows) != 1
+        or len(rows[0]) != 2
+        or rows[0][1] != ref
+        or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", rows[0][0])
+    ):
+        raise _DraftPRDeliveryError("remote_ref_response_invalid")
+    return rows[0][0]
+
+
+def _draft_pr_head_is_from_repository(
+    record: dict[str, object], repository: str
+) -> bool:
+    head_repository = record.get("headRepository")
+    return (
+        type(head_repository) is dict
+        and head_repository.get("nameWithOwner") == repository
+    )
+
+
+def _draft_pr_read_pr_list(repository: str, head: str) -> list[dict[str, object]]:
+    try:
+        value = json.loads(
+            _draft_pr_gh(
+                "pr",
+                "list",
+                "--repo",
+                repository,
+                "--head",
+                head,
+                "--state",
+                "all",
+                "--limit",
+                "100",
+                "--json",
+                "number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository",
+            )
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise _DraftPRDeliveryError("gh_pull_request_list_invalid") from None
+    if type(value) is not list or any(type(item) is not dict for item in value):
+        raise _DraftPRDeliveryError("gh_pull_request_list_invalid")
+    # `gh pr list --head` accepts a branch name, not OWNER:BRANCH.
+    return [
+        item for item in value if _draft_pr_head_is_from_repository(item, repository)
+    ]
+
+
+def _draft_pr_read_pr(repository: str, url: str) -> dict[str, object]:
+    try:
+        value = json.loads(
+            _draft_pr_gh(
+                "pr",
+                "view",
+                url,
+                "--repo",
+                repository,
+                "--json",
+                "number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,body,files",
+            )
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise _DraftPRDeliveryError("gh_pull_request_view_invalid") from None
+    if type(value) is not dict:
+        raise _DraftPRDeliveryError("gh_pull_request_view_invalid")
+    return value
+
+
+def _draft_pr_pr_matches(
+    record: dict[str, object],
+    *,
+    repository: str,
+    base_ref: str,
+    base_sha: str,
+    branch: str,
+    head_sha: str,
+    body_markers: tuple[str, ...],
+    paths: set[str],
+) -> bool:
+    files = record.get("files")
+    actual_paths = (
+        {item.get("path") for item in files if type(item) is dict}
+        if type(files) is list
+        else set()
+    )
+    url = record.get("url")
+    expected_prefix = f"https://github.com/{repository}/pull/"
+    body = record.get("body")
+    return bool(
+        record.get("state") == "OPEN"
+        and record.get("isDraft") is True
+        and record.get("baseRefName") == base_ref
+        and record.get("baseRefOid") == base_sha
+        and record.get("headRefName") == branch
+        and record.get("headRefOid") == head_sha
+        and _draft_pr_head_is_from_repository(record, repository)
+        and type(url) is str
+        and url.startswith(expected_prefix)
+        and url[len(expected_prefix) :].isdigit()
+        and type(body) is str
+        and all(marker in body for marker in body_markers)
+        and actual_paths == paths
+    )
+
+
+def _draft_pr_verify_remote_commit(
+    repository: Path,
+    remote_url: str,
+    remote_ref: str,
+    *,
+    expected_sha: str,
+    base_sha: str,
+    tree_sha: str,
+    message: str,
+    paths: set[str],
+) -> None:
+    if _draft_pr_ls_remote(repository, remote_url, remote_ref) != expected_sha:
+        raise _DraftPRDeliveryError("remote_head_mismatch")
+    _draft_pr_git(
+        repository,
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        remote_url,
+        remote_ref,
+        timeout=120,
+    )
+    parent = (
+        _draft_pr_git(repository, "show", "-s", "--format=%P", expected_sha)
+        .decode("ascii", "strict")
+        .strip()
+    )
+    tree = (
+        _draft_pr_git(repository, "show", "-s", "--format=%T", expected_sha)
+        .decode("ascii", "strict")
+        .strip()
+    )
+    actual_message = (
+        _draft_pr_git(repository, "show", "-s", "--format=%B", expected_sha)
+        .decode("utf-8", "strict")
+        .rstrip("\n")
+    )
+    if parent != base_sha or tree != tree_sha or actual_message != message:
+        raise _DraftPRDeliveryError("remote_commit_mismatch")
+    rows = (
+        _draft_pr_git(
+            repository,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-status",
+            "--no-renames",
+            "-r",
+            base_sha,
+            expected_sha,
+        )
+        .decode("utf-8", "strict")
+        .splitlines()
+    )
+    actual: dict[str, str] = {}
+    for row in rows:
+        parts = row.split("\t", 1)
+        if len(parts) != 2:
+            raise _DraftPRDeliveryError("remote_commit_diff_invalid")
+        actual[parts[1]] = parts[0]
+    if set(actual) != paths or any(status != "M" for status in actual.values()):
+        raise _DraftPRDeliveryError("remote_commit_diff_mismatch")
+
+
+def _draft_pr_confirmed_result(
+    repository_path: Path,
+    remote_url: str,
+    repo_name: str,
+    base_ref: str,
+    branch: str,
+    attempt: dict[str, object],
+    paths: set[str],
+) -> dict[str, object]:
+    branch_ref = f"refs/heads/{branch}"
+    base_ref_full = f"refs/heads/{base_ref}"
+    base_sha = attempt.get("base_sha")
+    commit_sha = attempt.get("commit_sha")
+    tree_sha = attempt.get("tree_sha")
+    commit_message = attempt.get("commit_message")
+    markers = attempt.get("body_markers")
+    if (
+        type(base_sha) is not str
+        or type(commit_sha) is not str
+        or type(tree_sha) is not str
+        or type(commit_message) is not str
+        or type(markers) is not list
+        or any(type(item) is not str for item in markers)
+        or _draft_pr_ls_remote(repository_path, remote_url, base_ref_full) != base_sha
+    ):
+        raise _DraftPRDeliveryError("prior_delivery_not_confirmed")
+    _draft_pr_verify_remote_commit(
+        repository_path,
+        remote_url,
+        branch_ref,
+        expected_sha=commit_sha,
+        base_sha=base_sha,
+        tree_sha=tree_sha,
+        message=commit_message,
+        paths=paths,
+    )
+    pull_requests = _draft_pr_read_pr_list(repo_name, branch)
+    if len(pull_requests) != 1 or type(pull_requests[0].get("url")) is not str:
+        raise _DraftPRDeliveryError("prior_draft_pr_not_confirmed")
+    url = pull_requests[0]["url"]
+    record = _draft_pr_read_pr(repo_name, url)
+    if not _draft_pr_pr_matches(
+        record,
+        repository=repo_name,
+        base_ref=base_ref,
+        base_sha=base_sha,
+        branch=branch,
+        head_sha=commit_sha,
+        body_markers=tuple(markers),
+        paths=paths,
+    ):
+        raise _DraftPRDeliveryError("prior_draft_pr_not_confirmed")
+    return {
+        "base_ref": base_ref,
+        "base_sha": base_sha,
+        "branch": branch,
+        "commit_sha": commit_sha,
+        "diff_sha256": attempt["diff_sha256"],
+        "job_id": attempt["job_id"],
+        "artifact_id": attempt["artifact_id"],
+        "artifact_sha256": attempt["artifact_sha256"],
+        "pr_url": url,
+        "repository": repo_name,
+        "reconciled_read_only": True,
+        "status": "completed",
+        "tree_sha": tree_sha,
+    }
+
+
+def _draft_pr_write_once(path: Path, value: dict[str, object]) -> None:
+    payload = _draft_pr_canonical(value)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        raise _DraftPRDeliveryError("delivery_record_already_exists") from None
+    except OSError:
+        raise _DraftPRDeliveryError("delivery_record_unavailable") from None
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError:
+        raise _DraftPRDeliveryError("delivery_record_write_failed") from None
+    finally:
+        os.close(descriptor)
+
+
+def _draft_pr_read_record(path: Path) -> dict[str, object] | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        info = path.lstat()
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or info.st_nlink != 1
+            or info.st_size > 65_536
+        ):
+            raise _DraftPRDeliveryError("delivery_record_invalid")
+        payload = path.read_bytes()
+        value = json.loads(payload)
+    except _DraftPRDeliveryError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise _DraftPRDeliveryError("delivery_record_invalid") from None
+    if type(value) is not dict or payload != _draft_pr_canonical(value):
+        raise _DraftPRDeliveryError("delivery_record_invalid")
+    return value
+
+
+def _draft_pr_load_candidate(
+    store: WorkflowRunManifestStore,
+    job_id: str,
+    git_repository: Path,
+    repo_name: str,
+    base_ref: str,
+) -> dict[str, object]:
+    from ai_office.engine.workflow_bounded_job import (
+        WorkflowJobAuthorizationError,
+        inspect_bounded_document_job,
+        load_bounded_workflow_job_scope,
+    )
+
+    try:
+        scope = load_bounded_workflow_job_scope(store, job_id)
+        inspection = inspect_bounded_document_job(
+            store, job_id, include_local_effect=True
+        )
+        status = inspection.get("status")
+        final_run_id = inspection.get("final_artifact_run_id")
+        artifact_id = inspection.get("final_artifact_id")
+        review_run_id = inspection.get("review_artifact_run_id")
+        review_artifact_id = inspection.get("review_artifact_id")
+        local_effect = inspection.get("final_local_effect")
+        if (
+            status not in {"candidate", "reviewed"}
+            or type(final_run_id) is not str
+            or type(artifact_id) is not str
+            or type(review_run_id) is not str
+            or type(review_artifact_id) is not str
+            or type(local_effect) is not dict
+            or local_effect.get("scope_sha256") != scope.digest
+        ):
+            raise _DraftPRDeliveryError("job_not_ready_for_delivery")
+        artifact = read_run_artifact(store, final_run_id, artifact_id)
+        review_artifact = read_run_artifact(store, review_run_id, review_artifact_id)
+        manifest = load_workflow_run_manifest(store, final_run_id)
+        source_manifest = load_workflow_run_manifest(
+            store, scope.source_manifest_run_id
+        )
+        authorization_id = local_effect.get("authorization_id")
+        if type(authorization_id) is not str:
+            raise _DraftPRDeliveryError("verification_evidence_missing")
+        authorization = load_local_execution_authorization(
+            store, final_run_id, authorization_id
+        )
+        evidence = load_local_execution_evidence(store, final_run_id, authorization_id)
+        assignment = json.loads(inspection["assignment"])
+        repository = assignment.get("repository") if type(assignment) is dict else None
+        if (
+            type(repository) is not dict
+            or repository.get("full_name") != repo_name
+            or type(repository.get("id")) is not int
+            or isinstance(repository.get("id"), bool)
+            or repository.get("base_revision") != authorization.policy.base_revision
+            or _draft_pr_branch_name(
+                repository.get("base_ref", ""), allow_heads_prefix=True
+            )
+            != base_ref
+            or type(repository.get("path")) is not str
+            or Path(repository["path"]).resolve(strict=True) != git_repository
+            or artifact.content_type != FILE_CHANGE_SET_CONTENT_TYPE
+            or artifact.run_id != final_run_id
+            or artifact.artifact_id != artifact_id
+            or artifact.manifest_digest != manifest.digest
+            or artifact.workflow_id != manifest.workflow_id
+            or review_artifact.run_id != review_run_id
+            or review_artifact.artifact_id != review_artifact_id
+            or authorization.run_id != artifact.run_id
+            or authorization.manifest_digest != artifact.manifest_digest
+            or authorization.artifact_id != artifact.artifact_id
+            or authorization.artifact_sha256 != artifact.content_sha256
+            or evidence.get("status") != "verified"
+            or evidence.get("run_id") != artifact.run_id
+            or evidence.get("manifest_digest") != artifact.manifest_digest
+            or evidence.get("artifact_id") != artifact.artifact_id
+            or evidence.get("artifact_sha256") != artifact.content_sha256
+            or evidence.get("authorization_id") != authorization_id
+            or evidence.get("base_revision") != authorization.policy.base_revision
+            or evidence.get("workspace_sha256") != authorization.workspace_sha256
+            or local_effect.get("run_id") != artifact.run_id
+            or local_effect.get("artifact_id") != artifact.artifact_id
+            or local_effect.get("artifact_sha256") != artifact.content_sha256
+            or local_effect.get("evidence_sha256")
+            != sha256(_draft_pr_canonical(evidence)).hexdigest()
+        ):
+            raise _DraftPRDeliveryError("source_evidence_mismatch")
+        if (
+            source_manifest.run_id != scope.source_manifest_run_id
+            or source_manifest.digest != scope.source_manifest_digest
+        ):
+            raise _DraftPRDeliveryError("source_manifest_mismatch")
+        changes = _parse_change_set(artifact, authorization.policy)
+        if not changes:
+            raise _DraftPRDeliveryError("change_set_empty")
+        paths = {item["path"] for item in changes}
+        if len(paths) != len(changes):
+            raise _DraftPRDeliveryError("change_set_duplicate_path")
+    except _DraftPRDeliveryError:
+        raise
+    except (OSError, TypeError, ValueError, KeyError, WorkflowJobAuthorizationError):
+        raise _DraftPRDeliveryError("source_evidence_invalid") from None
+
+    if (
+        store.root.resolve() == git_repository
+        or git_repository.is_relative_to(store.root.resolve())
+        or store.root.resolve().is_relative_to(git_repository)
+    ):
+        raise _DraftPRDeliveryError("run_store_overlaps_repository")
+    base_sha = authorization.policy.base_revision
+    try:
+        _draft_pr_git(git_repository, "cat-file", "-e", f"{base_sha}^{{commit}}")
+        before_by_path: dict[str, bytes] = {}
+        tree_modes: dict[str, str] = {}
+        for change in changes:
+            path = change["path"]
+            if "\n" in path or "\r" in path:
+                raise _DraftPRDeliveryError("change_path_invalid")
+            entry = _draft_pr_git(
+                git_repository, "ls-tree", "-z", "--full-tree", base_sha, "--", path
+            )
+            rows = [item for item in entry.split(b"\x00") if item]
+            if len(rows) != 1:
+                raise _DraftPRDeliveryError("change_preimage_missing")
+            header, raw_path = rows[0].split(b"\t", 1)
+            mode, object_type, object_id = header.split(b" ")
+            if (
+                raw_path.decode("utf-8") != path
+                or object_type != b"blob"
+                or mode not in {b"100644", b"100755"}
+            ):
+                raise _DraftPRDeliveryError("change_preimage_invalid")
+            before = _draft_pr_git(
+                git_repository, "cat-file", "blob", object_id.decode("ascii")
+            )
+            if sha256(before).hexdigest() != change["before_sha256"]:
+                raise _DraftPRDeliveryError("change_preimage_mismatch")
+            before_by_path[path] = before
+            tree_modes[path] = mode.decode("ascii")
+        expected_diff = "".join(
+            line
+            for change in sorted(changes, key=lambda item: item["path"])
+            for line in difflib.unified_diff(
+                before_by_path[change["path"]]
+                .decode("utf-8")
+                .splitlines(keepends=True),
+                base64.b64decode(change["content_base64"], validate=True)
+                .decode("utf-8")
+                .splitlines(keepends=True),
+                fromfile=f"a/{change['path']}",
+                tofile=f"b/{change['path']}",
+            )
+        )
+    except _DraftPRDeliveryError:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError, subprocess.SubprocessError):
+        raise _DraftPRDeliveryError("candidate_tree_invalid") from None
+    if (
+        evidence.get("diff") != expected_diff
+        or evidence.get("diff_sha256")
+        != sha256(expected_diff.encode("utf-8")).hexdigest()
+    ):
+        raise _DraftPRDeliveryError("verification_diff_mismatch")
+    return {
+        "artifact": artifact,
+        "authorization": authorization,
+        "base_sha": base_sha,
+        "changes": changes,
+        "evidence": evidence,
+        "evidence_sha256": sha256(_draft_pr_canonical(evidence)).hexdigest(),
+        "expected_diff": expected_diff,
+        "job_status": status,
+        "manifest": manifest,
+        "paths": paths,
+        "review_artifact": review_artifact,
+        "review_run_id": review_run_id,
+        "repository_id": repository["id"],
+        "scope": scope,
+        "tree_modes": tree_modes,
+    }
+
+
+def _draft_pr_build_tree(
+    repository: Path,
+    *,
+    base_sha: str,
+    changes: list[dict[str, str]],
+    tree_modes: dict[str, str],
+) -> str:
+    with tempfile.TemporaryDirectory(prefix="ai-office-draft-pr-index-") as directory:
+        index = Path(directory) / "index"
+        environment = {"GIT_INDEX_FILE": str(index)}
+        _draft_pr_git(repository, "read-tree", base_sha, env_updates=environment)
+        for change in changes:
+            content = base64.b64decode(change["content_base64"], validate=True)
+            blob = (
+                _draft_pr_git(
+                    repository,
+                    "hash-object",
+                    "-w",
+                    "--no-filters",
+                    "--stdin",
+                    input_bytes=content,
+                )
+                .decode("ascii", "strict")
+                .strip()
+            )
+            _draft_pr_git(
+                repository,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                tree_modes[change["path"]],
+                blob,
+                change["path"],
+                env_updates=environment,
+            )
+        tree_sha = (
+            _draft_pr_git(repository, "write-tree", env_updates=environment)
+            .decode("ascii", "strict")
+            .strip()
+        )
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", tree_sha):
+        raise _DraftPRDeliveryError("candidate_tree_invalid")
+    return tree_sha
+
+
+def _draft_pr_create_commit(
+    repository: Path,
+    *,
+    base_sha: str,
+    tree_sha: str,
+    message: str,
+) -> str:
+    commit_sha = (
+        _draft_pr_git(
+            repository,
+            "commit-tree",
+            tree_sha,
+            "-p",
+            base_sha,
+            "-m",
+            message,
+        )
+        .decode("ascii", "strict")
+        .strip()
+    )
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit_sha):
+        raise _DraftPRDeliveryError("candidate_commit_invalid")
+    if (
+        _draft_pr_git(repository, "show", "-s", "--format=%P", commit_sha)
+        .decode("ascii", "strict")
+        .strip()
+        != base_sha
+    ):
+        raise _DraftPRDeliveryError("candidate_commit_parent_mismatch")
+    if (
+        _draft_pr_git(repository, "show", "-s", "--format=%T", commit_sha)
+        .decode("ascii", "strict")
+        .strip()
+        != tree_sha
+    ):
+        raise _DraftPRDeliveryError("candidate_commit_tree_mismatch")
+    if (
+        _draft_pr_git(repository, "show", "-s", "--format=%B", commit_sha)
+        .decode("utf-8", "strict")
+        .rstrip("\n")
+        != message
+    ):
+        raise _DraftPRDeliveryError("candidate_commit_message_mismatch")
+    return commit_sha
+
+
+def _draft_pr_api_protection(repo_name: str, base_ref: str) -> bool | None:
+    endpoint = f"repos/{repo_name}/branches/{quote(base_ref, safe='')}"
+    try:
+        value = json.loads(_draft_pr_gh("api", endpoint))
+    except _DraftPRDeliveryError:
+        return None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    protected = value.get("protected") if type(value) is dict else None
+    return protected if type(protected) is bool else None
+
+
+def _draft_pr_pr_body(
+    *,
+    repo_name: str,
+    job_id: str,
+    job_status: str,
+    artifact: WorkflowArtifact,
+    review_artifact: WorkflowArtifact,
+    base_ref: str,
+    base_sha: str,
+    branch: str,
+    commit_sha: str,
+    tree_sha: str,
+    evidence_sha256: str,
+    diff_sha256: str,
+    paths: set[str],
+    protected: bool | None,
+) -> tuple[str, tuple[str, ...]]:
+    markers = (
+        f"AI-Office-Job: {job_id}",
+        f"AI-Office-Artifact: {artifact.artifact_id}",
+        f"AI-Office-Artifact-SHA256: {artifact.content_sha256}",
+        f"AI-Office-Verification-Evidence-SHA256: {evidence_sha256}",
+        f"AI-Office-Diff-SHA256: {diff_sha256}",
+    )
+    protection = (
+        "protected=true"
+        if protected is True
+        else "protected=false"
+        if protected is False
+        else "unknown (not assumed protected)"
+    )
+    body = "\n".join(
+        [
+            "Draft delivery for Issue #805 using ai-office's standard Git and "
+            "GitHub CLI path.",
+            "",
+            f"- Job: `{job_id}` ({job_status})",
+            (
+                f"- Final Artifact: `{artifact.run_id}/{artifact.artifact_id}` "
+                f"({artifact.content_sha256})"
+            ),
+            (
+                "- Final all-PASS review Artifact: "
+                f"`{review_artifact.run_id}/{review_artifact.artifact_id}` "
+                f"({review_artifact.content_sha256})"
+            ),
+            f"- Local verification Evidence SHA-256: `{evidence_sha256}`",
+            f"- Target: `{repo_name}` / `{base_ref}` at `{base_sha}`",
+            f"- New head: `{branch}` at `{commit_sha}` (tree `{tree_sha}`)",
+            f"- Verified diff SHA-256: `{diff_sha256}`",
+            f"- Changed paths: {', '.join(f'`{path}`' for path in sorted(paths))}",
+            f"- Base branch protection observed before delivery: `{protection}`",
+            "",
+            "The PR remains Draft. No Ready, merge, or Issue-closing action "
+            "was requested.",
+            "",
+            *markers,
+        ]
+    )
+    return body, markers
+
+
+@workflows_app.command("draft-pr")
+def deliver_verified_artifact_as_draft_pr(
+    job_id: str,
+    repository: str = typer.Option(..., "--repository"),
+    base_ref_option: str = typer.Option(..., "--base-ref"),
+    branch_option: str = typer.Option(..., "--branch"),
+    git_repository_option: Path = typer.Option(..., "--git-repository"),
+    remote_name: str = typer.Option("origin", "--remote"),
+    run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
+    yes: bool = typer.Option(False, "--yes"),
+) -> None:
+    """Commit, push and open a Draft PR for one verified bounded-Job Artifact.
+
+    Uses the Run's final all-PASS Artifact and existing local-verification
+    Evidence. `--yes` is an explicit operator-intent flag, not a security
+    boundary; the local GitHub credential remains available to this process.
+    """
+    try:
+        repo_name = _draft_pr_repository_name(repository)
+        base_ref = _draft_pr_branch_name(base_ref_option, allow_heads_prefix=True)
+        branch = _draft_pr_branch_name(branch_option)
+        if (
+            not remote_name
+            or remote_name.startswith("-")
+            or any(char.isspace() for char in remote_name)
+        ):
+            raise _DraftPRDeliveryError("invalid_remote_name")
+        git_repository = git_repository_option.expanduser().resolve(strict=True)
+        store = _load_run_store_or_exit(run_store)
+        git_root = Path(
+            _draft_pr_git(git_repository, "rev-parse", "--show-toplevel")
+            .decode("utf-8", "strict")
+            .strip()
+        ).resolve(strict=True)
+        if git_root != git_repository:
+            raise _DraftPRDeliveryError("git_repository_must_be_worktree_root")
+        source = _draft_pr_load_candidate(store, job_id, git_root, repo_name, base_ref)
+        artifact = source["artifact"]
+        review_artifact = source["review_artifact"]
+        evidence = source["evidence"]
+        paths = source["paths"]
+        base_sha = source["base_sha"]
+        tree_sha = _draft_pr_build_tree(
+            git_root,
+            base_sha=base_sha,
+            changes=source["changes"],
+            tree_modes=source["tree_modes"],
+        )
+        initial_worktree_status = _draft_pr_git(
+            git_root, "status", "--porcelain=v1", "--untracked-files=all"
+        )
+
+        _draft_pr_gh("auth", "status", "--hostname", "github.com")
+        try:
+            repo_view = json.loads(_draft_pr_gh("api", f"repos/{repo_name}"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise _DraftPRDeliveryError("gh_repository_identity_invalid") from None
+        if (
+            type(repo_view) is not dict
+            or repo_view.get("full_name") != repo_name
+            or type(repo_view.get("id")) is not int
+            or repo_view.get("id") != source["repository_id"]
+        ):
+            raise _DraftPRDeliveryError("gh_repository_identity_mismatch")
+        default_branch = repo_view.get("default_branch")
+        if type(default_branch) is not str:
+            raise _DraftPRDeliveryError("gh_default_branch_unavailable")
+        if branch in {base_ref, default_branch}:
+            raise _DraftPRDeliveryError("target_branch_must_be_new_and_non_default")
+        remote_url = (
+            _draft_pr_git(git_root, "remote", "get-url", "--push", remote_name)
+            .decode("utf-8", "strict")
+            .strip()
+        )
+        if _draft_pr_repo_from_url(remote_url) != repo_name:
+            raise _DraftPRDeliveryError("git_remote_identity_mismatch")
+        _draft_pr_git(git_root, "cat-file", "-e", f"{base_sha}^{{commit}}")
+        _draft_pr_git(git_root, "check-ref-format", "--branch", base_ref)
+        base_ref_full = f"refs/heads/{base_ref}"
+        branch_ref = f"refs/heads/{branch}"
+        if _draft_pr_ls_remote(git_root, remote_url, base_ref_full) != base_sha:
+            raise _DraftPRDeliveryError("remote_base_moved_or_mismatched")
+        _draft_pr_git(git_root, "check-ref-format", "--branch", branch)
+        protection = _draft_pr_api_protection(repo_name, base_ref)
+
+        plan = {
+            "artifact_id": artifact.artifact_id,
+            "artifact_run_id": artifact.run_id,
+            "artifact_sha256": artifact.content_sha256,
+            "base_ref": base_ref,
+            "base_sha": base_sha,
+            "branch": branch,
+            "diff_sha256": evidence["diff_sha256"],
+            "evidence_sha256": source["evidence_sha256"],
+            "job_id": job_id,
+            "job_status": source["job_status"],
+            "repository": repo_name,
+            "review_artifact_id": review_artifact.artifact_id,
+            "review_artifact_run_id": review_artifact.run_id,
+            "review_artifact_sha256": review_artifact.content_sha256,
+            "source_manifest_digest": source["manifest"].digest,
+            "tree_sha": tree_sha,
+        }
+        record_prefix = f"{job_id}.draft-pr-delivery"
+        attempt_path = store.root / f"{record_prefix}.attempt.json"
+        result_path = store.root / f"{record_prefix}.result.json"
+        stop_path = store.root / f"{record_prefix}.stop.json"
+        attempt = _draft_pr_read_record(attempt_path)
+        prior_result = _draft_pr_read_record(result_path)
+        if prior_result is not None and attempt is None:
+            raise _DraftPRDeliveryError("delivery_record_invalid")
+        if attempt is not None:
+            if any(attempt.get(key) != value for key, value in plan.items()):
+                raise _DraftPRDeliveryError("prior_delivery_target_mismatch")
+            if attempt.get("schema_version") != "ai-office-draft-pr-attempt.v1":
+                raise _DraftPRDeliveryError("delivery_record_invalid")
+            if prior_result is not None:
+                if (
+                    prior_result.get("attempt_sha256")
+                    != sha256(_draft_pr_canonical(attempt)).hexdigest()
+                ):
+                    raise _DraftPRDeliveryError("delivery_record_invalid")
+                confirmed = _draft_pr_confirmed_result(
+                    git_root, remote_url, repo_name, base_ref, branch, attempt, paths
+                )
+                if any(
+                    prior_result.get(key) != value
+                    for key, value in confirmed.items()
+                    if key not in {"reconciled_read_only"}
+                ):
+                    raise _DraftPRDeliveryError("stored_delivery_result_mismatch")
+                _emit_json({"operation": "draft-pr", **confirmed})
+                return
+            try:
+                confirmed = _draft_pr_confirmed_result(
+                    git_root, remote_url, repo_name, base_ref, branch, attempt, paths
+                )
+            except _DraftPRDeliveryError as error:
+                if not stop_path.exists():
+                    _draft_pr_write_once(
+                        stop_path,
+                        {
+                            "classification": error.classification,
+                            "job_id": job_id,
+                            "schema_version": "ai-office-draft-pr-stop.v1",
+                            "stage": "read_only_reconciliation",
+                        },
+                    )
+                raise _DraftPRDeliveryError("prior_delivery_not_confirmed") from None
+            _draft_pr_write_once(
+                result_path,
+                {
+                    **confirmed,
+                    "attempt_sha256": sha256(_draft_pr_canonical(attempt)).hexdigest(),
+                    "schema_version": "ai-office-draft-pr-result.v1",
+                },
+            )
+            _emit_json({"operation": "draft-pr", **confirmed})
+            return
+
+        if stop_path.exists():
+            raise _DraftPRDeliveryError("prior_delivery_stopped_no_retry")
+        if _draft_pr_ls_remote(git_root, remote_url, branch_ref) is not None:
+            raise _DraftPRDeliveryError("target_branch_already_exists")
+        local_target = (
+            _draft_pr_git(
+                git_root,
+                "for-each-ref",
+                "--format=%(refname)",
+                branch_ref,
+            )
+            .decode("utf-8", "strict")
+            .strip()
+        )
+        if local_target:
+            raise _DraftPRDeliveryError("local_target_branch_already_exists")
+        existing_pull_requests = _draft_pr_read_pr_list(repo_name, branch)
+        if existing_pull_requests:
+            raise _DraftPRDeliveryError("target_pull_request_already_exists")
+
+        protection_label = (
+            "enabled"
+            if protection is True
+            else (
+                "disabled (protected=false; GitHub will not enforce the local "
+                "CLI safeguard)"
+            )
+            if protection is False
+            else "unknown (do not assume GitHub-side protection)"
+        )
+        typer.echo("Draft PR delivery plan")
+        typer.echo(f"Job: {job_id} ({source['job_status']})")
+        typer.echo(f"Repository: {repo_name}")
+        typer.echo(f"Base: {base_ref} @ {base_sha}")
+        typer.echo(f"New branch: {branch}")
+        typer.echo(
+            f"Artifact: {artifact.run_id}/{artifact.artifact_id} "
+            f"({artifact.content_sha256})"
+        )
+        typer.echo(f"Verification Evidence SHA-256: {source['evidence_sha256']}")
+        typer.echo(f"Changed paths: {', '.join(sorted(paths))}")
+        typer.echo(f"Base branch protection: {protection_label}")
+        typer.echo("Effects: create local Git commit, push new branch, create Draft PR")
+        typer.echo("Verified diff:")
+        typer.echo(source["expected_diff"], nl=False)
+        if not str(source["expected_diff"]).endswith("\n"):
+            typer.echo()
+        if yes:
+            typer.echo("Operator intent: --yes")
+        else:
+            if not sys.stdin.isatty():
+                raise _DraftPRDeliveryError("explicit_confirmation_required")
+            if not typer.confirm(
+                "Commit, push the new branch and create a Draft PR?", default=False
+            ):
+                raise _DraftPRDeliveryError("operator_declined")
+
+        refreshed = _draft_pr_load_candidate(
+            store, job_id, git_root, repo_name, base_ref
+        )
+        refreshed_artifact = refreshed["artifact"]
+        if (
+            refreshed_artifact.run_id != artifact.run_id
+            or refreshed_artifact.artifact_id != artifact.artifact_id
+            or refreshed_artifact.content_sha256 != artifact.content_sha256
+            or refreshed["evidence_sha256"] != source["evidence_sha256"]
+            or refreshed["review_artifact"].artifact_id != review_artifact.artifact_id
+            or refreshed["job_status"] != source["job_status"]
+        ):
+            raise _DraftPRDeliveryError("candidate_changed_after_confirmation")
+        if (
+            _draft_pr_ls_remote(git_root, remote_url, base_ref_full) != base_sha
+            or _draft_pr_ls_remote(git_root, remote_url, branch_ref) is not None
+            or _draft_pr_git(
+                git_root,
+                "for-each-ref",
+                "--format=%(refname)",
+                branch_ref,
+            )
+            .decode("utf-8", "strict")
+            .strip()
+            or _draft_pr_read_pr_list(repo_name, branch)
+        ):
+            raise _DraftPRDeliveryError("target_changed_after_confirmation")
+        if (
+            _draft_pr_git(git_root, "status", "--porcelain=v1", "--untracked-files=all")
+            != initial_worktree_status
+        ):
+            raise _DraftPRDeliveryError("source_worktree_changed")
+
+        body_markers = (
+            f"AI-Office-Job: {job_id}",
+            f"AI-Office-Artifact: {artifact.artifact_id}",
+            f"AI-Office-Artifact-SHA256: {artifact.content_sha256}",
+            f"AI-Office-Verification-Evidence-SHA256: {source['evidence_sha256']}",
+            f"AI-Office-Diff-SHA256: {evidence['diff_sha256']}",
+        )
+        commit_message = "\n".join(
+            [
+                f"Deliver verified AI Office Artifact {artifact.artifact_id[:12]}",
+                "",
+                *body_markers,
+                f"AI-Office-Base-SHA: {base_sha}",
+                f"AI-Office-Tree-SHA: {tree_sha}",
+            ]
+        )
+        commit_sha = _draft_pr_create_commit(
+            git_root,
+            base_sha=base_sha,
+            tree_sha=tree_sha,
+            message=commit_message,
+        )
+        changed_rows = (
+            _draft_pr_git(
+                git_root,
+                "diff-tree",
+                "--no-commit-id",
+                "--name-status",
+                "--no-renames",
+                "-r",
+                base_sha,
+                commit_sha,
+            )
+            .decode("utf-8", "strict")
+            .splitlines()
+        )
+        changed = {}
+        for row in changed_rows:
+            parts = row.split("\t", 1)
+            if len(parts) != 2:
+                raise _DraftPRDeliveryError("candidate_commit_diff_invalid")
+            changed[parts[1]] = parts[0]
+        if set(changed) != paths or any(status != "M" for status in changed.values()):
+            raise _DraftPRDeliveryError("candidate_commit_diff_mismatch")
+        for item in source["changes"]:
+            entry = _draft_pr_git(
+                git_root, "ls-tree", "-z", "--full-tree", commit_sha, "--", item["path"]
+            )
+            rows = [line for line in entry.split(b"\x00") if line]
+            if len(rows) != 1:
+                raise _DraftPRDeliveryError("candidate_commit_content_mismatch")
+            header, raw_path = rows[0].split(b"\t", 1)
+            mode, kind, object_id = header.split(b" ")
+            content = _draft_pr_git(
+                git_root, "cat-file", "blob", object_id.decode("ascii")
+            )
+            if (
+                raw_path.decode("utf-8") != item["path"]
+                or kind != b"blob"
+                or mode.decode("ascii") != source["tree_modes"][item["path"]]
+                or content != base64.b64decode(item["content_base64"], validate=True)
+            ):
+                raise _DraftPRDeliveryError("candidate_commit_content_mismatch")
+
+        pr_body, body_markers = _draft_pr_pr_body(
+            repo_name=repo_name,
+            job_id=job_id,
+            job_status=source["job_status"],
+            artifact=artifact,
+            review_artifact=review_artifact,
+            base_ref=base_ref,
+            base_sha=base_sha,
+            branch=branch,
+            commit_sha=commit_sha,
+            tree_sha=tree_sha,
+            evidence_sha256=source["evidence_sha256"],
+            diff_sha256=evidence["diff_sha256"],
+            paths=paths,
+            protected=protection,
+        )
+        attempt = {
+            **plan,
+            "body_markers": list(body_markers),
+            "commit_message": commit_message,
+            "commit_sha": commit_sha,
+            "created_at_ns": time.time_ns(),
+            "schema_version": "ai-office-draft-pr-attempt.v1",
+            "tree_sha": tree_sha,
+        }
+        _draft_pr_write_once(attempt_path, attempt)
+
+        def stop_after_effect(stage: str, classification: str) -> None:
+            try:
+                _draft_pr_write_once(
+                    stop_path,
+                    {
+                        "classification": classification,
+                        "job_id": job_id,
+                        "schema_version": "ai-office-draft-pr-stop.v1",
+                        "stage": stage,
+                    },
+                )
+            except _DraftPRDeliveryError:
+                pass
+
+        try:
+            _draft_pr_git(
+                git_root,
+                "push",
+                "--no-verify",
+                "--no-follow-tags",
+                remote_url,
+                f"{commit_sha}:{branch_ref}",
+                timeout=120,
+            )
+        except _DraftPRDeliveryError:
+            try:
+                confirmed = _draft_pr_confirmed_result(
+                    git_root, remote_url, repo_name, base_ref, branch, attempt, paths
+                )
+            except _DraftPRDeliveryError as error:
+                stop_after_effect("push", error.classification)
+                raise _DraftPRDeliveryError("push_result_unknown_no_retry") from None
+            result_value = {
+                **confirmed,
+                "attempt_sha256": sha256(_draft_pr_canonical(attempt)).hexdigest(),
+                "schema_version": "ai-office-draft-pr-result.v1",
+            }
+            _draft_pr_write_once(result_path, result_value)
+            _emit_json({"operation": "draft-pr", **confirmed})
+            return
+
+        if (
+            _draft_pr_ls_remote(git_root, remote_url, branch_ref) != commit_sha
+            or _draft_pr_ls_remote(git_root, remote_url, base_ref_full) != base_sha
+        ):
+            stop_after_effect("push_verify", "remote_ref_or_base_mismatch")
+            raise _DraftPRDeliveryError("pushed_ref_or_base_mismatch")
+
+        with tempfile.TemporaryDirectory(
+            prefix="ai-office-draft-pr-body-"
+        ) as directory:
+            body_file = Path(directory) / "body.md"
+            body_file.write_text(pr_body, encoding="utf-8")
+            os.chmod(body_file, 0o600)
+            try:
+                create_output = (
+                    _draft_pr_gh(
+                        "pr",
+                        "create",
+                        "--repo",
+                        repo_name,
+                        "--base",
+                        base_ref,
+                        "--head",
+                        branch,
+                        "--title",
+                        "AI Office: deliver verified Artifact "
+                        f"{artifact.artifact_id[:12]}",
+                        "--body-file",
+                        str(body_file),
+                        "--draft",
+                        timeout=120,
+                    )
+                    .decode("utf-8", "strict")
+                    .strip()
+                )
+            except _DraftPRDeliveryError:
+                try:
+                    confirmed = _draft_pr_confirmed_result(
+                        git_root,
+                        remote_url,
+                        repo_name,
+                        base_ref,
+                        branch,
+                        attempt,
+                        paths,
+                    )
+                except _DraftPRDeliveryError as error:
+                    stop_after_effect("draft_pr", error.classification)
+                    raise _DraftPRDeliveryError(
+                        "draft_pr_result_unknown_no_retry"
+                    ) from None
+                result_value = {
+                    **confirmed,
+                    "attempt_sha256": sha256(_draft_pr_canonical(attempt)).hexdigest(),
+                    "schema_version": "ai-office-draft-pr-result.v1",
+                }
+                _draft_pr_write_once(result_path, result_value)
+                _emit_json({"operation": "draft-pr", **confirmed})
+                return
+
+        expected_url_prefix = f"https://github.com/{repo_name}/pull/"
+        if (
+            not create_output.startswith(expected_url_prefix)
+            or not create_output[len(expected_url_prefix) :].isdigit()
+        ):
+            stop_after_effect("draft_pr_verify", "pull_request_url_invalid")
+            raise _DraftPRDeliveryError("draft_pr_url_invalid")
+        confirmed = _draft_pr_confirmed_result(
+            git_root, remote_url, repo_name, base_ref, branch, attempt, paths
+        )
+        if (
+            confirmed["pr_url"] != create_output
+            or _draft_pr_git(
+                git_root, "status", "--porcelain=v1", "--untracked-files=all"
+            )
+            != initial_worktree_status
+        ):
+            stop_after_effect("draft_pr_verify", "pull_request_or_source_mismatch")
+            raise _DraftPRDeliveryError("draft_pr_verification_failed")
+        confirmed["reconciled_read_only"] = False
+        result_value = {
+            **confirmed,
+            "attempt_sha256": sha256(_draft_pr_canonical(attempt)).hexdigest(),
+            "schema_version": "ai-office-draft-pr-result.v1",
+        }
+        _draft_pr_write_once(result_path, result_value)
+        _emit_json({"operation": "draft-pr", **confirmed})
+    except _DraftPRDeliveryError as error:
+        _workflow_cli_error(
+            f"Draft PR delivery stopped safely ({error.classification})"
+        )
+    except Exception:
+        _workflow_cli_error("Draft PR delivery stopped safely (unexpected_local_error)")
 
 
 @workflows_app.command("artifacts")
