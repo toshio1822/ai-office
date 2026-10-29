@@ -15,6 +15,10 @@ ruff check .
 ai-office --help
 ```
 
+検証済み bounded Job Artifact を標準GitとGitHub CLIでDraft PRにする手順は、
+[Draft PR delivery runbook](docs/runbooks/draft-pr-delivery.md)を参照してください。
+この機能はローカルの`ai-office` CLIから使え、OpenClawを必要としません。
+
 ## 社員定義
 
 社員定義は `employees/` 直下の `.yaml` または `.yml` ファイルに記載します。全ての定義は読み込み時に検証され、追加フィールドや不足フィールドは受け付けません。

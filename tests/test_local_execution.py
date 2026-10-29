@@ -8,6 +8,7 @@ import os
 import socket
 import subprocess
 import sys
+import textwrap
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -949,7 +950,10 @@ def test_output_limit_is_durable_and_redacted(
     ids=["reviewed-after-revision", "candidate-no-revision"],
 )
 def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
-    tmp_path: Path, require_local_sandbox: None, needs_revision: bool
+    tmp_path: Path,
+    require_local_sandbox: None,
+    needs_revision: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ai_office.engine.artifact import read_run_artifact
 
@@ -1445,6 +1449,203 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             verification_authorization_id=authorizations[-1],
             expires_at_ns=expiry,
         )
+
+    # Product CLI proof: standard Git writes only to a local bare fake remote;
+    # every gh operation is served by this test executable, never GitHub.
+    product_remote = tmp_path / "product-fake-remote.git"
+    create_fake_bare_remote(product_remote, repository, revision)
+    remote_url = "https://github.com/offline-owner/offline-repository.git"
+    _git(repository, "remote", "add", "origin", remote_url)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    git_wrapper = fake_bin / "git"
+    git_wrapper.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent(
+            """\
+            import os
+            import sys
+
+            args = sys.argv[1:]
+            url = os.environ['AI_OFFICE_TEST_REMOTE_URL']
+            for index, arg in enumerate(args):
+                if arg == url:
+                    args[index] = os.environ['AI_OFFICE_TEST_REMOTE_PATH']
+            if 'push' in args:
+                with open(os.environ['AI_OFFICE_TEST_PUSH_LOG'], 'a') as stream:
+                    stream.write('push\\n')
+            os.execv('/usr/bin/git', ['/usr/bin/git', *args])
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent(
+            """\
+            import json
+            import os
+            import subprocess
+            import sys
+
+            args = sys.argv[1:]
+            state_path = os.environ['AI_OFFICE_TEST_GH_STATE']
+            remote = os.environ['AI_OFFICE_TEST_REMOTE_PATH']
+
+            def state():
+                try:
+                    with open(state_path) as stream:
+                        return json.load(stream)
+                except FileNotFoundError:
+                    return {'prs': [], 'events': []}
+
+            def save(value):
+                with open(state_path, 'w') as stream:
+                    json.dump(value, stream)
+
+            def git(*parts):
+                command = ['/usr/bin/git', '--git-dir', remote, *parts]
+                return subprocess.check_output(command, text=True).strip()
+
+            def option(name):
+                return args[args.index(name) + 1]
+
+            if args[:2] == ['auth', 'status']:
+                print('Logged in to github.com')
+            elif args[:2] == ['repo', 'view']:
+                repo = {
+                    'id': 805001,
+                    'nameWithOwner': 'offline-owner/offline-repository',
+                    'defaultBranchRef': {'name': 'main'},
+                }
+                print(json.dumps(repo))
+            elif args[0] == 'api':
+                print(json.dumps({'protected': False}))
+            elif args[:2] == ['pr', 'list']:
+                data = state()
+                branch = option('--head').split(':', 1)[-1]
+                matches = [
+                    item for item in data['prs']
+                    if item['headRefName'] == branch
+                ]
+                print(json.dumps(matches))
+            elif args[:2] == ['pr', 'create']:
+                data = state()
+                branch = option('--head')
+                base = option('--base')
+                head_sha = git('rev-parse', 'refs/heads/' + branch)
+                base_sha = git('rev-parse', 'refs/heads/' + base)
+                changed = git(
+                    'diff-tree', '--no-commit-id', '--name-only', '-r',
+                    base_sha, head_sha,
+                ).splitlines()
+                number = len(data['prs']) + 1
+                url = (
+                    'https://github.com/offline-owner/offline-repository/'
+                    f'pull/{number}'
+                )
+                with open(option('--body-file')) as stream:
+                    body = stream.read()
+                record = {
+                    'number': number,
+                    'url': url,
+                    'state': 'OPEN',
+                    'isDraft': True,
+                    'baseRefName': base,
+                    'baseRefOid': base_sha,
+                    'headRefName': branch,
+                    'headRefOid': head_sha,
+                    'body': body,
+                    'files': [{'path': path} for path in changed],
+                }
+                data['prs'].append(record)
+                data['events'].append('create')
+                save(data)
+                print(url)
+            elif args[:2] == ['pr', 'view']:
+                data = state()
+                url = args[2]
+                record = next(item for item in data['prs'] if item['url'] == url)
+                print(json.dumps(record))
+            else:
+                raise SystemExit(2)
+            """
+        ),
+        encoding="utf-8",
+    )
+    git_wrapper.chmod(0o700)
+    fake_gh.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}")
+    monkeypatch.setenv("AI_OFFICE_TEST_REMOTE_URL", remote_url)
+    monkeypatch.setenv("AI_OFFICE_TEST_REMOTE_PATH", str(product_remote))
+    monkeypatch.setenv("AI_OFFICE_TEST_PUSH_LOG", str(tmp_path / "push.log"))
+    monkeypatch.setenv("AI_OFFICE_TEST_GH_STATE", str(tmp_path / "gh-state.json"))
+
+    product_branch = (
+        f"ai-office/{scope.job_id}-{'reviewed' if needs_revision else 'candidate'}"
+    )
+    worktree_before = _git(
+        repository, "status", "--porcelain=v1", "--untracked-files=all"
+    )
+    head_before = _git(repository, "rev-parse", "HEAD")
+    command = [
+        "workflows",
+        "draft-pr",
+        scope.job_id,
+        "--run-store",
+        str(store.root),
+        "--git-repository",
+        str(repository),
+        "--repository",
+        "offline-owner/offline-repository",
+        "--base-ref",
+        "main",
+        "--branch",
+        product_branch,
+        "--yes",
+    ]
+    delivered = _CLI_RUNNER.invoke(app, command)
+    assert delivered.exit_code == 0, delivered.output
+    delivery_result = json.loads(delivered.stdout.splitlines()[-1])
+    assert delivery_result["status"] == "completed"
+    assert delivery_result["artifact_id"] == outcome.final_artifact_id
+    assert delivery_result["base_sha"] == revision
+    assert delivery_result["branch"] == product_branch
+    assert delivery_result["pr_url"].endswith("/pull/1")
+    assert delivery_result["reconciled_read_only"] is False
+    assert "protected=false" in delivered.output
+    assert (
+        _git(product_remote, "rev-parse", f"refs/heads/{product_branch}")
+        == delivery_result["commit_sha"]
+    )
+    assert (
+        _git(product_remote, "show", "-s", "--format=%P", delivery_result["commit_sha"])
+        == revision
+    )
+    assert _git(product_remote, "rev-parse", "refs/heads/main") == revision
+    assert (repository / "calculator.py").read_bytes() == source
+    assert (
+        _git(repository, "status", "--porcelain=v1", "--untracked-files=all")
+        == worktree_before
+    )
+    assert _git(repository, "rev-parse", "HEAD") == head_before
+    gh_state = json.loads((tmp_path / "gh-state.json").read_text(encoding="utf-8"))
+    assert gh_state["events"] == ["create"]
+    assert "Closes #805" not in gh_state["prs"][0]["body"]
+    assert "Fixes #805" not in gh_state["prs"][0]["body"]
+    assert (tmp_path / "push.log").read_text(encoding="utf-8").splitlines() == ["push"]
+
+    # Re-running proves the exact recorded result with reads only.
+    replay = _CLI_RUNNER.invoke(app, command)
+    assert replay.exit_code == 0, replay.output
+    replay_result = json.loads(replay.stdout.splitlines()[-1])
+    assert replay_result["commit_sha"] == delivery_result["commit_sha"]
+    assert replay_result["reconciled_read_only"] is True
+    assert json.loads((tmp_path / "gh-state.json").read_text(encoding="utf-8"))[
+        "events"
+    ] == ["create"]
+    assert (tmp_path / "push.log").read_text(encoding="utf-8").splitlines() == ["push"]
     expired = issue_test_delivery_grant(
         store,
         scope,
