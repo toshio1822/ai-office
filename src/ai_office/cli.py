@@ -2007,6 +2007,16 @@ def _draft_pr_ls_remote(repository: Path, remote_url: str, ref: str) -> str | No
     return rows[0][0]
 
 
+def _draft_pr_head_is_from_repository(
+    record: dict[str, object], repository: str
+) -> bool:
+    head_repository = record.get("headRepository")
+    return (
+        type(head_repository) is dict
+        and head_repository.get("nameWithOwner") == repository
+    )
+
+
 def _draft_pr_read_pr_list(repository: str, head: str) -> list[dict[str, object]]:
     try:
         value = json.loads(
@@ -2022,14 +2032,17 @@ def _draft_pr_read_pr_list(repository: str, head: str) -> list[dict[str, object]
                 "--limit",
                 "100",
                 "--json",
-                "number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid",
+                "number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository",
             )
         )
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise _DraftPRDeliveryError("gh_pull_request_list_invalid") from None
     if type(value) is not list or any(type(item) is not dict for item in value):
         raise _DraftPRDeliveryError("gh_pull_request_list_invalid")
-    return value
+    # `gh pr list --head` accepts a branch name, not OWNER:BRANCH.
+    return [
+        item for item in value if _draft_pr_head_is_from_repository(item, repository)
+    ]
 
 
 def _draft_pr_read_pr(repository: str, url: str) -> dict[str, object]:
@@ -2042,7 +2055,7 @@ def _draft_pr_read_pr(repository: str, url: str) -> dict[str, object]:
                 "--repo",
                 repository,
                 "--json",
-                "number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,body,files",
+                "number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,body,files",
             )
         )
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -2079,6 +2092,7 @@ def _draft_pr_pr_matches(
         and record.get("baseRefOid") == base_sha
         and record.get("headRefName") == branch
         and record.get("headRefOid") == head_sha
+        and _draft_pr_head_is_from_repository(record, repository)
         and type(url) is str
         and url.startswith(expected_prefix)
         and url[len(expected_prefix) :].isdigit()
@@ -2187,8 +2201,7 @@ def _draft_pr_confirmed_result(
         message=commit_message,
         paths=paths,
     )
-    head = f"{repo_name.split('/')[0]}:{branch}"
-    pull_requests = _draft_pr_read_pr_list(repo_name, head)
+    pull_requests = _draft_pr_read_pr_list(repo_name, branch)
     if len(pull_requests) != 1 or type(pull_requests[0].get("url")) is not str:
         raise _DraftPRDeliveryError("prior_draft_pr_not_confirmed")
     url = pull_requests[0]["url"]
@@ -2665,25 +2678,17 @@ def deliver_verified_artifact_as_draft_pr(
 
         _draft_pr_gh("auth", "status", "--hostname", "github.com")
         try:
-            repo_view = json.loads(
-                _draft_pr_gh(
-                    "repo",
-                    "view",
-                    repo_name,
-                    "--json",
-                    "id,nameWithOwner,defaultBranchRef",
-                )
-            )
+            repo_view = json.loads(_draft_pr_gh("api", f"repos/{repo_name}"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise _DraftPRDeliveryError("gh_repository_identity_invalid") from None
         if (
             type(repo_view) is not dict
-            or repo_view.get("nameWithOwner") != repo_name
+            or repo_view.get("full_name") != repo_name
+            or type(repo_view.get("id")) is not int
             or repo_view.get("id") != source["repository_id"]
         ):
             raise _DraftPRDeliveryError("gh_repository_identity_mismatch")
-        default_ref = repo_view.get("defaultBranchRef")
-        default_branch = default_ref.get("name") if type(default_ref) is dict else None
+        default_branch = repo_view.get("default_branch")
         if type(default_branch) is not str:
             raise _DraftPRDeliveryError("gh_default_branch_unavailable")
         if branch in {base_ref, default_branch}:
@@ -2795,8 +2800,8 @@ def deliver_verified_artifact_as_draft_pr(
         )
         if local_target:
             raise _DraftPRDeliveryError("local_target_branch_already_exists")
-        head_key = f"{repo_name.split('/')[0]}:{branch}"
-        if _draft_pr_read_pr_list(repo_name, head_key):
+        existing_pull_requests = _draft_pr_read_pr_list(repo_name, branch)
+        if existing_pull_requests:
             raise _DraftPRDeliveryError("target_pull_request_already_exists")
 
         protection_label = (
@@ -2860,7 +2865,7 @@ def deliver_verified_artifact_as_draft_pr(
             )
             .decode("utf-8", "strict")
             .strip()
-            or _draft_pr_read_pr_list(repo_name, head_key)
+            or _draft_pr_read_pr_list(repo_name, branch)
         ):
             raise _DraftPRDeliveryError("target_changed_after_confirmation")
         if (
@@ -3068,21 +3073,11 @@ def deliver_verified_artifact_as_draft_pr(
         ):
             stop_after_effect("draft_pr_verify", "pull_request_url_invalid")
             raise _DraftPRDeliveryError("draft_pr_url_invalid")
-        view = _draft_pr_read_pr(repo_name, create_output)
+        confirmed = _draft_pr_confirmed_result(
+            git_root, remote_url, repo_name, base_ref, branch, attempt, paths
+        )
         if (
-            view.get("url") != create_output
-            or not _draft_pr_pr_matches(
-                view,
-                repository=repo_name,
-                base_ref=base_ref,
-                base_sha=base_sha,
-                branch=branch,
-                head_sha=commit_sha,
-                body_markers=body_markers,
-                paths=paths,
-            )
-            or _draft_pr_ls_remote(git_root, remote_url, branch_ref) != commit_sha
-            or _draft_pr_ls_remote(git_root, remote_url, base_ref_full) != base_sha
+            confirmed["pr_url"] != create_output
             or _draft_pr_git(
                 git_root, "status", "--porcelain=v1", "--untracked-files=all"
             )
@@ -3090,9 +3085,6 @@ def deliver_verified_artifact_as_draft_pr(
         ):
             stop_after_effect("draft_pr_verify", "pull_request_or_source_mismatch")
             raise _DraftPRDeliveryError("draft_pr_verification_failed")
-        confirmed = _draft_pr_confirmed_result(
-            git_root, remote_url, repo_name, base_ref, branch, attempt, paths
-        )
         confirmed["reconciled_read_only"] = False
         result_value = {
             **confirmed,
