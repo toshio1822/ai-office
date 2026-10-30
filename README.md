@@ -17,7 +17,7 @@ ai-office --help
 
 検証済み bounded Job Artifact を標準GitとGitHub CLIでDraft PRにする手順は、
 [Draft PR delivery runbook](docs/runbooks/draft-pr-delivery.md)を参照してください。
-この機能はローカルの`ai-office` CLIから使え、OpenClawを必要としません。
+この機能はローカルの`ai-office` CLI単独で利用でき、OpenClawへの依存はありません。
 
 ## 社員定義
 
