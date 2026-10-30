@@ -1511,10 +1511,18 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             def option(name):
                 return args[args.index(name) + 1]
 
+            def field_value(name):
+                values = [
+                    args[index + 1]
+                    for index, item in enumerate(args[:-1])
+                    if item == name
+                ]
+                return values
+
             if args[:2] == ['auth', 'status']:
                 print('Logged in to github.com')
             elif args[0] == 'api':
-                endpoint = args[1]
+                endpoint = next(item for item in args[1:] if item.startswith('repos/'))
                 if endpoint == 'repos/offline-owner/offline-repository':
                     print(json.dumps({
                         'id': 805001,
@@ -1525,23 +1533,65 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                     'repos/offline-owner/offline-repository/branches/main'
                 ):
                     print(json.dumps({'protected': False}))
+                elif endpoint == (
+                    'repos/offline-owner/offline-repository/pulls'
+                ):
+                    filters = field_value('-f')
+                    if (
+                        '--paginate' not in args
+                        or option('--jq') != '.[].number'
+                        or option('-X') != 'GET'
+                        or len(filters) != 2
+                        or filters[0] != 'state=all'
+                        or not filters[1].startswith('head=')
+                        or option('-F') != 'per_page=100'
+                    ):
+                        raise SystemExit(2)
+                    head_filter = filters[1].removeprefix('head=')
+                    owner, branch = head_filter.split(':', 1)
+                    data = state()
+                    matches = [
+                        item for item in data['prs']
+                        if item['head']['ref'] == branch
+                        and item['head']['repo'] is not None
+                        and item['head']['repo']['full_name'].split('/')[0] == owner
+                    ]
+                    data.setdefault('queries', []).append({
+                        'head': head_filter,
+                        'matches': len(matches),
+                    })
+                    save(data)
+                    for item in matches:
+                        print(item['number'])
+                elif endpoint.startswith(
+                    'repos/offline-owner/offline-repository/pulls/'
+                ) and endpoint.endswith('/files'):
+                    if (
+                        '--paginate' not in args
+                        or option('--jq') != '.[].filename | @json'
+                    ):
+                        raise SystemExit(2)
+                    number = int(endpoint.split('/')[-2])
+                    record = next(
+                        item for item in state()['prs']
+                        if item['number'] == number
+                    )
+                    for item in record['files']:
+                        print(json.dumps(item['filename']))
+                elif endpoint.startswith(
+                    'repos/offline-owner/offline-repository/pulls/'
+                ):
+                    number = int(endpoint.rsplit('/', 1)[1])
+                    record = next(
+                        item for item in state()['prs']
+                        if item['number'] == number
+                    )
+                    print(json.dumps({
+                        key: value for key, value in record.items()
+                        if key != 'files'
+                    }))
                 else:
                     raise SystemExit(2)
-            elif args[:2] == ['pr', 'list']:
-                data = state()
-                branch = option('--head')
-                if ':' in branch:
-                    raise SystemExit(2)
-                matches = [
-                    item for item in data['prs']
-                    if item['headRefName'] == branch
-                ]
-                data.setdefault('queries', []).append({
-                    'head': branch,
-                    'matches': len(matches),
-                })
-                save(data)
-                print(json.dumps(matches))
             elif args[:2] == ['pr', 'create']:
                 data = state()
                 branch = option('--head')
@@ -1561,18 +1611,19 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                     body = stream.read()
                 record = {
                     'number': number,
-                    'url': url,
-                    'state': 'OPEN',
-                    'isDraft': True,
-                    'baseRefName': base,
-                    'baseRefOid': base_sha,
-                    'headRefName': branch,
-                    'headRefOid': head_sha,
-                    'headRepository': {
-                        'nameWithOwner': 'offline-owner/offline-repository',
+                    'html_url': url,
+                    'state': 'open',
+                    'draft': True,
+                    'base': {'ref': base, 'sha': base_sha},
+                    'head': {
+                        'ref': branch,
+                        'sha': head_sha,
+                        'repo': {
+                            'full_name': 'offline-owner/offline-repository',
+                        },
                     },
                     'body': body,
-                    'files': [{'path': path} for path in changed],
+                    'files': [{'filename': path} for path in changed],
                 }
                 data['prs'].append(record)
                 data['events'].append('create')
@@ -1582,11 +1633,6 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                     save(data)
                     raise SystemExit(1)
                 print(url)
-            elif args[:2] == ['pr', 'view']:
-                data = state()
-                url = args[2]
-                record = next(item for item in data['prs'] if item['url'] == url)
-                print(json.dumps(record))
             else:
                 raise SystemExit(2)
             """
@@ -1629,8 +1675,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         "--yes",
     ]
 
-    # A pre-existing PR from this exact head repository is a safe conflict;
-    # the fake rejects the unsupported OWNER:BRANCH filter syntax.
+    # A pre-existing PR from this exact head repository is a safe conflict.
     gh_state_path.write_text(
         json.dumps(
             {
@@ -1638,15 +1683,16 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 "prs": [
                     {
                         "number": 99,
-                        "url": "https://github.com/offline-owner/offline-repository/pull/99",
-                        "state": "OPEN",
-                        "isDraft": True,
-                        "baseRefName": "main",
-                        "baseRefOid": revision,
-                        "headRefName": product_branch,
-                        "headRefOid": revision,
-                        "headRepository": {
-                            "nameWithOwner": "offline-owner/offline-repository"
+                        "html_url": "https://github.com/offline-owner/offline-repository/pull/99",
+                        "state": "open",
+                        "draft": True,
+                        "base": {"ref": "main", "sha": revision},
+                        "head": {
+                            "ref": product_branch,
+                            "sha": revision,
+                            "repo": {
+                                "full_name": "offline-owner/offline-repository"
+                            },
                         },
                     }
                 ],
@@ -1659,7 +1705,9 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     assert collision.exit_code != 0
     assert "target_pull_request_already_exists" in collision.output
     collision_state = json.loads(gh_state_path.read_text(encoding="utf-8"))
-    assert collision_state["queries"] == [{"head": product_branch, "matches": 1}]
+    assert collision_state["queries"] == [
+        {"head": f"offline-owner:{product_branch}", "matches": 1}
+    ]
     assert not (tmp_path / "push.log").exists()
     assert not (store.root / f"{scope.job_id}.draft-pr-delivery.attempt.json").exists()
 
@@ -1671,15 +1719,16 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 "prs": [
                     {
                         "number": 98,
-                        "url": "https://github.com/offline-owner/offline-repository/pull/98",
-                        "state": "OPEN",
-                        "isDraft": True,
-                        "baseRefName": "main",
-                        "baseRefOid": revision,
-                        "headRefName": product_branch,
-                        "headRefOid": revision,
-                        "headRepository": {
-                            "nameWithOwner": "offline-fork/offline-repository"
+                        "html_url": "https://github.com/offline-owner/other-repository/pull/98",
+                        "state": "open",
+                        "draft": True,
+                        "base": {"ref": "main", "sha": revision},
+                        "head": {
+                            "ref": product_branch,
+                            "sha": revision,
+                            "repo": {
+                                "full_name": "offline-owner/other-repository"
+                            },
                         },
                     }
                 ],
@@ -1718,14 +1767,17 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         ["create", "create_response_dropped"] if needs_revision else ["create"]
     )
     assert [query["matches"] for query in gh_state["queries"]] == [1, 1, 2]
-    assert all(query["head"] == product_branch for query in gh_state["queries"])
+    assert all(
+        query["head"] == f"offline-owner:{product_branch}"
+        for query in gh_state["queries"]
+    )
     pull_request = gh_state["prs"][1]
-    assert pull_request["isDraft"] is True
-    assert pull_request["baseRefName"] == "main"
-    assert pull_request["baseRefOid"] == revision
-    assert pull_request["headRefName"] == product_branch
-    assert pull_request["headRefOid"] == delivery_result["commit_sha"]
-    assert pull_request["headRepository"]["nameWithOwner"] == (
+    assert pull_request["draft"] is True
+    assert pull_request["base"]["ref"] == "main"
+    assert pull_request["base"]["sha"] == revision
+    assert pull_request["head"]["ref"] == product_branch
+    assert pull_request["head"]["sha"] == delivery_result["commit_sha"]
+    assert pull_request["head"]["repo"]["full_name"] == (
         "offline-owner/offline-repository"
     )
     assert "Closes #805" not in pull_request["body"]
