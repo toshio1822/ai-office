@@ -2010,52 +2010,57 @@ def _draft_pr_ls_remote(repository: Path, remote_url: str, ref: str) -> str | No
 def _draft_pr_head_is_from_repository(
     record: dict[str, object], repository: str
 ) -> bool:
-    head_repository = record.get("headRepository")
+    head = record.get("head")
+    head_repository = head.get("repo") if type(head) is dict else None
     return (
         type(head_repository) is dict
-        and head_repository.get("nameWithOwner") == repository
+        and head_repository.get("full_name") == repository
     )
 
 
 def _draft_pr_read_pr_list(repository: str, head: str) -> list[dict[str, object]]:
+    owner = repository.split("/", 1)[0]
     try:
-        value = json.loads(
-            _draft_pr_gh(
-                "pr",
-                "list",
-                "--repo",
-                repository,
-                "--head",
-                head,
-                "--state",
-                "all",
-                "--limit",
-                "100",
-                "--json",
-                "number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository",
-            )
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        output = _draft_pr_gh(
+            "api",
+            "--paginate",
+            "--jq",
+            ".[].number",
+            "-X",
+            "GET",
+            f"repos/{repository}/pulls",
+            "-f",
+            "state=all",
+            "-f",
+            f"head={owner}:{head}",
+            "-F",
+            "per_page=100",
+        ).decode("ascii", "strict")
+    except UnicodeDecodeError:
         raise _DraftPRDeliveryError("gh_pull_request_list_invalid") from None
-    if type(value) is not list or any(type(item) is not dict for item in value):
-        raise _DraftPRDeliveryError("gh_pull_request_list_invalid")
-    # `gh pr list --head` accepts a branch name, not OWNER:BRANCH.
-    return [
-        item for item in value if _draft_pr_head_is_from_repository(item, repository)
-    ]
+    try:
+        numbers = [int(line) for line in output.splitlines() if line]
+    except ValueError:
+        raise _DraftPRDeliveryError("gh_pull_request_list_invalid") from None
+
+    pull_requests = []
+    for number in numbers:
+        record = _draft_pr_read_pr(repository, number)
+        head_record = record.get("head")
+        if (
+            type(head_record) is dict
+            and head_record.get("ref") == head
+            and _draft_pr_head_is_from_repository(record, repository)
+        ):
+            pull_requests.append(record)
+    return pull_requests
 
 
-def _draft_pr_read_pr(repository: str, url: str) -> dict[str, object]:
+def _draft_pr_read_pr(repository: str, number: int) -> dict[str, object]:
     try:
         value = json.loads(
             _draft_pr_gh(
-                "pr",
-                "view",
-                url,
-                "--repo",
-                repository,
-                "--json",
-                "number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,body,files",
+                "api", f"repos/{repository}/pulls/{number}"
             )
         )
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -2063,6 +2068,23 @@ def _draft_pr_read_pr(repository: str, url: str) -> dict[str, object]:
     if type(value) is not dict:
         raise _DraftPRDeliveryError("gh_pull_request_view_invalid")
     return value
+
+
+def _draft_pr_read_pr_files(repository: str, number: int) -> set[str]:
+    try:
+        output = _draft_pr_gh(
+            "api",
+            "--paginate",
+            "--jq",
+            ".[].filename | @json",
+            f"repos/{repository}/pulls/{number}/files",
+        ).decode("utf-8", "strict")
+        paths = [json.loads(line) for line in output.splitlines() if line]
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise _DraftPRDeliveryError("gh_pull_request_view_invalid") from None
+    if any(type(path) is not str for path in paths):
+        raise _DraftPRDeliveryError("gh_pull_request_view_invalid")
+    return set(paths)
 
 
 def _draft_pr_pr_matches(
@@ -2075,23 +2097,22 @@ def _draft_pr_pr_matches(
     head_sha: str,
     body_markers: tuple[str, ...],
     paths: set[str],
+    actual_paths: set[str],
 ) -> bool:
-    files = record.get("files")
-    actual_paths = (
-        {item.get("path") for item in files if type(item) is dict}
-        if type(files) is list
-        else set()
-    )
-    url = record.get("url")
+    url = record.get("html_url")
     expected_prefix = f"https://github.com/{repository}/pull/"
     body = record.get("body")
+    base = record.get("base")
+    head = record.get("head")
     return bool(
-        record.get("state") == "OPEN"
-        and record.get("isDraft") is True
-        and record.get("baseRefName") == base_ref
-        and record.get("baseRefOid") == base_sha
-        and record.get("headRefName") == branch
-        and record.get("headRefOid") == head_sha
+        record.get("state") == "open"
+        and record.get("draft") is True
+        and type(base) is dict
+        and base.get("ref") == base_ref
+        and base.get("sha") == base_sha
+        and type(head) is dict
+        and head.get("ref") == branch
+        and head.get("sha") == head_sha
         and _draft_pr_head_is_from_repository(record, repository)
         and type(url) is str
         and url.startswith(expected_prefix)
@@ -2202,10 +2223,14 @@ def _draft_pr_confirmed_result(
         paths=paths,
     )
     pull_requests = _draft_pr_read_pr_list(repo_name, branch)
-    if len(pull_requests) != 1 or type(pull_requests[0].get("url")) is not str:
+    if (
+        len(pull_requests) != 1
+        or type(pull_requests[0].get("number")) is not int
+        or type(pull_requests[0].get("html_url")) is not str
+    ):
         raise _DraftPRDeliveryError("prior_draft_pr_not_confirmed")
-    url = pull_requests[0]["url"]
-    record = _draft_pr_read_pr(repo_name, url)
+    record = pull_requests[0]
+    url = record["html_url"]
     if not _draft_pr_pr_matches(
         record,
         repository=repo_name,
@@ -2215,6 +2240,7 @@ def _draft_pr_confirmed_result(
         head_sha=commit_sha,
         body_markers=tuple(markers),
         paths=paths,
+        actual_paths=_draft_pr_read_pr_files(repo_name, record["number"]),
     ):
         raise _DraftPRDeliveryError("prior_draft_pr_not_confirmed")
     return {
