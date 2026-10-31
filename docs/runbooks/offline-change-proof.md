@@ -81,8 +81,14 @@ files.
 First create the candidate Artifact through the normal configured Workflow
 Run. Fix the Run Input before provider execution and include the request,
 repository identity/base SHA, exact readable/writable path sets, acceptance
-criteria, and exact UTF-8 source context needed for the bounded change. For
-example:
+criteria, exact UTF-8 source context needed for the bounded change, and a
+`source_sha256` mapping for every writable path. Compute those digests on the
+operator side from the exact bytes at the fixed base revision, then verify each
+digest against its matching `source_context` value before Run creation. These
+values are prompt inputs, not a replacement for the existing local preimage
+validation; author and revision steps copy them verbatim and never calculate
+them. The existing revision handoff retains the original Run Input under
+`assignment`, so the digest source remains fixed across a revision. For example:
 
 ```json
 {
@@ -103,6 +109,9 @@ example:
   "source_context": {
     "calculator.py": "def answer():\n    return 1 + 1\n",
     "test_calculator.py": "<exact UTF-8 test source>"
+  },
+  "source_sha256": {
+    "calculator.py": "<operator-computed SHA-256 of exact calculator.py base bytes>"
   }
 }
 ```
