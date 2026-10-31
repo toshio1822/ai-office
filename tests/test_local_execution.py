@@ -461,10 +461,13 @@ def _change_set(
     *,
     path: str = "calculator.py",
     replacement: bytes = b"def answer():\n    return 2\n",
+    before_sha256: str | None = None,
     extra: dict[str, object] | None = None,
 ) -> str:
     change: dict[str, object] = {
-        "before_sha256": sha256(source).hexdigest(),
+        "before_sha256": (
+            sha256(source).hexdigest() if before_sha256 is None else before_sha256
+        ),
         "content_base64": base64.b64encode(replacement).decode("ascii"),
         "path": path,
     }
@@ -1346,6 +1349,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             encoding="utf-8"
         ),
     }
+    source_sha256 = {"calculator.py": sha256(source).hexdigest()}
     assignment = json.dumps(
         {
             "acceptance_criteria": ["answer() returns 2", "tests pass"],
@@ -1366,6 +1370,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             },
             "request": "Change answer() to return 2 without changing the test.",
             "source_context": source_context,
+            "source_sha256": source_sha256,
         },
         ensure_ascii=False,
         indent=2,
@@ -1375,6 +1380,24 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     store_root.mkdir(mode=0o700)
     store = WorkflowRunManifestStore(store_root)
     workflow = load_workflow_file(_SAMPLE_ROOT / "workflows/bounded-change-review.yaml")
+    author_instructions = " ".join(
+        next(
+            step.instructions
+            for step in workflow.definition.steps
+            if step.id == "create-candidate"
+        ).split()
+    )
+    revision_instructions = " ".join(
+        next(
+            step.instructions
+            for step in workflow.definition.steps
+            if step.id == "revise-candidate"
+        ).split()
+    )
+    assert "Copy source_sha256[path] verbatim" in author_instructions
+    assert "Never compute" in author_instructions
+    assert "assignment's source_sha256[path] verbatim" in revision_instructions
+    assert "never calculate" in revision_instructions
     employees = {
         loaded.definition.id: loaded
         for loaded in load_employees(_SAMPLE_ROOT / "employees")
@@ -1533,10 +1556,16 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         if "source_artifact" in run_input and "review_artifacts" not in run_input:
             reviewer_inputs.append(run_input)
         index = len(calls) - 1
+        fixed_run_input = (
+            run_input
+            if "source_sha256" in run_input
+            else json.loads(run_input["assignment"])
+        )
         if index == 0:
             output = _change_set(
                 revision,
                 source,
+                before_sha256=fixed_run_input["source_sha256"]["calculator.py"],
                 replacement=(
                     b"def answer():\n    return 2  # unnecessary comment\n"
                     if needs_revision
@@ -1548,7 +1577,11 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         elif needs_revision and index == 2:
             output = pass_review()
         elif needs_revision and index == 3:
-            output = _change_set(revision, source)
+            output = _change_set(
+                revision,
+                source,
+                before_sha256=fixed_run_input["source_sha256"]["calculator.py"],
+            )
         else:
             output = pass_review()
         return response(output)
