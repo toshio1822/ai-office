@@ -38,6 +38,7 @@ from ai_office.engine.local_execution import (
     _git_status,
     _load_trusted_bundle,
     _redact,
+    _sandbox_python_abi,
     _source_contains_secret,
     execute_local_change,
     issue_local_execution_authorization,
@@ -629,6 +630,16 @@ def test_fixed_python_runtime_and_oracle_work_only_in_readonly_bwrap(
     relative = "src/ai_office/engine/workflow_bounded_job.py"
     base_source = (_SAMPLE_ROOT / relative).read_bytes()
     candidate_source = _fenced_finding_patch(base_source)
+    test_abi = {
+        "python_cache_tag": sys.implementation.cache_tag,
+        "python_platform": sysconfig.get_platform(),
+    }
+    sandbox_abi = _sandbox_python_abi()
+    if sandbox_abi != test_abi:
+        pytest.skip(
+            "Pydantic fixture targets pytest Python ABI, not /usr/bin/python3: "
+            f"{test_abi!r} != {sandbox_abi!r}"
+        )
     repository, revision = _single_file_repo(tmp_path, relative, base_source)
     bundle, bundle_sha256 = _trusted_bundle(tmp_path)
     run_input = _run_input(
