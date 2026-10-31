@@ -118,8 +118,8 @@ policy file with this shape:
   "read_paths": ["calculator.py", "test_calculator.py"],
   "write_paths": ["calculator.py"],
   "commands": [
-    ["/usr/bin/python3", "-B", "-m", "unittest", "discover", "-s", "/workspace", "-p", "test_*.py"],
-    ["/usr/bin/python3", "-B", "-c", "import ast,pathlib; ast.parse(pathlib.Path('calculator.py').read_text())"]
+    ["/usr/bin/python3", "-S", "-B", "-m", "unittest", "discover", "-s", "/workspace", "-p", "test_*.py"],
+    ["/usr/bin/python3", "-S", "-B", "-c", "import ast,pathlib; ast.parse(pathlib.Path('calculator.py').read_text())"]
   ],
   "trusted_bundle_path": "/absolute/operator/managed/python-proof-bundle",
   "trusted_bundle_manifest_sha256": "<sha256 of canonical manifest.json>",
