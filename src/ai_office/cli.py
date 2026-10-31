@@ -3253,6 +3253,10 @@ def authorize_local_effect(
             "manifest_digest": authorization.manifest_digest,
             "read_paths": authorization.policy.read_paths,
             "run_id": authorization.run_id,
+            "trusted_bundle_manifest_sha256": (
+                authorization.policy.trusted_bundle_manifest_sha256
+            ),
+            "trusted_bundle_path": authorization.policy.trusted_bundle_path,
             "write_paths": authorization.policy.write_paths,
             "workspace_sha256": authorization.workspace_sha256,
         }
