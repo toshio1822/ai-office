@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import sysconfig
 import textwrap
 import time
 import uuid
@@ -33,9 +36,13 @@ from ai_office.engine.local_execution import (
     _capture_bounded_output,
     _git_identity,
     _git_status,
+    _load_trusted_bundle,
     _redact,
+    _sandbox_python_abi,
+    _source_contains_secret,
     execute_local_change,
     issue_local_execution_authorization,
+    load_local_execution_evidence,
 )
 from ai_office.engine.publication_intent import (
     PUBLICATION_INTENT_EFFECTS,
@@ -157,6 +164,33 @@ def test_redaction_covers_common_secret_assignments() -> None:
     for secret in ("first", "second", "third", "fourth"):
         assert secret not in value
     assert value.count("[REDACTED]") == 4
+
+
+def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
+    assert not _source_contains_secret(
+        "module.py",
+        "call(api_key=api_key)\ncall(api_key=(\n    api_key[slot.provider]\n))\n",
+    )
+    assert _source_contains_secret("module.py", 'API_KEY = "literal-value"\n')
+    assert _source_contains_secret(
+        "module.py", 'call(api_key=(\n    "literal-value"\n))\n'
+    )
+    assert _source_contains_secret("module.yaml", "API_KEY: literal-value\n")
+
+
+def test_trusted_bundle_policy_requires_paired_pin_and_isolated_python(
+    tmp_path: Path,
+) -> None:
+    values = _policy(
+        "0" * 40,
+        commands=(("/usr/bin/python3", "-B", "-c", "pass"),),
+    ).model_dump()
+    values["trusted_bundle_path"] = str(tmp_path / "bundle")
+    with pytest.raises(ValueError):
+        LocalExecutionPolicy.model_validate(values)
+    values["trusted_bundle_manifest_sha256"] = "0" * 64
+    with pytest.raises(ValueError):
+        LocalExecutionPolicy.model_validate(values)
 
 
 def test_cli_requires_and_persists_explicit_local_effect_approval(
@@ -543,6 +577,354 @@ def _policy(
             max_open_files=64,
         ),
     )
+
+
+def _single_file_repo(root: Path, relative: str, contents: bytes) -> tuple[Path, str]:
+    repository = root / "repository"
+    repository.mkdir()
+    source_path = repository.joinpath(*relative.split("/"))
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(contents)
+    _git(repository, "init", "--quiet")
+    _git(repository, "config", "user.name", "Offline Proof")
+    _git(repository, "config", "user.email", "offline-proof@example.invalid")
+    _git(repository, "add", relative)
+    _git(repository, "commit", "--quiet", "-m", "baseline")
+    return repository, _git(repository, "rev-parse", "HEAD")
+
+
+def _fenced_finding_patch(source: bytes) -> bytes:
+    needle = (
+        "        for line in lines[verdict_index + 1 :]:\n"
+        "            heading = line.strip()\n"
+    )
+    replacement = (
+        "        fenced: tuple[str, int] | None = None\n"
+        "        for line in lines[verdict_index + 1 :]:\n"
+        '            indentation = len(line) - len(line.lstrip(" "))\n'
+        '            if indentation >= 4 or line.startswith("\\t"):\n'
+        "                continue\n"
+        '            fence = re.match(r"(`{3,}|~{3,})(.*)$", line[indentation:])\n'
+        "            if fenced is not None:\n"
+        "                if (\n"
+        "                    fence is not None\n"
+        "                    and fence.group(1)[0] == fenced[0]\n"
+        "                    and len(fence.group(1)) >= fenced[1]\n"
+        "                    and not fence.group(2).strip()\n"
+        "                ):\n"
+        "                    fenced = None\n"
+        "                continue\n"
+        "            if fence is not None:\n"
+        "                fenced = (fence.group(1)[0], len(fence.group(1)))\n"
+        "                continue\n"
+        "            heading = line.strip()\n"
+    )
+    text = source.decode("utf-8")
+    assert text.count(needle) == 1
+    return text.replace(needle, replacement, 1).encode("utf-8")
+
+
+def test_fixed_python_runtime_and_oracle_work_only_in_readonly_bwrap(
+    tmp_path: Path, require_local_sandbox: None
+) -> None:
+    relative = "src/ai_office/engine/workflow_bounded_job.py"
+    base_source = (_SAMPLE_ROOT / relative).read_bytes()
+    candidate_source = _fenced_finding_patch(base_source)
+    test_abi = {
+        "python_cache_tag": sys.implementation.cache_tag,
+        "python_platform": sysconfig.get_platform(),
+    }
+    sandbox_abi = _sandbox_python_abi()
+    if sandbox_abi != test_abi:
+        pytest.skip(
+            "Pydantic fixture targets pytest Python ABI, not /usr/bin/python3: "
+            f"{test_abi!r} != {sandbox_abi!r}"
+        )
+    repository, revision = _single_file_repo(tmp_path, relative, base_source)
+    bundle, bundle_sha256 = _trusted_bundle(tmp_path)
+    run_input = _run_input(
+        tmp_path,
+        revision,
+        base_source,
+        repository_path=str(repository),
+        read_paths=[relative],
+        write_paths=[relative],
+        source_context={relative: base_source.decode("utf-8")},
+    )
+    for run_id, replacement, expected_status, expected_classification in (
+        (
+            "run-local-effect-base",
+            base_source,
+            "command_failed",
+            "document_job_unverified_finding",
+        ),
+        (
+            "run-local-effect-candidate",
+            candidate_source,
+            "verified",
+            "document_job_nonactionable_review",
+        ),
+    ):
+        command = (
+            "/usr/bin/python3",
+            "-S",
+            "-B",
+            "/input/trusted/oracle/test_review_verdict.py",
+            expected_classification,
+        )
+        store, artifact = _candidate(
+            tmp_path,
+            revision,
+            base_source,
+            run_id=run_id,
+            change_set=_change_set(
+                revision, base_source, path=relative, replacement=replacement
+            ),
+            run_input_override=run_input,
+        )
+        policy = LocalExecutionPolicy(
+            base_revision=revision,
+            read_paths=(relative,),
+            write_paths=(relative,),
+            commands=(command,),
+            expires_at_ns=time.time_ns() + 60_000_000_000,
+            trusted_bundle_path=str(bundle),
+            trusted_bundle_manifest_sha256=bundle_sha256,
+            limits=LocalExecutionLimits(
+                wall_timeout_seconds=30,
+                cpu_seconds=20,
+                memory_bytes=536_870_912,
+                workspace_bytes=33_554_432,
+                max_file_bytes=1_048_576,
+                max_output_bytes=16_384,
+                max_processes=128,
+                max_open_files=64,
+            ),
+        )
+        authorization = issue_local_execution_authorization(
+            store,
+            run_id=artifact.run_id,
+            artifact_id=artifact.artifact_id,
+            workspace=repository,
+            policy=policy,
+            approved_by="offline-proof-operator",
+            approval_id=f"trusted-bundle-{run_id}",
+        )
+        if expected_status == "command_failed":
+            package_file = bundle / "site-packages" / "pydantic" / "__init__.py"
+            original = package_file.read_bytes()
+            package_file.write_bytes(b"#" + original[1:])
+            with pytest.raises(LocalExecutionError):
+                execute_local_change(
+                    store,
+                    run_id=artifact.run_id,
+                    artifact_id=artifact.artifact_id,
+                    authorization_id=authorization.authorization_id,
+                    workspace=repository,
+                )
+            assert not list(store.root.glob("*.local-effect-attempt.*.json"))
+            assert not list(store.root.glob("*.local-effect-result.*.json"))
+            package_file.write_bytes(original)
+        evidence = execute_local_change(
+            store,
+            run_id=artifact.run_id,
+            artifact_id=artifact.artifact_id,
+            authorization_id=authorization.authorization_id,
+            workspace=repository,
+        )
+        assert evidence["status"] == expected_status, evidence
+        assert evidence["trusted_bundle_manifest_sha256"] == bundle_sha256
+        assert evidence["commands"][0]["argv"] == list(command)
+        assert (
+            load_local_execution_evidence(
+                store, artifact.run_id, authorization.authorization_id
+            )
+            == evidence
+        )
+        if expected_status == "command_failed":
+            assert (
+                "document_job_unverified_finding" in evidence["commands"][0]["stderr"]
+            )
+        if expected_status == "verified":
+            assert (
+                "pydantic-runtime-and-readonly-oracle-ok"
+                in evidence["commands"][0]["stdout"]
+            )
+            assert evidence["diff"].count("workflow_bounded_job.py") == 2
+        assert (repository / relative).read_bytes() == base_source
+        assert _git(repository, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "digest",
+        "file",
+        "extra",
+        "symlink",
+        "hardlink",
+        "abi",
+        "workspace",
+        "run-store",
+    ],
+)
+def test_trusted_bundle_tampering_fails_closed_before_effect(
+    tmp_path: Path, tamper: str
+) -> None:
+    bundle, digest = _small_trusted_bundle(
+        tmp_path / "bundle",
+        python_cache_tag=("unsupported-python" if tamper == "abi" else None),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    if tamper == "file":
+        (bundle / "site-packages" / "dependency.py").write_text(
+            "VALUE = 9\n", encoding="utf-8"
+        )
+    elif tamper == "extra":
+        (bundle / "oracle" / "unlisted.py").write_text("pass\n", encoding="utf-8")
+    elif tamper == "symlink":
+        (bundle / "oracle" / "unlisted.py").symlink_to("check.py")
+    elif tamper == "hardlink":
+        os.link(bundle / "oracle" / "check.py", bundle / "oracle" / "linked.py")
+    elif tamper == "workspace":
+        workspace = bundle
+    with pytest.raises(LocalExecutionError):
+        _load_trusted_bundle(
+            str(bundle),
+            "0" * 64 if tamper == "digest" else digest,
+            workspace=workspace,
+            run_store=bundle if tamper == "run-store" else None,
+        )
+
+
+def _trusted_bundle(tmp_path: Path) -> tuple[Path, str]:
+    bundle = tmp_path / "trusted-bundle"
+    site_packages = bundle / "site-packages"
+    source_root = bundle / "source" / "src"
+    oracle_root = bundle / "oracle"
+    site_packages.mkdir(parents=True)
+    oracle_root.mkdir(parents=True)
+    shutil.copytree(
+        _SAMPLE_ROOT / "src" / "ai_office",
+        source_root / "ai_office",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    for module_name in (
+        "pydantic",
+        "pydantic_core",
+        "annotated_types",
+        "typing_extensions",
+        "typing_inspection",
+        "yaml",
+        "cryptography",
+        "cffi",
+        "_cffi_backend",
+    ):
+        spec = importlib.util.find_spec(module_name)
+        assert spec is not None
+        if spec.submodule_search_locations:
+            shutil.copytree(
+                Path(next(iter(spec.submodule_search_locations))),
+                site_packages / module_name,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+        else:
+            assert spec.origin is not None
+            shutil.copy2(spec.origin, site_packages / Path(spec.origin).name)
+    oracle = (
+        "from pathlib import Path\n"
+        "import importlib.util,sys\n"
+        "import pydantic\n"
+        "assert Path(pydantic.__file__).is_relative_to("
+        "'/input/trusted/site-packages')\n"
+        "import ai_office.engine\n"
+        "module_name='ai_office.engine.workflow_bounded_job'\n"
+        "candidate_path=Path('/workspace/src/ai_office/engine/workflow_bounded_job.py')\n"
+        "spec=importlib.util.spec_from_file_location(module_name,candidate_path)\n"
+        "candidate=importlib.util.module_from_spec(spec)\n"
+        "sys.modules[module_name]=candidate\n"
+        "spec.loader.exec_module(candidate)\n"
+        "example=('Verdict: CHANGES_REQUIRED\\n'"
+        "+ '```markdown\\n### Finding 1\\n'"
+        "+ 'Requirement: documentation example\\n'"
+        "+ 'Artifact location: `src/ai_office/engine/workflow_bounded_job.py:1`\\n'"
+        "+ 'Evidence source/reference: "
+        "`src/ai_office/engine/workflow_bounded_job.py:1`\\n'"
+        "+ 'Impact: documentation example\\n'"
+        "+ 'Requested correction: none\\n```')\n"
+        "expected=sys.argv[1]\n"
+        "try:\n    candidate._review_verdict(example)\n"
+        "except candidate.WorkflowJobAuthorizationError as error:\n"
+        "    assert error.classification == expected\n"
+        "    if expected == 'document_job_unverified_finding':\n"
+        "        raise AssertionError('baseline counted a fenced finding')\n"
+        "else:\n    raise AssertionError('fenced example counted as a finding')\n"
+        "for fixed in (Path(__file__), Path(pydantic.__file__), "
+        "Path('/input/trusted/source/src/ai_office/engine/workflow_bounded_job.py')):\n"
+        "    try:\n        fixed.write_bytes(b'tamper')\n"
+        "    except OSError:\n        pass\n"
+        "    else:\n        raise AssertionError('trusted input was writable')\n"
+        "print('pydantic-runtime-and-readonly-oracle-ok')\n"
+    )
+    (oracle_root / "test_review_verdict.py").write_text(oracle, encoding="utf-8")
+    files = []
+    for path in sorted(
+        (item for item in bundle.rglob("*") if item.is_file()),
+        key=lambda item: item.relative_to(bundle).as_posix(),
+    ):
+        relative = path.relative_to(bundle).as_posix()
+        content = path.read_bytes()
+        files.append(
+            {
+                "path": relative,
+                "sha256": sha256(content).hexdigest(),
+                "size": len(content),
+            }
+        )
+    manifest = {
+        "files": files,
+        "python_cache_tag": sys.implementation.cache_tag,
+        "python_platform": sysconfig.get_platform(),
+        "schema_version": "local-execution-trusted-bundle.v1",
+    }
+    manifest_bytes = json.dumps(
+        manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    (bundle / "manifest.json").write_bytes(manifest_bytes)
+    return bundle, sha256(manifest_bytes).hexdigest()
+
+
+def _small_trusted_bundle(
+    root: Path, *, python_cache_tag: str | None = None
+) -> tuple[Path, str]:
+    files = {
+        "oracle/check.py": b"pass\n",
+        "site-packages/dependency.py": b"VALUE = 1\n",
+        "source/src/fixed_module.py": b"VALUE = 2\n",
+    }
+    for relative, contents in files.items():
+        target = root.joinpath(*relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(contents)
+    manifest = {
+        "files": [
+            {
+                "path": relative,
+                "sha256": sha256(contents).hexdigest(),
+                "size": len(contents),
+            }
+            for relative, contents in sorted(files.items())
+        ],
+        "python_cache_tag": python_cache_tag or sys.implementation.cache_tag,
+        "python_platform": sysconfig.get_platform(),
+        "schema_version": "local-execution-trusted-bundle.v1",
+    }
+    manifest_bytes = json.dumps(
+        manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    (root / "manifest.json").write_bytes(manifest_bytes)
+    return root, sha256(manifest_bytes).hexdigest()
 
 
 def test_fake_provider_patch_is_run_bound_and_only_verified_in_bwrap_tmpfs(

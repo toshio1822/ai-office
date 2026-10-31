@@ -10,8 +10,10 @@ import os
 import resource
 import selectors
 import signal
+import stat
 import subprocess
 import sys
+import sysconfig
 import time
 import traceback
 from pathlib import Path, PurePosixPath
@@ -46,9 +48,14 @@ def _snapshot(root: Path) -> dict[str, tuple[int, bytes]]:
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root).as_posix()
         mode = path.lstat().st_mode
-        if path.is_symlink() or not path.is_file():
+        if path.is_symlink():
             raise ValueError
-        result[relative] = (mode & 0o777, path.read_bytes())
+        if stat.S_ISDIR(mode):
+            result[relative] = (stat.S_IFDIR | (mode & 0o777), b"")
+        elif stat.S_ISREG(mode):
+            result[relative] = (mode & 0o777, path.read_bytes())
+        else:
+            raise ValueError
     return result
 
 
@@ -63,6 +70,110 @@ def _tree_digest(snapshot: dict[str, tuple[int, bytes]]) -> str:
     )
 
 
+def _verify_trusted_bundle(expected_sha256: object) -> str | None:
+    if expected_sha256 is None:
+        if Path("/input/trusted").exists():
+            raise ValueError
+        return None
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise ValueError
+    root = Path("/input/trusted")
+    manifest_path = root / "manifest.json"
+    metadata = manifest_path.lstat()
+    if (
+        not manifest_path.is_file()
+        or manifest_path.is_symlink()
+        or metadata.st_nlink != 1
+        or metadata.st_size > 1_048_576
+    ):
+        raise ValueError
+    manifest_bytes = manifest_path.read_bytes()
+    if _digest(manifest_bytes) != expected_sha256:
+        raise ValueError
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    if (
+        type(manifest) is not dict
+        or set(manifest)
+        != {"schema_version", "python_cache_tag", "python_platform", "files"}
+        or manifest["schema_version"] != "local-execution-trusted-bundle.v1"
+        or manifest_bytes != _canonical(manifest)
+        or manifest["python_cache_tag"] != sys.implementation.cache_tag
+        or manifest["python_platform"] != sysconfig.get_platform()
+        or type(manifest["files"]) is not list
+        or not 1 <= len(manifest["files"]) <= 1024
+    ):
+        raise ValueError
+    expected_files = {"manifest.json"}
+    expected_directories: set[str] = set()
+    roots: set[str] = set()
+    total = 0
+    previous_path = ""
+    for item in manifest["files"]:
+        if (
+            type(item) is not dict
+            or set(item) != {"path", "sha256", "size"}
+            or type(item["path"]) is not str
+            or type(item["sha256"]) is not str
+            or type(item["size"]) is not int
+        ):
+            raise ValueError
+        relative = _safe_path(item["path"])
+        first = relative.partition("/")[0]
+        if (
+            first not in {"oracle", "site-packages", "source"}
+            or not relative.startswith(f"{first}/")
+            or relative <= previous_path
+            or len(item["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in item["sha256"])
+            or not 0 <= item["size"] <= 16_777_216
+            or relative in expected_files
+        ):
+            raise ValueError
+        previous_path = relative
+        roots.add(first)
+        total += item["size"]
+        if total > 33_554_432:
+            raise ValueError
+        expected_files.add(relative)
+        parent = PurePosixPath(relative).parent
+        while str(parent) != ".":
+            expected_directories.add(parent.as_posix())
+            if len(expected_directories) > 4096:
+                raise ValueError
+            parent = parent.parent
+    if roots != {"oracle", "site-packages", "source"}:
+        raise ValueError
+    actual_files: set[str] = set()
+    actual_directories: set[str] = set()
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        metadata = path.lstat()
+        if path.is_symlink():
+            raise ValueError
+        if path.is_dir():
+            actual_directories.add(relative)
+            if len(actual_directories) > 4096:
+                raise ValueError
+        elif path.is_file() and metadata.st_nlink == 1:
+            actual_files.add(relative)
+        else:
+            raise ValueError
+    if actual_files != expected_files or actual_directories != expected_directories:
+        raise ValueError
+    for item in manifest["files"]:
+        path = root.joinpath(*item["path"].split("/"))
+        metadata = path.lstat()
+        if metadata.st_size != item["size"] or metadata.st_size > 16_777_216:
+            raise ValueError
+        if _digest(path.read_bytes()) != item["sha256"]:
+            raise ValueError
+    return "/input/trusted/source/src:/input/trusted/site-packages"
+
+
 def _terminate(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
@@ -72,17 +183,20 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
 
 
 def _run_command(
-    argv: list[str], *, timeout: float, output_budget: int
+    argv: list[str], *, timeout: float, output_budget: int, pythonpath: str | None
 ) -> tuple[dict[str, object], int]:
+    command_env = {
+        "HOME": "/nonexistent",
+        "PATH": "/usr/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "TMPDIR": "/tmp",
+    }
+    if pythonpath is not None:
+        command_env["PYTHONPATH"] = pythonpath
     process = subprocess.Popen(
         argv,
         cwd="/workspace",
-        env={
-            "HOME": "/nonexistent",
-            "PATH": "/usr/bin",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "TMPDIR": "/tmp",
-        },
+        env=command_env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -146,6 +260,7 @@ def _run_command(
 
 def run(plan_path: Path) -> dict[str, object]:
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    pythonpath = _verify_trusted_bundle(plan.get("trusted_bundle_manifest_sha256"))
     limits = plan["limits"]
     resource.setrlimit(
         resource.RLIMIT_CPU, (limits["cpu_seconds"], limits["cpu_seconds"])
@@ -193,6 +308,7 @@ def run(plan_path: Path) -> dict[str, object]:
             stream.flush()
             os.fsync(stream.fileno())
         before[relative] = (source["mode"], content)
+    before = _snapshot(workspace)
     before_digest = _tree_digest(before)
     after_patch = dict(before)
     for change in changes:
@@ -225,6 +341,7 @@ def run(plan_path: Path) -> dict[str, object]:
             argv,
             timeout=plan["limits"]["wall_timeout_seconds"],
             output_budget=remaining_budget,
+            pythonpath=pythonpath,
         )
         output_used += len(base64.b64decode(command_result["stdout_base64"])) + len(
             base64.b64decode(command_result["stderr_base64"])
@@ -283,6 +400,7 @@ def run(plan_path: Path) -> dict[str, object]:
         "network_namespace": os.readlink("/proc/self/ns/net"),
         "schema_version": "local-execution-result.v1",
         "status": status,
+        "trusted_bundle_manifest_sha256": plan.get("trusted_bundle_manifest_sha256"),
     }
 
 

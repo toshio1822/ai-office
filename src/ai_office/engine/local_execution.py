@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import binascii
 import json
@@ -43,10 +44,19 @@ _ASSIGNMENT = re.compile(
     r"(?i)(\b[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
     r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\s*[:=]\s*)\S+"
 )
+_SECRET_NAME = (
+    r"[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
+    r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)"
+)
 _MAX_ARTIFACT_BYTES = 1_048_576
 _MAX_SOURCE_BYTES = 2_097_152
 _MAX_CHANGE_BYTES = 1_048_576
 _MAX_RESULT_BYTES = 8_388_608
+_MAX_TRUSTED_MANIFEST_BYTES = 1_048_576
+_MAX_TRUSTED_FILE_BYTES = 16_777_216
+_MAX_TRUSTED_FILES = 1024
+_MAX_TRUSTED_DIRECTORIES = 4096
+_MAX_TRUSTED_TOTAL_BYTES = 33_554_432
 _PATH_TYPE = type(Path())
 FILE_CHANGE_SET_CONTENT_TYPE = "application/vnd.ai-office.file-change-set+json"
 
@@ -77,6 +87,8 @@ class LocalExecutionPolicy(BaseModel):
     commands: tuple[tuple[str, ...], ...] = Field(min_length=1, max_length=8)
     expires_at_ns: int = Field(gt=0)
     limits: LocalExecutionLimits
+    trusted_bundle_path: str | None = None
+    trusted_bundle_manifest_sha256: str | None = None
 
     @model_validator(mode="after")
     def validate_scope(self) -> LocalExecutionPolicy:
@@ -86,6 +98,18 @@ class LocalExecutionPolicy(BaseModel):
         _validate_paths(self.write_paths)
         if not set(self.write_paths) <= set(self.read_paths):
             raise ValueError("write paths must be readable")
+        if (self.trusted_bundle_path is None) != (
+            self.trusted_bundle_manifest_sha256 is None
+        ):
+            raise ValueError("trusted bundle path and digest must be supplied together")
+        if self.trusted_bundle_path is not None:
+            bundle_path = Path(self.trusted_bundle_path)
+            if (
+                not bundle_path.is_absolute()
+                or os.path.abspath(bundle_path) != self.trusted_bundle_path
+                or not _SHA256.fullmatch(self.trusted_bundle_manifest_sha256 or "")
+            ):
+                raise ValueError("trusted bundle path or digest is invalid")
         if len(set(self.read_paths)) != len(self.read_paths):
             raise ValueError("read paths must be distinct")
         if len(set(self.write_paths)) != len(self.write_paths):
@@ -113,6 +137,10 @@ class LocalExecutionPolicy(BaseModel):
                 raise ValueError("invalid command argument")
             if any(_SENSITIVE.search(arg) for arg in argv):
                 raise ValueError("secret-like command argument")
+            if self.trusted_bundle_path is not None and (
+                argv[0] != "/usr/bin/python3" or argv[1:3] != ("-S", "-B")
+            ):
+                raise ValueError("trusted bundle commands must use python3 -S -B")
         return self
 
 
@@ -138,6 +166,225 @@ class LocalExecutionError(ValueError):
     def __init__(self, classification: str = "contract") -> None:
         super().__init__("local execution could not be completed")
         self.classification = classification
+
+
+@dataclass(frozen=True)
+class _TrustedBundle:
+    manifest_sha256: str
+    manifest_bytes: bytes
+    files: dict[str, bytes]
+
+
+def _load_trusted_bundle(
+    bundle_path: str,
+    expected_manifest_sha256: str,
+    *,
+    workspace: Path,
+    run_store: Path | None = None,
+) -> _TrustedBundle:
+    """Read an operator-pinned offline runtime/source/oracle bundle exactly."""
+    path = Path(bundle_path)
+    try:
+        root = path.resolve(strict=True)
+        if (
+            path != root
+            or not root.is_dir()
+            or root.is_relative_to(workspace)
+            or workspace.is_relative_to(root)
+            or (
+                run_store is not None
+                and (root.is_relative_to(run_store) or run_store.is_relative_to(root))
+            )
+        ):
+            _raise("trusted_bundle_path")
+        actual_files, actual_directories = _trusted_bundle_tree(root)
+        if "manifest.json" not in actual_files:
+            _raise("trusted_bundle_manifest")
+        manifest_bytes = _read_bundle_file(
+            root, "manifest.json", _MAX_TRUSTED_MANIFEST_BYTES
+        )
+        if _digest(manifest_bytes) != expected_manifest_sha256:
+            _raise("trusted_bundle_digest")
+        manifest = _strict_json(manifest_bytes)
+        if (
+            type(manifest) is not dict
+            or set(manifest)
+            != {"schema_version", "python_cache_tag", "python_platform", "files"}
+            or manifest.get("schema_version") != "local-execution-trusted-bundle.v1"
+            or manifest_bytes != _canonical(manifest)
+            or type(manifest.get("python_cache_tag")) is not str
+            or type(manifest.get("python_platform")) is not str
+            or type(manifest.get("files")) is not list
+            or not 1 <= len(manifest["files"]) <= _MAX_TRUSTED_FILES
+        ):
+            _raise("trusted_bundle_manifest")
+        if _sandbox_python_abi() != {
+            "python_cache_tag": manifest["python_cache_tag"],
+            "python_platform": manifest["python_platform"],
+        }:
+            _raise("trusted_bundle_abi")
+        file_entries: list[dict[str, object]] = []
+        expected_files = {"manifest.json"}
+        expected_directories: set[str] = set()
+        total = 0
+        required_roots = {"oracle", "site-packages", "source"}
+        present_roots: set[str] = set()
+        for item in manifest["files"]:
+            if (
+                type(item) is not dict
+                or set(item) != {"path", "sha256", "size"}
+                or type(item["path"]) is not str
+                or type(item["sha256"]) is not str
+                or type(item["size"]) is not int
+            ):
+                _raise("trusted_bundle_manifest")
+            relative = _validate_relative_path(item["path"])
+            digest = item["sha256"]
+            size = item["size"]
+            first = relative.partition("/")[0]
+            if (
+                first not in required_roots
+                or not relative.startswith(f"{first}/")
+                or not _SHA256.fullmatch(digest)
+                or not 0 <= size <= _MAX_TRUSTED_FILE_BYTES
+                or relative in expected_files
+            ):
+                _raise("trusted_bundle_manifest")
+            present_roots.add(first)
+            total += size
+            if total > _MAX_TRUSTED_TOTAL_BYTES:
+                _raise("trusted_bundle_size")
+            expected_files.add(relative)
+            parent = PurePosixPath(relative).parent
+            while str(parent) != ".":
+                expected_directories.add(parent.as_posix())
+                parent = parent.parent
+            file_entries.append(item)
+        if (
+            present_roots != required_roots
+            or file_entries != sorted(file_entries, key=lambda item: item["path"])
+            or actual_files != expected_files
+            or actual_directories != expected_directories
+        ):
+            _raise("trusted_bundle_file_set")
+        files: dict[str, bytes] = {}
+        for item in file_entries:
+            relative = item["path"]
+            content = _read_bundle_file(root, relative, _MAX_TRUSTED_FILE_BYTES)
+            if len(content) != item["size"] or _digest(content) != item["sha256"]:
+                _raise("trusted_bundle_file_digest")
+            files[relative] = content
+        return _TrustedBundle(expected_manifest_sha256, manifest_bytes, files)
+    except LocalExecutionError:
+        raise
+    except (OSError, RuntimeError, UnicodeError, ValueError):
+        _raise("trusted_bundle_invalid")
+
+
+def _sandbox_python_abi() -> dict[str, str]:
+    """Ask only the fixed sandbox interpreter for its cache tag/platform."""
+    code = (
+        "import json,sys,sysconfig;sys.stdout.write(json.dumps({"
+        "'python_cache_tag':sys.implementation.cache_tag,"
+        "'python_platform':sysconfig.get_platform()},sort_keys=True,"
+        "separators=(',',':')))"
+    )
+    try:
+        result = subprocess.run(
+            ["/usr/bin/python3", "-S", "-B", "-c", code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": "/usr/bin"},
+            shell=False,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        _raise("sandbox_interpreter")
+    if result.returncode != 0 or len(result.stdout) > 1024:
+        _raise("sandbox_interpreter")
+    value = _strict_json(result.stdout)
+    if (
+        type(value) is not dict
+        or set(value) != {"python_cache_tag", "python_platform"}
+        or not all(type(item) is str and item for item in value.values())
+    ):
+        _raise("sandbox_interpreter")
+    return value
+
+
+def _trusted_bundle_tree(root: Path) -> tuple[set[str], set[str]]:
+    files: set[str] = set()
+    directories: set[str] = set()
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(directory)
+        for name in dirnames:
+            child = current / name
+            if child.is_symlink() or not child.is_dir():
+                _raise("trusted_bundle_file_type")
+            directories.add(child.relative_to(root).as_posix())
+            if len(directories) > _MAX_TRUSTED_DIRECTORIES:
+                _raise("trusted_bundle_directory_count")
+        for name in filenames:
+            child = current / name
+            try:
+                metadata = child.lstat()
+            except OSError:
+                _raise("trusted_bundle_file_type")
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_size > _MAX_TRUSTED_FILE_BYTES
+            ):
+                _raise("trusted_bundle_file_type")
+            files.add(child.relative_to(root).as_posix())
+            if len(files) > _MAX_TRUSTED_FILES + 1:
+                _raise("trusted_bundle_file_count")
+    return files, directories
+
+
+def _read_bundle_file(root: Path, relative: str, limit: int) -> bytes:
+    components = _validate_relative_path(relative).split("/")
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    directory_fd = root_fd
+    try:
+        for component in components[:-1]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            if directory_fd != root_fd:
+                os.close(directory_fd)
+            directory_fd = next_fd
+        descriptor = os.open(
+            components[-1],
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_fd,
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_size > limit
+            ):
+                _raise("trusted_bundle_file_type")
+            content = stream.read(limit + 1)
+            after = os.fstat(stream.fileno())
+        if len(content) != before.st_size or (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            _raise("trusted_bundle_file_changed")
+        return content
+    finally:
+        if directory_fd != root_fd:
+            os.close(directory_fd)
+        os.close(root_fd)
 
 
 def issue_local_execution_authorization(
@@ -169,6 +416,13 @@ def issue_local_execution_authorization(
     validate_local_execution_scope(
         _fixed_run_input_for_effect(manifest.run_input), root, policy
     )
+    if policy.trusted_bundle_path is not None:
+        _load_trusted_bundle(
+            policy.trusted_bundle_path,
+            policy.trusted_bundle_manifest_sha256 or "",
+            workspace=root,
+            run_store=store.root.resolve(strict=True),
+        )
     value = {
         "approval_id": approval_id,
         "approved_by": approved_by,
@@ -314,6 +568,14 @@ def execute_local_change(
         fixed_run_input, root, authorization.policy, sources=sources
     )
     _validate_change_preimages(changes, sources, authorization.policy)
+    trusted_bundle = None
+    if authorization.policy.trusted_bundle_path is not None:
+        trusted_bundle = _load_trusted_bundle(
+            authorization.policy.trusted_bundle_path,
+            authorization.policy.trusted_bundle_manifest_sha256 or "",
+            workspace=root,
+            run_store=store.root.resolve(strict=True),
+        )
     bwrap = Path("/usr/bin/bwrap")
     if not bwrap.is_file() or not os.access(bwrap, os.X_OK):
         _raise("sandbox_unavailable")
@@ -347,13 +609,22 @@ def execute_local_change(
                 source_descriptors.append(
                     {"mode": mode, "path": relative, "sha256": _digest(content)}
                 )
+            if trusted_bundle is not None:
+                trusted_root = input_root / "trusted"
+                trusted_root.mkdir(mode=0o700)
+                _write_private_file(
+                    trusted_root / "manifest.json", trusted_bundle.manifest_bytes
+                )
+                for relative, content in trusted_bundle.files.items():
+                    _write_input_file(trusted_root, relative, content)
             plan = {
                 "changes": changes,
                 "commands": [list(item) for item in authorization.policy.commands],
-                "limits": {
-                    **authorization.policy.limits.model_dump(mode="json"),
-                },
+                "limits": authorization.policy.limits.model_dump(mode="json"),
                 "sources": source_descriptors,
+                "trusted_bundle_manifest_sha256": (
+                    trusted_bundle.manifest_sha256 if trusted_bundle else None
+                ),
             }
             _write_private_file(input_root / "plan.json", _canonical(plan))
             _write_private_file(
@@ -413,6 +684,9 @@ def execute_local_change(
         "manifest_digest": manifest.digest,
         "run_id": run_id,
         "schema_version": _EVIDENCE_SCHEMA,
+        "trusted_bundle_manifest_sha256": (
+            trusted_bundle.manifest_sha256 if trusted_bundle else None
+        ),
         "workspace_sha256": authorization.workspace_sha256,
     }
     evidence_bytes = _canonical(evidence)
@@ -437,6 +711,8 @@ def load_local_execution_evidence(
         or value.get("artifact_id") != authorization.artifact_id
         or value.get("artifact_sha256") != authorization.artifact_sha256
         or value.get("authorization_id") != authorization_id
+        or value.get("trusted_bundle_manifest_sha256")
+        != authorization.policy.trusted_bundle_manifest_sha256
         or raw != _canonical(value)
     ):
         _raise("evidence_integrity")
@@ -485,8 +761,8 @@ def _parse_change_set(
             content.decode("utf-8")
         except (binascii.Error, UnicodeDecodeError):
             _raise("change_set_content")
-        if len(content) > policy.limits.max_file_bytes or _SENSITIVE.search(
-            content.decode("utf-8")
+        if len(content) > policy.limits.max_file_bytes or _source_contains_secret(
+            path, content.decode("utf-8")
         ):
             _raise("change_set_secret_or_size")
         total_change_bytes += len(content)
@@ -556,7 +832,7 @@ def _read_sources(
                 ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
                     _raise("source_changed")
                 text = content.decode("utf-8")
-                if _SENSITIVE.search(text):
+                if _source_contains_secret(relative, text):
                     _raise("source_secret_like")
                 total += len(content)
                 if total > _MAX_SOURCE_BYTES:
@@ -567,6 +843,44 @@ def _read_sources(
     finally:
         os.close(root_fd)
     return result
+
+
+def _source_contains_secret(relative: str, text: str) -> bool:
+    """Keep literal secret detection while allowing Python keyword passthroughs."""
+    if PurePosixPath(relative).suffix != ".py":
+        return _SENSITIVE.search(text) is not None
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return _SENSITIVE.search(text) is not None
+    content = bytearray(text.encode("utf-8"))
+    line_offsets = [0]
+    for line in content.splitlines(keepends=True):
+        line_offsets.append(line_offsets[-1] + len(line))
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.keyword)
+            or node.arg is None
+            or re.fullmatch(_SECRET_NAME, node.arg, re.IGNORECASE) is None
+        ):
+            continue
+        expression = tuple(ast.walk(node.value))
+        if (
+            not any(
+                isinstance(child, ast.Name)
+                and child.id.casefold() == node.arg.casefold()
+                for child in expression
+            )
+            or any(isinstance(child, ast.Constant) for child in expression)
+            or node.end_lineno is None
+        ):
+            continue
+        start = line_offsets[node.lineno - 1] + node.col_offset
+        end = line_offsets[node.end_lineno - 1] + node.end_col_offset
+        for index in range(start, end):
+            if content[index] not in (0x0A, 0x0D):
+                content[index] = 0x20
+    return _SENSITIVE.search(content.decode("utf-8")) is not None
 
 
 def _run_sandbox(
@@ -633,6 +947,7 @@ def _run_sandbox(
         "/workspace",
         "--",
         "/usr/bin/python3",
+        "-S",
         "-B",
         "/input/bootstrap.py",
     ]
@@ -735,6 +1050,8 @@ def _parse_sandbox_result(
     if (
         not isinstance(value, dict)
         or value.get("schema_version") != "local-execution-result.v1"
+        or value.get("trusted_bundle_manifest_sha256")
+        != authorization.policy.trusted_bundle_manifest_sha256
         or value.get("status")
         not in {
             "verified",
