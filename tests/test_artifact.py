@@ -100,6 +100,7 @@ def _success_body(text: str = "# Exact\n\nResult ✓") -> bytes:
             "output": [
                 {
                     "type": "message",
+                    "role": "assistant",
                     "content": [{"type": "output_text", "text": text}],
                 }
             ],

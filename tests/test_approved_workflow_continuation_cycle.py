@@ -305,6 +305,7 @@ def _terminal_history_bytes(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [{"type": "output_text", "text": output}],
                     }
                 ],
@@ -405,7 +406,7 @@ def transport(calls: list[object], *, status: int = 200) -> object:
             headers=(("x-request-id", "request_123"),),
             body=(
                 b'{"id":"resp_123","object":"response","status":"completed",'
-                b'"output":[{"type":"message","content":'
+                b'"output":[{"type":"message","role":"assistant","content":'
                 b'[{"type":"output_text","text":"ok"}]}]}'
             ),
         )

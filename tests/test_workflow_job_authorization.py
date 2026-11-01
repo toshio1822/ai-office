@@ -230,7 +230,7 @@ def _competing_provider_worker(
             "synthetic",
             (),
             b'{"id":"authority-race-response","object":"response",'
-            b'"status":"completed","output":[{"type":"message",'
+            b'"status":"completed","output":[{"type":"message","role":"assistant",'
             b'"content":[{"type":"output_text","text":"offline"}]}]}',
         )
 
@@ -419,7 +419,7 @@ def _success_transport(calls: list[object], run, authorization):
             "synthetic",
             (("x-request-id", "offline-job-1"),),
             b'{"id":"response-job-1","object":"response","status":"completed",'
-            b'"output":[{"type":"message","content":[{"type":"output_text",'
+            b'"output":[{"type":"message","role":"assistant","content":[{"type":"output_text",'
             b'"text":"# Offline result\\n\\nBounded grant path verified."}]}]}',
         )
 
@@ -641,7 +641,7 @@ def test_one_root_job_grant_authorizes_two_distinct_runs_through_shared_provider
                     "synthetic",
                     (),
                     b'{"id":"bounded-two-run-response","object":"response",'
-                    b'"status":"completed","output":[{"type":"message",'
+                    b'"status":"completed","output":[{"type":"message","role":"assistant",'
                     b'"content":[{"type":"output_text","text":"# Durable handoff"}]}]}',
                 )
             ),
@@ -1551,7 +1551,7 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
             "synthetic",
             (),
             b'{"id":"first-response","object":"response","status":"completed",'
-            b'"output":[{"type":"message","content":[{"type":"output_text",'
+            b'"output":[{"type":"message","role":"assistant","content":[{"type":"output_text",'
             b'"text":"source note"}]}]}',
         ),
         binding=run.binding,
@@ -1636,7 +1636,7 @@ def test_continuation_uses_job_business_and_execution_grants_without_legacy_appr
             "synthetic",
             (("x-request-id", "continuation-job-1"),),
             b'{"id":"continuation-job-1","object":"response","status":"completed",'
-            b'"output":[{"type":"message","content":[{"type":"output_text",'
+            b'"output":[{"type":"message","role":"assistant","content":[{"type":"output_text",'
             b'"text":"# Continuation result\\n\\nJob authority verified."}]}]}',
         )
 
@@ -1781,6 +1781,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
                     "output": [
                         {
                             "type": "message",
+                            "role": "assistant",
                             "content": [
                                 {
                                     "type": "output_text",
@@ -2268,6 +2269,7 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [{"type": "output_text", "text": text}],
                     }
                 ],
@@ -3082,6 +3084,7 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [{"type": "output_text", "text": response}],
                     }
                 ],
@@ -3671,6 +3674,7 @@ def test_bounded_job_cli_retries_only_scoped_http_failures_offline(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [{"type": "output_text", "text": content}],
                     }
                 ],
@@ -4473,6 +4477,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [{"type": "output_text", "text": output}],
                     }
                 ],

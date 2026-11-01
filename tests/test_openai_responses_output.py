@@ -49,6 +49,7 @@ def test_extracts_only_supported_output_text_in_order() -> None:
             MappingProxyType(
                 {
                     "type": "message",
+                    "role": "assistant",
                     "content": (MappingProxyType({"type": "output_text", "text": ""}),),
                 }
             ),
@@ -76,6 +77,7 @@ def test_no_supported_text_returns_explicit_empty_text() -> None:
                 MappingProxyType(
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": (MappingProxyType({"type": "refusal"}),),
                     }
                 ),
@@ -127,6 +129,7 @@ def test_result_and_input_remain_immutable() -> None:
         MappingProxyType(
             {
                 "type": "message",
+                "role": "assistant",
                 "content": (
                     MappingProxyType({"type": "output_text", "text": "exact"}),
                 ),
@@ -150,6 +153,7 @@ def test_extraction_is_deterministic() -> None:
             MappingProxyType(
                 {
                     "type": "message",
+                    "role": "assistant",
                     "content": (
                         MappingProxyType({"type": "output_text", "text": "same"}),
                     ),
