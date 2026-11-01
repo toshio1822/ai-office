@@ -24,7 +24,7 @@ steps:
       supplied digest, stop and ask the operator to correct Run Input. Change
       only paths in allowed_paths.write.
       Return only one canonical JSON object matching file-change-set.v1:
-      {"schema_version":"file-change-set.v1","base_revision":"<pinned SHA>","changes":[{"path":"<relative source path>","before_sha256":"<SHA-256>","content_base64":"<UTF-8 replacement bytes>"}]}
+      {"schema_version":"file-change-set.v1","base_revision":"<pinned SHA>","changes":[{"path":"<relative source path>","before_sha256":"<SHA-256>","content_base64":"<Base64 of complete post-change UTF-8 file bytes>"}]}
       `content_base64` MUST be a standard RFC 4648 Base64 string encoding the
       complete post-change file's exact UTF-8 bytes (not Base64URL). It is only
       for the replacement file contents: never put a SHA/digest, unencoded text,
