@@ -65,6 +65,7 @@ def raw_response(status_code: int = 200) -> OpenAIResponsesRawHttpResponse:
             "output": [
                 {
                     "type": "message",
+                    "role": "assistant",
                     "content": [{"type": "output_text", "text": "synthetic output"}],
                 }
             ],

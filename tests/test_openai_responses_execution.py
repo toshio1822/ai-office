@@ -85,7 +85,7 @@ def success_payload(content: object) -> dict[str, object]:
         "id": "resp_123",
         "object": "response",
         "status": "completed",
-        "output": [{"type": "message", "content": content}],
+        "output": [{"type": "message", "role": "assistant", "content": content}],
     }
 
 

@@ -130,6 +130,7 @@ def _responses_body() -> bytes:
             "output": [
                 {
                     "type": "message",
+                    "role": "assistant",
                     "content": [{"type": "output_text", "text": "# Offline proof"}],
                 }
             ],

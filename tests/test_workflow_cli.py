@@ -250,7 +250,7 @@ def synthetic_transport(
     if response_body is None and status_code == 200:
         response_body = (
             b'{"id":"synthetic-response","object":"response",'
-            b'"status":"completed","output":[{"type":"message",'
+            b'"status":"completed","output":[{"type":"message","role":"assistant",'
             b'"content":[{"type":"output_text","text":"synthetic ok"}]}]}'
         )
     if response_body is None:
@@ -477,6 +477,7 @@ def write_succeeded_prefix(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [
                             {"type": "output_text", "text": output_text}
                         ],

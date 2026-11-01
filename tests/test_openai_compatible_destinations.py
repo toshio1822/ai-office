@@ -239,6 +239,7 @@ def test_same_workflow_executes_both_protocols_offline(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [{"type": "output_text", "text": "# Offline proof"}],
                     }
                 ],
@@ -391,6 +392,7 @@ def test_workflow_steps_use_pinned_destinations_and_explicit_recovery_offline(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [
                             {"type": "output_text", "text": "# Offline draft"}
                         ],

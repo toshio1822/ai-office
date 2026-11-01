@@ -1521,6 +1521,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                     "output": [
                         {
                             "type": "message",
+                            "role": "assistant",
                             "content": [{"type": "output_text", "text": text}],
                         }
                     ],

@@ -436,6 +436,7 @@ def _success_response(text: str = "recovered output") -> OpenAIResponsesRawHttpR
             "output": [
                 {
                     "type": "message",
+                    "role": "assistant",
                     "content": [{"type": "output_text", "text": text}],
                 }
             ],

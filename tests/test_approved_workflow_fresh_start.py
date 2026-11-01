@@ -172,7 +172,7 @@ def success_transport(calls: list[object]):
             "synthetic",
             (("x-request-id", "request-1"),),
             b'{"id":"resp-1","object":"response","status":"completed",'
-            b'"output":[{"type":"message","content":'
+            b'"output":[{"type":"message","role":"assistant","content":'
             b'[{"type":"output_text","text":"ok"}]}]}',
         )
 

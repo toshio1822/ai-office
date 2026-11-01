@@ -299,6 +299,7 @@ def _write_history(
                 "output": [
                     {
                         "type": "message",
+                        "role": "assistant",
                         "content": [{"type": "output_text", "text": output_text}],
                     }
                 ],
