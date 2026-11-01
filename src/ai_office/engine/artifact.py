@@ -34,6 +34,7 @@ from ai_office.storage import (
 
 _ARTIFACT_SCHEMA = "workflow-artifact.v1"
 _ARTIFACT_PREFIX = "artifact"
+_FILE_CHANGE_SET_CONTENT_TYPE = "application/vnd.ai-office.file-change-set+json"
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _CONTENT_TYPE_PATTERN = re.compile(
@@ -229,6 +230,14 @@ def _ensure_required_artifacts_for_history(
         selected = policy_by_step.get(event.step_id)
         if selected is None or selected[1].artifact_content_type is None:
             continue
+        if any(
+            item.execution_attempt_id == event.execution_attempt_id
+            for item in existing_by_id.values()
+        ):
+            # A pre-normalization Artifact for this successful attempt remains
+            # immutable. Its lineage was checked above; do not add a second
+            # canonical Artifact beside that historical record.
+            continue
         artifact = _artifact_from_success_event(store, manifest, event)
         existing = existing_by_id.get(artifact.artifact_id)
         if existing is not None:
@@ -250,6 +259,8 @@ def _artifact_from_success_event(
     store: WorkflowRunManifestStore,
     manifest: WorkflowRunManifest,
     event: RuntimeStepEvent,
+    *,
+    canonicalize_file_change_set: bool = True,
 ) -> WorkflowArtifact:
     binding = WorkflowRunBinding(manifest.run_id, manifest.digest)
     if binding_of(event) != binding:
@@ -286,6 +297,34 @@ def _artifact_from_success_event(
         _raise_load("execution_evidence")
     assert normalized.text is not None
     content = normalized.text.encode("utf-8")
+    if (
+        canonicalize_file_change_set
+        and step.artifact_content_type == _FILE_CHANGE_SET_CONTENT_TYPE
+    ):
+        candidate = normalized.text.strip()
+        if candidate.startswith("```"):
+            fenced = re.fullmatch(
+                r"```json[ \t]*\r?\n(.*?)(?:\r?\n)?```",
+                candidate,
+                flags=re.DOTALL,
+            )
+            if fenced is None:
+                _raise_load("file_change_set_json")
+            candidate = fenced.group(1)
+        try:
+            value = json.loads(
+                candidate,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_nonstandard_json_constant,
+            )
+        except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
+            _raise_load("file_change_set_json")
+        if type(value) is not dict:
+            _raise_load("file_change_set_json")
+        try:
+            content = _canonical_json(value).encode("utf-8")
+        except (UnicodeEncodeError, ValueError, TypeError, RecursionError):
+            _raise_load("file_change_set_json")
     content_digest = sha256(content).hexdigest()
     event_bytes = serialize_runtime_step_event_jsonl(event).encode()
     event_digest = sha256(event_bytes).hexdigest()
@@ -386,8 +425,22 @@ def _validate_artifact_lineage(
     )
     if len(matches) != 1:
         _raise_load("terminal_event")
-    expected = _artifact_from_success_event(store, manifest, matches[0])
-    if artifact != expected:
+    try:
+        expected = _artifact_from_success_event(store, manifest, matches[0])
+    except WorkflowArtifactLoadError:
+        expected = None
+    if artifact == expected:
+        return
+    # Existing Artifacts were historically the exact normalized provider text.
+    # Continue to verify those immutable records without rewriting them; new
+    # file-change-set Artifacts are canonicalized by the finalization path above.
+    legacy = _artifact_from_success_event(
+        store,
+        manifest,
+        matches[0],
+        canonicalize_file_change_set=False,
+    )
+    if artifact != legacy:
         _raise_load("artifact_lineage")
 
 

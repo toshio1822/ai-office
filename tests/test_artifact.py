@@ -45,6 +45,7 @@ from ai_office.runtime import (
 )
 from ai_office.storage import (
     WorkflowExecutionPersistenceTargets,
+    load_workflow_execution_history,
     persist_workflow_execution_transition,
 )
 from tests._execution_evidence_test_support import create_test_execution_evidence
@@ -263,6 +264,121 @@ def test_configured_success_creates_exact_immutable_artifact_from_result_evidenc
     assert b"artifact-provider-key" not in persisted_bytes
     assert b"Bearer response-secret" not in persisted_bytes
     assert b"authorization" not in persisted_bytes.lower()
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_file_change_set_artifact_canonicalizes_one_json_object(
+    tmp_path: Path, fenced: bool
+) -> None:
+    change_set = {
+        "changes": [
+            {
+                "content_base64": "cHJpbnQoMSkK",
+                "before_sha256": "b" * 64,
+                "path": "src/example.py",
+            }
+        ],
+        "schema_version": "file-change-set.v1",
+        "base_revision": "a" * 40,
+    }
+    json_text = json.dumps(change_set, ensure_ascii=False, indent=2)
+    output = f"```json\n{json_text}\n```" if fenced else json_text
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        output=output,
+    )
+    _commit_success(workflow, evidence, result)
+
+    decision = _route(workflow, evidence)
+    artifacts = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)
+    normalized = load_normalized_result_evidence(
+        evidence.run.store.root,
+        evidence.run.binding.run_id,
+        artifacts[0].execution_attempt_id,
+    )
+
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    expected = artifact_module._canonical_json(change_set).encode("utf-8")
+    assert artifact.content == expected
+    assert json.loads(artifact.content) == change_set
+    assert artifact.content_sha256 == sha256(expected).hexdigest()
+    assert normalized.text == output
+    assert artifact.normalized_result_evidence_sha256 == normalized.digest
+    assert (
+        artifact.raw_response_evidence_sha256
+        == normalized.raw_response_evidence_sha256
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        '```json\n{"schema_version":"file-change-set.v1",}\n```',
+        '```json\n{"schema_version":"file-change-set.v1"}\n``` trailing text',
+        '{"schema_version":"file-change-set.v1","schema_version":"other"}',
+    ],
+)
+def test_file_change_set_artifact_rejects_invalid_or_ambiguous_json(
+    tmp_path: Path, output: str
+) -> None:
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        output=output,
+    )
+    _commit_success(workflow, evidence, result)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError):
+        _route(workflow, evidence)
+
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
+    )
+
+
+def test_legacy_file_change_set_artifact_remains_readable_without_rewrite(
+    tmp_path: Path,
+) -> None:
+    output = '```json\n{"schema_version":"file-change-set.v1","changes":}\n```'
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        output=output,
+    )
+    _commit_success(workflow, evidence, result)
+    store = evidence.run.store
+    run_id = evidence.run.binding.run_id
+    manifest = load_workflow_run_manifest(store, run_id)
+    history = load_workflow_execution_history(store.execution_targets(run_id))
+    event = next(item for item in history.events if item.event_type == "step_succeeded")
+
+    legacy_artifact = artifact_module._artifact_from_success_event(
+        store,
+        manifest,
+        event,
+        canonicalize_file_change_set=False,
+    )
+    artifact_module._persist_workflow_artifact(store, legacy_artifact)
+    path = workflow_artifact_path(store, run_id, legacy_artifact.artifact_id)
+    artifact_bytes_before = path.read_bytes()
+    namespace_before = _run_namespace_snapshot(store.root)
+
+    assert (
+        read_run_artifact(store, run_id, legacy_artifact.artifact_id)
+        == legacy_artifact
+    )
+    decision = _route(workflow, evidence)
+
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert list_run_artifacts(store, run_id) == (legacy_artifact,)
+    assert path.read_bytes() == artifact_bytes_before
+    assert _run_namespace_snapshot(store.root) == namespace_before
 
 
 def test_missing_artifact_is_completed_after_restart_without_provider_replay(
