@@ -1929,14 +1929,7 @@ def test_bounded_root_grant_covers_both_steps_of_existing_workflow(
         ),
         ("CHANGES_REQUIRED", 5, "reviewed", 1, None, "PASS"),
         ("MULTI_FINDING", 5, "reviewed", 1, None, "PASS"),
-        (
-            "INCOMPLETE",
-            3,
-            "stopped",
-            1,
-            "document_job_nonactionable_review",
-            "PASS",
-        ),
+        ("FREEFORM", 5, "reviewed", 1, None, "PASS"),
         (
             "CHANGES_REQUIRED",
             5,
@@ -2150,56 +2143,31 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 text = "Verdict: BLOCKED\n\nEvidence is insufficient."
             elif first_verdict == "MALFORMED":
                 text = "The report is not ready."
-            elif first_verdict == "INCOMPLETE":
+            elif first_verdict == "FREEFORM":
                 text = (
                     "Verdict: CHANGES_REQUIRED\n\n"
-                    "### Finding 1\n"
-                    "Requirement: preserve the stated limit.\n"
-                    "Artifact location: Conclusion.\n"
-                    "Evidence source/reference: Evidence A\n"
-                    "Impact: unsupported certainty."
+                    "The conclusion overstates certainty. Keep the stated limit "
+                    "and narrow the claim to what Evidence A directly supports."
                 )
             elif first_verdict == "MULTI_FINDING":
                 text = (
                     "Verdict: CHANGES_REQUIRED\n\n"
-                    "### F1: unsupported statement\n"
-                    "- **要件**: keep claims within supplied evidence.\n"
-                    "- **Artifact位置**: Conclusion, paragraph 1.\n"
-                    "- **証拠**: Evidence A\n"
-                    "- **影響**: readers may infer an unsupported guarantee.\n"
-                    "- **修正要求**: narrow the claim to the cited excerpt.\n\n"
-                    "### F2: missing boundary\n"
-                    "- **要件**: preserve stated unknowns.\n"
-                    "- **Artifact位置**: Unknowns, item 2.\n"
-                    "- **証拠**: Evidence D\n"
-                    "- **影響**: the implementation boundary is overstated.\n"
-                    "- **修正要求**: state only what the excerpt shows.\n\n"
-                    "### F3: citation scope\n"
-                    "- **要件**: cite supplied sources precisely.\n"
-                    "- **Artifact位置**: Sources, final bullet.\n"
-                    "- **証拠**: Evidence A\n"
-                    "- **影響**: the source range cannot be audited.\n"
-                    "- **修正要求**: retain the provided path and line range."
+                    "The conclusion overstates what Evidence A supports. Narrow it "
+                    "to the excerpt, preserve the stated unknowns, and keep the "
+                    "provided source path and line range."
                 )
             elif first_verdict == "JAPANESE_CHANGES_REQUIRED":
                 text = (
                     "**確定事項**： supplied material reviewed.\n\n"
                     "判定： `CHANGES_REQUIRED`\n\n"
-                    "### Finding 1\n"
-                    "Requirement: preserve the stated limit.\n"
-                    "Artifact location: Conclusion.\n"
-                    "Evidence source/reference: fixture:evidence-1\n"
-                    "Impact: unsupported certainty.\n"
-                    "Requested correction: retain the limitation."
+                    "結論が根拠資料の範囲を越えています。示された上限を維持し、 "
+                    "根拠が裏付ける内容に限定してください。"
                 )
             else:
                 text = (
                     "Verdict: CHANGES_REQUIRED\n\n"
-                    "Requirement: preserve the stated limit.\n"
-                    "Artifact location: Conclusion.\n"
-                    "Evidence source/reference: fixture:evidence-1\n"
-                    "Impact: unsupported certainty.\n"
-                    "Requested correction: retain the limitation."
+                    "The conclusion overstates the supplied evidence. Narrow it "
+                    "to the stated limit."
                 )
         elif index == 3:
             label, text = (
@@ -2212,21 +2180,14 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
                 text = (
                     "**確定事項**： revised report reviewed.\n\n"
                     "判定： `CHANGES_REQUIRED`\n\n"
-                    "### Finding 1\n"
-                    "Requirement: preserve the stated limit.\n"
-                    "Artifact location: Conclusion.\n"
-                    "Evidence source/reference: fixture:evidence-1\n"
-                    "Impact: unsupported certainty.\n"
-                    "Requested correction: retain the limitation."
+                    "改訂後も結論が根拠資料の範囲を越えています。示された上限に "
+                    "限定してください。"
                 )
             elif final_verdict == "CHANGES_REQUIRED":
                 text = (
                     "Verdict: CHANGES_REQUIRED\n\n"
-                    "Requirement: preserve the stated limit.\n"
-                    "Artifact location: Conclusion.\n"
-                    "Evidence source/reference: fixture:evidence-1\n"
-                    "Impact: unsupported certainty.\n"
-                    "Requested correction: retain the limitation."
+                    "The conclusion still overstates the supplied evidence. "
+                    "Narrow it to the stated limit."
                 )
             else:
                 text = _grounded_pass_for_request(request)
@@ -2316,12 +2277,13 @@ def test_fixed_bounded_document_job_uses_artifacts_and_stops_on_verdict(
     }
 
     if (
-        first_verdict
-        not in {
-            "CHANGES_REQUIRED",
-            "JAPANESE_CHANGES_REQUIRED",
-            "MULTI_FINDING",
-        }
+            first_verdict
+            not in {
+                "CHANGES_REQUIRED",
+                "JAPANESE_CHANGES_REQUIRED",
+                "MULTI_FINDING",
+                "FREEFORM",
+            }
         and max_revisions > 0
     ):
         # Even with unused revision quota, the public derivation/input path
