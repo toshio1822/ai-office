@@ -1773,7 +1773,6 @@ def _review_verdict(
     content: str,
     *,
     review_input: str | None = None,
-    require_actionable_findings: bool = True,
 ) -> str:
     lines = content.splitlines()
     allowed_verdicts = {"PASS", "CHANGES_REQUIRED", "BLOCKED"}
@@ -1832,151 +1831,16 @@ def _review_verdict(
     if len(declarations) != 1:
         raise WorkflowJobAuthorizationError("document_job_invalid_verdict")
     verdict_index, verdict = declarations[0]
-    if verdict == "PASS":
-        if review_input is None:
-            raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
+    if verdict == "PASS" and review_input is None:
+        raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
+    if verdict == "CHANGES_REQUIRED" and review_input is None:
+        raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+    if verdict in {"PASS", "CHANGES_REQUIRED"}:
         _validate_review_input_integrity(review_input)
-        required = (
-            "Requirement",
-            "Artifact location",
-            "Evidence source/reference",
-            "Assessment",
-        )
-        labels = {
-            "requirement": "Requirement",
-            "artifact location": "Artifact location",
-            "evidence source/reference": "Evidence source/reference",
-            "assessment": "Assessment",
-        }
-        checks: list[dict[str, str]] = []
-        check: dict[str, str] = {}
-        check_numbers: list[int] = []
-        unresolved_count = 0
-        unresolved_is_none = False
-        fenced: tuple[str, int] | None = None
-        for line in lines[verdict_index + 1 :]:
-            indentation = len(line) - len(line.lstrip(" "))
-            if indentation >= 4 or line.startswith("\t"):
-                continue
-            fence = re.match(r"(`{3,}|~{3,})(.*)$", line[indentation:])
-            if fenced is not None:
-                if (
-                    fence is not None
-                    and fence.group(1)[0] == fenced[0]
-                    and len(fence.group(1)) >= fenced[1]
-                    and not fence.group(2).strip()
-                ):
-                    fenced = None
-                continue
-            if fence is not None:
-                fenced = (fence.group(1)[0], len(fence.group(1)))
-                continue
-            if line[indentation:].startswith(">"):
-                continue
-            heading = re.fullmatch(r"#{1,6}\s+Check\s+([1-9][0-9]*)\s*", line.strip())
-            if heading is not None:
-                if check:
-                    checks.append(check)
-                    check = {}
-                check_numbers.append(int(heading.group(1)))
-                continue
-            unresolved_line = line[indentation:].strip()
-            inline_code_line = re.fullmatch(
-                r"`(Unresolved material issues: none)`", unresolved_line
-            )
-            if inline_code_line is not None:
-                unresolved_line = inline_code_line.group(1)
-            label, separator, value = unresolved_line.partition(":")
-            normalized_label = label.strip().casefold()
-            if normalized_label == "unresolved material issues":
-                unresolved_count += 1
-                unresolved_is_none = (
-                    separator != "" and value.strip().casefold() == "none"
-                )
-                continue
-            canonical_label = labels.get(normalized_label)
-            if canonical_label is not None:
-                if not separator or not value.strip() or canonical_label in check:
-                    raise WorkflowJobAuthorizationError(
-                        "document_job_nonactionable_review"
-                    )
-                check[canonical_label] = value.strip()
-        if check:
-            checks.append(check)
-        if (
-            not checks
-            or check_numbers != list(range(1, len(check_numbers) + 1))
-            or len(checks) != len(check_numbers)
-            or any(set(item) != set(required) for item in checks)
-            or unresolved_count != 1
-            or not unresolved_is_none
-        ):
-            raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
-
-        return verdict
-    if verdict == "CHANGES_REQUIRED":
-        if review_input is None:
-            raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-        _validate_review_input_integrity(review_input)
-        if not require_actionable_findings:
-            return verdict
-        required = (
-            "Requirement",
-            "Artifact location",
-            "Evidence source/reference",
-            "Impact",
-            "Requested correction",
-        )
-        labels = {
-            "requirement": "Requirement",
-            "artifact location": "Artifact location",
-            "evidence source/reference": "Evidence source/reference",
-            "impact": "Impact",
-            "requested correction": "Requested correction",
-            "要件": "Requirement",
-            "artifact位置": "Artifact location",
-            "証拠": "Evidence source/reference",
-            "影響": "Impact",
-            "修正要求": "Requested correction",
-        }
-        findings: list[dict[str, str]] = []
-        finding: dict[str, str] = {}
-        finding_header_seen = False
-        for line in lines[verdict_index + 1 :]:
-            heading = line.strip()
-            if heading.startswith("#"):
-                heading = heading.lstrip("#").strip()
-            elif heading.startswith(("- ", "* ")):
-                heading = heading[2:].strip()
-            else:
-                heading = ""
-            name, _, heading_detail = heading.partition(" ")
-            name = name.rstrip(":")
-            finding_header = (
-                name.casefold() == "finding"
-                and bool(heading_detail)
-                and heading_detail.strip().split(maxsplit=1)[0].rstrip(":").isdigit()
-            ) or (len(name) > 1 and name[0].casefold() == "f" and name[1:].isdigit())
-            if finding_header:
-                if finding_header_seen:
-                    findings.append(finding)
-                finding = {}
-                finding_header_seen = True
-                continue
-            label, separator, value = line.partition(":")
-            label = label.strip().lstrip("-* ").strip().strip("*_")
-            canonical_label = labels.get(label.casefold())
-            if canonical_label is not None:
-                if not separator or not value.strip() or canonical_label in finding:
-                    raise WorkflowJobAuthorizationError(
-                        "document_job_nonactionable_review"
-                    )
-                finding[canonical_label] = value.strip()
-        if finding_header_seen:
-            findings.append(finding)
-        elif finding:
-            findings.append(finding)
-        if not findings or any(set(item) != set(required) for item in findings):
+        review_body = [
+            line for index, line in enumerate(lines) if index != verdict_index
+        ]
+        if not any(line.strip() for line in review_body):
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
     return verdict
 
@@ -2899,7 +2763,6 @@ def _execute_bounded_document_job(
             verdict = _review_verdict(
                 review_artifact.content.decode("utf-8"),
                 review_input=review_input,
-                require_actionable_findings=has_revision_slot,
             )
             # BLOCKED, malformed, or ungrounded verdicts raise here, so the
             # round fails closed and its remaining sends are never attempted.
