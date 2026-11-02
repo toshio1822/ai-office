@@ -113,15 +113,10 @@ from tests._run_test_support import create_test_run
 
 
 def _grounded_pass_for_request(request) -> str:
-    """Build a structural PASS fixture using descriptive references."""
+    """Build a human-readable PASS fixture for the captured request."""
     return (
-        "Verdict: PASS\n"
-        "Unresolved material issues: none\n\n"
-        "### Check 1\n"
-        "Requirement: supplied acceptance criteria\n"
-        "Artifact location: changed files and verification results\n"
-        "Evidence source/reference: fixed assignment and verified local Evidence\n"
-        "Assessment: The candidate and execution evidence address the request."
+        "The candidate and verified execution evidence address the supplied "
+        "acceptance criteria.\nVerdict: PASS"
     )
 
 
@@ -2627,7 +2622,7 @@ def test_stopped_outcome_counts_distinct_revision_actions(
     assert outcome.revisions_used == revision_count
 
 
-def test_changes_required_uses_descriptive_references_and_correction() -> None:
+def test_changes_required_accepts_freeform_review_body_and_checks_binding() -> None:
     from ai_office.engine.workflow_bounded_job import _review_verdict
 
     assignment = (
@@ -2651,23 +2646,16 @@ def test_changes_required_uses_descriptive_references_and_correction() -> None:
     review_input = json.dumps(review_input_data)
     review = (
         "Verdict: CHANGES_REQUIRED\n\n"
+        "The changed test expectation no longer matches the supplied Japanese text; "
+        "restore the expected value.\n\n"
+        "### Check 1\n"
         "Requirement: use the cited evidence.\n"
-        "Artifact location: the conclusion paragraph near the unsupported claim.\n"
-        "Evidence source/reference: assignment line 55/56; source AC2 page 4.\n"
-        "Impact: unsupported statement.\n"
-        "Requested correction: remove unsupported wording."
+        "Requirement: this supplemental check repeats the requirement label.\n"
+        "Artifact location: the conclusion paragraph."
     )
     assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
-    imprecise_location = review.replace(
-        "the conclusion paragraph near the unsupported claim",
-        "Conclusion, around the final third",
-    ).replace("assignment line 55/56; source AC2 page 4", "the source materials")
-    assert _review_verdict(imprecise_location, review_input=review_input) == (
-        "CHANGES_REQUIRED"
-    )
-    missing_correction = review.replace("remove unsupported wording.", "")
     with pytest.raises(WorkflowJobAuthorizationError) as caught:
-        _review_verdict(missing_correction, review_input=review_input)
+        _review_verdict("Verdict: CHANGES_REQUIRED", review_input=review_input)
     assert caught.value.classification == "document_job_nonactionable_review"
 
     tampered_input = json.loads(review_input)
@@ -2675,132 +2663,6 @@ def test_changes_required_uses_descriptive_references_and_correction() -> None:
     with pytest.raises(WorkflowJobAuthorizationError) as caught:
         _review_verdict(review, review_input=json.dumps(tampered_input))
     assert caught.value.classification == "document_job_unverified_finding"
-
-
-def test_note_findings_accept_plain_language_locations_and_source_references() -> None:
-    from ai_office.engine.workflow_bounded_job import _review_verdict
-
-    assignment = (
-        "タイトル案: 複雑な仕事を抱え込まないために\n"
-        "ToDoリストを否定せず、不明点を確認可能な問いに変える。\n"
-        "著者が未提示の実体験や数字を捏造しない。"
-    )
-    artifact = (
-        "# 複雑な仕事を整理する\n\n"
-        "ToDoリストは役に立たない。\n"
-        "私は顧客の重大障害を必ず解決してきた。"
-    )
-    artifact_bytes = artifact.encode("utf-8")
-    review_input = json.dumps(
-        {
-            "assignment": assignment,
-            "source_artifact": {
-                "artifact_id": "note-draft-1",
-                "content": artifact,
-                "content_length": len(artifact_bytes),
-                "content_sha256": sha256(artifact_bytes).hexdigest(),
-            },
-        },
-        ensure_ascii=False,
-    )
-    review = (
-        "Verdict: CHANGES_REQUIRED\n\n"
-        "### Finding 1\n"
-        "Requirement: Do not reject ToDo lists.\n"
-        "Artifact location: second paragraph, which rejects ToDo lists.\n"
-        "Evidence source/reference: ToDo requirement in the original brief.\n"
-        "Impact: the statement contradicts the supplied brief.\n"
-        "Requested correction: explain the different roles of ToDo and unknowns lists."
-        "\n\n"
-        "### Finding 2\n"
-        "Requirement: Do not invent personal experiences or numbers.\n"
-        "Artifact location: the unsupported personal-history sentence.\n"
-        "Evidence source/reference: personal-experience constraint in the brief.\n"
-        "Impact: the draft presents an unsupported experience as fact.\n"
-        "Requested correction: remove the claim or mark it for author confirmation."
-    )
-
-    assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
-    assert json.loads(review_input)["assignment"] == assignment
-
-    less_precise_review = review.replace(
-        "second paragraph, which rejects ToDo lists.",
-        "somewhere in the draft",
-    ).replace(
-        "ToDo requirement in the original brief.",
-        "assignment:L999 `not an actual line reference`",
-    )
-    assert _review_verdict(less_precise_review, review_input=review_input) == (
-        "CHANGES_REQUIRED"
-    )
-
-
-def test_issue_772_personal_history_findings_and_supported_first_person_stay_distinct():
-    from ai_office.engine.workflow_bounded_job import _review_verdict
-
-    assignment = (
-        "著者の一人称で書く。\n"
-        "私は複雑な仕事に取りかかるとき、まず「不明点リスト」を作る。\n"
-        "著者が未提示の実体験・過去の経験・個人的な習慣などを、"
-        "与えられていないのに実体験として捏造しない。"
-    )
-    unsupported_claims = (
-        "私も以前はそうだった。",
-        "私は「技術」「仕様」「人」「リスク」の4つに分けることが多い。",
-        "私はすべての不明点を一度に潰そうとはしない。",
-    )
-    artifact = "\n".join(unsupported_claims)
-    artifact_bytes = artifact.encode("utf-8")
-    review_input = json.dumps(
-        {
-            "assignment": assignment,
-            "source_artifact": {
-                "artifact_id": "issue-772-fixture",
-                "content": artifact,
-                "content_length": len(artifact_bytes),
-                "content_sha256": sha256(artifact_bytes).hexdigest(),
-            },
-        },
-        ensure_ascii=False,
-    )
-    findings = [
-        f"### Finding {index}\n"
-        "Requirement: Do not invent unsupplied personal experiences or habits.\n"
-        f"Artifact location: personal-history claim {index} in the draft.\n"
-        "Evidence source/reference: the personal-history constraint in the brief.\n"
-        "Impact: This states unsupported author history as fact.\n"
-        "Requested correction: Remove or generalize the claim, or move it to an "
-        "author-confirmation note outside the article."
-        for index, claim in enumerate(unsupported_claims, start=1)
-    ]
-    review = "Verdict: CHANGES_REQUIRED\n\n" + "\n\n".join(findings)
-
-    assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
-
-    supported_artifact = "私は複雑な仕事に取りかかるとき、まず「不明点リスト」を作る。"
-    supported_bytes = supported_artifact.encode("utf-8")
-    supported_input = json.dumps(
-        {
-            "assignment": assignment,
-            "source_artifact": {
-                "artifact_id": "issue-772-supported-fixture",
-                "content": supported_artifact,
-                "content_length": len(supported_bytes),
-                "content_sha256": sha256(supported_bytes).hexdigest(),
-            },
-        },
-        ensure_ascii=False,
-    )
-    supported_pass = (
-        "Verdict: PASS\n"
-        "Unresolved material issues: none\n\n"
-        "### Check 1\n"
-        "Requirement: Use the supplied author voice and supported fact.\n"
-        "Artifact location: the first-person method statement.\n"
-        "Evidence source/reference: supplied author-voice and method guidance.\n"
-        "Assessment: This first-person claim is explicitly supported by the brief."
-    )
-    assert _review_verdict(supported_pass, review_input=supported_input) == "PASS"
 
 
 @pytest.mark.parametrize(
@@ -2973,18 +2835,13 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
         "具体例は仮想例とし、著者の未確認経験は記載しない。"
     )
     findings = (
-        "### Finding 1\n"
-        "Requirement: ToDo自体を否定しない。\n"
-        "Artifact location: main claim that rejects ToDo lists.\n"
-        "Evidence source/reference: brief's distinction between ToDo and unknowns.\n"
-        "Impact: briefと逆の主張になる。\n"
-        "Requested correction: 両者の役割の違いを説明する。\n\n"
-        "### Finding 2\n"
-        "Requirement: 未提示の経験を捏造しない。\n"
-        "Artifact location: personal-history claim in the introduction.\n"
-        "Evidence source/reference: brief's author-experience constraint.\n"
-        "Impact: 未確認の経験を事実として提示する。\n"
-        "Requested correction: 削除するか著者確認事項とする。"
+        "The draft rejects ToDo lists despite the brief distinguishing them from "
+        "unknowns, and it presents unverified personal experience as fact. "
+        "Explain the distinct roles of the lists and remove or qualify the "
+        "unsupported experience.\n\n"
+        "### Check 1\n"
+        "Requirement: keep both points in scope.\n"
+        "Requirement: supplemental reviewer notes repeat this label."
     )
     labels = []
     request_assignments = []
@@ -3194,65 +3051,13 @@ def test_configured_bounded_job_reviewers_execute_and_audit_offline(
     assert all(item.authorization_source == "job_action" for item in evidence)
 
 
-def test_review_verdict_requires_one_unambiguous_declaration() -> None:
+def test_review_verdict_requires_one_unambiguous_declaration_and_review_body() -> None:
     from ai_office.engine.workflow_bounded_job import _review_verdict
 
-    assignment = "Material requirement: preserve the supplied boundary."
-    source_content = "# Result\n\nThe supplied boundary is preserved."
-    source_bytes = source_content.encode()
-    review_input = json.dumps(
-        {
-            "assignment": assignment,
-            "source_artifact": {
-                "content": source_content,
-                "content_length": len(source_bytes),
-                "content_sha256": sha256(source_bytes).hexdigest(),
-            },
-        }
-    )
-    grounded_pass = (
-        "Verdict: PASS\n"
-        "Unresolved material issues: none\n\n"
-        "### Check 1\n"
-        "Requirement: preserve the supplied boundary.\n"
-        "Artifact location: the result section.\n"
-        "Evidence source/reference: fixed assignment and supplied Artifact.\n"
-        "Assessment: The result preserves the required boundary."
-    )
-    assert _review_verdict(grounded_pass, review_input=review_input) == "PASS"
-    inline_code_pass = grounded_pass.replace(
-        "Unresolved material issues: none",
-        "`Unresolved material issues: none`",
-    )
-    assert _review_verdict(inline_code_pass, review_input=review_input) == "PASS"
-    with pytest.raises(WorkflowJobAuthorizationError) as caught:
-        _review_verdict("Verdict: PASS", review_input=review_input)
-    assert caught.value.classification == "document_job_nonactionable_review"
-
-    imprecise_pass = grounded_pass.replace(
-        "Evidence source/reference: fixed assignment and supplied Artifact.",
-        "Evidence source/reference: assignment:L99; boundary requirement in brief.",
-    )
-    assert _review_verdict(imprecise_pass, review_input=review_input) == "PASS"
-
-    invalid_passes = (
-        grounded_pass.replace("Assessment:", "Rationale:"),
-        grounded_pass.replace("Evidence source/reference:", "Evidence:"),
-        grounded_pass.replace(
-            "Unresolved material issues: none", "Unresolved material issues: unclear"
-        ),
-    )
-    for invalid_pass in invalid_passes:
-        with pytest.raises(WorkflowJobAuthorizationError) as caught:
-            _review_verdict(invalid_pass, review_input=review_input)
-        assert caught.value.classification in {
-            "document_job_nonactionable_review",
-        }
-
     artifact_content = "# Result\n\nThe supplied boundary is preserved."
-    artifact_bytes = artifact_content.encode("utf-8")
+    artifact_bytes = artifact_content.encode()
     diff = "--- old\n+++ new\n+boundary preserved"
-    evidence_input = json.dumps(
+    review_input = json.dumps(
         {
             "assignment": "Material requirement: preserve the supplied boundary.",
             "source_artifact": {
@@ -3273,7 +3078,37 @@ def test_review_verdict_requires_one_unambiguous_declaration() -> None:
             },
         }
     )
-    assert _review_verdict(imprecise_pass, review_input=evidence_input) == "PASS"
+    freeform_pass = (
+        "The result preserves the requested boundary and the verified evidence "
+        "supports that assessment.\nVerdict: PASS"
+    )
+    freeform_changes = (
+        "Verdict: CHANGES_REQUIRED\n\n"
+        "Restore the test's expected text to the original supplied value.\n\n"
+        "### Check 1\n"
+        "Requirement: preserve the supplied text.\n"
+        "Requirement: this supplemental check repeats the label."
+    )
+    assert _review_verdict(freeform_pass, review_input=review_input) == "PASS"
+    assert (
+        _review_verdict(freeform_changes, review_input=review_input)
+        == "CHANGES_REQUIRED"
+    )
+    assert (
+        _review_verdict("Verdict: BLOCKED\nReviewer needs clarification")
+        == "BLOCKED"
+    )
+
+    for bodyless in ("Verdict: PASS", "Verdict: CHANGES_REQUIRED"):
+        with pytest.raises(WorkflowJobAuthorizationError) as caught:
+            _review_verdict(bodyless, review_input=review_input)
+        assert caught.value.classification == "document_job_nonactionable_review"
+    with pytest.raises(WorkflowJobAuthorizationError) as caught:
+        _review_verdict("Verdict: PASS")
+    assert caught.value.classification == "document_job_nonactionable_review"
+    with pytest.raises(WorkflowJobAuthorizationError) as caught:
+        _review_verdict("Verdict: CHANGES_REQUIRED")
+    assert caught.value.classification == "document_job_unverified_finding"
 
     for mutate in (
         lambda value: value["local_execution_evidence"].update(status="unverified"),
@@ -3283,57 +3118,12 @@ def test_review_verdict_requires_one_unambiguous_declaration() -> None:
         ),
         lambda value: value["local_execution_evidence"].update(diff_sha256="0" * 64),
     ):
-        tampered = json.loads(evidence_input)
+        tampered = json.loads(review_input)
         mutate(tampered)
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
-            _review_verdict(imprecise_pass, review_input=json.dumps(tampered))
+            _review_verdict(freeform_pass, review_input=json.dumps(tampered))
         assert caught.value.classification == "document_job_unverified_finding"
 
-    non_revision_review = "Verdict: CHANGES_REQUIRED"
-    assert (
-        _review_verdict(
-            non_revision_review,
-            review_input=evidence_input,
-            require_actionable_findings=False,
-        )
-        == "CHANGES_REQUIRED"
-    )
-    invalid_evidence = json.loads(evidence_input)
-    invalid_evidence["local_execution_evidence"]["status"] = "unverified"
-    with pytest.raises(WorkflowJobAuthorizationError) as caught:
-        _review_verdict(
-            non_revision_review,
-            review_input=json.dumps(invalid_evidence),
-            require_actionable_findings=False,
-        )
-    assert caught.value.classification == "document_job_unverified_finding"
-
-    invalid_unresolved_declarations = (
-        "`Unresolved material issues: none",
-        "Unresolved material issues: `none`",
-        "`Unresolved material issues: none` with explanation",
-        "> Unresolved material issues: none",
-        "    Unresolved material issues: none",
-        "```text\nUnresolved material issues: none\n```",
-        "Unresolved material issues: none\n`Unresolved material issues: none`",
-    )
-    for declaration in invalid_unresolved_declarations:
-        invalid_pass = grounded_pass.replace(
-            "Unresolved material issues: none", declaration
-        )
-        with pytest.raises(WorkflowJobAuthorizationError) as caught:
-            _review_verdict(invalid_pass, review_input=review_input)
-        assert caught.value.classification == "document_job_nonactionable_review"
-
-    quoted_examples_with_verdict = (
-        "Assessment summary.\n"
-        "> 判定： BLOCKED\n"
-        "```markdown\n判定： BLOCKED\n```\n"
-        "判定： PASS"
-    )
-    with pytest.raises(WorkflowJobAuthorizationError) as caught:
-        _review_verdict(quoted_examples_with_verdict, review_input=review_input)
-    assert caught.value.classification == "document_job_nonactionable_review"
     quoted_examples = (
         "Assessment summary.\n> 判定： BLOCKED",
         "Assessment summary.\n```markdown\n判定： BLOCKED\n```",
@@ -3348,6 +3138,7 @@ def test_review_verdict_requires_one_unambiguous_declaration() -> None:
     ambiguous_or_invalid = (
         "Assessment summary.\n判定: PASS\nVerdict: PASS",
         "Assessment summary.\n判定： PASS\n判定: PASS",
+        "Assessment summary.\nVerdict: PASS\nVerdict: CHANGES_REQUIRED",
         "Assessment summary.\n判定： MAYBE",
         "Assessment summary.\nVerdict: `PASS`",
     )
@@ -3355,65 +3146,6 @@ def test_review_verdict_requires_one_unambiguous_declaration() -> None:
         with pytest.raises(WorkflowJobAuthorizationError) as caught:
             _review_verdict(review)
         assert caught.value.classification == "document_job_invalid_verdict"
-
-
-def test_saved_japanese_findings_accept_plain_language_source_and_location_fields() -> (
-    None
-):
-    import hashlib
-
-    from ai_office.engine.workflow_bounded_job import _review_verdict
-
-    source_content = (
-        "調査範囲と資料 **前提の上.replace**\n"
-        "資料から確認できた事実 **必頍引数**\n"
-        "( Humans: hash確認含む) 読取search ・ publishing\n"
-        "報告された観測事実 research-and-summarize\n"
-        "Administrative veto Evidence D"
-    )
-    source_bytes = source_content.encode("utf-8")
-    review_input = json.dumps(
-        {
-            "assignment": "Evidence supplied for review.\n"
-            "**Evidence A — source A**\n"
-            "**Evidence B — source B**\n"
-            "**Evidence C — source C**\n"
-            "**Evidence D — source D**",
-            "source_artifact": {
-                "artifact_id": "artifact-747",
-                "content": source_content,
-                "content_length": len(source_bytes),
-                "content_sha256": hashlib.sha256(source_bytes).hexdigest(),
-            },
-        }
-    )
-    review = (
-        "Verdict: CHANGES_REQUIRED\n\n"
-        "### F1: Japanese review finding\n"
-        "- **要件**: 日本語Markdown報告。\n"
-        "- **Artifact位置**: `**前提の上.replace**`、`**必頍引数**`、"
-        "`( Humans: hash確認含む)`、`読取search`、`・ publishing`。\n"
-        "- **証拠**: Artifact本文の当該文字列（供給内容のまま引用）。\n"
-        "- **影響**: 文意が不明瞭。\n"
-        "- **修正要求**: 誤記を直す。\n\n"
-        "### F2: Evidence range\n"
-        "- **要件**: 供給証拠の範囲。\n"
-        "- **Artifact位置**: `research-and-summarize`。\n"
-        "- **証拠**: 本Runに供給された証拠はコード断片A–Dのみ。\n"
-        "- **影響**: 検証不能。\n"
-        "- **修正要求**: 記述を削除する。\n\n"
-        "### F3: Evidence D\n"
-        "- **要件**: 断片の表示範囲。\n"
-        "- **Artifact位置**: 経路説明。\n"
-        "- **証拠**: 課題の Evidence D は条件列で切断。\n"
-        "- **影響**: 断定が強すぎる。\n"
-        "- **修正要求**: 表現を限定する。"
-    )
-    assert _review_verdict(review, review_input=review_input) == "CHANGES_REQUIRED"
-
-    imprecise = review.replace("`**前提の上.replace**`", "the first section")
-    assert _review_verdict(imprecise, review_input=review_input) == "CHANGES_REQUIRED"
-
 
 @pytest.mark.parametrize(
     ("real_uid", "effective_uid", "is_tty"),

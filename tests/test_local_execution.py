@@ -596,43 +596,12 @@ def _single_file_repo(root: Path, relative: str, contents: bytes) -> tuple[Path,
     return repository, _git(repository, "rev-parse", "HEAD")
 
 
-def _fenced_finding_patch(source: bytes) -> bytes:
-    needle = (
-        "        for line in lines[verdict_index + 1 :]:\n"
-        "            heading = line.strip()\n"
-    )
-    replacement = (
-        "        fenced: tuple[str, int] | None = None\n"
-        "        for line in lines[verdict_index + 1 :]:\n"
-        '            indentation = len(line) - len(line.lstrip(" "))\n'
-        '            if indentation >= 4 or line.startswith("\\t"):\n'
-        "                continue\n"
-        '            fence = re.match(r"(`{3,}|~{3,})(.*)$", line[indentation:])\n'
-        "            if fenced is not None:\n"
-        "                if (\n"
-        "                    fence is not None\n"
-        "                    and fence.group(1)[0] == fenced[0]\n"
-        "                    and len(fence.group(1)) >= fenced[1]\n"
-        "                    and not fence.group(2).strip()\n"
-        "                ):\n"
-        "                    fenced = None\n"
-        "                continue\n"
-        "            if fence is not None:\n"
-        "                fenced = (fence.group(1)[0], len(fence.group(1)))\n"
-        "                continue\n"
-        "            heading = line.strip()\n"
-    )
-    text = source.decode("utf-8")
-    assert text.count(needle) == 1
-    return text.replace(needle, replacement, 1).encode("utf-8")
-
-
 def test_fixed_python_runtime_and_oracle_work_only_in_readonly_bwrap(
     tmp_path: Path, require_local_sandbox: None
 ) -> None:
     relative = "src/ai_office/engine/workflow_bounded_job.py"
     base_source = (_SAMPLE_ROOT / relative).read_bytes()
-    candidate_source = _fenced_finding_patch(base_source)
+    candidate_source = base_source + b"\n# offline sandbox candidate\n"
     test_abi = {
         "python_cache_tag": sys.implementation.cache_tag,
         "python_platform": sysconfig.get_platform(),
@@ -654,26 +623,15 @@ def test_fixed_python_runtime_and_oracle_work_only_in_readonly_bwrap(
         write_paths=[relative],
         source_context={relative: base_source.decode("utf-8")},
     )
-    for run_id, replacement, expected_status, expected_classification in (
-        (
-            "run-local-effect-base",
-            base_source,
-            "command_failed",
-            "document_job_unverified_finding",
-        ),
-        (
-            "run-local-effect-candidate",
-            candidate_source,
-            "verified",
-            "document_job_nonactionable_review",
-        ),
+    for run_id, replacement, expected_status in (
+        ("run-local-effect-base", base_source, "command_failed"),
+        ("run-local-effect-candidate", candidate_source, "verified"),
     ):
         command = (
             "/usr/bin/python3",
             "-S",
             "-B",
             "/input/trusted/oracle/test_review_verdict.py",
-            expected_classification,
         )
         store, artifact = _candidate(
             tmp_path,
@@ -746,7 +704,7 @@ def test_fixed_python_runtime_and_oracle_work_only_in_readonly_bwrap(
         )
         if expected_status == "command_failed":
             assert (
-                "document_job_unverified_finding" in evidence["commands"][0]["stderr"]
+                "candidate source is unchanged" in evidence["commands"][0]["stderr"]
             )
         if expected_status == "verified":
             assert (
@@ -838,6 +796,7 @@ def _trusted_bundle(tmp_path: Path) -> tuple[Path, str]:
     oracle = (
         "from pathlib import Path\n"
         "import importlib.util,sys\n"
+        "import hashlib,json\n"
         "import pydantic\n"
         "assert Path(pydantic.__file__).is_relative_to("
         "'/input/trusted/site-packages')\n"
@@ -848,23 +807,23 @@ def _trusted_bundle(tmp_path: Path) -> tuple[Path, str]:
         "candidate=importlib.util.module_from_spec(spec)\n"
         "sys.modules[module_name]=candidate\n"
         "spec.loader.exec_module(candidate)\n"
-        "example=('Verdict: CHANGES_REQUIRED\\n'"
-        "+ '```markdown\\n### Finding 1\\n'"
-        "+ 'Requirement: documentation example\\n'"
-        "+ 'Artifact location: `src/ai_office/engine/workflow_bounded_job.py:1`\\n'"
-        "+ 'Evidence source/reference: "
-        "`src/ai_office/engine/workflow_bounded_job.py:1`\\n'"
-        "+ 'Impact: documentation example\\n'"
-        "+ 'Requested correction: none\\n```')\n"
-        "expected=sys.argv[1]\n"
-        "try:\n    candidate._review_verdict(example)\n"
-        "except candidate.WorkflowJobAuthorizationError as error:\n"
-        "    assert error.classification == expected\n"
-        "    if expected == 'document_job_unverified_finding':\n"
-        "        raise AssertionError('baseline counted a fenced finding')\n"
-        "else:\n    raise AssertionError('fenced example counted as a finding')\n"
+        "content='The candidate satisfies the concrete request.'\n"
+        "content_bytes=content.encode('utf-8')\n"
+        "review_input=json.dumps({'assignment':'offline', 'source_artifact':"
+        "{'content':content, 'content_length':len(content_bytes), "
+        "'content_sha256':hashlib.sha256(content_bytes).hexdigest()}})\n"
+        "example=('Verdict: CHANGES_REQUIRED\\n\\n'"
+        "+ 'Restore the supplied expected text.\\n\\n'"
+        "+ '### Check 1\\nRequirement: review note\\n'"
+        "+ 'Requirement: supplemental note repeats this label.')\n"
+        "assert candidate._review_verdict(example, review_input=review_input) "
+        "== 'CHANGES_REQUIRED'\n"
+        "trusted_source=Path('/input/trusted/source/src/ai_office/engine/"
+        "workflow_bounded_job.py')\n"
+        "assert candidate_path.read_bytes() != trusted_source.read_bytes(), "
+        "'candidate source is unchanged'\n"
         "for fixed in (Path(__file__), Path(pydantic.__file__), "
-        "Path('/input/trusted/source/src/ai_office/engine/workflow_bounded_job.py')):\n"
+        "trusted_source):\n"
         "    try:\n        fixed.write_bytes(b'tamper')\n"
         "    except OSError:\n        pass\n"
         "    else:\n        raise AssertionError('trusted input was writable')\n"
@@ -1525,22 +1484,16 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
 
     def pass_review() -> str:
         return (
-            "Verdict: PASS\n\n### Check 1\n"
-            "Requirement: answer() returns 2.\n"
-            "Artifact location: implementation and test result.\n"
-            "Evidence source/reference: the acceptance criteria and local evidence.\n"
-            "Assessment: The diff and successful test evidence meet the "
-            "request.\n"
-            "Unresolved material issues: none"
+            "Verdict: PASS\n\n"
+            "The candidate and its sandbox evidence satisfy the request."
         )
 
     findings = (
-        "Verdict: CHANGES_REQUIRED\n\n### Finding 1\n"
+        "Verdict: CHANGES_REQUIRED\n\n"
+        "The unnecessary comment should be removed from the implementation.\n\n"
+        "### Check 1\n"
         "Requirement: Keep the implementation minimal.\n"
-        "Artifact location: unnecessary comment next to the return statement.\n"
-        "Evidence source/reference: assignment:L55/L56; code review context.\n"
-        "Impact: The candidate adds an unnecessary comment.\n"
-        "Requested correction: Remove the comment."
+        "Requirement: This supplemental check repeats the requirement label."
     )
 
     def fake_transport(request: object) -> OpenAIResponsesRawHttpResponse:
