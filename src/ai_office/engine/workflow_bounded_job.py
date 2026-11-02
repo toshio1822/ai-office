@@ -1835,6 +1835,7 @@ def _review_verdict(
     if verdict == "PASS":
         if review_input is None:
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
+        _validate_review_input_integrity(review_input)
         required = (
             "Requirement",
             "Artifact location",
@@ -1912,23 +1913,11 @@ def _review_verdict(
         ):
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
 
-        try:
-            assignment_text, source_content = _review_source_context(review_input)
-        except WorkflowJobAuthorizationError:
-            raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-        for item in checks:
-            evidence_reference = item["Evidence source/reference"]
-            if not _assignment_line_reference_matches(
-                evidence_reference, assignment_text
-            ):
-                raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-            location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
-            if not location_quotes or any(
-                quote not in source_content for quote in location_quotes
-            ):
-                raise WorkflowJobAuthorizationError("document_job_unverified_finding")
         return verdict
     if verdict == "CHANGES_REQUIRED":
+        if review_input is None:
+            raise WorkflowJobAuthorizationError("document_job_unverified_finding")
+        _validate_review_input_integrity(review_input)
         if not require_actionable_findings:
             return verdict
         required = (
@@ -1989,60 +1978,11 @@ def _review_verdict(
             findings.append(finding)
         if not findings or any(set(item) != set(required) for item in findings):
             raise WorkflowJobAuthorizationError("document_job_nonactionable_review")
-        if review_input is None:
-            raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-        assignment_references = _explicit_assignment_evidence_references(review_input)
-        assignment_text = json.loads(review_input)["assignment"]
-        assignment_reference_ids = _reference_ids(assignment_text, line_start_only=True)
-        try:
-            assignment_text, source_content = _review_source_context(review_input)
-            source_is_bound = True
-        except WorkflowJobAuthorizationError:
-            source_content = ""
-            source_is_bound = False
-            assignment_text = ""
-        for item in findings:
-            evidence_reference = _normalized_reference(
-                item["Evidence source/reference"]
-            )
-            raw_evidence_reference = item["Evidence source/reference"]
-            if _contains_assignment_line_reference(raw_evidence_reference):
-                if not _assignment_line_reference_matches(
-                    raw_evidence_reference, assignment_text
-                ):
-                    raise WorkflowJobAuthorizationError(
-                        "document_job_unverified_finding"
-                    )
-                location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
-                if (
-                    source_is_bound
-                    and location_quotes
-                    and all(quote in source_content for quote in location_quotes)
-                ):
-                    continue
-                raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-            if evidence_reference in assignment_references:
-                continue
-            cited_reference_ids = _reference_ids(item["Evidence source/reference"])
-            if cited_reference_ids and cited_reference_ids <= assignment_reference_ids:
-                continue
-            location_quotes = re.findall(r"`([^`]+)`", item["Artifact location"])
-            if (
-                any(
-                    label in evidence_reference
-                    for label in ("artifact", "deliverable", "成果物")
-                )
-                and source_is_bound
-                and location_quotes
-                and all(quote in source_content for quote in location_quotes)
-            ):
-                continue
-            raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     return verdict
 
 
-def _review_source_context(review_input: str) -> tuple[str, str]:
-    """Verify exact source Artifact and optional local evidence for citations."""
+def _validate_review_input_integrity(review_input: str) -> None:
+    """Verify bound source Artifact and optional local-execution Evidence."""
     try:
         input_value = json.loads(review_input)
         assignment = input_value["assignment"]
@@ -2064,7 +2004,7 @@ def _review_source_context(review_input: str) -> tuple[str, str]:
         raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     evidence = input_value.get("local_execution_evidence")
     if evidence is None:
-        return assignment, content
+        return
     if type(evidence) is not dict:
         raise WorkflowJobAuthorizationError("document_job_unverified_finding")
     diff = evidence.get("diff")
@@ -2078,143 +2018,6 @@ def _review_source_context(review_input: str) -> tuple[str, str]:
         and evidence.get("diff_sha256") == _digest(diff.encode("utf-8"))
     ):
         raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-    return assignment, f"{content}\n{diff}"
-
-
-def _assignment_line_reference_matches(reference: str, assignment: str) -> bool:
-    """Verify a line citation against the exact immutable assignment text."""
-    match = re.fullmatch(r"assignment:L([1-9][0-9]*)\s+`([^`\n]+)`", reference)
-    if match is None:
-        return False
-    line_number = int(match.group(1))
-    lines = assignment.splitlines()
-    return line_number <= len(lines) and match.group(2) in lines[line_number - 1]
-
-
-def _contains_assignment_line_reference(reference: str) -> bool:
-    """Identify line-reference syntax to prevent legacy fallback."""
-    return (
-        re.search(r"(?<![a-z0-9_])assignment\s*:\s*L", reference, re.IGNORECASE)
-        is not None
-    )
-
-
-def _normalized_reference(value: str) -> str:
-    return " ".join(value.split()).casefold()
-
-
-def _reference_ids(
-    value: str, *, line_start_only: bool = False
-) -> frozenset[tuple[str, str]]:
-    """Return explicitly typed IDs; incidental words are not declarations."""
-    identifiers: set[tuple[str, str]] = set()
-    pattern = re.compile(
-        r"(?<![a-z0-9_])(?:"
-        r"(?P<kind>evidence|criterion|requirement|source|reference|fragment)"
-        r"(?![a-z0-9_])|(?P<kind_ja>証拠|断片))"
-        r"(?:\s+|\s*[:#]\s*|(?<=証拠)|(?<=断片))"
-        r"(?P<first>[a-z0-9][a-z0-9_-]*)"
-        r"(?:\s*[-–—]\s*(?P<last>[a-z0-9][a-z0-9_-]*))?"
-        r"(?![a-z0-9_])",
-        re.IGNORECASE,
-    )
-    matches = (
-        (
-            match
-            for line in value.splitlines()
-            if (match := pattern.match(line.lstrip(" \t#>*_`-+")))
-        )
-        if line_start_only
-        else pattern.finditer(value)
-    )
-    for match in matches:
-        kind = (match.group("kind") or match.group("kind_ja")).casefold()
-        if kind in {"fragment", "断片"}:
-            kind = "evidence"
-        first = match.group("first").casefold()
-        last = (match.group("last") or first).casefold()
-        if first in {
-            "criterion",
-            "evidence",
-            "fragment",
-            "identifier",
-            "id",
-            "only",
-            "package",
-            "provided",
-            "reference",
-            "requirement",
-            "source",
-            "supplied",
-        }:
-            continue
-        identifiers.add((kind, first))
-        if len(first) == len(last) == 1 and first.isalpha() and last.isalpha():
-            start, end = sorted((ord(first), ord(last)))
-            if end - start <= 25:
-                identifiers.update((kind, chr(code)) for code in range(start, end + 1))
-    return frozenset(identifiers)
-
-
-def _explicit_assignment_evidence_references(review_input: str) -> frozenset[str]:
-    """Extract exact, explicitly labeled criteria/source references from input.
-
-    Subject Artifact text and the JSON envelope are deliberately excluded. This
-    is a scope/provenance check, not an automatic semantic-truth verifier. The
-    accepted labels are generic and do not require a domain-specific evidence
-    naming convention.
-    """
-    try:
-        value = json.loads(review_input)
-    except Exception:
-        raise WorkflowJobAuthorizationError("document_job_unverified_finding") from None
-    assignment = value.get("assignment") if type(value) is dict else None
-    if type(assignment) is not str:
-        raise WorkflowJobAuthorizationError("document_job_unverified_finding")
-    allowed_labels = {
-        "evidence",
-        "evidence id",
-        "evidence reference",
-        "acceptance evidence",
-        "criterion",
-        "criterion id",
-        "requirement",
-        "requirement id",
-        "reference",
-        "source id",
-        "source reference",
-    }
-    generic = {
-        "acceptance evidence",
-        "assignment",
-        "artifact",
-        "evidence",
-        "input",
-        "report",
-        "result",
-        "source",
-    }
-    references = set()
-    for line in assignment.splitlines():
-        heading = line.strip().strip("*_").strip()
-        reference_label = re.match(
-            r"(?:evidence|criterion|requirement|source)\s+([a-z0-9][a-z0-9_-]*)\b",
-            heading,
-            re.IGNORECASE,
-        )
-        if reference_label:
-            references.add(
-                _normalized_reference(
-                    f"{heading.split()[0]} {reference_label.group(1)}"
-                )
-            )
-        label, separator, raw_reference = line.partition(":")
-        if not separator or label.strip().casefold() not in allowed_labels:
-            continue
-        reference = _normalized_reference(raw_reference.strip().strip("`*_\"'"))
-        if reference and reference not in generic:
-            references.add(reference)
-    return frozenset(references)
 
 
 @dataclass(frozen=True)

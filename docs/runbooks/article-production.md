@@ -19,24 +19,25 @@ source material, and language belong in Run Input.
 
 ## What the mechanical checks establish
 
-The shared review path validates the verdict and finding/check structure,
-whether a cited assignment line and quoted Artifact text exist in the bound
-inputs, and the Artifact/Run lineage. The bounded Job also enforces approvals,
+The shared review path validates the unambiguous verdict, required review fields,
+and the authenticity and lineage of bound Artifact and execution Evidence. It
+does not mechanically match a reviewer's prose to assignment line numbers or
+literal Artifact quotations. The bounded Job also enforces approvals,
 send/revision limits, evidence, and safe stopping.
 
-These are integrity and process guarantees, not semantic entailment. A real
-quote, valid line reference, successful parser result, or model `PASS` does
-not prove that the evidence supports the full subject, predicate, scope,
-frequency, quantity, or outcome of a claim. Human acceptance remains necessary.
+These are integrity and process guarantees, not semantic entailment. Authentic
+bound material, a successful parser result, or a model `PASS` does not prove
+that the evidence supports the full subject, predicate, scope, frequency,
+quantity, or outcome of a claim. Human acceptance remains necessary.
 
 ## Offline evaluation examples
 
 The examples below are expected review judgments, not model responses and not
 rules copied into the operational prompts. The offline contract test feeds
-canned, source-linked review results through the existing mechanical
-`_review_verdict` validator. It checks that valid positive and negative
-findings can be represented and that exact citations/quotes are enforced; it
-does **not** ask a model to judge the cases.
+canned review results through the existing mechanical `_review_verdict`
+validator. It checks that positive and negative findings can be represented
+without exact line/quote formatting, while required review fields and bound
+Artifact integrity remain enforced; it does **not** ask a model to judge cases.
 
 | Case | Expected judgment | Why |
 | --- | --- | --- |
@@ -52,16 +53,16 @@ The unchanged #764 brief, draft, and both saved review Artifacts were used local
 as read-only root-cause material. Their stored content lengths and SHA-256
 digests matched; none was rewritten or copied into this repository. Running the
 existing parser against the two actual review Artifacts returns PASS for both.
-That negative control is expected: the current parser checks mechanical
-structure and exact text existence, not meaning.
+That negative control is expected: the parser checks mechanical structure and
+input integrity, not the semantic accuracy of a review.
 
 The offline examples and existing fake-transport tests can validate prompt
-assembly, format, citation binding, reviewer routing, bounded revision, and
-stopping without provider requests. They cannot show that a real model now
-detects the unsupported habit, nor that it avoids over-rejecting supported
-first-person facts. **Improved real-model semantic quality remains unproven**
-until a separately authorized evaluation measures both false negatives and
-false positives.
+assembly, required review fields, input-integrity checks, reviewer routing,
+bounded revision, and stopping without provider requests. They cannot show that
+a real model now detects the unsupported habit, nor that it avoids
+over-rejecting supported first-person facts. **Improved real-model semantic
+quality remains unproven** until a separately authorized evaluation measures
+both false negatives and false positives.
 
 ## Reviewer count and send budget
 
@@ -170,13 +171,14 @@ ai-office workflows bounded-job-run JOB_ID \
   ...
 ```
 
-The original assignment stays first and unchanged, so its line references remain
-stable. A labeled style-only section is appended with the selected ID, version,
-exact content SHA-256, and content. Its digest and the exact combined Run Input
-are included in the existing launch preview and assignment digest; that same
-input is pinned in the existing Run Manifests, bounded Job Scope, provider
-requests, and Evidence. The initial draft, each independent reviewer, revision,
-and re-review therefore use one snapshot. Editing or removing the source file
+The original assignment stays first and unchanged so the style section remains
+separate from the brief. A labeled style-only section is appended with the
+selected ID, version, exact content SHA-256, and content. Its digest and the
+exact combined Run Input are included in the existing launch preview and
+assignment digest; that same input is pinned in the existing Run Manifests,
+bounded Job Scope, provider requests, and Evidence. The initial draft, each
+independent reviewer, revision, and re-review therefore use one snapshot.
+Editing or removing the source file
 after Job start cannot change that Job. Omitting `--style-profile` leaves the
 Run Input unchanged. Unknown IDs, path-like IDs, malformed or oversized files,
 and profiles whose declared ID does not match the selected ID fail before
