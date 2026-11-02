@@ -1499,12 +1499,6 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             ),
         ),
     ).model_copy(update={"expires_at_ns": time.time_ns() + 600_000_000_000})
-    citation_line = next(
-        (index, line)
-        for index, line in enumerate(assignment.splitlines(), start=1)
-        if "answer() returns 2" in line
-    )
-    citation = f"assignment:L{citation_line[0]} `{citation_line[1]}`"
     calls: list[dict[str, object]] = []
     reviewer_inputs: list[dict[str, object]] = []
 
@@ -1533,9 +1527,9 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         return (
             "Verdict: PASS\n\n### Check 1\n"
             "Requirement: answer() returns 2.\n"
-            "Artifact location: `return 2`\n"
-            f"Evidence source/reference: {citation}\n"
-            "Assessment: The exact diff and successful test evidence meet the "
+            "Artifact location: implementation and test result.\n"
+            "Evidence source/reference: the acceptance criteria and local evidence.\n"
+            "Assessment: The diff and successful test evidence meet the "
             "request.\n"
             "Unresolved material issues: none"
         )
@@ -1543,8 +1537,8 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     findings = (
         "Verdict: CHANGES_REQUIRED\n\n### Finding 1\n"
         "Requirement: Keep the implementation minimal.\n"
-        "Artifact location: `return 2  # unnecessary comment`\n"
-        f"Evidence source/reference: {citation}\n"
+        "Artifact location: unnecessary comment next to the return statement.\n"
+        "Evidence source/reference: assignment:L55/L56; code review context.\n"
         "Impact: The candidate adds an unnecessary comment.\n"
         "Requested correction: Remove the comment."
     )
