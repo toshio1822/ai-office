@@ -92,6 +92,7 @@ _WORKFLOW_STEP_KEYS = frozenset(
         "name",
     }
 )
+_OPTIONAL_WORKFLOW_STEP_KEYS = frozenset({"model_output_format"})
 _EMPLOYEE_KEYS = frozenset({"allowed_tools", "id", "instructions", "name", "role"})
 _TOOL_KEYS = frozenset({"description", "name", "parameters"})
 _TOOL_PARAMETER_KEYS = frozenset({"description", "name", "required", "type"})
@@ -144,6 +145,7 @@ class WorkflowStepSnapshot:
     business_approval_required: bool
     artifact_content_type: str | None = None
     execution_destination: str | None = None
+    model_output_format: str | None = None
 
     def __post_init__(self) -> None:
         _validate_workflow_step_snapshot(self)
@@ -626,6 +628,7 @@ def workflow_definition_from_run_manifest(
                     "instructions": step.instructions,
                     "business_approval_required": step.business_approval_required,
                     "artifact_content_type": step.artifact_content_type,
+                    "model_output_format": step.model_output_format,
                 }
                 for step in snapshot.steps
             ],
@@ -763,6 +766,7 @@ def _workflow_step_snapshot(step: WorkflowStepDefinition) -> WorkflowStepSnapsho
             business_approval_required=step.business_approval_required,
             artifact_content_type=step.artifact_content_type,
             execution_destination=step.execution_destination,
+            model_output_format=step.model_output_format,
         )
     except WorkflowRunManifestError:
         raise
@@ -888,6 +892,8 @@ def _workflow_step_dict(step: WorkflowStepSnapshot) -> dict[str, object]:
     }
     value["artifact_content_type"] = step.artifact_content_type
     value["execution_destination"] = step.execution_destination
+    if step.model_output_format is not None:
+        value["model_output_format"] = step.model_output_format
     return value
 
 
@@ -1004,6 +1010,12 @@ def _validate_workflow_step_snapshot(snapshot: object) -> None:
     if type(snapshot.business_approval_required) is not bool:
         _raise_manifest("business_approval_policy")
     _validate_artifact_content_type(snapshot.artifact_content_type)
+    if snapshot.model_output_format is not None and (
+        snapshot.model_output_format != "unified-diff"
+        or snapshot.artifact_content_type
+        != "application/vnd.ai-office.file-change-set+json"
+    ):
+        _raise_manifest("model_output_format")
     if snapshot.execution_destination is not None:
         _validate_definition_id(snapshot.execution_destination)
 
@@ -1366,7 +1378,10 @@ def _parse_execution_destination(value: object) -> ExecutionDestinationSnapshot:
 
 
 def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
-    if type(value) is not dict or frozenset(value) != _WORKFLOW_STEP_KEYS:
+    if type(value) is not dict or frozenset(value) not in {
+        _WORKFLOW_STEP_KEYS,
+        _WORKFLOW_STEP_KEYS | _OPTIONAL_WORKFLOW_STEP_KEYS,
+    }:
         _raise_load("workflow_step")
     try:
         return WorkflowStepSnapshot(
@@ -1378,6 +1393,7 @@ def _parse_workflow_step(value: object) -> WorkflowStepSnapshot:
             business_approval_required=value["business_approval_required"],
             artifact_content_type=value["artifact_content_type"],
             execution_destination=value["execution_destination"],
+            model_output_format=value.get("model_output_format"),
         )
     except Exception:
         _raise_load("workflow_step")

@@ -70,6 +70,7 @@ def workflow(
     description: str = "Researches the assigned subject.",
     step_instructions: str = "Gather relevant information.",
     artifact_content_type: str | None = None,
+    model_output_format: str | None = None,
 ) -> LoadedWorkflow:
     return LoadedWorkflow(
         source_path=Path("source-workflow.yaml"),
@@ -85,6 +86,7 @@ def workflow(
                     model="model",
                     instructions=step_instructions,
                     artifact_content_type=artifact_content_type,
+                    model_output_format=model_output_format,
                 )
             ],
         ),
@@ -342,6 +344,41 @@ def test_artifact_policy_is_pinned_and_changes_manifest_identity() -> None:
     assert b'"artifact_content_type":"text/markdown"' in (
         workflow_run_manifest_canonical_bytes(artifact)
     )
+
+
+def test_model_output_format_is_pinned_without_rewriting_legacy_v6_bytes(
+    tmp_path: Path,
+) -> None:
+    legacy = manifest()
+    legacy_bytes = workflow_run_manifest_canonical_bytes(legacy)
+    assert b"model_output_format" not in legacy_bytes
+
+    unified = manifest(
+        run_id="run-diff",
+        workflow_value=workflow(
+            artifact_content_type="application/vnd.ai-office.file-change-set+json",
+            model_output_format="unified-diff",
+        )
+    )
+    unified_bytes = workflow_run_manifest_canonical_bytes(unified)
+    assert b'"model_output_format":"unified-diff"' in unified_bytes
+    assert unified.digest != legacy.digest
+
+    store = WorkflowRunManifestStore(tmp_path)
+    persist_workflow_run_manifest(store, legacy)
+    persist_workflow_run_manifest(store, unified)
+    restored_legacy = load_workflow_run_manifest(store, legacy.run_id)
+    restored_unified = load_workflow_run_manifest(store, unified.run_id)
+
+    assert store.manifest_path(legacy.run_id).read_bytes() == legacy_bytes
+    assert workflow_run_manifest_canonical_bytes(restored_legacy) == legacy_bytes
+    assert (
+        workflow_definition_from_run_manifest(restored_unified)
+        .steps[0]
+        .model_output_format
+        == "unified-diff"
+    )
+    assert workflow_run_manifest_canonical_bytes(restored_unified) == unified_bytes
 
 
 def test_old_v5_manifest_is_rejected_without_migration(tmp_path: Path) -> None:

@@ -45,6 +45,18 @@ def _digest(value: bytes) -> str:
     return sha256(value).hexdigest()
 
 
+def _workflow_snapshot_digest_matches(snapshot: object, expected: str) -> bool:
+    """Accept current and pre-format hashes for unchanged legacy snapshots."""
+    value = asdict(snapshot)
+    current_digest = _digest(_canonical(value))
+    if current_digest == expected:
+        return True
+    for step in value.get("steps", []):
+        if step.get("model_output_format") is None:
+            step.pop("model_output_format", None)
+    return _digest(_canonical(value)) == expected
+
+
 def bounded_review_action_plan(
     workflow: LoadedWorkflow, max_revisions: int
 ) -> tuple[tuple[str, int, str], ...]:
@@ -172,8 +184,9 @@ def _validate_derived_review_plan(
             and slot.input_source == input_source
             and slot.employee_id == selected.employee
             and slot.model == selected.model
-            and slot.workflow_snapshot_sha256
-            == _digest(_canonical(asdict(snapshot.workflow_snapshot)))
+            and _workflow_snapshot_digest_matches(
+                snapshot.workflow_snapshot, slot.workflow_snapshot_sha256
+            )
             and slot.employee_snapshot_sha256
             == _digest(_canonical(_employee_dict(employee)))
             and slot.execution_target_fingerprint
@@ -538,8 +551,10 @@ def issue_bounded_workflow_job_scope(
         _digest(initial_manifest.run_input.encode("utf-8")) != initial_input_sha256
         or initial_input_sha256 != assignment_sha256
         or initial_manifest.workflow_id != actions[0].workflow_id
-        or _digest(_canonical(asdict(initial_manifest.workflow_snapshot)))
-        != actions[0].workflow_snapshot_sha256
+        or not _workflow_snapshot_digest_matches(
+            initial_manifest.workflow_snapshot,
+            actions[0].workflow_snapshot_sha256,
+        )
     ):
         raise WorkflowJobAuthorizationError("job_initial_run")
     if source_manifest_run_id is not None:
@@ -673,7 +688,6 @@ def derive_bounded_job_action_authorization(
         _validate_derived_review_plan(
             source_manifest, current.actions, current.max_revisions
         )
-    workflow_snapshot = _canonical(asdict(manifest.workflow_snapshot))
     employee = next(
         (item for item in manifest.employee_snapshots if item.id == slot.employee_id),
         None,
@@ -683,7 +697,9 @@ def derive_bounded_job_action_authorization(
         and manifest.workflow_snapshot.steps[slot.step_index - 1].id == slot.step_id
         and manifest.workflow_snapshot.steps[slot.step_index - 1].employee
         == slot.employee_id
-        and _digest(workflow_snapshot) == slot.workflow_snapshot_sha256
+        and _workflow_snapshot_digest_matches(
+            manifest.workflow_snapshot, slot.workflow_snapshot_sha256
+        )
         and _digest(_canonical(_employee_dict(employee)))
         == slot.employee_snapshot_sha256
         and manifest.workflow_snapshot.steps[
@@ -1955,11 +1971,10 @@ def run_bounded_document_job(
     except WorkflowJobAuthorizationError as error:
         outcome = _stopped_document_job_outcome(store, scope, error.classification)
     except PersistedExecutionOutcomeRoutingCompatibilityError as error:
-        reason = (
-            "document_job_file_change_set_json"
-            if error.detail.classification == "file_change_set_json"
-            else "document_job_execution_uncertain"
-        )
+        reason = {
+            "file_change_set_json": "document_job_file_change_set_json",
+            "file_change_set_diff": "document_job_file_change_set_diff",
+        }.get(error.detail.classification, "document_job_execution_uncertain")
         outcome = _stopped_document_job_outcome(store, scope, reason)
     except Exception:
         # Transport/normalization errors can have ambiguous side effects. Do not
@@ -2432,8 +2447,10 @@ def _execute_bounded_document_job(
     if (
         initial_manifest.workflow_id != scope.actions[0].workflow_id
         or initial_manifest.run_input != assignment
-        or _digest(_canonical(asdict(initial_manifest.workflow_snapshot)))
-        != scope.actions[0].workflow_snapshot_sha256
+        or not _workflow_snapshot_digest_matches(
+            initial_manifest.workflow_snapshot,
+            scope.actions[0].workflow_snapshot_sha256,
+        )
     ):
         raise WorkflowJobAuthorizationError("document_job_initial_run")
 

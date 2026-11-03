@@ -39,6 +39,7 @@ PersistedExecutionOutcomeRoutingClassification = Literal[
     "classification_contract",
     "progression_contract",
     "file_change_set_json",
+    "file_change_set_diff",
     "dependency_error",
     "dependency_rollback",
 ]
@@ -154,8 +155,8 @@ def _ensure_required_run_artifacts(
             allow_creation=allow_artifact_completion,
         )
     except WorkflowArtifactLoadError as error:
-        if error.classification == "file_change_set_json":
-            _raise("file_change_set_json")
+        if error.classification in {"file_change_set_json", "file_change_set_diff"}:
+            _raise(error.classification)
         _raise("dependency_error")
     except PersistedExecutionOutcomeRoutingError:
         raise

@@ -204,6 +204,44 @@ def test_workflow_artifact_content_type_is_explicit_and_validated(
     assert loaded.definition.steps[1].artifact_content_type is None
 
 
+def test_model_output_format_is_explicit_and_only_applies_to_change_sets(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "workflow.yaml"
+    definition = workflow_data()
+    definition["steps"][0]["artifact_content_type"] = (
+        "application/vnd.ai-office.file-change-set+json"
+    )
+    definition["steps"][0]["model_output_format"] = "unified-diff"
+    source.write_text(yaml.safe_dump(definition, sort_keys=False), encoding="utf-8")
+
+    loaded = load_workflow_file(source)
+
+    assert loaded.definition.steps[0].model_output_format == "unified-diff"
+    assert loaded.definition.steps[1].model_output_format is None
+
+    definition["steps"][0]["artifact_content_type"] = "text/markdown"
+    source.write_text(yaml.safe_dump(definition, sort_keys=False), encoding="utf-8")
+    with pytest.raises(WorkflowLoadError, match="invalid workflow definition"):
+        load_workflow_file(source)
+
+
+def test_bounded_change_workflow_selects_unified_diff_for_author_and_revision() -> None:
+    root = Path(__file__).parents[1]
+    workflow = load_workflow_file(
+        root / "workflows/bounded-change-review.yaml"
+    ).definition
+    steps = {step.id: step for step in workflow.steps}
+
+    for step_id in ("create-candidate", "revise-candidate"):
+        step = steps[step_id]
+        assert step.model_output_format == "unified-diff"
+        assert "unified diff" in step.instructions
+        assert "content_base64" not in step.instructions
+        assert "before_sha256" not in step.instructions
+        assert "source_sha256" not in step.instructions
+
+
 @pytest.mark.parametrize("content_type", ["", "markdown", "text/*", " text/csv"])
 def test_workflow_artifact_content_type_rejects_missing_media_type_separator(
     tmp_path: Path, content_type: str

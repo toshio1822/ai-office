@@ -6,7 +6,7 @@ import base64
 import json
 import threading
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from multiprocessing import get_context
 from pathlib import Path
@@ -272,6 +272,30 @@ def _snapshot_digest(snapshot: object) -> str:
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
+
+
+def test_legacy_bounded_job_snapshot_digest_remains_accepted() -> None:
+    @dataclass
+    class Snapshot:
+        steps: list[dict[str, object]]
+
+    snapshot = Snapshot(
+        steps=[{"id": "draft", "model_output_format": None}]
+    )
+    current = _snapshot_digest(snapshot)
+    legacy_value = {"steps": [{"id": "draft"}]}
+    legacy = sha256(
+        json.dumps(
+            legacy_value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+    assert bounded_job_module._workflow_snapshot_digest_matches(snapshot, current)
+    assert bounded_job_module._workflow_snapshot_digest_matches(snapshot, legacy)
+    assert not bounded_job_module._workflow_snapshot_digest_matches(snapshot, "0" * 64)
 
 
 def test_legacy_bounded_scope_v2_is_rejected_without_migration(
