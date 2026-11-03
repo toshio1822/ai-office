@@ -1306,6 +1306,11 @@ def test_output_limit_is_durable_and_redacted(
         ),
         pytest.param(
             False,
+            "invalid-diff-space-trailer",
+            id="space-prefixed-diff-trailer-stops-before-review-and-effect",
+        ),
+        pytest.param(
+            False,
             "persistence-failure",
             id="artifact-persistence-failure-remains-uncertain",
         ),
@@ -1542,18 +1547,24 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             reviewer_inputs.append(run_input)
         index = len(calls) - 1
         if index == 0:
-            output = (
-                "Explanation of the change:\n"
-                "--- a/calculator.py\n+++ b/calculator.py\n"
-                "@@ -1,2 +1,2 @@\n def answer():\n"
-                "-    return 404\n+    return 2\n"
-                if artifact_failure == "invalid-diff"
-                else candidate_diff(
+            if artifact_failure == "invalid-diff":
+                output = (
+                    "Explanation of the change:\n"
+                    "--- a/calculator.py\n+++ b/calculator.py\n"
+                    "@@ -1,2 +1,2 @@\n def answer():\n"
+                    "-    return 404\n+    return 2\n"
+                )
+            elif artifact_failure == "invalid-diff-space-trailer":
+                output = (
+                    candidate_diff(b"def answer():\n    return 2\n")
+                    + " This is explanation text\n"
+                )
+            else:
+                output = candidate_diff(
                     b"def answer():\n    return 2  # unnecessary comment\n"
                     if needs_revision
                     else b"def answer():\n    return 2\n"
                 )
-            )
         elif needs_revision and index == 1:
             output = findings
         elif needs_revision and index == 2:
@@ -1619,7 +1630,8 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     if artifact_failure is not None:
         expected_reason = (
             "document_job_file_change_set_diff"
-            if artifact_failure == "invalid-diff"
+            if artifact_failure
+            in {"invalid-diff", "invalid-diff-space-trailer"}
             else "document_job_execution_uncertain"
         )
         assert outcome.status == "stopped"

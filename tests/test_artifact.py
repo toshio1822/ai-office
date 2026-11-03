@@ -469,6 +469,15 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "--- a/src/example.py\n+++ b/src/example.py\n"
         "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
         "Explanation of the change.\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        " This is explanation text\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "+This is explanation text\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "-This is explanation text\n",
         "```diff\n"
         "--- a/src/example.py\n+++ b/src/example.py\n"
         "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
@@ -489,6 +498,9 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "create",
         "explanation-preamble",
         "explanation-trailer",
+        "space-prefixed-hunk-trailer",
+        "addition-prefixed-hunk-trailer",
+        "deletion-prefixed-hunk-trailer",
         "markdown-fence",
         "git-metadata",
     ],

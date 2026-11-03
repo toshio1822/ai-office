@@ -524,13 +524,14 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
             _raise_load("file_change_set_diff")
         patch_lines = patch.splitlines()
         # This is only an envelope check: Git remains the sole parser and
-        # applicability check for hunk syntax and counts. Reject prose,
-        # Markdown wrappers, and extended Git metadata before calling it.
+        # applicability check for hunk syntax and source context. Count only
+        # declared hunk records here so Git cannot silently ignore trailing
+        # lines after an otherwise valid hunk.
         if (
             len(patch_lines) < 3
             or not patch_lines[0].startswith("--- ")
             or not patch_lines[1].startswith("+++ ")
-            or not any(line.startswith("@@ ") for line in patch_lines)
+            or not _has_complete_unified_diff_hunks(patch_lines)
             or any(
                 not line.startswith(("--- ", "+++ ", "@@ ", " ", "+", "-"))
                 and line != r"\ No newline at end of file"
@@ -652,6 +653,58 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
     # the model-output classification.
     except (UnicodeError, ValueError, TypeError, KeyError, RecursionError):
         _raise_load("file_change_set_diff")
+
+
+def _has_complete_unified_diff_hunks(patch_lines: list[str]) -> bool:
+    """Reject lines outside declared hunks; Git validates and applies syntax."""
+    marker = r"\ No newline at end of file"
+    index = 2
+    has_hunk = False
+    while index < len(patch_lines):
+        line = patch_lines[index]
+        if line.startswith("@@ "):
+            header = re.match(
+                r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line
+            )
+            if header is None:
+                return False
+            old_remaining = int(header.group(1) or 1)
+            new_remaining = int(header.group(2) or 1)
+            has_hunk = True
+            index += 1
+            while old_remaining or new_remaining:
+                if index >= len(patch_lines):
+                    return False
+                body_line = patch_lines[index]
+                if body_line == marker:
+                    index += 1
+                    continue
+                if body_line.startswith(" "):
+                    old_remaining -= 1
+                    new_remaining -= 1
+                elif body_line.startswith("-"):
+                    old_remaining -= 1
+                elif body_line.startswith("+"):
+                    new_remaining -= 1
+                else:
+                    return False
+                if old_remaining < 0 or new_remaining < 0:
+                    return False
+                index += 1
+            while index < len(patch_lines) and patch_lines[index] == marker:
+                index += 1
+            continue
+        if line.startswith("--- "):
+            if (
+                index + 2 >= len(patch_lines)
+                or not patch_lines[index + 1].startswith("+++ ")
+                or not patch_lines[index + 2].startswith("@@ ")
+            ):
+                return False
+            index += 2
+            continue
+        return False
+    return has_hunk
 
 
 def _load_manifest(
