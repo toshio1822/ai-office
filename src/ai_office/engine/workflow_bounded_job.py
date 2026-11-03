@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import Literal
 
 from ai_office.definitions.workflow import LoadedWorkflow, WorkflowDefinition
+from ai_office.engine.persisted_execution_outcome_routing_reentry import (
+    PersistedExecutionOutcomeRoutingCompatibilityError,
+)
 from ai_office.engine.workflow_job_authorization import (
     WorkflowJobAuthorizationError,
     WorkflowJobGrant,
@@ -1951,6 +1954,13 @@ def run_bounded_document_job(
         )
     except WorkflowJobAuthorizationError as error:
         outcome = _stopped_document_job_outcome(store, scope, error.classification)
+    except PersistedExecutionOutcomeRoutingCompatibilityError as error:
+        reason = (
+            "document_job_file_change_set_json"
+            if error.detail.classification == "file_change_set_json"
+            else "document_job_execution_uncertain"
+        )
+        outcome = _stopped_document_job_outcome(store, scope, reason)
     except Exception:
         # Transport/normalization errors can have ambiguous side effects. Do not
         # retry or infer a provider outcome; make the partial stop inspectable.
