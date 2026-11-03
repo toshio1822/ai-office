@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import difflib
 import json
+import subprocess
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -53,7 +56,11 @@ from tests._execution_evidence_test_support import create_test_execution_evidenc
 runner = CliRunner()
 
 
-def _workflow(*, artifact_content_type: str | None = "text/markdown"):
+def _workflow(
+    *,
+    artifact_content_type: str | None = "text/markdown",
+    model_output_format: str | None = None,
+):
     return WorkflowDefinition.model_validate(
         {
             "id": "artifact-workflow",
@@ -68,6 +75,7 @@ def _workflow(*, artifact_content_type: str | None = "text/markdown"):
                     "instructions": "Write the assigned output.",
                     "business_approval_required": False,
                     "artifact_content_type": artifact_content_type,
+                    "model_output_format": model_output_format,
                 },
                 {
                     "id": "review",
@@ -115,12 +123,16 @@ def _start_fixture(
     *,
     run_id: str = "run-artifact",
     artifact_content_type: str | None = "text/markdown",
+    model_output_format: str | None = None,
     output: str = "# Exact\n\nResult ✓",
     status_code: int = 200,
     run_input: str | None = None,
     captured_requests: list[object] | None = None,
 ):
-    workflow = _workflow(artifact_content_type=artifact_content_type)
+    workflow = _workflow(
+        artifact_content_type=artifact_content_type,
+        model_output_format=model_output_format,
+    )
     employee = _employee()
     request = ModelInvocationRequest(
         model=workflow.steps[0].model,
@@ -311,6 +323,349 @@ def test_file_change_set_artifact_canonicalizes_one_json_object(
     assert (
         artifact.raw_response_evidence_sha256
         == normalized.raw_response_evidence_sha256
+    )
+
+
+def _diff_run_input(
+    sources: dict[str, str], revision: str = "a" * 40
+) -> str:
+    return json.dumps(
+        {
+            "repository": {"base_revision": revision},
+            "allowed_paths": {"read": sorted(sources), "write": sorted(sources)},
+            "source_context": sources,
+            "source_sha256": {
+                path: sha256(content.encode("utf-8")).hexdigest()
+                for path, content in sources.items()
+            },
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _unified_diff(sources: dict[str, str], replacements: dict[str, str]) -> str:
+    sections = []
+    for path in sorted(replacements):
+        sections.extend(
+            difflib.unified_diff(
+                sources[path].splitlines(keepends=True),
+                replacements[path].splitlines(keepends=True),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                n=3,
+            )
+        )
+    return "".join(sections)
+
+
+def test_unified_diff_artifact_applies_to_fixed_sources_and_keeps_raw_evidence(
+    tmp_path: Path,
+) -> None:
+    sources = {
+        "src/example.py": "def answer():\n    return 1\n",
+        "tests/test_example.py": "def test_answer():\n    assert answer() == 1\n",
+    }
+    replacements = {
+        "src/example.py": "def answer():\n    return 2\n",
+        "tests/test_example.py": "def test_answer():\n    assert answer() == 2\n",
+    }
+    output = _unified_diff(sources, replacements)
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+
+    decision = _route(workflow, evidence)
+    artifact = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)[0]
+    normalized = load_normalized_result_evidence(
+        evidence.run.store.root,
+        evidence.run.binding.run_id,
+        artifact.execution_attempt_id,
+    )
+    value = json.loads(artifact.content)
+    changes = {change["path"]: change for change in value["changes"]}
+
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert normalized.text == output
+    assert value["schema_version"] == "file-change-set.v1"
+    assert value["base_revision"] == "a" * 40
+    assert set(changes) == set(replacements)
+    for path, content in replacements.items():
+        assert changes[path]["before_sha256"] == sha256(
+            sources[path].encode("utf-8")
+        ).hexdigest()
+        assert base64.b64decode(changes[path]["content_base64"]) == content.encode(
+            "utf-8"
+        )
+    assert artifact.content_sha256 == sha256(artifact.content).hexdigest()
+    assert artifact.normalized_result_evidence_sha256 == normalized.digest
+    assert (
+        artifact.raw_response_evidence_sha256
+        == normalized.raw_response_evidence_sha256
+    )
+
+
+def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
+    tmp_path: Path,
+) -> None:
+    source = "x" * 800_000 + "\nold\nkeep\n"
+    output = (
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -2,2 +2,2 @@\n-old\n+new\n keep\n"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input({"src/example.py": source}),
+    )
+    _commit_success(workflow, evidence, result)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
+        _route(workflow, evidence)
+
+    assert error.value.detail.classification == "file_change_set_diff"
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n    return 1\n-    return 1\n+    return 2\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n not-the-source\n-    return 1\n+    return 2\n",
+        "--- a/not-allowed.py\n+++ b/not-allowed.py\n"
+        "@@ -1,1 +1,1 @@\n-old\n+new\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 3\n",
+        "diff --git a/src/example.py b/src/src-renamed.py\n"
+        "similarity index 100%\nrename from src/example.py\n"
+        "rename to src/src-renamed.py\n",
+        "diff --git a/src/example.py b/src/example.py\n"
+        "old mode 100644\nnew mode 100755\n",
+        "diff --git a/src/example.py b/src/example.py\n"
+        "deleted file mode 100644\nindex e69de29..0000000\n"
+        "--- a/src/example.py\n+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n-def answer():\n-    return 1\n",
+        "diff --git a/src/new.py b/src/new.py\n"
+        "new file mode 100644\nindex 0000000..3e75765\n"
+        "--- /dev/null\n+++ b/src/new.py\n@@ -0,0 +1 @@\n+new\n",
+        "Explanation of the change:\n"
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "Explanation of the change.\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        " This is explanation text\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "+This is explanation text\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "-This is explanation text\n",
+        "```diff\n"
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "```\n",
+        "diff --git a/src/example.py b/src/example.py\n"
+        "index 0123456..abcdef0 100644\n"
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n",
+    ],
+    ids=[
+        "offset",
+        "mismatched-context",
+        "out-of-scope",
+        "duplicate-path",
+        "rename",
+        "mode-change",
+        "delete",
+        "create",
+        "explanation-preamble",
+        "explanation-trailer",
+        "space-prefixed-hunk-trailer",
+        "addition-prefixed-hunk-trailer",
+        "deletion-prefixed-hunk-trailer",
+        "markdown-fence",
+        "git-metadata",
+    ],
+)
+def test_unified_diff_artifact_rejects_unsafe_or_ambiguous_patches(
+    tmp_path: Path, output: str
+) -> None:
+    sources = {"src/example.py": "def answer():\n    return 1\n"}
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
+        _route(workflow, evidence)
+
+    assert error.value.detail.classification == "file_change_set_diff"
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
+    )
+
+
+@pytest.mark.parametrize("failure", ["git-process", "temporary-io"])
+def test_unified_diff_artifact_runtime_failures_keep_dependency_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    sources = {"src/example.py": "def answer():\n    return 1\n"}
+    output = (
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+
+    if failure == "git-process":
+        original_run = subprocess.run
+
+        def fail_git_apply(command, *args, **kwargs):
+            if command[:2] == ["git", "apply"]:
+                raise FileNotFoundError("synthetic missing git executable")
+            return original_run(command, *args, **kwargs)
+
+        monkeypatch.setattr(artifact_module.subprocess, "run", fail_git_apply)
+    else:
+        original_write_bytes = Path.write_bytes
+
+        def fail_temporary_write(path: Path, content: bytes) -> int:
+            if any(part.startswith("ai-office-unified-diff-") for part in path.parts):
+                raise OSError("synthetic temporary-file write failure")
+            return original_write_bytes(path, content)
+
+        monkeypatch.setattr(Path, "write_bytes", fail_temporary_write)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
+        _route(workflow, evidence)
+
+    assert error.value.detail.classification == "dependency_error"
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
+    )
+
+
+def test_unified_diff_artifact_checks_all_hunks_before_producing_artifact(
+    tmp_path: Path,
+) -> None:
+    sources = {"src/example.py": "a\nb\nc\nd\ne\nf\n"}
+    output = (
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n-a\n+A\n b\n"
+        "@@ -5,2 +5,2 @@\n-not-e\n+E\n f\n"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
+        _route(workflow, evidence)
+
+    assert error.value.detail.classification == "file_change_set_diff"
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
+    )
+
+
+def test_unified_diff_artifact_rejects_binary_patch(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "binary-patch"
+    (repository / "src").mkdir(parents=True)
+    source = b"old\n"
+    path = repository / "src/example.py"
+    path.write_bytes(source)
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Offline Test"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "config",
+            "user.email",
+            "offline@example.invalid",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "--", "src/example.py"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-q", "-m", "baseline"],
+        check=True,
+    )
+    path.write_bytes(b"\x00new\n")
+    patch = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "diff",
+            "--binary",
+            "--full-index",
+            "--",
+            "src/example.py",
+        ],
+        capture_output=True,
+        check=True,
+    ).stdout.decode("ascii")
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=patch,
+        run_input=_diff_run_input({"src/example.py": source.decode("ascii")}),
+    )
+    _commit_success(workflow, evidence, result)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
+        _route(workflow, evidence)
+
+    assert error.value.detail.classification == "file_change_set_diff"
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
     )
 
 

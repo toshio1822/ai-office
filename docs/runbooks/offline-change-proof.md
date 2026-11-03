@@ -9,10 +9,14 @@ and the referenced Employee definitions.
 
 ## Boundary
 
-- The author step returns one canonical `file-change-set.v1` JSON Artifact.
-  It names an exact Git base revision, relative existing file paths, SHA-256
-  preimages, and UTF-8 replacement bytes. It is data, never a command; deletion
-  and mode changes are not part of the contract.
+- The fixed author/revision Step Manifest selects human-readable unified diff
+  as the model output format. The model returns exact-position hunks against
+  the original fixed `source_context`; it does not calculate hashes, Base64, or
+  replacement-file JSON. Artifact finalization retains the normalized diff as
+  provider Evidence, applies it to the pinned source in a disposable directory,
+  and creates the existing canonical `file-change-set.v1` JSON Artifact with
+  system-computed preimage hashes and UTF-8 replacement bytes. Creation,
+  deletion, rename, binary content, and mode changes are rejected.
 - An operator reviews a JSON policy and must pass
   `--approve-local-effect` with a distinct approval ID. The durable grant binds
   the Run Manifest digest, Artifact ID and digest, repository path and base
@@ -85,10 +89,11 @@ criteria, exact UTF-8 source context needed for the bounded change, and a
 `source_sha256` mapping for every writable path. Compute those digests on the
 operator side from the exact bytes at the fixed base revision, then verify each
 digest against its matching `source_context` value before Run creation. These
-values are prompt inputs, not a replacement for the existing local preimage
-validation; author and revision steps copy them verbatim and never calculate
-them. The existing revision handoff retains the original Run Input under
-`assignment`, so the digest source remains fixed across a revision. For example:
+values are not model-output fields or a replacement for the existing local
+preimage validation; Artifact finalization independently computes and checks
+the preimage for each changed file. The existing revision handoff retains the
+original Run Input under `assignment`, so the patch source remains fixed across
+a revision. For example:
 
 ```json
 {

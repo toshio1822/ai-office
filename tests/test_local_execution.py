@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import difflib
 import importlib.util
 import json
 import os
@@ -1300,13 +1301,23 @@ def test_output_limit_is_durable_and_redacted(
         pytest.param(False, None, id="candidate-no-revision"),
         pytest.param(
             False,
-            "invalid-json",
-            id="invalid-candidate-json-stops-before-artifact",
+            "invalid-diff",
+            id="invalid-candidate-diff-stops-before-artifact",
+        ),
+        pytest.param(
+            False,
+            "invalid-diff-space-trailer",
+            id="space-prefixed-diff-trailer-stops-before-review-and-effect",
         ),
         pytest.param(
             False,
             "persistence-failure",
             id="artifact-persistence-failure-remains-uncertain",
+        ),
+        pytest.param(
+            False,
+            "temporary-io-failure",
+            id="artifact-temporary-io-failure-remains-uncertain",
         ),
     ],
 )
@@ -1371,10 +1382,12 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             if step.id == "revise-candidate"
         ).split()
     )
-    assert "Copy source_sha256[path] verbatim" in author_instructions
-    assert "Never compute" in author_instructions
-    assert "assignment's source_sha256[path] verbatim" in revision_instructions
-    assert "never calculate" in revision_instructions
+    assert "standard unified diff" in author_instructions
+    assert "exactly" in author_instructions
+    assert "unified diff" in revision_instructions
+    assert "original source_context" in revision_instructions
+    assert "source_sha256" not in author_instructions
+    assert "source_sha256" not in revision_instructions
     employees = {
         loaded.definition.id: loaded
         for loaded in load_employees(_SAMPLE_ROOT / "employees")
@@ -1514,6 +1527,17 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         "Requirement: This supplemental check repeats the requirement label."
     )
 
+    def candidate_diff(replacement: bytes) -> str:
+        return "".join(
+            difflib.unified_diff(
+                source.decode("utf-8").splitlines(keepends=True),
+                replacement.decode("utf-8").splitlines(keepends=True),
+                fromfile="a/calculator.py",
+                tofile="b/calculator.py",
+                n=3,
+            )
+        )
+
     def fake_transport(request: object) -> OpenAIResponsesRawHttpResponse:
         payload = json.loads(request.body)
         task_input = json.loads(payload["input"])
@@ -1522,36 +1546,31 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         if "source_artifact" in run_input and "review_artifacts" not in run_input:
             reviewer_inputs.append(run_input)
         index = len(calls) - 1
-        fixed_run_input = (
-            run_input
-            if "source_sha256" in run_input
-            else json.loads(run_input["assignment"])
-        )
         if index == 0:
-            output = (
-                "Candidate content is unavailable in the required JSON format."
-                if artifact_failure == "invalid-json"
-                else _change_set(
-                    revision,
-                    source,
-                    before_sha256=fixed_run_input["source_sha256"]["calculator.py"],
-                    replacement=(
-                        b"def answer():\n    return 2  # unnecessary comment\n"
-                        if needs_revision
-                        else b"def answer():\n    return 2\n"
-                    ),
+            if artifact_failure == "invalid-diff":
+                output = (
+                    "Explanation of the change:\n"
+                    "--- a/calculator.py\n+++ b/calculator.py\n"
+                    "@@ -1,2 +1,2 @@\n def answer():\n"
+                    "-    return 404\n+    return 2\n"
                 )
-            )
+            elif artifact_failure == "invalid-diff-space-trailer":
+                output = (
+                    candidate_diff(b"def answer():\n    return 2\n")
+                    + " This is explanation text\n"
+                )
+            else:
+                output = candidate_diff(
+                    b"def answer():\n    return 2  # unnecessary comment\n"
+                    if needs_revision
+                    else b"def answer():\n    return 2\n"
+                )
         elif needs_revision and index == 1:
             output = findings
         elif needs_revision and index == 2:
             output = pass_review()
         elif needs_revision and index == 3:
-            output = _change_set(
-                revision,
-                source,
-                before_sha256=fixed_run_input["source_sha256"]["calculator.py"],
-            )
+            output = candidate_diff(b"def answer():\n    return 2\n")
         else:
             output = pass_review()
         return response(output)
@@ -1586,6 +1605,15 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         monkeypatch.setattr(
             artifact_module, "_persist_workflow_artifact", fail_artifact_persistence
         )
+    elif artifact_failure == "temporary-io-failure":
+        original_write_bytes = Path.write_bytes
+
+        def fail_temporary_write(path: Path, content: bytes) -> int:
+            if any(part.startswith("ai-office-unified-diff-") for part in path.parts):
+                raise OSError("synthetic temporary-file write failure")
+            return original_write_bytes(path, content)
+
+        monkeypatch.setattr(Path, "write_bytes", fail_temporary_write)
 
     outcome = run_bounded_document_job(
         store,
@@ -1601,8 +1629,9 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
 
     if artifact_failure is not None:
         expected_reason = (
-            "document_job_file_change_set_json"
-            if artifact_failure == "invalid-json"
+            "document_job_file_change_set_diff"
+            if artifact_failure
+            in {"invalid-diff", "invalid-diff-space-trailer"}
             else "document_job_execution_uncertain"
         )
         assert outcome.status == "stopped"

@@ -7,6 +7,7 @@ import binascii
 import json
 import os
 import re
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from hashlib import sha256
@@ -35,6 +36,7 @@ from ai_office.storage import (
 _ARTIFACT_SCHEMA = "workflow-artifact.v1"
 _ARTIFACT_PREFIX = "artifact"
 _FILE_CHANGE_SET_CONTENT_TYPE = "application/vnd.ai-office.file-change-set+json"
+_MAX_ARTIFACT_BYTES = 1_048_576
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _CONTENT_TYPE_PATTERN = re.compile(
@@ -301,29 +303,34 @@ def _artifact_from_success_event(
         canonicalize_file_change_set
         and step.artifact_content_type == _FILE_CHANGE_SET_CONTENT_TYPE
     ):
-        candidate = normalized.text.strip()
-        if candidate.startswith("```"):
-            fenced = re.fullmatch(
-                r"```json[ \t]*\r?\n(.*?)(?:\r?\n)?```",
-                candidate,
-                flags=re.DOTALL,
-            )
-            if fenced is None:
+        if step.model_output_format == "unified-diff":
+            content = _canonicalize_unified_diff(manifest.run_input, normalized.text)
+        elif step.model_output_format is None:
+            candidate = normalized.text.strip()
+            if candidate.startswith("```"):
+                fenced = re.fullmatch(
+                    r"```json[ \t]*\r?\n(.*?)(?:\r?\n)?```",
+                    candidate,
+                    flags=re.DOTALL,
+                )
+                if fenced is None:
+                    _raise_load("file_change_set_json")
+                candidate = fenced.group(1)
+            try:
+                value = json.loads(
+                    candidate,
+                    object_pairs_hook=_reject_duplicate_keys,
+                    parse_constant=_reject_nonstandard_json_constant,
+                )
+            except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
                 _raise_load("file_change_set_json")
-            candidate = fenced.group(1)
-        try:
-            value = json.loads(
-                candidate,
-                object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_nonstandard_json_constant,
-            )
-        except (json.JSONDecodeError, ValueError, TypeError, RecursionError):
-            _raise_load("file_change_set_json")
-        if type(value) is not dict:
-            _raise_load("file_change_set_json")
-        try:
-            content = _canonical_json(value).encode("utf-8")
-        except (UnicodeEncodeError, ValueError, TypeError, RecursionError):
+            if type(value) is not dict:
+                _raise_load("file_change_set_json")
+            try:
+                content = _canonical_json(value).encode("utf-8")
+            except (UnicodeEncodeError, ValueError, TypeError, RecursionError):
+                _raise_load("file_change_set_json")
+        else:
             _raise_load("file_change_set_json")
     content_digest = sha256(content).hexdigest()
     event_bytes = serialize_runtime_step_event_jsonl(event).encode()
@@ -431,6 +438,8 @@ def _validate_artifact_lineage(
         expected = None
     if artifact == expected:
         return
+    if step.model_output_format == "unified-diff":
+        _raise_load("artifact_lineage")
     # Existing Artifacts were historically the exact normalized provider text.
     # Continue to verify those immutable records without rewriting them; new
     # file-change-set Artifacts are canonicalized by the finalization path above.
@@ -442,6 +451,260 @@ def _validate_artifact_lineage(
     )
     if artifact != legacy:
         _raise_load("artifact_lineage")
+
+
+def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
+    """Apply one pinned exact-position diff and encode the existing v1 payload."""
+    try:
+        input_value = json.loads(
+            run_input,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+        if (
+            type(input_value) is dict
+            and type(input_value.get("assignment")) is str
+            and type(input_value.get("source_artifact")) is dict
+        ):
+            input_value = json.loads(
+                input_value["assignment"],
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=_reject_nonstandard_json_constant,
+            )
+        repository = input_value["repository"]
+        allowed_paths = input_value["allowed_paths"]
+        source_context = input_value["source_context"]
+        source_sha256 = input_value["source_sha256"]
+        if (
+            type(input_value) is not dict
+            or type(repository) is not dict
+            or type(allowed_paths) is not dict
+            or type(source_context) is not dict
+            or type(source_sha256) is not dict
+            or type(allowed_paths.get("write")) is not list
+        ):
+            _raise_load("file_change_set_diff")
+        base_revision = repository.get("base_revision")
+        write_paths = allowed_paths["write"]
+        if (
+            type(base_revision) is not str
+            or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base_revision)
+            is None
+            or not write_paths
+            or any(type(path) is not str for path in write_paths)
+            or len(write_paths) != len(set(write_paths))
+        ):
+            _raise_load("file_change_set_diff")
+
+        sources: dict[str, bytes] = {}
+        for path in write_paths:
+            path_parts = Path(path).parts
+            if (
+                not path
+                or Path(path).is_absolute()
+                or "\\" in path
+                or "\x00" in path
+                or Path(path).as_posix() != path
+                or not path_parts
+                or any(part in {"", ".", ".."} for part in path_parts)
+                or path_parts[0] == ".git"
+            ):
+                _raise_load("file_change_set_diff")
+            source_text = source_context.get(path)
+            expected_digest = source_sha256.get(path)
+            if type(source_text) is not str or type(expected_digest) is not str:
+                _raise_load("file_change_set_diff")
+            source = source_text.encode("utf-8")
+            if expected_digest != sha256(source).hexdigest():
+                _raise_load("file_change_set_diff")
+            sources[path] = source
+
+        patch_bytes = patch.encode("utf-8")
+        if not patch_bytes or len(patch_bytes) > 1_048_576:
+            _raise_load("file_change_set_diff")
+        patch_lines = patch.splitlines()
+        # This is only an envelope check: Git remains the sole parser and
+        # applicability check for hunk syntax and source context. Count only
+        # declared hunk records here so Git cannot silently ignore trailing
+        # lines after an otherwise valid hunk.
+        if (
+            len(patch_lines) < 3
+            or not patch_lines[0].startswith("--- ")
+            or not patch_lines[1].startswith("+++ ")
+            or not _has_complete_unified_diff_hunks(patch_lines)
+            or any(
+                not line.startswith(("--- ", "+++ ", "@@ ", " ", "+", "-"))
+                and line != r"\ No newline at end of file"
+                for line in patch_lines
+            )
+        ):
+            _raise_load("file_change_set_diff")
+        with tempfile.TemporaryDirectory(prefix="ai-office-unified-diff-") as root:
+            workspace = Path(root)
+            for path, source in sources.items():
+                target = workspace / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source)
+                target.chmod(0o600)
+
+            environment = {
+                "HOME": root,
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": os.defpath,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_TERMINAL_PROMPT": "0",
+            }
+
+            def git_apply(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+                return subprocess.run(
+                    ["git", "apply", *arguments, "-"],
+                    cwd=workspace,
+                    input=patch_bytes,
+                    capture_output=True,
+                    env=environment,
+                    timeout=5,
+                    check=False,
+                )
+
+            checked = git_apply("--check", "--verbose")
+            diagnostics = checked.stderr.decode("utf-8", errors="replace")
+            if checked.returncode != 0 or re.search(
+                r"\b(?:Hunk\s+#\d+\s+succeeded|offset\s+-?\d+\s+lines?|"
+                r"with fuzz\s+\d+)\b",
+                diagnostics,
+                flags=re.IGNORECASE,
+            ):
+                _raise_load("file_change_set_diff")
+
+            summary = git_apply("--summary")
+            if summary.returncode != 0 or summary.stdout:
+                _raise_load("file_change_set_diff")
+
+            numstat = git_apply("--numstat", "-z")
+            if numstat.returncode != 0:
+                _raise_load("file_change_set_diff")
+            records = numstat.stdout.decode("utf-8").split("\x00")
+            if not records or records[-1] != "":
+                _raise_load("file_change_set_diff")
+            changed_paths: list[str] = []
+            for record in records[:-1]:
+                fields = record.split("\t", 2)
+                if (
+                    len(fields) != 3
+                    or fields[0] == "-"
+                    or fields[1] == "-"
+                    or fields[2] not in sources
+                    or fields[2] in changed_paths
+                ):
+                    _raise_load("file_change_set_diff")
+                changed_paths.append(fields[2])
+            if not changed_paths:
+                _raise_load("file_change_set_diff")
+
+            applied = git_apply()
+            if applied.returncode != 0:
+                _raise_load("file_change_set_diff")
+            existing_paths = {
+                item.relative_to(workspace).as_posix()
+                for item in workspace.rglob("*")
+                if item.is_file() or item.is_symlink()
+            }
+            if existing_paths != set(sources):
+                _raise_load("file_change_set_diff")
+
+            changes = []
+            for path in sorted(changed_paths):
+                target = workspace / path
+                if (
+                    target.is_symlink()
+                    or not target.is_file()
+                ):
+                    _raise_load("file_change_set_diff")
+                content = target.read_bytes()
+                content.decode("utf-8")
+                if content == sources[path]:
+                    _raise_load("file_change_set_diff")
+                changes.append(
+                    {
+                        "path": path,
+                        "before_sha256": sha256(sources[path]).hexdigest(),
+                        "content_base64": base64.b64encode(content).decode("ascii"),
+                    }
+                )
+        content = _canonical_json(
+            {
+                "schema_version": "file-change-set.v1",
+                "base_revision": base_revision,
+                "changes": changes,
+            }
+        ).encode("utf-8")
+        if len(content) > _MAX_ARTIFACT_BYTES:
+            _raise_load("file_change_set_diff")
+        return content
+    except WorkflowArtifactLoadError:
+        raise
+    # Runtime I/O and Git process errors deliberately cross this boundary.
+    # The existing routing owner maps those unknown dependencies to its
+    # conservative execution-uncertain stop; only input/patch failures get
+    # the model-output classification.
+    except (UnicodeError, ValueError, TypeError, KeyError, RecursionError):
+        _raise_load("file_change_set_diff")
+
+
+def _has_complete_unified_diff_hunks(patch_lines: list[str]) -> bool:
+    """Reject lines outside declared hunks; Git validates and applies syntax."""
+    marker = r"\ No newline at end of file"
+    index = 2
+    has_hunk = False
+    while index < len(patch_lines):
+        line = patch_lines[index]
+        if line.startswith("@@ "):
+            header = re.match(
+                r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line
+            )
+            if header is None:
+                return False
+            old_remaining = int(header.group(1) or 1)
+            new_remaining = int(header.group(2) or 1)
+            has_hunk = True
+            index += 1
+            while old_remaining or new_remaining:
+                if index >= len(patch_lines):
+                    return False
+                body_line = patch_lines[index]
+                if body_line == marker:
+                    index += 1
+                    continue
+                if body_line.startswith(" "):
+                    old_remaining -= 1
+                    new_remaining -= 1
+                elif body_line.startswith("-"):
+                    old_remaining -= 1
+                elif body_line.startswith("+"):
+                    new_remaining -= 1
+                else:
+                    return False
+                if old_remaining < 0 or new_remaining < 0:
+                    return False
+                index += 1
+            while index < len(patch_lines) and patch_lines[index] == marker:
+                index += 1
+            continue
+        if line.startswith("--- "):
+            if (
+                index + 2 >= len(patch_lines)
+                or not patch_lines[index + 1].startswith("+++ ")
+                or not patch_lines[index + 2].startswith("@@ ")
+            ):
+                return False
+            index += 2
+            continue
+        return False
+    return has_hunk
 
 
 def _load_manifest(

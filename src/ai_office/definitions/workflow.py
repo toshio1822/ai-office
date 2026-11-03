@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import (
@@ -36,6 +37,7 @@ class WorkflowStepDefinition(BaseModel):
         default=None,
         pattern=r"^[!#$%&'+.^_`|~%0-9A-Za-z-]+/[!#$%&'+.^_`|~%0-9A-Za-z-]+$",
     )
+    model_output_format: Literal["unified-diff"] | None = None
 
     @field_validator("name", "model", "instructions")
     @classmethod
@@ -44,6 +46,18 @@ class WorkflowStepDefinition(BaseModel):
         if not value.strip():
             raise ValueError("must not be blank")
         return value
+
+    @model_validator(mode="after")
+    def output_format_requires_file_change_set(self) -> WorkflowStepDefinition:
+        """Keep model-facing representation distinct from Artifact content."""
+        if self.model_output_format is not None and (
+            self.artifact_content_type
+            != "application/vnd.ai-office.file-change-set+json"
+        ):
+            raise ValueError(
+                "model_output_format requires a file-change-set Artifact"
+            )
+        return self
 
 
 class BoundedReviewDefinition(BaseModel):
