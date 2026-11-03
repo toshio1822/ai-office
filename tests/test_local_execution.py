@@ -24,10 +24,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
+import ai_office.engine.artifact as artifact_module
 from ai_office.cli import app
 from ai_office.definitions.employee import load_employees
 from ai_office.definitions.workflow import load_workflow_file
-from ai_office.engine.artifact import list_run_artifacts
+from ai_office.engine.artifact import (
+    WorkflowArtifactPersistenceError,
+    list_run_artifacts,
+)
 from ai_office.engine.local_execution import (
     FILE_CHANGE_SET_CONTENT_TYPE,
     LocalExecutionError,
@@ -54,6 +58,7 @@ from ai_office.engine.workflow_bounded_job import (
     BoundedJobActionSlot,
     bounded_job_execution_view,
     bounded_review_action_plan,
+    inspect_bounded_document_job,
     issue_bounded_workflow_job_scope,
     run_bounded_document_job,
 )
@@ -1289,14 +1294,27 @@ def test_output_limit_is_durable_and_redacted(
 
 
 @pytest.mark.parametrize(
-    "needs_revision",
-    [True, False],
-    ids=["reviewed-after-revision", "candidate-no-revision"],
+    ("needs_revision", "artifact_failure"),
+    [
+        pytest.param(True, None, id="reviewed-after-revision"),
+        pytest.param(False, None, id="candidate-no-revision"),
+        pytest.param(
+            False,
+            "invalid-json",
+            id="invalid-candidate-json-stops-before-artifact",
+        ),
+        pytest.param(
+            False,
+            "persistence-failure",
+            id="artifact-persistence-failure-remains-uncertain",
+        ),
+    ],
 )
 def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     tmp_path: Path,
     require_local_sandbox: None,
     needs_revision: bool,
+    artifact_failure: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ai_office.engine.artifact import read_run_artifact
@@ -1510,15 +1528,19 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             else json.loads(run_input["assignment"])
         )
         if index == 0:
-            output = _change_set(
-                revision,
-                source,
-                before_sha256=fixed_run_input["source_sha256"]["calculator.py"],
-                replacement=(
-                    b"def answer():\n    return 2  # unnecessary comment\n"
-                    if needs_revision
-                    else b"def answer():\n    return 2\n"
-                ),
+            output = (
+                "Candidate content is unavailable in the required JSON format."
+                if artifact_failure == "invalid-json"
+                else _change_set(
+                    revision,
+                    source,
+                    before_sha256=fixed_run_input["source_sha256"]["calculator.py"],
+                    replacement=(
+                        b"def answer():\n    return 2  # unnecessary comment\n"
+                        if needs_revision
+                        else b"def answer():\n    return 2\n"
+                    ),
+                )
             )
         elif needs_revision and index == 1:
             output = findings
@@ -1557,6 +1579,14 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         authorizations.append(authorization.authorization_id)
         return authorization.authorization_id
 
+    if artifact_failure == "persistence-failure":
+        def fail_artifact_persistence(_store, _artifact) -> None:
+            raise WorkflowArtifactPersistenceError("durable_write")
+
+        monkeypatch.setattr(
+            artifact_module, "_persist_workflow_artifact", fail_artifact_persistence
+        )
+
     outcome = run_bounded_document_job(
         store,
         scope,
@@ -1568,6 +1598,29 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         transport=fake_transport,
         local_effect_handler=authorize_and_validate,
     )
+
+    if artifact_failure is not None:
+        expected_reason = (
+            "document_job_file_change_set_json"
+            if artifact_failure == "invalid-json"
+            else "document_job_execution_uncertain"
+        )
+        assert outcome.status == "stopped"
+        assert outcome.stop_reason == expected_reason
+        assert outcome.final_artifact_id is None
+        assert outcome.final_artifact_run_id is None
+        assert calls and len(calls) == 1
+        assert reviewer_inputs == []
+        assert authorizations == []
+        assert list_run_artifacts(store, initial_manifest.run_id) == ()
+        assert (repository / "calculator.py").read_bytes() == source
+        inspection = inspect_bounded_document_job(store, scope.job_id)
+        assert inspection["status"] == "stopped"
+        assert inspection["stop_reason"] == expected_reason
+        assert inspection["consumed_provider_attempts"] == 1
+        assert inspection["retry_attempts_consumed"] == 0
+        assert len(inspection["dispatch_order"]) == 1
+        return
 
     assert outcome.status == ("reviewed" if needs_revision else "candidate"), outcome
     assert outcome.revisions_used == (1 if needs_revision else 0)
