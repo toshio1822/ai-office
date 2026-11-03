@@ -522,6 +522,22 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
         patch_bytes = patch.encode("utf-8")
         if not patch_bytes or len(patch_bytes) > 1_048_576:
             _raise_load("file_change_set_diff")
+        patch_lines = patch.splitlines()
+        # This is only an envelope check: Git remains the sole parser and
+        # applicability check for hunk syntax and counts. Reject prose,
+        # Markdown wrappers, and extended Git metadata before calling it.
+        if (
+            len(patch_lines) < 3
+            or not patch_lines[0].startswith("--- ")
+            or not patch_lines[1].startswith("+++ ")
+            or not any(line.startswith("@@ ") for line in patch_lines)
+            or any(
+                not line.startswith(("--- ", "+++ ", "@@ ", " ", "+", "-"))
+                and line != r"\ No newline at end of file"
+                for line in patch_lines
+            )
+        ):
+            _raise_load("file_change_set_diff")
         with tempfile.TemporaryDirectory(prefix="ai-office-unified-diff-") as root:
             workspace = Path(root)
             for path, source in sources.items():
@@ -630,15 +646,11 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
         return content
     except WorkflowArtifactLoadError:
         raise
-    except (
-        OSError,
-        UnicodeError,
-        ValueError,
-        TypeError,
-        KeyError,
-        RecursionError,
-        subprocess.SubprocessError,
-    ):
+    # Runtime I/O and Git process errors deliberately cross this boundary.
+    # The existing routing owner maps those unknown dependencies to its
+    # conservative execution-uncertain stop; only input/patch failures get
+    # the model-output classification.
+    except (UnicodeError, ValueError, TypeError, KeyError, RecursionError):
         _raise_load("file_change_set_diff")
 
 

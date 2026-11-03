@@ -1309,6 +1309,11 @@ def test_output_limit_is_durable_and_redacted(
             "persistence-failure",
             id="artifact-persistence-failure-remains-uncertain",
         ),
+        pytest.param(
+            False,
+            "temporary-io-failure",
+            id="artifact-temporary-io-failure-remains-uncertain",
+        ),
     ],
 )
 def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
@@ -1538,6 +1543,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         index = len(calls) - 1
         if index == 0:
             output = (
+                "Explanation of the change:\n"
                 "--- a/calculator.py\n+++ b/calculator.py\n"
                 "@@ -1,2 +1,2 @@\n def answer():\n"
                 "-    return 404\n+    return 2\n"
@@ -1588,6 +1594,15 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         monkeypatch.setattr(
             artifact_module, "_persist_workflow_artifact", fail_artifact_persistence
         )
+    elif artifact_failure == "temporary-io-failure":
+        original_write_bytes = Path.write_bytes
+
+        def fail_temporary_write(path: Path, content: bytes) -> int:
+            if any(part.startswith("ai-office-unified-diff-") for part in path.parts):
+                raise OSError("synthetic temporary-file write failure")
+            return original_write_bytes(path, content)
+
+        monkeypatch.setattr(Path, "write_bytes", fail_temporary_write)
 
     outcome = run_bounded_document_job(
         store,

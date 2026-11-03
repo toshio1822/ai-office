@@ -463,6 +463,20 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "diff --git a/src/new.py b/src/new.py\n"
         "new file mode 100644\nindex 0000000..3e75765\n"
         "--- /dev/null\n+++ b/src/new.py\n@@ -0,0 +1 @@\n+new\n",
+        "Explanation of the change:\n"
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n",
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "Explanation of the change.\n",
+        "```diff\n"
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+        "```\n",
+        "diff --git a/src/example.py b/src/example.py\n"
+        "index 0123456..abcdef0 100644\n"
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n",
     ],
     ids=[
         "offset",
@@ -473,6 +487,10 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "mode-change",
         "delete",
         "create",
+        "explanation-preamble",
+        "explanation-trailer",
+        "markdown-fence",
+        "git-metadata",
     ],
 )
 def test_unified_diff_artifact_rejects_unsafe_or_ambiguous_patches(
@@ -492,6 +510,53 @@ def test_unified_diff_artifact_rejects_unsafe_or_ambiguous_patches(
         _route(workflow, evidence)
 
     assert error.value.detail.classification == "file_change_set_diff"
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
+    )
+
+
+@pytest.mark.parametrize("failure", ["git-process", "temporary-io"])
+def test_unified_diff_artifact_runtime_failures_keep_dependency_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    sources = {"src/example.py": "def answer():\n    return 1\n"}
+    output = (
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+
+    if failure == "git-process":
+        original_run = subprocess.run
+
+        def fail_git_apply(command, *args, **kwargs):
+            if command[:2] == ["git", "apply"]:
+                raise FileNotFoundError("synthetic missing git executable")
+            return original_run(command, *args, **kwargs)
+
+        monkeypatch.setattr(artifact_module.subprocess, "run", fail_git_apply)
+    else:
+        original_write_bytes = Path.write_bytes
+
+        def fail_temporary_write(path: Path, content: bytes) -> int:
+            if any(part.startswith("ai-office-unified-diff-") for part in path.parts):
+                raise OSError("synthetic temporary-file write failure")
+            return original_write_bytes(path, content)
+
+        monkeypatch.setattr(Path, "write_bytes", fail_temporary_write)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
+        _route(workflow, evidence)
+
+    assert error.value.detail.classification == "dependency_error"
     assert calls == [1]
     assert not tuple(
         tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
