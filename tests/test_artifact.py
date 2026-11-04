@@ -33,7 +33,12 @@ from ai_office.engine.workflow_run_manifest import (
     load_workflow_run_manifest,
     workflow_definition_from_run_manifest,
 )
-from ai_office.execution_evidence import load_normalized_result_evidence
+from ai_office.execution_evidence import (
+    execution_normalized_result_evidence_path,
+    execution_raw_response_evidence_path,
+    list_run_execution_evidence,
+    load_normalized_result_evidence,
+)
 from ai_office.execution_target import DIRECT_OPENAI_EXECUTION_TARGET
 from ai_office.invocation import ModelInvocationRequest
 from ai_office.providers.openai import (
@@ -408,6 +413,111 @@ def test_unified_diff_artifact_applies_to_fixed_sources_and_keeps_raw_evidence(
     assert (
         artifact.raw_response_evidence_sha256
         == normalized.raw_response_evidence_sha256
+    )
+
+
+def test_unified_diff_artifact_adds_terminal_lf_only_for_git(
+    tmp_path: Path,
+) -> None:
+    sources = {
+        "src/example.py": "def answer():\n    return 1\n",
+        "tests/test_example.py": "def test_answer():\n    assert answer() == 1\n",
+    }
+    replacements = {
+        "src/example.py": "def answer():\n    return 2\n",
+        "tests/test_example.py": "def test_answer():\n    assert answer() == 2\n",
+    }
+    output_with_lf = _unified_diff(sources, replacements)
+    assert output_with_lf.endswith("\n")
+    outputs = (
+        ("with-lf", output_with_lf),
+        ("without-lf", output_with_lf.removesuffix("\n")),
+    )
+    artifact_contents = []
+
+    for label, output in outputs:
+        workflow, evidence, calls, result = _start_fixture(
+            tmp_path / label,
+            artifact_content_type="application/vnd.ai-office.file-change-set+json",
+            model_output_format="unified-diff",
+            output=output,
+            run_input=_diff_run_input(sources),
+        )
+        _commit_success(workflow, evidence, result)
+        attempts = list_run_execution_evidence(
+            evidence.run.store.root, evidence.run.binding.run_id
+        )
+        assert len(attempts) == 1
+        attempt_id = attempts[0].attempt_id
+        raw_path = execution_raw_response_evidence_path(
+            evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+        )
+        normalized_path = execution_normalized_result_evidence_path(
+            evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+        )
+        evidence_before = (raw_path.read_bytes(), normalized_path.read_bytes())
+
+        decision = _route(workflow, evidence)
+
+        artifacts = list_run_artifacts(
+            evidence.run.store, evidence.run.binding.run_id
+        )
+        assert decision.decision == "prepare_next_step"
+        assert calls == [1]
+        assert len(artifacts) == 1
+        artifact = artifacts[0]
+        normalized = load_normalized_result_evidence(
+            evidence.run.store.root,
+            evidence.run.binding.run_id,
+            attempt_id,
+        )
+        assert normalized.text == output
+        assert (raw_path.read_bytes(), normalized_path.read_bytes()) == evidence_before
+        assert artifact.normalized_result_evidence_sha256 == normalized.digest
+        assert (
+            artifact.raw_response_evidence_sha256
+            == normalized.raw_response_evidence_sha256
+        )
+        artifact_contents.append(artifact.content)
+
+    assert artifact_contents[0] == artifact_contents[1]
+    value = json.loads(artifact_contents[0])
+    assert value["schema_version"] == "file-change-set.v1"
+    assert {
+        change["path"] for change in value["changes"]
+    } == set(replacements)
+    assert {
+        change["path"]: base64.b64decode(change["content_base64"])
+        for change in value["changes"]
+    } == {path: content.encode("utf-8") for path, content in replacements.items()}
+
+
+def test_unified_diff_artifact_rejects_invalid_patch_after_terminal_lf(
+    tmp_path: Path,
+) -> None:
+    sources = {"src/example.py": "def answer():\n    return 1\n"}
+    output_without_lf = (
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def not_answer():\n"
+        "-    return 1\n+    return 2"
+    )
+    assert not output_without_lf.endswith("\n")
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output_without_lf,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
+        _route(workflow, evidence)
+
+    assert error.value.detail.classification == "file_change_set_diff"
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
     )
 
 

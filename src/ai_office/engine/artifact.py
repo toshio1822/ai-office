@@ -520,7 +520,11 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
             sources[path] = source
 
         patch_bytes = patch.encode("utf-8")
-        if not patch_bytes or len(patch_bytes) > 1_048_576:
+        # Preserve Evidence verbatim; terminate only the bytes passed to Git.
+        git_patch_bytes = (
+            patch_bytes if patch_bytes.endswith(b"\n") else patch_bytes + b"\n"
+        )
+        if not patch_bytes or len(git_patch_bytes) > 1_048_576:
             _raise_load("file_change_set_diff")
         patch_lines = patch.splitlines()
         # This is only an envelope check: Git remains the sole parser and
@@ -563,7 +567,7 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
                 return subprocess.run(
                     ["git", "apply", *arguments, "-"],
                     cwd=workspace,
-                    input=patch_bytes,
+                    input=git_patch_bytes,
                     capture_output=True,
                     env=environment,
                     timeout=5,
