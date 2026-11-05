@@ -130,6 +130,8 @@
 4. **Issue C（第2段階）:** Job内pytest/Ruffと不合格からの有限改訂・再検証を実装する。
 5. 各Issueは調査からDraft PR・最新HEAD CI確認までopenClawへまとめて委任し、ChatGPTがPRをレビュー、人間がmergeを判断する。実Providerや実GitHubへの製品副作用は都度別承認。
 
+実装単位: [Issue A #828](https://github.com/toshio1822/ai-office/issues/828) → [Issue B #829](https://github.com/toshio1822/ai-office/issues/829) → [Issue C #830](https://github.com/toshio1822/ai-office/issues/830)。
+
 **Issue #802は第1段階のみでcloseしない。** 第2段階のJob内pytest/Ruff・失敗からの自律修正を含め、原Issueの要求と照合した上で人間が判断する。
 
 ## 7. 主な根拠資料
