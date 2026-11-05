@@ -6,7 +6,7 @@ AI Office は、人間が定義した仕事を AI 社員が担当工程ごとに
 
 **AI Officeは、OpenClawやCodexなどの外部AIエージェントを必須としない独立したアプリケーションである。** AI Provider、Python、Git、GitHub CLI、隔離環境などの明示された基盤依存は許されるが、外部AIエージェントが内部のRun Input、ソースハッシュ、作業引継ぎを生成することを製品の成立条件にしない。
 
-最初の完成目標は小規模Python修正とする。利用者がGitHub Issueとリポジトリを指定し、AI Office自身が読み取り専用調査・対象候補・受け入れ条件・有限の権限案を提示する。人間が変更範囲と実行権限を承認したら、AI Officeは固定Run Inputを内部構成し、既存Workflowで生成・隔離検証・独立レビュー・有限改訂を進める。別のGitHub書込み承認を得てDraft PR、CI、証跡を提示する。最終mergeは人間が判断する。
+最初の完成目標は小規模Python修正とする。利用者がGitHub Issueとリポジトリを指定し、AI OfficeがIssueの内容と設定から権限・有限予算の案を提示する。人間が固定base・最大読取範囲・Provider送信範囲・最大変更範囲と実行予算を事前承認した後、AI社員がその範囲内で有限の追加調査を行い、原因仮説・具体的な修正対象を選ぶ。AI Officeは固定Run Inputを内部構成し、既存Workflowで生成・隔離検証・独立レビュー・有限改訂を進める。別のGitHub書込み承認を得てDraft PR、CI、証跡を提示する。最終mergeは人間が判断する。
 
 利用者が判断するのは目的、受け入れ条件、許可範囲、外部副作用であり、JSON転記やSHA-256計算ではない。現在の機能と未達事項は[製品機能マップ](product-capabilities.md)に集約する。
 
