@@ -1,5 +1,7 @@
 # Phase Implementation Contract
 
+> **Historical development reference (2026-11-05).** Phase numbers are past work units, not mandatory new layers or a reason to add a Phase. For current scope use [Product Capabilities](../product-capabilities.md), current development steps [Development Workflow](../development-workflow.md), and the [Product Vision](../product-vision.md). Preserve useful observable-behavior, Git and review guidance; do not perpetuate obsolete structural requirements.
+
 This contract is the reusable development agreement for future Phase Issues and
 implementation batches. The GitHub Issue remains the source of truth for
 phase-specific requirements. This document defines shared implementation,

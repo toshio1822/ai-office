@@ -1,6 +1,6 @@
 # AI Office Engine Target Architecture
 
-> **Status:** This is the normative target architecture for future engine design and implementation. It is not a claim that every capability described here is implemented today.
+> **Status:** Normative target architecture and invariants, not a current feature inventory. Finite bounded review/revision, isolated local verification and Draft PR delivery already exist. For a dated implementation status, gaps and MVP priorities, consult [Product Capabilities](product-capabilities.md). Historical future-tense passages must not override observed capabilities.
 
 ## Documentation authority
 
@@ -10,6 +10,8 @@ The documentation authority hierarchy is:
 2. [`docs/engine-target-architecture.md`](engine-target-architecture.md) — **What the engine must ultimately guarantee; normative target design and invariants**
 3. [`docs/architecture.md`](architecture.md) — **Current implementation architecture plus historical design record**
 4. GitHub Issues — **Scoped deltas from current architecture toward the target**
+
+[Product Capabilities](product-capabilities.md) is the dated **status/roadmap register**, subordinate to the vision and architecture invariants; it does not authorize implementation or external effects.
 
 This document is authoritative for future design decisions and invariants. `docs/architecture.md` remains authoritative for what is actually implemented today. A target capability must not be described as already implemented merely because it appears here. If a future Issue intentionally deviates from this target architecture, that deviation must be explicit and this document, or an ADR where appropriate, must be updated rather than silently diverged.
 
@@ -298,9 +300,9 @@ They may be identical, but need not be.
 
 Publication/export should eventually operate on explicit artifacts/projections rather than assuming every provider output is a publishable artifact.
 
-## Future capability: independent artifact review and revision
+## Target contract: independent artifact review and revision
 
-The following describes a future controlled capability, not current implementation or a requirement to add a loop engine. A workflow may create an Artifact, have it reviewed against the original request and acceptance criteria, return evidenced findings for revision, and submit the resulting Artifact for independent re-review before human acceptance or stop. Managed handoffs should carry the exact work and feedback so an operator need not relay them manually.
+This section defines the semantic contract; a finite bounded implementation already exists. It does not imply support for every workflow or require a new loop engine. A workflow may create an Artifact, have it reviewed against the original request and acceptance criteria, return evidenced findings for revision, and submit the resulting Artifact for independent re-review before human acceptance or stop. Managed handoffs should carry the exact work and feedback so an operator need not relay them manually.
 
 The creator and reviewer must use different AI sessions / conversation contexts. The creator's private conversation/session transcript and hidden reasoning must not be passed to or inherited by the reviewer. Its authoritative inputs are the original request and acceptance criteria, the exact immutable Artifact version under review, and relevant independently attributable evidence. Creator-declared explanations or provenance may be supplied as claims, but remain unverified until checked; creator self-assessment is not authority. Different models may be used, but are not required; session separation alone does not establish objectivity, so objective criteria and external evidence remain important.
 
@@ -312,9 +314,9 @@ Progression is bounded by human-defined scope, iteration and budget limits, and 
 
 Before adding a new subsystem or fixed execution structure, determine whether existing Workflow Runs, immutable Artifacts, evidence, and approvals can provide the required guarantees. This future capability does not change the initial non-goals in §26: in particular, it does not make generic loops, automatic retries, or automatic approvals part of the initial engine target.
 
-## Future capability: opt-in bounded autonomous Artifact job
+## Target contract: opt-in bounded autonomous Artifact job
 
-This is a high-priority product direction and a future target contract, not a description of current behavior. The current engine continues to require the existing per-invocation authorization and explicit step progression. A future opt-in job may let a person give one assignment and authorize a finite, auditable sequence of create → independent review → revise → re-review actions without coordinating each routine handoff. It must stop at a human-acceptance candidate or a reasoned safe stop; it does not grant final acceptance or publication authority.
+This is the normative target, not a claim that all capabilities are already implemented. A finite bounded-review Job has been exercised with a real model; Issue intake and autonomous repository investigation remain incomplete. An opt-in bounded job may accept one approved assignment and conduct a finite, auditable sequence of create → independent review → revise → re-review without human relay of routine handoffs. It must stop at a human-acceptance candidate or a reasoned safe stop; it does not grant final acceptance or publication authority.
 
 ### Job envelope and upfront authority
 
