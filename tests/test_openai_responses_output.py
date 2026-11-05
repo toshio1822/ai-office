@@ -90,15 +90,42 @@ def test_no_supported_text_returns_explicit_empty_text() -> None:
     assert result.text == ""
 
 
+def test_message_without_role_raises_invalid_output_error() -> None:
+    output = (MappingProxyType({"type": "message", "content": ()}),)
+
+    with pytest.raises(OpenAIResponsesInvalidOutputError) as error:
+        extract_openai_responses_output_text(success_response(output))
+
+    assert str(error.value) == "invalid OpenAI output structure"
+
+
+def test_message_with_non_assistant_role_raises_invalid_output_error() -> None:
+    output = (MappingProxyType({"type": "message", "role": "system", "content": ()}),)
+
+    with pytest.raises(OpenAIResponsesInvalidOutputError) as error:
+        extract_openai_responses_output_text(success_response(output))
+
+    assert str(error.value) == "invalid OpenAI output structure"
+
+
 @pytest.mark.parametrize(
     "output",
     [
-        (MappingProxyType({"type": "message"}),),
-        (MappingProxyType({"type": "message", "content": "not a sequence"}),),
+        (MappingProxyType({"type": "message", "role": "assistant"}),),
         (
             MappingProxyType(
                 {
                     "type": "message",
+                    "role": "assistant",
+                    "content": "not a sequence",
+                }
+            ),
+        ),
+        (
+            MappingProxyType(
+                {
+                    "type": "message",
+                    "role": "assistant",
                     "content": (MappingProxyType({"type": "output_text"}),),
                 }
             ),
@@ -107,6 +134,7 @@ def test_no_supported_text_returns_explicit_empty_text() -> None:
             MappingProxyType(
                 {
                     "type": "message",
+                    "role": "assistant",
                     "content": (MappingProxyType({"type": "output_text", "text": 1}),),
                 }
             ),
