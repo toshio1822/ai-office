@@ -22,7 +22,7 @@
 4. **ChatGPT は Draft PR をレビューする。** 差分、設計の不変条件、受け入れ条件、テスト結果、既存機能への影響を確認する。内部構造・呼び出し回数だけを理由に過度な実装固定をしない。
 5. **人間が merge と次の Issue への進行を判断する。** 不合格なら同じ Issue / PR 内で修正し、設計変更が必要なら先に合意する。main への直接変更・push、無断 merge はしない。
 
-現時点の大きな実装単位は、**A: 自律的 Issue 調査と Run Input 自動準備**、**B: 既存 Job・独立レビュー・Draft PR・CI の統合**、**C: Job 内 pytest/Ruff とテスト失敗からの有限自律修正** の3件を基本とする。A・B は第1段階（固定 Oracle＋Draft PR 後の CI）、C は第2段階。これは開発上の区分であり、新しい Engine / Phase を3つ作る指示ではない。詳細な範囲は統合製品設計と各 Issue を正本とする。
+現時点の大きな実装単位は、**A: 自律的 Issue 調査と Run Input 自動準備**、**B: 既存 Job・独立レビュー・Draft PR・CI の統合**、**C: Job 内 pytest/Ruff とテスト失敗からの有限自律修正** の3件を基本とする。A・B は第1段階（固定 Oracle＋Draft PR 後の CI）、C は第2段階。これは開発上の区分であり、新しい Engine / Phase を3つ作る指示ではない。詳細な範囲は[統合製品設計 v0.4](issue-to-pr-product-design.md)と[Issue A #828](https://github.com/toshio1822/ai-office/issues/828)・[Issue B #829](https://github.com/toshio1822/ai-office/issues/829)・[Issue C #830](https://github.com/toshio1822/ai-office/issues/830)を正本とする。
 
 ## 設計・実装の原則
 
