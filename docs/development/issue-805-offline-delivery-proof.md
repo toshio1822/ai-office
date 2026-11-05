@@ -1,5 +1,8 @@
 # Issue #805 Offline Delivery Proof
 
+> **Historical offline verification (2026-11-05).** This records an earlier proof, not the product delivery procedure. Verified real-model work was later delivered through Draft PR #826 after separate approval. See [Draft PR delivery](../runbooks/draft-pr-delivery.md) for the current standalone CLI workflow. This document does not justify another publisher or engine.
+
+
 This is a test-only composition proof, not a product Git publisher. It starts
 from the existing configured bounded Workflow and reuses its Run scope,
 reviewed Artifact, local-execution authorization, verified Evidence, and

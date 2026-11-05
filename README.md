@@ -2,7 +2,17 @@
 
 人間が定義した業務ワークフローを、明示的な状態遷移と検証のもとで AI が処理するための基盤です。
 
-開発方針は [Product Vision](docs/product-vision.md)、[Engine Target Architecture](docs/engine-target-architecture.md)、[Current Architecture](docs/architecture.md) を参照してください。
+**製品としてのAI Officeは、OpenClawやCodexなどの外部AIエージェントなしで単独利用できることを目指します。** 現時点ではIssueの調査・Run Input準備を含む一貫した操作は未完成です。
+
+ドキュメントの役割:
+
+- [Product Vision](docs/product-vision.md) — 目的・原則
+- [Product Capabilities](docs/product-capabilities.md) — **現在の機能、不足、開発優先順位、受け入れ条件**
+- [Engine Target Architecture](docs/engine-target-architecture.md) — 共通Engineの不変条件
+- [Current Architecture](docs/architecture.md) — 実装経緯と歴史的なPhase記録
+- [Runbooks](docs/runbooks/) — 現行の操作手順
+
+有限Job、Artifact、独立レビュー、隔離検証、Draft PR配信は既に存在します。Issue受付・対象探索・Run Input自動準備・統一的な操作は未実装または部分対応であり、区別して扱います。
 
 ## 開発
 
@@ -47,7 +57,7 @@ ai-office employees list --directory path/to/employees
 
 ## ワークフロー定義
 
-ワークフロー定義は `workflows/` 直下の `.yaml` または `.yml` ファイルに記載します。現行の選択可能な定義は媒体非依存の `article-production` 1件です。工程と有限の判定分岐は同じ定義を正本とし、媒体・テーマ・根拠などはRun Inputで指定します。
+ワークフロー定義は `workflows/` 直下の `.yaml` または `.yml` ファイルに記載します。現行の選択可能な定義には記事制作の `article-production` と、小規模ソフトウェア修正向けの `bounded-change-review` があります。共通の有限レビューJobを使用し、業務固有の要件・対象・根拠はRun Inputで指定します。
 
 ```yaml
 id: article-production
