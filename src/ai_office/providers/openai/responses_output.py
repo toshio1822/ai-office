@@ -38,6 +38,9 @@ def extract_openai_responses_output_text(
         if not isinstance(output_item, Mapping) or output_item.get("type") != "message":
             continue
 
+        if output_item.get("role") != "assistant":
+            _invalid_output_error()
+
         if "content" not in output_item:
             _invalid_output_error()
         content = output_item["content"]
