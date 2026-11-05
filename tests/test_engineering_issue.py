@@ -30,6 +30,7 @@ from ai_office.github_snapshot import GitHubRawResponse
 _ROOT = Path(__file__).resolve().parents[1]
 _REPOSITORY = "example/project"
 _ISSUE_URL = "https://github.com/example/project/issues/828"
+_ORACLE_PROFILE = "python-syntax"
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -74,43 +75,15 @@ def fixed_repository(tmp_path: Path) -> tuple[Path, str, dict[str, bytes]]:
     return root, revision, sources
 
 
-@pytest.fixture
-def policy_template(tmp_path: Path) -> Path:
-    path = tmp_path / "local-effect-policy-template.json"
-    path.write_text(
-        json.dumps(
-            {
-                "commands": [
-                    ["/usr/bin/python3", "-S", "-B", "-m", "unittest", "discover"]
-                ],
-                "limits": {
-                    "wall_timeout_seconds": 30,
-                    "cpu_seconds": 20,
-                    "memory_bytes": 134_217_728,
-                    "workspace_bytes": 16_777_216,
-                    "max_file_bytes": 1_048_576,
-                    "max_output_bytes": 16_384,
-                    "max_processes": 64,
-                    "max_open_files": 64,
-                },
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    path.chmod(0o600)
-    return path
-
-
 def _prepare(
     repository: Path,
     revision: str,
-    policy: Path,
     *,
     initial_files: int = 1,
     max_files: int = 8,
     send_patterns: tuple[str, ...] = ("src/**/*.py", "tests/**/*.py"),
     send_issue_body: bool = True,
+    oracle_profile: str = _ORACLE_PROFILE,
     transport=None,
 ) -> tuple[str, dict[str, object], list[object]]:
     requests: list[object] = []
@@ -145,7 +118,7 @@ def _prepare(
         max_provider_input_bytes=900_000,
         max_provider_total_bytes=3_600_000,
         max_provider_attempts=3,
-        policy_template_path=policy,
+        oracle_profile=oracle_profile,
         send_issue_body=send_issue_body,
         github_transport=transport or fake_transport,
     )
@@ -237,10 +210,10 @@ def _install_successful_history(
 
 
 def test_initial_preparation_is_fixed_base_scoped_and_get_only(
-    fixed_repository: tuple[Path, str, dict[str, bytes]], policy_template: Path
+    fixed_repository: tuple[Path, str, dict[str, bytes]],
 ) -> None:
     repository, revision, source_bytes = fixed_repository
-    run_input, summary, requests = _prepare(repository, revision, policy_template)
+    run_input, summary, requests = _prepare(repository, revision)
     value = json.loads(run_input)
 
     assert len(requests) == 1
@@ -261,11 +234,13 @@ def test_initial_preparation_is_fixed_base_scoped_and_get_only(
         for source in value["available_sources"]
     )
     assert summary["workflow_id"] == "engineering-issue-investigation"
+    assert summary["oracle_profile"] == _ORACLE_PROFILE
+    assert value["authorization"]["oracle_profile"] == _ORACLE_PROFILE
     assert value["provider_input_bytes_used"] == summary["provider_input_bytes"]
 
 
 def test_issue_body_send_must_be_explicit_and_stops_before_get(
-    fixed_repository: tuple[Path, str, dict[str, bytes]], policy_template: Path
+    fixed_repository: tuple[Path, str, dict[str, bytes]],
 ) -> None:
     repository, revision, _ = fixed_repository
     called = False
@@ -279,7 +254,6 @@ def test_issue_body_send_must_be_explicit_and_stops_before_get(
         _prepare(
             repository,
             revision,
-            policy_template,
             send_issue_body=False,
             transport=forbidden_transport,
         )
@@ -287,10 +261,31 @@ def test_issue_body_send_must_be_explicit_and_stops_before_get(
     assert called is False
 
 
+def test_unregistered_oracle_profile_stops_before_issue_get(
+    fixed_repository: tuple[Path, str, dict[str, bytes]],
+) -> None:
+    repository, revision, _ = fixed_repository
+    called = False
+
+    def forbidden_transport(_request):
+        nonlocal called
+        called = True
+        raise AssertionError("an unregistered Oracle must stop before GitHub GET")
+
+    with pytest.raises(engineering_issue.EngineeringIssueError) as caught:
+        _prepare(
+            repository,
+            revision,
+            oracle_profile="model-selected-command",
+            transport=forbidden_transport,
+        )
+    assert caught.value.classification == "oracle_profile_invalid"
+    assert called is False
+
+
 def test_prepare_cli_writes_run_input_exclusively_with_private_mode(
     tmp_path: Path,
     fixed_repository: tuple[Path, str, dict[str, bytes]],
-    policy_template: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, revision, _ = fixed_repository
@@ -353,8 +348,8 @@ def test_prepare_cli_writes_run_input_exclusively_with_private_mode(
             "3600000",
             "--max-provider-attempts",
             "3",
-            "--policy-template",
-            str(policy_template),
+            "--oracle-profile",
+            _ORACLE_PROFILE,
             "--output-directory",
             str(output_directory),
             "--send-issue-body",
@@ -365,18 +360,19 @@ def test_prepare_cli_writes_run_input_exclusively_with_private_mode(
     summary = json.loads(result.stdout)
     output_file = output_directory / summary["output"]
     assert summary["output"] == "engineering-issue-round-1.json"
-    assert json.loads(output_file.read_text(encoding="utf-8"))["round"] == 1
+    value = json.loads(output_file.read_text(encoding="utf-8"))
+    assert value["round"] == 1
+    assert value["authorization"]["oracle_profile"] == _ORACLE_PROFILE
     assert output_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_provider_scope_excludes_readable_but_unapproved_paths(
-    fixed_repository: tuple[Path, str, dict[str, bytes]], policy_template: Path
+    fixed_repository: tuple[Path, str, dict[str, bytes]],
 ) -> None:
     repository, revision, _ = fixed_repository
     run_input, _summary, _requests = _prepare(
         repository,
         revision,
-        policy_template,
         initial_files=3,
         send_patterns=("src/**/*.py",),
     )
@@ -387,15 +383,58 @@ def test_provider_scope_excludes_readable_but_unapproved_paths(
     assert all(path.startswith("src/") for path in value["source_context"])
 
 
-def test_candidate_count_over_approved_budget_stops_instead_of_truncating(
-    fixed_repository: tuple[Path, str, dict[str, bytes]], policy_template: Path
+def test_candidate_count_over_budget_selects_a_finite_reported_subset(
+    fixed_repository: tuple[Path, str, dict[str, bytes]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, revision, _ = fixed_repository
+    for index in range(133):
+        path = repository / f"src/pkg/module_{index:03}.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"VALUE_{index} = {index}\n", encoding="utf-8")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-qm", "add bounded-search candidates")
+    revision = _git(repository, "rev-parse", "HEAD")
+    read_blob = engineering_issue._read_blob
+    read_paths: list[str] = []
 
-    with pytest.raises(engineering_issue.EngineeringIssueError) as caught:
-        _prepare(repository, revision, policy_template, max_files=1)
+    def record_blob_read(root: Path, entry) -> bytes:
+        read_paths.append(entry.path)
+        return read_blob(root, entry)
 
-    assert caught.value.classification == "candidate_search_budget_exceeded"
+    monkeypatch.setattr(engineering_issue, "_read_blob", record_blob_read)
+
+    run_input, summary, _requests = _prepare(
+        repository, revision, max_files=12
+    )
+    value = json.loads(run_input)
+    selection = value["authorization"]["candidate_selection"]
+
+    assert len(value["available_sources"]) == 12
+    assert selection["matched_tree_path_count"] == 136
+    assert selection["eligible_python_candidate_count"] == 136
+    assert selection["candidate_limit"] == 12
+    assert selection["provided_candidate_count"] == 12
+    assert selection["unselected_candidate_count"] == 124
+    assert selection["omitted_candidate_count"] == 124
+    assert selection["truncated"] is True
+    assert selection["search_patterns"] == ["src/**/*.py", "tests/**/*.py"]
+    assert selection["read_patterns"] == ["src/**/*.py", "tests/**/*.py"]
+    assert selection["provider_send_patterns"] == [
+        "src/**/*.py",
+        "tests/**/*.py",
+    ]
+    assert (
+        selection["selection_method"] == engineering_issue._CANDIDATE_SELECTION_METHOD
+    )
+    assert selection["limitation"]
+    assert read_paths == summary["selected_initial_paths"]
+    assert len(read_paths) == 1
+    assert all(item["write_allowed"] for item in value["available_sources"])
+    assert set(summary["selected_candidate_reasons"]) == {
+        item["path"] for item in value["available_sources"]
+    }
+    assert summary["candidate_selection"] == selection
 
 
 @pytest.mark.parametrize(
@@ -432,13 +471,10 @@ def test_git_tree_search_roots_are_the_narrowest_fixed_prefix(
 def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
     tmp_path: Path,
     fixed_repository: tuple[Path, str, dict[str, bytes]],
-    policy_template: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, revision, source_bytes = fixed_repository
-    first_input, _summary, _requests = _prepare(
-        repository, revision, policy_template, initial_files=1
-    )
+    first_input, _summary, _requests = _prepare(repository, revision, initial_files=1)
     first_value = json.loads(first_input)
     sent_path = next(iter(first_value["source_context"]))
     assert sent_path == "src/pkg/engine.py"
@@ -506,7 +542,6 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
     assignment, policy_text, summary = engineering_issue.prepare_bounded_job_inputs(
         run_store,
         "issue-round-2",
-        policy_template,
         now_ns=1_000_000_000,
     )
     job_input = json.loads(assignment)
@@ -526,7 +561,19 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
     assert policy["base_revision"] == revision
     assert policy["read_paths"] == ["src/pkg/engine.py", "tests/unit/test_engine.py"]
     assert policy["write_paths"] == ["src/pkg/engine.py"]
+    assert policy["commands"][0][:4] == [
+        "/usr/bin/python3",
+        "-S",
+        "-B",
+        "-c",
+    ]
+    assert "ast.parse" in policy["commands"][0][4]
     assert summary["base_revision"] == revision
+    assert summary["oracle_profile"] == _ORACLE_PROFILE
+    assert summary["candidate_selection"]["limitation"]
+    assert json.loads(job_input["request"])["candidate_search"] == summary[
+        "candidate_selection"
+    ]
     assert (
         validate_local_execution_scope(
             assignment,
@@ -554,13 +601,10 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
 def test_unlisted_additional_path_and_changed_base_stop_without_preparation(
     tmp_path: Path,
     fixed_repository: tuple[Path, str, dict[str, bytes]],
-    policy_template: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, revision, _ = fixed_repository
-    first_input, _summary, _requests = _prepare(
-        repository, revision, policy_template, initial_files=1
-    )
+    first_input, _summary, _requests = _prepare(repository, revision, initial_files=1)
     malicious_plan = {
         "outcome": "needs_more_evidence",
         "cause_hypotheses": [],

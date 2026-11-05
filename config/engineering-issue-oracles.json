@@ -1,0 +1,27 @@
+{
+  "schema_version": "engineering-issue-oracles.v1",
+  "profiles": {
+    "python-syntax": {
+      "description": "Parse the candidate Python sources with the standard library only; this does not run project tests or prove behavior.",
+      "commands": [
+        [
+          "/usr/bin/python3",
+          "-S",
+          "-B",
+          "-c",
+          "import ast,pathlib; files=sorted(pathlib.Path('/workspace').rglob('*.py')); assert files, 'no Python files to validate'; [ast.parse(path.read_text(encoding='utf-8'), filename=str(path)) for path in files]; print(f'parsed {len(files)} Python file(s)')"
+        ]
+      ],
+      "limits": {
+        "wall_timeout_seconds": 30,
+        "cpu_seconds": 20,
+        "memory_bytes": 134217728,
+        "workspace_bytes": 16777216,
+        "max_file_bytes": 1048576,
+        "max_output_bytes": 16384,
+        "max_processes": 64,
+        "max_open_files": 64
+      }
+    }
+  }
+}

@@ -959,7 +959,14 @@ def prepare_engineering_issue_workflow(
     max_provider_attempts: int = typer.Option(
         ..., "--max-provider-attempts", min=1, max=5
     ),
-    policy_template: Path = typer.Option(..., "--policy-template"),
+    oracle_profile: str = typer.Option(
+        ...,
+        "--oracle-profile",
+        help=(
+            "Operator-selected registered policy profile (currently "
+            "python-syntax; syntax parsing only, not project tests)."
+        ),
+    ),
     output_directory: Path = typer.Option(..., "--output-directory"),
     send_issue_body: bool = typer.Option(False, "--send-issue-body"),
     token_environment_variable: str = typer.Option(
@@ -993,7 +1000,7 @@ def prepare_engineering_issue_workflow(
             max_provider_input_bytes=max_provider_input_bytes,
             max_provider_total_bytes=max_provider_total_bytes,
             max_provider_attempts=max_provider_attempts,
-            policy_template_path=policy_template,
+            oracle_profile=oracle_profile,
             send_issue_body=send_issue_body,
             github_token=os.environ.get(token_environment_variable),
         )
@@ -1046,7 +1053,6 @@ def prepare_next_engineering_issue_workflow(
 def prepare_engineering_job_input_workflow(
     run_id: str = typer.Argument(...),
     run_store: Path = typer.Option(Path("runs"), "--run-store"),
-    policy_template: Path = typer.Option(..., "--policy-template"),
     output_directory: Path = typer.Option(..., "--output-directory"),
 ) -> None:
     """Prepare bounded-change-review assignment and local-effect policy files."""
@@ -1058,7 +1064,7 @@ def prepare_engineering_job_input_workflow(
 
     try:
         assignment, policy, summary = prepare_bounded_job_inputs(
-            run_store, run_id, policy_template
+            run_store, run_id
         )
         run_suffix = sha256(run_id.encode("utf-8")).hexdigest()[:12]
         assignment_name = f"assignment-{run_suffix}.json"

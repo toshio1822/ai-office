@@ -14,11 +14,11 @@ Business/Execution Approval, and configured Provider limits.
 
 Issue #828 does **not** combine all operations into one command. The operator
 selects and confirms the fixed base, search/read/provider-send/write patterns,
-source/provider byte budgets, finite investigation count, and fixed oracle
-policy. Existing Workflow approval controls still apply to every actual model
-Step; the separate local-effect authorization is still required before any
-bounded local verification. GitHub write approval and Draft PR delivery are
-outside this feature and remain separate.
+source/provider byte budgets, finite investigation count, and a named
+preconfigured Oracle profile. Existing Workflow approval controls still apply
+to every actual model Step; the separate local-effect authorization is still
+required before any bounded local verification. GitHub write approval and Draft
+PR delivery are outside this feature and remain separate.
 
 ## Prepare the first Run Input
 
@@ -28,11 +28,16 @@ are separate; only paths inside all required scopes can be supplied to the
 investigator. Issue title/body are also provider-bound input and are included
 only with the explicit `--send-issue-body` flag.
 
-Prepare a fixed local-effect policy template outside the repository, containing
-only operator-selected absolute `/usr/bin/...` command argv and finite limits.
-Do not put secrets in the Issue, source scope, Run Input, or policy. Output
-directories must already exist, be mode `0700` or stricter, and be outside the
-repository.
+The operator chooses a registered policy profile from the trusted application
+catalog; the AI cannot select or approve its own verification conditions. The
+shipped `python-syntax` profile uses only the standard library to parse the
+selected Python sources; it does not run project tests or prove behavior. Its
+exact argv and resource limits are reviewed configuration, never model output.
+The selected profile digest is pinned in the research Run Input and checked
+again when bounded Job inputs are prepared. No policy JSON or command argv has
+to be assembled by the operator. Do not put secrets in the Issue, source
+scope, Run Input, or policy. Output directories must already exist, be mode
+`0700` or stricter, and be outside the repository.
 
 ```sh
 umask 077
@@ -56,7 +61,7 @@ ai-office workflows prepare-engineering-issue \
   --max-provider-input-bytes 900000 \
   --max-provider-total-bytes 3600000 \
   --max-provider-attempts 3 \
-  --policy-template /path/outside/repo/local-effect-policy-template.json \
+  --oracle-profile python-syntax \
   --output-directory /tmp/issue-828-output \
   --send-issue-body
 ```
@@ -64,10 +69,17 @@ ai-office workflows prepare-engineering-issue \
 The command performs a single GitHub Issue GET and only local read-only Git
 operations. It writes `engineering-issue-round-1.json` exclusively with mode
 `0600`; the output summary reports base, hashes, selected path names, and byte
-counts, not source contents. A missing or invalid Issue, secret-like text,
-dirty/moved base, unapproved path, or budget excess stops before output. If the
-authorized search returns more Python candidates than `--max-files`, preparation
-stops rather than silently dropping candidates.
+counts, not source contents. Candidate discovery walks Git path metadata matching
+the approved search patterns, then intersects it with read and Provider-send
+scopes. Eligible paths are ranked by write authorization, Issue title/body
+path-token overlap, and lexical path order. `--max-files` bounds the candidate
+list offered to the AI; it does not prevent a broad approved search from
+starting. The summary and Run Input report the search/read/send patterns, tree
+path count, eligible and omitted candidate counts, each offered path's
+selection reason, and the limit. Omitted or individually over-budget file
+contents were not read or sent, so the AI must not claim the candidate set is
+exhaustive. A missing or invalid Issue, secret-like text, dirty/moved base,
+unapproved path, or byte/attempt budget excess still stops before output.
 Omitting `--send-issue-body` deliberately stops preparation before the GET.
 
 ## Run the investigation and continue finitely
@@ -109,20 +121,20 @@ run-bound local policy from exact selected source bytes at the fixed base:
 ```sh
 ai-office workflows prepare-engineering-job-input issue-828-round-2 \
   --run-store /private/path/to/ai-office-runs \
-  --policy-template /path/outside/repo/local-effect-policy-template.json \
   --output-directory /tmp/issue-828-output
 ```
 
 The command verifies exact evidence quotes and line ranges, that selected
 read/test/write paths are authorized, that every selected byte still matches
-the Git blob at the fixed clean base, and that the policy template digest has
-not changed. It writes `assignment-<digest>.json` and
+the Git blob at the fixed clean base, and that the selected registered Oracle
+profile digest has not changed. It writes `assignment-<digest>.json` and
 `local-effect-policy-<digest>.json` exclusively with mode `0600`. The assignment
 has the existing `request`, `repository`, `allowed_paths`, `acceptance_criteria`,
 `source_context`, and `source_sha256` shape expected by the bounded Workflow;
-the policy is still only a proposal. Existing `bounded-job-run` Business,
-Execution, and local-effect approval remains necessary. Use the exact fixed
-base checkout; do not write candidate changes into it during preparation.
+candidate-search coverage is preserved for the Job, and the policy is still
+only a proposal. Existing `bounded-job-run` Business, Execution, and
+local-effect approval remains necessary. Use the exact fixed base checkout; do
+not write candidate changes into it during preparation.
 
 This is the input-preparation boundary delivered by #828. The unified Issue →
 Job → independently reviewed candidate → separately approved Draft PR → exact

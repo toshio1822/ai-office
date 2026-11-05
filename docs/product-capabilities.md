@@ -38,7 +38,7 @@
 | C11 | ツール名の定義・API用tool schema変換 | **実装済み** | `ToolCatalog`は定義解決とProvider payloadの生成。**モデルが要求したFileRead等を実行するランタイムではない。** |
 | C12 | GitHub Issue URLから作業開始 | **入口実装済み（offline proof）** | `workflows prepare-engineering-issue` が明示scope/budgetと固定baseからIssue GET・初回Run Inputを準備する。Provider/Jobの実行と一連操作は#829。 |
 | C13 | リポジトリを読み取り専用で探索し対象候補を提案 | **有限Workflow実装済み（live AI未実証）** | `engineering-issue-investigation` が根拠・引用・path候補を返す。追加資料は成功Runから次の通常Runとして有限準備し、Git bytes/scope/budgetを再検証する。 |
-| C14 | 承認済み対象からRun Inputを自動構成 | **入力準備実装済み（offline proof）** | `prepare-engineering-job-input` が選択対象の固定base bytes/hash、既存bounded-change-review assignment、local-effect policyを生成する。Jobを起動せず、既存承認は維持。 |
+| C14 | 承認済み対象からRun Inputを自動構成 | **入力準備実装済み（offline proof）** | `prepare-engineering-job-input` が選択対象の固定base bytes/hash、既存bounded-change-review assignment、operator選択の登録policy profile由来local-effect policyを生成する。JSON/argv手組みやJob起動を求めず、既存承認は維持。 |
 | C15 | 計画提示→人間承認→Job→納品の一貫した操作 | **部分対応** | Issue #828は入力準備まで。Run/Job/Artifact/PR/CIを一つの操作に束ねる統合は#829。 |
 | C16 | PR後のCIを候補の最終品質ゲートとして提示 | **部分対応** | GitHub Actionsでpytest/Ruffは実行可能、PR #826で成功。ただしJobからPR/CI結果を一貫した状態で提示する製品経路は未確立。 |
 | C17 | 仕事の進捗・停止理由・成果物を一画面/一コマンドで把握 | **部分対応** | Jobのinspect、Workflowのresult、Artifact表示などはある。利用者向けの単一「仕事の状態」は不足。 |

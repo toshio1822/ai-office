@@ -14,6 +14,15 @@ steps:
       `authorization.read_patterns`, `authorization.provider_send_patterns`,
       `authorization.write_patterns`, and its finite budgets are fixed human
       permissions; never broaden them.
+      The registered Oracle profile and digest were selected by the operator;
+      never choose or change a profile, or claim syntax parsing proves behavior.
+
+      `authorization.candidate_selection` records the approved search patterns,
+      Git path count, finite candidate cap, ranking method, and any omitted or
+      over-size candidate counts. Each `available_sources` entry contains its
+      deterministic selection reason. These are path-only search facts: do not
+      claim omitted file contents were examined or infer that the offered list
+      is exhaustive.
 
       Only inspect the supplied `source_context`. `available_sources` is a
       bounded list of additional Python paths and fixed Git blob metadata. You
