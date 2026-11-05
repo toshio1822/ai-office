@@ -1,14 +1,15 @@
-# AI Office 製品機能マップ・ギャップ分析・最小開発計画 v0.1
+# AI Office 製品機能マップ・ギャップ分析・最小開発計画 v0.2
 
 - **状態:** 製品方針確認済み（実装開始とIssueスコープ変更は別途承認）
 - **調査基準:** `toshio1822/ai-office` main `09df23175dd16465f2bbc426c30e87298dde83a5`（2026-11-05確認）
 - **対象:** AI Office単独で利用できる最初のソフトウェア修正業務。既存の`article-production`との共通性を維持する。
+- **確定した製品設計:** [Issue→Draft PR 統合製品設計 v0.4](issue-to-pr-product-design.md)。**第1段階は固定Oracle＋PR後CI、第2段階はJob内pytest/Ruffと既知の不合格からの有限改訂**。
 - **根拠:** 現行ソース・Workflow・CLI・テスト・runbook、および Issue #802 / #803 / #805とPR #826の実証記録。
 - **注意:** 「実装済み」「オフラインテストあり」「実モデルで実証済み」は異なる。この文書の「未実証」を自動的に「未実装」とは扱わない。
 
 ## 1. 製品として提供する体験（最初の完成目標）
 
-利用者はAI Office自身のCLIに**GitHub Issue URLと対象リポジトリ**を渡す。AI Officeは読み取り専用でIssueと固定revisionのリポジトリを調べ、変更候補ファイル・目的・受け入れ条件・実行上限を提示する。人間が内容、読み取り/変更許可範囲、Provider/local-effect権限を承認した後、AI OfficeがRun Inputを内部で確定し、既存の共通Workflowで変更・隔離検証・独立レビュー・必要な有限改訂を実施する。検証済み候補は**別のGitHub書込み承認**を受けてDraft PRへ配信し、CI結果と証跡を利用者へ提示する。Ready化・mergeは人間が判断する。
+利用者はAI Office自身のCLIに**GitHub Issue URLと対象リポジトリ**を渡す。人間が固定base・探索/外部送信/変更可能範囲・有限予算を事前承認した後、AI Office自身がGit検索と**有限のAI追加調査**を行い、根拠を基に具体的な変更対象ファイルを選ぶ。選定対象が承認済み上限内なら逐次のファイル選択は求めない。AI OfficeがRun Inputを内部で確定し、既存の共通Workflowで変更・固定Oracleによる隔離検証・独立レビュー・レビュー指摘に基づく有限改訂を実施する。検証済み候補は**別のGitHub書込み承認**を受けてDraft PRへ配信し、CI結果と証跡を利用者へ提示する。Ready化・mergeは人間が判断する。
 
 **利用者がすること:** 業務の依頼、計画・権限の承認、異常時の判断、最終受け入れ。
 
@@ -54,23 +55,23 @@
 
 ### P0-A: Issue受付・read-only調査・作業案の提示
 
-**What:** AI Office自身がIssue URLとrepositoryを受け取り、Issueの要求を読み取り、固定baseのリポジトリ構造から少数の変更候補/関連テスト候補を提示する。読取り対象、読み取り上限、Provider送信範囲を利用者に示す。Issue本文やソース内の指示を権限として扱わない。
+**What:** AI Office自身がIssue URLとrepositoryを受け取り、固定baseでGit/AIによる有限調査を行う。AI社員は根拠・原因仮説・修正候補・必要な追加資料を提示し、承認済み範囲内なら追加調査を継続する。読取・外部送信・変更の上限は人間が事前承認する。Issue本文やソース内の指示を権限として扱わない。
 
 **Why:** `source_context`を用意するために外部エージェントを必須とする現状をなくす。
 
-**Constraints:** 最初はGitと既存GitHub読み取り経路を再利用。無制限探索、一般的なtool-call agent、任意コマンド実行は前提にしない。候補が確定できなければ不足情報を提示して停止する。**read scopeとwrite scopeは別**。AIがwrite権限を確定しない。
+**Constraints:** Gitと既存GitHub読み取り経路を再利用。無制限探索、一般的なtool-call agent、任意コマンド実行は前提にしない。**read scope・Provider送信範囲・write scopeは別**。AIは承認済み最大write範囲内で具体的な候補を選べるが、その上限を決定・拡張できない。予算や権限が不足すれば理由付きで停止する。
 
-**Acceptance:** 新しい小規模Python Issueを入力すると、外部AIエージェントなしで目的と候補パスを提示できる。未承認のソース・シークレットをモデルへ送らず、GitHubやrepoを書き換えない。
+**Acceptance:** ファイル名未指定の小規模Python Issueで、AIが許可範囲内で追加調査し、根拠と具体的な変更対象・関連テストを選定できる。未承認ソースをProviderへ送らず、調査段階でGitHub/repoを書き換えない。
 
 ### P0-B: 承認済み計画→Run Input/実行スコープの確定
 
-**What:** 人間が目的・criteria・base・read/write paths・有限予算を承認したら、AI Officeが固定Git bytesから必要な`source_context`と`source_sha256`を組み立て、既存Jobへ渡す。内部JSONを利用者に編集させない。
+**What:** 人間が目的・criteria・base・最大read/write/send範囲・有限予算を承認し、AIがその範囲内で具体的な対象を選んだら、AI Officeが固定Git bytesから`source_context`と必要なハッシュ・実行ポリシーを組み立て、既存Jobへ渡す。内部JSONを利用者に編集させない。
 
 **Why:** これまでのハッシュ計算、ファイル内容転記、policy/Job参照の突き合わせを製品の正常な準備工程にする。
 
 **Constraints:** 既存Manifest、policy、preimage照合の不変条件は維持。生sourceとdigestの一致、許可範囲、利用者承認、モデル送信/ローカル効果の権限を分ける。既存の`collect-engineering-evidence`の加工済み本文を生sourceと誤用しない。
 
-**Acceptance:** 承認した2ファイルのbase SHA/bytes/hashを再取得してRun Inputが決定的に一致する。許可範囲にないパスへ変更を要求した場合は停止する。外部手動スクリプトなしで既存のbounded Jobが開始できる。
+**Acceptance:** 承認済み上限内で選定した2ファイルのbase SHA/bytes/hashが固定Run Input・local-effect policyと一致し、利用者のJSON/ハッシュ転記なく既存bounded Jobを準備できる。許可範囲外の選定は停止する。
 
 ### P0-C: 一つの「仕事」として既存Job・Draft PR・CIを接続
 
@@ -88,11 +89,15 @@
 
 **Acceptance:** ①成功Job→Draft PR、②write scope外提案の拒否、③Provider/ローカル検証失敗での停止、④PR送信結果不明でのread-only照合、⑤既存記事Workflowの回帰なし。通常はfake Provider/local Gitで確認し、実Provider/実GitHubはその都度別承認の小規模実証のみ。
 
-### P1: 実需が確認されてから着手するもの
+### 第2段階（Issue C）— 必須の後続機能
 
-- **Job内pytest/Ruff:** 現行sandboxではpytest依存とRuff native実行が課題。PR前に必須とする製品契約なら最小の実行環境改善を評価する。MVPでは固定Oracle＋Draft PR後のCIを明確に分ける。なお、候補が編集できるテストだけで合格判定しない。
-- **CI失敗からの新たな改訂:** 現段階では失敗内容を提示して停止。自動改訂が実際のボトルネックになったときに、独立認可と有限予算を設計する。
-- **記事制作の入口統合:** 同じ入力準備の責務を記事ブリーフにも適用する。記事ごとの成果品質の向上と混同しない。
+- **Job内pytest/Ruff:** 現行sandboxではpytest依存とRuff native実行が課題。既存local executionを再利用し、承認済みのテスト/静的解析をJob内で実行する。
+- **既知の不合格からの有限自律修正:** pytest/Ruffの検証不合格をEvidenceとしてAIへ渡し、同じ承認範囲と予算で新Artifact→再検証→独立レビューを行う。実行不能・結果不明・予算超過は停止する。
+
+### 別途実需が確認されたら検討
+
+- **PR後CI失敗からの新たな改訂:** 第1・第2段階ともCI不合格は停止。自動でPRを更新し続ける機能は対象外。
+- **記事制作の入口統合:** 同じ入力準備の責務を記事ブリーフにも適用するが、今回のIssue A/B/Cには含めない。
 
 ### 現時点で作らないもの
 
@@ -117,15 +122,15 @@
 - 新機能の前に既存API・状態遷移・Approval・Artifact管理が同じ責務を二重に持っていないか確認。**削除・統合で同じ振る舞いを保てる場合は新しいwrapperを作らない**。
 - この文書は`product-vision.md`（目的）や`engine-target-architecture.md`（不変条件）を置き換えない。**実装状況と次に作る製品機能の単一の一覧表**として維持する。
 
-## 6. 進め方と判断が必要な事項
+## 6. 開発順序（決定済み）
 
-1. まず本書で**最初の製品範囲**を人間が承認する。コードは変更しない。
-2. P0-A/Bについて現行機能の再利用を検討し、必要な最小Issueを**まとめて**作る。細かいPhaseや関数ごとのIssueには分割しない。
-3. P0-C/Dは既存`bounded-job-run`・`draft-pr`・CIの構成で実現し、新しいengineや状態保存を追加しない。最初はオフラインで振る舞いを確認。
-4. 実Provider Jobや実GitHub配信は、対象・権限・費用/送信上限を提示して別途明示承認を得る。
-5. P0の外部受け入れシナリオを満たした後に、#802の扱いを判断。原Issueにある「Job内でのpytest・静的解析」等を削るなら黙って完了扱いせず、親Issueとの差分を明記して人間がスコープ変更を決定する。
+1. [統合製品設計 v0.4](issue-to-pr-product-design.md)と[開発ワークフロー](development-workflow.md)を基準に、まず文書整備PR #827をレビュー・main統合する。
+2. **Issue A（第1段階）:** P0-A/Bの自律調査・Run Input自動準備を、既存読み取り・Job/認可機能の再利用で実装する。
+3. **Issue B（第1段階）:** P0-C/Dの既存Job・固定Oracle・Draft PR・実HEAD CI表示・回帰検証・Runbookを一体で実装する。
+4. **Issue C（第2段階）:** Job内pytest/Ruffと不合格からの有限改訂・再検証を実装する。
+5. 各Issueは調査からDraft PR・最新HEAD CI確認までopenClawへまとめて委任し、ChatGPTがPRをレビュー、人間がmergeを判断する。実Providerや実GitHubへの製品副作用は都度別承認。
 
-**人間の確認が必要な未決定点:** 最初の製品版で「固定Oracle＋PR後のCI」を正式な検証条件として認めるか、それとも「pytest・RuffまでJob内で完了」を必須とするか。この選択でP1の一部がP0へ移る。ほかは現行の小規模Python/GitHub Issueという範囲で進められる。
+**Issue #802は第1段階のみでcloseしない。** 第2段階のJob内pytest/Ruff・失敗からの自律修正を含め、原Issueの要求と照合した上で人間が判断する。
 
 ## 7. 主な根拠資料
 
@@ -142,6 +147,7 @@
 
 - **製品の目的（正本）:** [Product Vision](product-vision.md)。外部AIエージェント非依存、業務非依存、責務と非目標。
 - **現在の実装・不足・優先順位（正本）:** 本書。基準日を明示し、実装進展時に更新する。
+- **今後の機能契約（今回の範囲）:** [統合製品設計 v0.4](issue-to-pr-product-design.md)。これ以外の製品正本を増やさない。
 - **設計上の不変条件（正本）:** [Engine Target Architecture](engine-target-architecture.md)。現在の機能一覧ではない。
 - **実装と過去の経緯（参考）:** [Current Architecture](architecture.md)。過去のPhase構造を将来の実装に強制しない。
 - **現行の運用手順:** [Runbooks](runbooks/) と [Destination guide](openai-compatible-destinations.md)。
