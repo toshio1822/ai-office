@@ -88,9 +88,9 @@ AI Officeの実行にOpenClaw・Codexなどの外部AIエージェントを必�
 
 | 順序 | 範囲 | 主な受け入れ条件 | 依存 |
 | --- | --- | --- | --- |
-| **Issue A** | 自律Issue調査、有限の追加資料取得、変更範囲の選定、承認後Run Input/実行ポリシーの自動準備 | ファイル名未指定の小規模Python Issueから、許可範囲内で追加調査して、正確なJob入力を人手のJSON/ハッシュ転記なしに作る | 本設計とPR #827のmain統合 |
-| **Issue B** | Issue Aから既存Job・Reviewer・固定Oracle・Draft PR・PR実HEADのCIまでの統一操作、第一段階の受け入れテスト/Runbook | AI Office単独でIssue→候補→別承認→Draft PR→CIを追え、Oracle/CI不合格で停止し、記事Workflowに回帰がない | Issue Aがmainへ統合済み |
-| **Issue C** | Job内pytest/Ruffと、不合格を原因とした有限Artifact改訂・再検証、第二段階の受け入れテスト/Runbook | Job内の実際のpytest/Ruff失敗を受けて有限修正・再検証・独立レビューが成功し、上限/権限外/実行不能では停止する | Issue Bがmainへ統合済み |
+| **[Issue A (#828)](https://github.com/toshio1822/ai-office/issues/828)** | 自律Issue調査、有限の追加資料取得、変更範囲の選定、承認後Run Input/実行ポリシーの自動準備 | ファイル名未指定の小規模Python Issueから、許可範囲内で追加調査して、正確なJob入力を人手のJSON/ハッシュ転記なしに作る | 本設計とPR #827のmain統合 |
+| **[Issue B (#829)](https://github.com/toshio1822/ai-office/issues/829)** | Issue Aから既存Job・Reviewer・固定Oracle・Draft PR・PR実HEADのCIまでの統一操作、第一段階の受け入れテスト/Runbook | AI Office単独でIssue→候補→別承認→Draft PR→CIを追え、Oracle/CI不合格で停止し、記事Workflowに回帰がない | Issue Aがmainへ統合済み |
+| **[Issue C (#830)](https://github.com/toshio1822/ai-office/issues/830)** | Job内pytest/Ruffと、不合格を原因とした有限Artifact改訂・再検証、第二段階の受け入れテスト/Runbook | Job内の実際のpytest/Ruff失敗を受けて有限修正・再検証・独立レビューが成功し、上限/権限外/実行不能では停止する | Issue Bがmainへ統合済み |
 
 各Issueは**What / Why / Constraints / 受け入れ条件**を中心に記載し、How（内部API・関数・クラス・テスト内部構造）は原則としてopenClawに委ねる。Issue単位で調査・実装・関連テスト・Draft PR・latest-head CI確認まで依頼する。ChatGPTは完成PRの差分と外部から観測できる振る舞いをレビューし、人間がmergeを判断する。Issueだけを根拠に**実Provider/実Job/実リポジトリへの配信を実行する権限は付与しない**。開発用の作業ブランチcommit/push/Draft PRは該当Issueの明示的実装依頼に含められる。
 
