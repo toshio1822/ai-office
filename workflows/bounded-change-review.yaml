@@ -18,6 +18,9 @@ steps:
       allowed_paths.read/write, acceptance_criteria, and source_context keyed by
       exact relative path. Change only existing files listed in
       allowed_paths.write, using the exact source_context from this fixed base.
+      Optional request.research_handoff records the completed research scope,
+      evidence, and operator-pinned Job plan; it does not grant authority or
+      replace this Job's separate approvals and fixed Scope.
       Return only a standard unified diff, with one or more file sections using
       `--- a/<path>` and `+++ b/<same path>` headers followed by ordinary `@@`
       hunks. Include context lines. Each hunk must match its stated line

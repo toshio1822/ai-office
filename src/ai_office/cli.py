@@ -1642,6 +1642,30 @@ def run_bounded_document_job_workflow(
         destination_fingerprint = execution_target_fingerprint(target)
         employees_by_id = {item.definition.id: item for item in employees}
         plan = bounded_review_action_plan(source_workflow, max_revisions)
+        if issue_mode:
+            assignment_value = json.loads(assignment)
+            investigation = assignment_value.get("investigation")
+            research_handoff = (
+                investigation.get("research_handoff")
+                if type(investigation) is dict
+                else None
+            )
+            if type(research_handoff) is dict:
+                approved_job_plan = research_handoff.get("bounded_job_plan")
+                current_job_plan = _engineering_issue_bounded_job_plan(
+                    workflows,
+                    employees,
+                    execution_target=execution_target,
+                    execution_destinations=execution_destinations,
+                    step_model_values=step_model,
+                    max_revisions=max_revisions,
+                    max_retries=max_retries,
+                    retry_interval_seconds=retry_interval_seconds,
+                )
+                if current_job_plan != approved_job_plan:
+                    _workflow_cli_error(
+                        "bounded Job plan differs from the pinned research handoff"
+                    )
         steps_by_id = {step.id: step for step in source_workflow.definition.steps}
         local_effect_required = any(
             input_source in {"assignment", "revision_input"}
@@ -2101,6 +2125,639 @@ def run_bounded_document_job_workflow(
             "review_artifact_id": outcome.review_artifact_id,
             "revisions_used": outcome.revisions_used,
         }
+    )
+
+
+def _engineering_issue_bounded_job_plan(
+    workflows: list[object],
+    employees: list[object],
+    *,
+    execution_target: str,
+    execution_destinations: Path,
+    step_model_values: list[str],
+    max_revisions: int,
+    max_retries: int,
+    retry_interval_seconds: int,
+) -> dict[str, object]:
+    """Pin the existing bounded Job's finite plan in the research Run Input."""
+    from ai_office.engine.workflow_bounded_job import (
+        WorkflowJobAuthorizationError,
+        bounded_review_action_plan,
+    )
+
+    workflow = _apply_step_model_overrides(
+        _select_workflow_or_exit(workflows, "bounded-change-review"),
+        step_model_values,
+    )
+    targets = _resolve_workflow_execution_targets(
+        workflow, execution_target, execution_destinations
+    )
+    for target, step in zip(
+        targets, workflow.definition.steps, strict=True
+    ):
+        _validate_pinned_models_for_target(target, execution_destinations, [step.model])
+    try:
+        action_plan = bounded_review_action_plan(workflow, max_revisions)
+    except WorkflowJobAuthorizationError:
+        _workflow_cli_error("bounded Job plan exceeds its configured finite limit")
+
+    employees_by_id = {item.definition.id: item for item in employees}
+    required_employee_ids = tuple(
+        dict.fromkeys(step.employee for step in workflow.definition.steps)
+    )
+    if any(employee_id not in employees_by_id for employee_id in required_employee_ids):
+        _workflow_cli_error("bounded Job employee definition is unavailable")
+    workflow_bytes = json.dumps(
+        workflow.definition.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    employee_bytes = json.dumps(
+        [
+            employees_by_id[employee_id].definition.model_dump(mode="json")
+            for employee_id in required_employee_ids
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "action_plan": [
+            {"input_source": source, "step_id": step_id, "step_index": step_index}
+            for step_id, step_index, source in action_plan
+        ],
+        "employee_definitions_sha256": sha256(employee_bytes).hexdigest(),
+        "execution_target": execution_target,
+        "max_provider_attempts": len(action_plan) + max_retries,
+        "max_retries": max_retries,
+        "max_revisions": max_revisions,
+        "retry_interval_seconds": retry_interval_seconds,
+        "steps": [
+            {
+                "execution_target_fingerprint": execution_target_fingerprint(target),
+                "model": step.model,
+                "step_id": step.id,
+            }
+            for step, target in zip(
+                workflow.definition.steps, targets, strict=True
+            )
+        ],
+        "workflow_definition_sha256": sha256(workflow_bytes).hexdigest(),
+        "workflow_id": "bounded-change-review",
+    }
+
+
+def _engineering_issue_run_id(run_input: str, round_number: int) -> str:
+    """Derive one stable Run identity from its immutable bounded Run Input."""
+    value = json.loads(run_input)
+    issue = value["issue"]
+    digest = sha256(run_input.encode("utf-8")).hexdigest()[:20]
+    return f"engineering-issue-{issue['number']}-r{round_number}-{digest}"
+
+
+def _engineering_issue_initial_input_matches(
+    initial: dict[str, object], current: dict[str, object]
+) -> bool:
+    """Require a resumed lineage to preserve its complete approved plan."""
+    for key in ("issue", "repository", "authorization", "bounded_job_plan"):
+        if initial.get(key) != current.get(key):
+            return False
+    initial_sources = initial.get("available_sources")
+    current_sources = current.get("available_sources")
+    if type(initial_sources) is not list or type(current_sources) is not list:
+        return False
+
+    def inventory(items: list[object]) -> list[dict[str, object]]:
+        result = []
+        for item in items:
+            if type(item) is not dict:
+                return []
+            result.append(
+                {key: value for key, value in item.items() if key != "already_sent"}
+            )
+        return result
+
+    if inventory(initial_sources) != inventory(current_sources):
+        return False
+    initial_context = initial.get("source_context")
+    current_context = current.get("source_context")
+    initial_digests = initial.get("source_sha256")
+    current_digests = current.get("source_sha256")
+    if not all(
+        type(value) is dict
+        for value in (
+            initial_context,
+            current_context,
+            initial_digests,
+            current_digests,
+        )
+    ):
+        return False
+    return all(
+        current_context.get(path) == content
+        and current_digests.get(path) == initial_digests.get(path)
+        for path, content in initial_context.items()
+    )
+
+
+@workflows_app.command("engineering-issue-run")
+def run_engineering_issue_workflow(
+    issue_url: str = typer.Option(..., "--issue-url"),
+    repository: str = typer.Option(..., "--repository"),
+    repository_path: Path = typer.Option(..., "--repository-path"),
+    base_revision: str = typer.Option(..., "--base-revision"),
+    search_pattern: list[str] = typer.Option(..., "--search-pattern"),
+    read_pattern: list[str] = typer.Option(..., "--read-pattern"),
+    send_pattern: list[str] = typer.Option(..., "--send-pattern"),
+    write_pattern: list[str] = typer.Option(..., "--write-pattern"),
+    initial_files: int = typer.Option(..., "--initial-files", min=1, max=64),
+    max_files: int = typer.Option(..., "--max-files", min=1, max=64),
+    max_source_bytes: int = typer.Option(..., "--max-source-bytes", min=1),
+    max_provider_input_bytes: int = typer.Option(
+        ..., "--max-provider-input-bytes", min=1024, max=1_048_576
+    ),
+    max_provider_total_bytes: int = typer.Option(
+        ..., "--max-provider-total-bytes", min=1024, max=5_242_880
+    ),
+    max_provider_attempts: int = typer.Option(
+        ..., "--max-provider-attempts", min=1, max=5
+    ),
+    oracle_profile: str = typer.Option(..., "--oracle-profile"),
+    send_issue_body: bool = typer.Option(False, "--send-issue-body"),
+    execution_target: str = typer.Option(..., "--execution-target"),
+    execution_destinations: Path = typer.Option(..., "--execution-destinations"),
+    research_model: str = typer.Option(..., "--research-model"),
+    job_step_model: list[str] = typer.Option(
+        [], "--job-step-model", help="Repeat STEP_ID=MODEL to pin Job Step models."
+    ),
+    max_revisions: int = typer.Option(1, "--max-revisions", min=0),
+    max_retries: int = typer.Option(0, "--max-retries", min=0, max=2),
+    retry_interval_seconds: int = typer.Option(
+        30, "--retry-interval-seconds", min=1, max=3600
+    ),
+    run_store: Path = typer.Option(
+        Path("runs/engineering-issues"), "--run-store", "--run-root"
+    ),
+    directory: Path = typer.Option(Path("workflows"), "--directory"),
+    employees_directory: Path = typer.Option(
+        Path("employees"), "--employees-directory"
+    ),
+) -> None:
+    """Investigate finitely, then hand a ready Issue to the existing bounded Job.
+
+    Every research Run retains its exact Business and Execution approvals.
+    The bounded Job retains its separate Business, Execution, and local-effect
+    confirmations. GitHub delivery is not started by this command.
+    """
+    import ai_office.engineering_issue as engineering_issue
+    from ai_office.engine.workflow_run_manifest import (
+        WorkflowRunManifestStore,
+        load_workflow_run_manifest,
+    )
+    from ai_office.engineering_issue import (
+        EngineeringIssueError,
+        _load_research_result,
+        _parse_plan,
+        find_latest_engineering_issue_run_id,
+        prepare_engineering_issue_input,
+        prepare_next_engineering_issue_input,
+    )
+
+    if os.geteuid() == 0 or os.geteuid() != os.getuid() or not sys.stdin.isatty():
+        _workflow_cli_error(
+            "engineering Issue execution requires an interactive operator"
+        )
+    if run_store.is_symlink() or (run_store.exists() and not run_store.is_dir()):
+        _workflow_cli_error("engineering Issue Run storage is invalid")
+    if run_store.parent.is_symlink():
+        _workflow_cli_error("engineering Issue Run storage parent is invalid")
+
+    workflows, employees = _load_workflow_command_inputs(
+        directory, employees_directory
+    )
+    research_step_model_values = [f"investigate={research_model}"]
+    research_workflow = _apply_step_model_overrides(
+        _select_workflow_or_exit(workflows, "engineering-issue-investigation"),
+        research_step_model_values,
+    )
+    research_targets = _resolve_workflow_execution_targets(
+        research_workflow, execution_target, execution_destinations
+    )
+    for target, step in zip(
+        research_targets, research_workflow.definition.steps, strict=True
+    ):
+        _validate_pinned_models_for_target(target, execution_destinations, [step.model])
+    try:
+        bounded_job_plan = _engineering_issue_bounded_job_plan(
+            workflows,
+            employees,
+            execution_target=execution_target,
+            execution_destinations=execution_destinations,
+            step_model_values=job_step_model,
+            max_revisions=max_revisions,
+            max_retries=max_retries,
+            retry_interval_seconds=retry_interval_seconds,
+        )
+    except EngineeringIssueError as error:
+        _workflow_cli_error(f"bounded Job plan stopped ({error.classification})")
+
+    try:
+        initial_run_input, _initial_summary = prepare_engineering_issue_input(
+            issue_url=issue_url,
+            repository=repository,
+            repository_path=repository_path,
+            base_revision=base_revision,
+            search_patterns=search_pattern,
+            read_patterns=read_pattern,
+            send_patterns=send_pattern,
+            write_patterns=write_pattern,
+            initial_files=initial_files,
+            max_files=max_files,
+            max_source_bytes=max_source_bytes,
+            max_provider_input_bytes=max_provider_input_bytes,
+            max_provider_total_bytes=max_provider_total_bytes,
+            max_provider_attempts=max_provider_attempts,
+            oracle_profile=oracle_profile,
+            send_issue_body=send_issue_body,
+            bounded_job_plan=bounded_job_plan,
+            github_token=os.environ.get("GITHUB_TOKEN"),
+            github_transport=engineering_issue.send_github_read_request,
+        )
+        initial_value = json.loads(initial_run_input)
+    except EngineeringIssueError as error:
+        _workflow_cli_error(
+            f"engineering Issue preparation stopped ({error.classification})"
+        )
+    except (OSError, json.JSONDecodeError):
+        _workflow_cli_error("engineering Issue Run Input could not be prepared")
+
+    authorization = initial_value["authorization"]
+    job_run_store = run_store / "bounded-job-runs"
+    _emit_json(
+        {
+            "operation": "engineering-issue-run-plan",
+            "issue_url": issue_url,
+            "repository": repository,
+            "base_revision": base_revision,
+            "search_patterns": search_pattern,
+            "read_patterns": read_pattern,
+            "provider_send_patterns": send_pattern,
+            "write_patterns": write_pattern,
+            "issue_body_sent": authorization["issue_body_sent"],
+            "research_round_limit": max_provider_attempts,
+            "research_provider_attempt_limit": max_provider_attempts,
+            "research_source_byte_limit": max_source_bytes,
+            "provider_input_byte_limit": max_provider_input_bytes,
+            "provider_total_input_byte_limit": max_provider_total_bytes,
+            "oracle_profile": oracle_profile,
+            "oracle_policy_sha256": authorization["oracle_policy_sha256"],
+            "research_model": research_model,
+            "execution_target": execution_target,
+            "job_plan": bounded_job_plan,
+            "job_run_store": str(job_run_store),
+        }
+    )
+
+    latest_run_id: str | None = None
+    latest_manifest = None
+    first_manifest = None
+    latest_output: str | None = None
+    if run_store.exists():
+        try:
+            latest_run_id = find_latest_engineering_issue_run_id(run_store, issue_url)
+        except EngineeringIssueError as error:
+            if error.classification != "research_run_not_found":
+                _workflow_cli_error(
+                    f"engineering Issue resume stopped ({error.classification})"
+                )
+    if latest_run_id is not None:
+        try:
+            research_store = WorkflowRunManifestStore(run_store)
+            latest_manifest = load_workflow_run_manifest(research_store, latest_run_id)
+            latest_value = json.loads(latest_manifest.run_input)
+            first_run_id = (
+                latest_run_id
+                if latest_value["round"] == 1
+                else latest_value["prior_research"][0]["run_id"]
+            )
+            first_manifest = load_workflow_run_manifest(research_store, first_run_id)
+            if (
+                first_manifest.workflow_id != "engineering-issue-investigation"
+                or first_manifest.run_input != initial_run_input
+                or not _engineering_issue_initial_input_matches(
+                    initial_value, latest_value
+                )
+                or (
+                    latest_value["round"] > 1
+                    and first_manifest.digest
+                    != latest_value["prior_research"][0]["manifest_digest"]
+                )
+            ):
+                _workflow_cli_error(
+                    "Issue, fixed scopes, budgets, or bounded Job plan changed; "
+                    "resume with the original plan"
+                )
+            prior_research = latest_value["prior_research"]
+            for prior_round, prior_record in enumerate(prior_research, start=1):
+                prior_run_id = prior_record["run_id"]
+                prior_manifest = load_workflow_run_manifest(
+                    research_store, prior_run_id
+                )
+                prior_value = json.loads(prior_manifest.run_input)
+                if (
+                    prior_manifest.workflow_id
+                    != "engineering-issue-investigation"
+                    or prior_manifest.digest != prior_record["manifest_digest"]
+                    or prior_value.get("round") != prior_round
+                    or not _engineering_issue_initial_input_matches(
+                        initial_value, prior_value
+                    )
+                    or prior_value.get("prior_research")
+                    != prior_research[: prior_round - 1]
+                ):
+                    _workflow_cli_error("prior engineering Issue Run lineage changed")
+                _prior_manifest, _prior_input, prior_output, prior_output_sha256 = (
+                    _load_research_result(run_store, prior_run_id)
+                )
+                if (
+                    prior_output_sha256 != prior_record["output_sha256"]
+                    or _parse_plan(prior_output) != prior_record["output"]
+                ):
+                    _workflow_cli_error(
+                        "prior engineering Issue result does not match its Run evidence"
+                    )
+            candidate_first_manifest, _candidate_binding, *_ = (
+                _build_start_manifest_preview(
+                    "engineering-issue-investigation",
+                    first_run_id,
+                    initial_run_input,
+                    workflows,
+                    employees,
+                    research_step_model_values,
+                    execution_targets=research_targets,
+                )
+            )
+            if candidate_first_manifest.digest != first_manifest.digest:
+                _workflow_cli_error(
+                    "pinned research workflow, model, employee, or destination changed"
+                )
+            _loaded_manifest, _loaded_input, latest_output, _output_digest = (
+                _load_research_result(run_store, latest_run_id)
+            )
+        except typer.Exit:
+            raise
+        except Exception:
+            _workflow_cli_error(
+                "latest engineering Issue Run is ambiguous or incomplete"
+            )
+
+    if latest_output is not None:
+        try:
+            latest_plan = _parse_plan(latest_output)
+        except EngineeringIssueError as error:
+            _workflow_cli_error(
+                f"engineering Issue result stopped ({error.classification})"
+            )
+        if latest_plan["outcome"] == "ready":
+            ready_run_id = latest_run_id
+        elif latest_plan["outcome"] == "blocked":
+            _emit_json(
+                {
+                    "operation": "engineering-issue-run",
+                    "status": "stopped",
+                    "reason": "research_blocked",
+                    "research_run_id": latest_run_id,
+                }
+            )
+            raise typer.Exit(code=1)
+        else:
+            try:
+                active_run_input, _next_summary = prepare_next_engineering_issue_input(
+                    run_store, latest_run_id
+                )
+            except EngineeringIssueError as error:
+                _emit_json(
+                    {
+                        "operation": "engineering-issue-run",
+                        "status": "stopped",
+                        "reason": error.classification,
+                        "research_run_id": latest_run_id,
+                    }
+                )
+                raise typer.Exit(code=1) from None
+            ready_run_id = None
+    else:
+        active_run_input = initial_run_input
+        ready_run_id = None
+
+    while ready_run_id is None:
+        active_value = json.loads(active_run_input)
+        round_number = active_value["round"]
+        run_id = _engineering_issue_run_id(active_run_input, round_number)
+        source_research_workflow = _apply_step_model_overrides(
+            _select_workflow_or_exit(
+                workflows, "engineering-issue-investigation"
+            ),
+            research_step_model_values,
+        )
+        research_targets = _resolve_workflow_execution_targets(
+            source_research_workflow, execution_target, execution_destinations
+        )
+        manifest, binding, pinned_workflows, pinned_employees, tool_catalog = (
+            _build_start_manifest_preview(
+                "engineering-issue-investigation",
+                run_id,
+                active_run_input,
+                workflows,
+                employees,
+                research_step_model_values,
+                execution_targets=research_targets,
+            )
+        )
+        _validate_manifest_execution_destinations(manifest, execution_destinations)
+        if first_manifest is not None and any(
+            getattr(manifest, field) != getattr(first_manifest, field)
+            for field in (
+                "workflow_snapshot",
+                "employee_snapshots",
+                "tool_contracts",
+                "execution_destinations",
+            )
+        ):
+            _workflow_cli_error(
+                "pinned research workflow, model, employee, or destination changed"
+            )
+        target = manifest.execution_destination_for_step(1).target
+        _workflow, preview = _build_workflow_step_preview(
+            pinned_workflows,
+            pinned_employees,
+            "engineering-issue-investigation",
+            1,
+            execution_target=target,
+            run_binding=binding,
+            run_input=manifest.run_input,
+            tool_catalog=tool_catalog,
+        )
+        preview_value = _step_preview_json("engineering-issue-run", preview)
+        preview_value.update(
+            {
+                "operation": "engineering-issue-run-preview",
+                "research_round": round_number,
+                "research_round_limit": max_provider_attempts,
+                "research_provider_attempt_limit": max_provider_attempts,
+                "job_provider_attempt_limit": bounded_job_plan[
+                    "max_provider_attempts"
+                ],
+            }
+        )
+        _emit_json(preview_value)
+
+        if preview.business_approval_required and not typer.confirm(
+            f"Approve the exact Business step for research Run {run_id}?",
+            default=False,
+        ):
+            _emit_json(
+                {
+                    "operation": "engineering-issue-run",
+                    "status": "approval_required",
+                    "approval": "business",
+                    "research_run_id": run_id,
+                    "research_round": round_number,
+                    "request_fingerprint": preview.request_fingerprint,
+                }
+            )
+            return
+        if not typer.confirm(
+            f"Approve exactly one Provider request for research Run {run_id}?",
+            default=False,
+        ):
+            _emit_json(
+                {
+                    "operation": "engineering-issue-run",
+                    "status": "approval_required",
+                    "approval": "execution",
+                    "research_run_id": run_id,
+                    "research_round": round_number,
+                    "request_fingerprint": preview.request_fingerprint,
+                }
+            )
+            return
+
+        operator_label = getpass.getuser()
+        start_workflow(
+            "engineering-issue-investigation",
+            run_id=run_id,
+            run_input=active_run_input,
+            run_input_file=None,
+            run_store=run_store,
+            directory=directory,
+            employees_directory=employees_directory,
+            preview_only=False,
+            execution_target=execution_target,
+            execution_destinations=execution_destinations,
+            step_model=research_step_model_values,
+            legacy_execution_model=None,
+            approve_business=preview.business_approval_required,
+            business_approved_by=(
+                operator_label if preview.business_approval_required else None
+            ),
+            business_approval_id=(
+                f"issue-business-{uuid.uuid4().hex}"
+                if preview.business_approval_required
+                else None
+            ),
+            approve_execution=True,
+            execution_approved_by=operator_label,
+            execution_approval_id=f"issue-execution-{uuid.uuid4().hex}",
+            expected_step_id=preview.step_request.step_id,
+            expected_step_index=preview.step_request.step_index,
+            expected_employee_id=preview.step_request.employee_id,
+            expected_request_fingerprint=preview.request_fingerprint,
+        )
+        if first_manifest is None:
+            first_manifest = manifest
+
+        try:
+            _result_manifest, _result_input, output_text, _output_sha256 = (
+                _load_research_result(run_store, run_id)
+            )
+            research_plan = _parse_plan(output_text)
+        except EngineeringIssueError as error:
+            _emit_json(
+                {
+                    "operation": "engineering-issue-run",
+                    "status": "stopped",
+                    "reason": error.classification,
+                    "research_run_id": run_id,
+                    "research_round": round_number,
+                }
+            )
+            raise typer.Exit(code=1) from None
+        if research_plan["outcome"] == "ready":
+            ready_run_id = run_id
+        elif research_plan["outcome"] == "blocked":
+            _emit_json(
+                {
+                    "operation": "engineering-issue-run",
+                    "status": "stopped",
+                    "reason": "research_blocked",
+                    "research_run_id": run_id,
+                    "research_round": round_number,
+                }
+            )
+            raise typer.Exit(code=1)
+        else:
+            try:
+                active_run_input, _next_summary = prepare_next_engineering_issue_input(
+                    run_store, run_id
+                )
+            except EngineeringIssueError as error:
+                _emit_json(
+                    {
+                        "operation": "engineering-issue-run",
+                        "status": "stopped",
+                        "reason": error.classification,
+                        "research_run_id": run_id,
+                        "research_round": round_number,
+                    }
+                )
+                raise typer.Exit(code=1) from None
+
+    if ready_run_id is None:
+        _workflow_cli_error("ready research Run is unavailable")
+    if job_run_store.is_symlink() or (
+        job_run_store.exists()
+        and (not job_run_store.is_dir() or any(job_run_store.iterdir()))
+    ):
+        _workflow_cli_error(
+            "bounded Job already has durable state; inspect it instead of restarting"
+        )
+
+    run_bounded_document_job_workflow(
+        job_id=None,
+        initial_run_id=None,
+        assignment_file=None,
+        issue_url=issue_url,
+        research_run_store=run_store,
+        style_profile_id=None,
+        run_store=job_run_store,
+        directory=directory,
+        employees_directory=employees_directory,
+        execution_target=execution_target,
+        execution_destinations=execution_destinations,
+        step_model=[
+            f"{step['step_id']}={step['model']}"
+            for step in bounded_job_plan["steps"]
+        ],
+        legacy_execution_model=None,
+        workflow_id="bounded-change-review",
+        max_revisions=max_revisions,
+        max_retries=max_retries,
+        retry_interval_seconds=retry_interval_seconds,
+        local_effect_policy_file=None,
+        local_effect_workspace=None,
+        approve_local_effect=False,
     )
 
 

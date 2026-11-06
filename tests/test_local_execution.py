@@ -67,6 +67,7 @@ from ai_office.engine.workflow_bounded_job import (
 from ai_office.engine.workflow_run_manifest import (
     WorkflowRunManifestStore,
     build_workflow_run_manifest,
+    load_workflow_run_manifest,
     persist_workflow_run_manifest,
 )
 from ai_office.execution_target import (
@@ -482,7 +483,7 @@ def _temporary_repo(root: Path) -> tuple[Path, str, bytes]:
     return repository, revision, source
 
 
-def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
+def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     tmp_path: Path,
     require_local_sandbox: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -520,24 +521,39 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
             200, json.dumps(issue_response).encode("utf-8")
         )
 
-    research_input, _summary = engineering_issue.prepare_engineering_issue_input(
-        issue_url=issue_url,
-        repository="offline-owner/offline-repository",
-        repository_path=repository,
-        base_revision=revision,
-        search_patterns=("*.py",),
-        read_patterns=("*.py",),
-        send_patterns=("*.py",),
-        write_patterns=("calculator.py",),
-        initial_files=2,
-        max_files=2,
-        max_source_bytes=100_000,
-        max_provider_input_bytes=900_000,
-        max_provider_total_bytes=3_600_000,
-        max_provider_attempts=1,
-        oracle_profile="python-tests-and-ruff",
-        send_issue_body=True,
-        github_transport=issue_transport,
+    monkeypatch.setattr(
+        engineering_issue, "send_github_read_request", issue_transport
+    )
+    needs_more_plan = json.dumps(
+        {
+            "outcome": "needs_more_evidence",
+            "cause_hypotheses": [
+                {
+                    "hypothesis": (
+                        "The implementation's test should confirm the intended result."
+                    ),
+                    "confidence": "medium",
+                    "evidence": ["calculator.py"],
+                }
+            ],
+            "evidence": [
+                {
+                    "path": "calculator.py",
+                    "start_line": 2,
+                    "end_line": 2,
+                    "quote": "    return 1 + 1",
+                    "reason": (
+                        "The implementation is known but its test contract is not."
+                    ),
+                }
+            ],
+            "read_paths": ["calculator.py"],
+            "additional_read_paths": ["test_calculator.py"],
+            "write_paths": [],
+            "test_paths": [],
+            "acceptance_criteria": [],
+        },
+        sort_keys=True,
     )
     ready_plan = json.dumps(
         {
@@ -595,6 +611,7 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
         "Unresolved material issues: none"
     )
     fake_outputs = [
+        needs_more_plan,
         ready_plan,
         failing_candidate_diff,
         revised_candidate_diff,
@@ -649,59 +666,6 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
     monkeypatch.setattr(cli_module, "send_openai_responses_http_request", fake_provider)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-    research_store = tmp_path / "research-runs"
-    research_run_id = "offline-ready-research-829"
-    start_args = [
-        "workflows",
-        "start",
-        "engineering-issue-investigation",
-        "--run-id",
-        research_run_id,
-        "--run-input",
-        research_input,
-        "--run-store",
-        str(research_store),
-        "--execution-target",
-        "opencode-go-chat",
-        "--execution-destinations",
-        str(destinations),
-        "--step-model",
-        "investigate=glm-5.3-flash",
-        "--preview-only",
-    ]
-    preview_result = CliRunner().invoke(app, start_args)
-    assert preview_result.exit_code == 0, preview_result.output
-    preview = json.loads(preview_result.stdout)
-    assert preview["workflow_id"] == "engineering-issue-investigation"
-    assert preview["step_id"] == "investigate"
-
-    executed_research = CliRunner().invoke(
-        app,
-        start_args[:-1]
-        + [
-            "--approve-business",
-            "--business-approved-by",
-            "offline-proof",
-            "--business-approval-id",
-            "offline-research-business",
-            "--approve-execution",
-            "--execution-approved-by",
-            "offline-proof",
-            "--execution-approval-id",
-            "offline-research-execution",
-            "--expected-step-id",
-            preview["step_id"],
-            "--expected-step-index",
-            str(preview["step_index"]),
-            "--expected-employee-id",
-            preview["employee_id"],
-            "--expected-request-fingerprint",
-            preview["request_fingerprint"],
-        ],
-    )
-    assert executed_research.exit_code == 0, executed_research.output
-    assert json.loads(executed_research.stdout)["status"] == "workflow_complete"
-
     metadata_reads: list[object] = []
 
     def metadata_transport(request):
@@ -737,71 +701,146 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
         prepare_for_issue,
     )
     confirmations: list[str] = []
+    deny_confirmation_number: int | None = 3
 
     def approve(prompt: str, *, default: bool = False) -> bool:
         confirmations.append(prompt)
-        return True
+        return len(confirmations) != deny_confirmation_number
 
     monkeypatch.setattr(cli_module.typer, "confirm", approve)
-    run_store = tmp_path / "engineering-job-runs"
-    bounded_args = [
+    research_store = tmp_path / "engineering-issue-runs"
+    issue_run_args = [
         "workflows",
-        "bounded-job-run",
+        "engineering-issue-run",
         "--issue-url",
         issue_url,
-        "--research-run-store",
-        str(research_store),
-        "--run-store",
-        str(run_store),
-        "--workflow",
-        "bounded-change-review",
-        "--directory",
-        str(repository_root / "workflows"),
-        "--employees-directory",
-        str(repository_root / "employees"),
+        "--repository",
+        "offline-owner/offline-repository",
+        "--repository-path",
+        str(repository),
+        "--base-revision",
+        revision,
+        "--search-pattern",
+        "*.py",
+        "--read-pattern",
+        "*.py",
+        "--send-pattern",
+        "*.py",
+        "--write-pattern",
+        "calculator.py",
+        "--initial-files",
+        "1",
+        "--max-files",
+        "2",
+        "--max-source-bytes",
+        "100000",
+        "--max-provider-input-bytes",
+        "900000",
+        "--max-provider-total-bytes",
+        "3600000",
+        "--max-provider-attempts",
+        "2",
+        "--oracle-profile",
+        "python-tests-and-ruff",
+        "--send-issue-body",
+        "--research-model",
+        "glm-5.3-flash",
+        "--job-step-model",
+        "create-candidate=glm-5.3-flash",
+        "--job-step-model",
+        "review-scope=glm-5.3-flash",
+        "--job-step-model",
+        "review-verification=glm-5.3-flash",
+        "--job-step-model",
+        "revise-candidate=glm-5.3-flash",
+        "--max-revisions",
+        "1",
         "--execution-target",
         "opencode-go-chat",
         "--execution-destinations",
         str(destinations),
-        "--step-model",
-        "create-candidate=glm-5.3-flash",
-        "--step-model",
-        "review-scope=glm-5.3-flash",
-        "--step-model",
-        "review-verification=glm-5.3-flash",
-        "--step-model",
-        "revise-candidate=glm-5.3-flash",
-        "--max-revisions",
-        "1",
+        "--run-store",
+        str(research_store),
+        "--directory",
+        str(repository_root / "workflows"),
+        "--employees-directory",
+        str(repository_root / "employees"),
     ]
-    bounded_result = CliRunner().invoke(app, bounded_args)
-    assert bounded_result.exit_code == 0, bounded_result.output
-    lines = bounded_result.stdout.splitlines()
-    launch = json.loads(lines[0])
-    completed = json.loads(lines[-1])
+    first_result = CliRunner().invoke(app, issue_run_args)
+    assert first_result.exit_code == 0, first_result.output
+    first_records = [
+        json.loads(line) for line in first_result.stdout.splitlines()
+    ]
+    assert not any(
+        item["operation"] == "bounded-job-launch-confirmation"
+        for item in first_records
+    )
+    assert first_records[-1]["operation"] == "engineering-issue-run"
+    assert first_records[-1]["status"] == "approval_required"
+    assert first_records[-1]["research_round"] == 2
+    assert len(provider_requests) == 1
+    assert len(list(research_store.glob("*.manifest.json"))) == 1
+    changed_plan_args = list(issue_run_args)
+    max_files_index = changed_plan_args.index("--max-files") + 1
+    changed_plan_args[max_files_index] = "3"
+    changed_plan_result = CliRunner().invoke(app, changed_plan_args)
+    assert changed_plan_result.exit_code == 2
+    assert "resume with the original plan" in changed_plan_result.output
+    assert len(provider_requests) == 1
+    assert len(list(research_store.glob("*.manifest.json"))) == 1
+    changed_job_plan_args = list(issue_run_args)
+    revisions_index = changed_job_plan_args.index("--max-revisions") + 1
+    changed_job_plan_args[revisions_index] = "0"
+    changed_job_plan_result = CliRunner().invoke(app, changed_job_plan_args)
+    assert changed_job_plan_result.exit_code == 2
+    assert "resume with the original plan" in changed_job_plan_result.output
+    assert len(provider_requests) == 1
+    assert len(list(research_store.glob("*.manifest.json"))) == 1
+    confirmations.clear()
+    deny_confirmation_number = None
+
+    result = CliRunner().invoke(app, issue_run_args)
+    assert result.exit_code == 0, result.output
+    records = [json.loads(line) for line in result.stdout.splitlines()]
+    plan_record = next(
+        item for item in records if item["operation"] == "engineering-issue-run-plan"
+    )
+    launch = next(
+        item
+        for item in records
+        if item["operation"] == "bounded-job-launch-confirmation"
+    )
+    completed = next(
+        item for item in records if item["operation"] == "bounded-job-run"
+    )
+    assert plan_record["operation"] == "engineering-issue-run-plan"
     assert launch["operation"] == "bounded-job-launch-confirmation"
     assert launch["issue_url"] == issue_url
-    assert launch["research_run_id"] == research_run_id
+    research_run_id = launch["research_run_id"]
+    assert research_run_id.startswith("engineering-issue-829-r2-")
     assert launch["repository_id"] == 805001
     assert launch["base_ref"] == "main"
     assert completed["operation"] == "bounded-job-run"
     assert completed["status"] == "reviewed", json.dumps(completed)
     assert completed["revisions_used"] == 1
     assert completed["final_artifact_id"] is not None
-    assert len(confirmations) == 3
-    assert "Business grant" in confirmations[0]
-    assert "Execution grant" in confirmations[1]
-    assert "sandbox verification" in confirmations[2]
+    assert len(confirmations) == 5
+    assert "Business step for research Run" in confirmations[0]
+    assert "one Provider request for research Run" in confirmations[1]
+    assert "Business grant" in confirmations[2]
+    assert "Execution grant" in confirmations[3]
+    assert "sandbox verification" in confirmations[4]
     assert len(metadata_reads) == 1
-    assert len(provider_requests) == 5
+    assert len(provider_requests) == 6
     assert fake_outputs == []
-    revision_body = provider_request_bodies[2]
+    revision_body = provider_request_bodies[3]
     assert "validation_failure" in revision_body
     assert "validation_failed" in revision_body
     assert "review_artifacts" not in revision_body
     assert bundle_sha256 in revision_body
     from ai_office.engine.artifact import read_run_artifact
 
+    run_store = research_store / "bounded-job-runs"
     job_store = WorkflowRunManifestStore(run_store)
     candidate = read_run_artifact(
         job_store,
@@ -828,9 +867,46 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
     assert inspection["revisions_used"] == 1
     assert inspection["final_local_effect"]["status"] == "verified"
     assert (repository / "calculator.py").read_bytes() == source
-    assert "--assignment-file" not in bounded_args
-    assert "--run-id" not in bounded_args
-    assert research_run_id not in bounded_args
+    assert "--assignment-file" not in issue_run_args
+    assert "--run-id" not in issue_run_args
+    assert research_run_id not in issue_run_args
+    research_manifest_store = WorkflowRunManifestStore(research_store)
+    research_run_ids = sorted(
+        path.name.removesuffix(".manifest.json")
+        for path in research_store.glob("*.manifest.json")
+    )
+    research_manifests = [
+        load_workflow_run_manifest(research_manifest_store, run_id)
+        for run_id in research_run_ids
+    ]
+    assert len(research_manifests) == 2
+    assert [json.loads(item.run_input)["round"] for item in research_manifests] == [
+        1,
+        2,
+    ]
+    from ai_office.engineering_issue import _load_research_result
+
+    first_result = _load_research_result(research_store, research_run_ids[0])
+    assert json.loads(first_result[2])["outcome"] == "needs_more_evidence"
+
+    job_manifest = load_workflow_run_manifest(
+        job_store, completed["run_id"]
+    )
+    job_run_input = json.loads(job_manifest.run_input)
+    handoff = job_run_input["investigation"]["research_handoff"]
+    assert handoff["research_rounds_used"] == 2
+    assert job_run_input["investigation"]["research_run_id"] == research_run_id
+    assert job_run_input["allowed_paths"] == {
+        "read": ["calculator.py", "test_calculator.py"],
+        "write": ["calculator.py"],
+    }
+    assert job_run_input["source_sha256"]
+    assert handoff["approved_research_scope_and_budget"] == json.loads(
+        research_manifests[1].run_input
+    )["authorization"]
+    job_request = json.loads(job_run_input["request"])
+    assert job_request["research_handoff"] == handoff
+    assert job_request["research_handoff"]["bounded_job_plan"]["max_revisions"] == 1
 
 
 def _change_set(

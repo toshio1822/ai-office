@@ -3,7 +3,7 @@
 - 決定日: 2026-11-05
 - 状態: **製品目標・段階・開発単位について人間合意済み**。個々の実Provider実行・外部書込み・mergeの承認ではない。
 - 基準: `toshio1822/ai-office` main `09df23175dd16465f2bbc426c30e87298dde83a5`（2026-11-05確認）
-- 関連: [親Issue #802](https://github.com/toshio1822/ai-office/issues/802)、[文書整備PR #827](https://github.com/toshio1822/ai-office/pull/827)、[Product Capabilities](product-capabilities.md)、[開発ワークフロー](development-workflow.md)
+- 関連: [親Issue #802](https://github.com/toshio1822/ai-office/issues/802)、[Issue #834](https://github.com/toshio1822/ai-office/issues/834)、[文書整備PR #827](https://github.com/toshio1822/ai-office/pull/827)、[Product Capabilities](product-capabilities.md)、[開発ワークフロー](development-workflow.md)
 - 位置付け: 第1・第2段階の**製品機能と受け入れ条件の設計**。製品の目的はProduct Vision、不変条件はEngine Target Architecture、実装状況はProduct Capabilitiesを正本とする。既存の設計を無条件に正しいものとして扱わず、実装前に現行コードで照合する。
 
 ## 1. 完成目標と適用範囲
@@ -50,6 +50,7 @@ AI Officeの実行にOpenClaw・Codexなどの外部AIエージェントを必�
 - Run Inputは既存の`request`、`repository.path/base_revision`、`acceptance_criteria`、`allowed_paths.read/write`、`source_context`等の契約と整合させる。ハッシュや関連manifest/policyの生成・照合はAI Office自身が実施する。取得したbytes・Git base・許可範囲・Job入力が一致しなければ開始しない。
 - Job開始後のRun Input/Workflow/Employee/モデル・Destination/最大回数/権限を暗黙に変更しない。Source内容が変化したら再計画・再承認が必要。既存Run/Job/Artifact/Evidenceを正本に使い、同じ事実を所有する第二のDBやJob状態機械を作らない。
 - `bounded-change-review`、bounded Job、既存の独立Reviewer/有限レビュー改訂、Bubblewrap local execution、Git/gh Draft PR配信を再利用する。開発業務のために新しい共通Engineや別publisherを作らない。
+- Issue #834の有限自律継続は既存の調査Workflow Runを順に実行し、`ready`結果を既存bounded Jobへ直接引き継ぐ。各調査RunのBusiness/Execution承認とJobの別Business/Execution/local-effect承認を維持し、承認・Run・Jobの意味は統合しない。Run/Manifest/Evidenceを再利用し、継続専用Engine、Phase、状態DBは追加しない。
 - 調査→Job→Artifact→PR→CIの紐付き情報を一つの利用者向け表示から追えるようにする。**既存の各正本を読み取り集約**し、独立した第二の状態権威を持たない。
 
 ## 5. 検証の契約
@@ -90,6 +91,7 @@ AI Officeの実行にOpenClaw・Codexなどの外部AIエージェントを必�
 | --- | --- | --- | --- |
 | **[Issue A (#828)](https://github.com/toshio1822/ai-office/issues/828)** | 自律Issue調査、有限の追加資料取得、変更範囲の選定、承認後Run Input/実行ポリシーの自動準備 | ファイル名未指定の小規模Python Issueから、許可範囲内で追加調査して、正確なJob入力を人手のJSON/ハッシュ転記なしに作る | 本設計とPR #827のmain統合 |
 | **[Issue B (#829)](https://github.com/toshio1822/ai-office/issues/829)** | Issue Aから既存Job・Reviewer・固定Oracle・Draft PR・PR実HEADのCIまでの統一操作、第一段階の受け入れテスト/Runbook | AI Office単独でIssue→候補→別承認→Draft PR→CIを追え、Oracle/CI不合格で停止し、記事Workflowに回帰がない | Issue Aがmainへ統合済み |
+| **[Issue #834](https://github.com/toshio1822/ai-office/issues/834)** | 承認済みの有限調査をRun単位で継続し、ready結果を既存bounded Jobへ直接引き継ぐ | `needs_more_evidence`を承認済みbudget内で再開でき、停止/再起動時に同じProvider呼出しや試行数を重ねず、既存Jobへのhandoffでscope/budget/Evidenceを保つ | Issues A/Bがmainへ統合済み |
 | **[Issue C (#830)](https://github.com/toshio1822/ai-office/issues/830)** | Job内pytest/Ruffと、不合格を原因とした有限Artifact改訂・再検証、第二段階の受け入れテスト/Runbook | Job内の実際のpytest/Ruff失敗を受けて有限修正・再検証・独立レビューが成功し、上限/権限外/実行不能では停止する | Issue Bがmainへ統合済み |
 
 各Issueは**What / Why / Constraints / 受け入れ条件**を中心に記載し、How（内部API・関数・クラス・テスト内部構造）は原則としてopenClawに委ねる。Issue単位で調査・実装・関連テスト・Draft PR・latest-head CI確認まで依頼する。ChatGPTは完成PRの差分と外部から観測できる振る舞いをレビューし、人間がmergeを判断する。Issueだけを根拠に**実Provider/実Job/実リポジトリへの配信を実行する権限は付与しない**。開発用の作業ブランチcommit/push/Draft PRは該当Issueの明示的実装依頼に含められる。
@@ -98,6 +100,7 @@ AI Officeの実行にOpenClaw・Codexなどの外部AIエージェントを必�
 
 - **S1 第1段階正常系:** Issue URLのみでは具体的ファイル名が不明な修正依頼に対し、開始時の人間承認範囲内で追加Git/AI調査を実施。選定ファイルの固定ソースからRun Inputを作り、既存Jobが修正・固定Oracle・独立Reviewerまで完了。別承認でDraft PRを作り、PR HEADに一致するCIを表示する。OpenClawは製品実行に不要。
 - **S2 調査継続・上限:** 初回検索で不十分な場合は許可範囲内で追加調査でき、範囲外・上限超過なら理由付き停止。
+- **S2a Run継続・再起動:** `needs_more_evidence`後に別Runの正確なpreview/承認を要求し、停止後に同じ固定入力で再開しても完了済みRunを再送せず、`ready`時は既存JobへEvidenceとscope/budgetを保ったままhandoffする。
 - **S3 権限・ソース固定:** モデルが未承認ソース/コマンド/ファイルを要求しても副作用を発生させない。読み取り範囲と送信範囲の違いを強制し、変更対象・baseの不一致を拒否する。
 - **S4 第1段階の検証失敗:** 固定Oracle不合格・CI不合格をそれぞれ別に表示し、暗黙の改訂・再送を起こさない。PR不明結果ではread-only照合のみ実施する。
 - **S5 共通性:** `article-production`と`bounded-change-review`が既存の共通Job/Artifact/Evidence/Approval/有限レビューを利用し続ける。
