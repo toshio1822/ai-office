@@ -64,11 +64,21 @@ the canonical manifest's SHA-256 and absolute bundle path in the local-effect
 policy. The existing authorization digest binds that policy; local Evidence
 records the same manifest digest. The host and in-sandbox bootstrap both check
 ABI, exact file/directory set, no symlinks or hard links, each file digest, and
-the current 1,024-file / 4,096-directory / 32-MiB total / 16-MiB per-file
+the current 1,024-file / 4,096-directory / 128-MiB total / 32-MiB per-file
 bounds before running commands. A missing, changed, extra, unsupported, or
 malformed bundle fails closed.
 
-Only explicitly approved `/usr/bin/python3 -S -B ...` commands may use a bundle.
+Only explicitly approved `/usr/bin/python3 -S -B ...` commands and exact
+manifest-pinned executables may use a trusted bundle.
+The `python-tests-and-ruff` Oracle profile imports its pinned `pytest` module
+before patching the candidate, so a missing or broken runtime is not confused
+with a test failure. It runs `pytest -p no:cacheprovider
+--maxfail=1 /workspace`, followed by the exact `site-packages/bin/ruff`
+executable from the pinned bundle with fixed lint settings over `/workspace`.
+Only the listed bundle file is made executable by the matching explicit
+policy. Exit code 1 alone is a
+known validation failure for these commands. Other nonzero codes, startup
+errors, timeouts, output limits, or integrity failures stop without a revision.
 The existing bootstrap passes a fixed `PYTHONPATH` containing only
 `/input/trusted/source/src` and `/input/trusted/site-packages`; Python site
 initialization and ambient site packages are disabled. The complete input
@@ -76,9 +86,12 @@ root remains one read-only bwrap bind at `/input`, including the fixed oracle
 and runtime. Candidate files remain limited by `read_paths`/`write_paths` in
 the existing disposable `/workspace`; do not add oracle or dependency files
 to model `source_context` just to make them importable. Prepare the bundle
-offline from an already trusted, ABI-matched dependency closure; do not include
-the host `.venv`, secrets, mutable package caches, or downloaded/unverified
-files.
+offline from an already trusted, ABI-matched dependency closure for the selected
+tests and Ruff; do not copy a virtual environment wholesale or include secrets,
+mutable package caches, or downloaded/unverified files. Include any distribution
+metadata those packages use at runtime. Set
+`AI_OFFICE_PYTHON_VALIDATION_BUNDLE` to the absolute bundle directory when
+preparing an Issue Run with `--oracle-profile python-tests-and-ruff`.
 
 ## Operator flow
 
@@ -132,9 +145,12 @@ policy file with this shape:
   "read_paths": ["calculator.py", "test_calculator.py"],
   "write_paths": ["calculator.py"],
   "commands": [
-    ["/usr/bin/python3", "-S", "-B", "-m", "unittest", "discover", "-s", "/workspace", "-p", "test_*.py"],
-    ["/usr/bin/python3", "-S", "-B", "-c", "import ast,pathlib; ast.parse(pathlib.Path('calculator.py').read_text())"]
+    ["/usr/bin/python3", "-S", "-B", "-m", "pytest", "-p", "no:cacheprovider", "--maxfail=1", "/workspace"],
+    ["/input/trusted/site-packages/bin/ruff", "check", "--isolated", "--no-cache", "--select", "E,F,I,UP", "--target-version", "py312", "--line-length", "88", "/workspace"]
   ],
+  "validation_modules": ["pytest"],
+  "validation_failure_exit_codes": [1],
+  "trusted_executable_paths": ["site-packages/bin/ruff"],
   "trusted_bundle_path": "/absolute/operator/managed/python-proof-bundle",
   "trusted_bundle_manifest_sha256": "<sha256 of canonical manifest.json>",
   "limits": {
@@ -176,11 +192,14 @@ ai-office workflows bounded-job-run JOB_ID \
   --run-store /private/path/ai-office-runs
 ```
 
-Only a `verified` local result is passed to reviewers; other outcomes stop the
-Job before review or revision. Reviewer count/order remain configuration data,
-and the common bounded Workflow parser enforces the shared structured verdict
-contract. Automated proof tests use an in-memory fake provider transport and
-never authorize a real model call.
+Only a `verified` local result is passed to reviewers. A completed
+`validation_failed` result is instead supplied as immutable Evidence to the
+existing finite revision Step; the revised Artifact is revalidated before
+review. Execution errors, unknown results, or an exhausted revision budget stop
+the Job. Reviewer count/order remain configuration data, and the common
+bounded Workflow parser enforces the shared structured verdict contract.
+Automated proof tests use an in-memory fake provider transport and never
+authorize a real model call.
 
 Keep the Run store for author/reviewer Runs and local-effect Evidence outside
 the target repository; local-effect authorization fails closed if the store

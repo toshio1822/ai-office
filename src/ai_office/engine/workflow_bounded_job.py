@@ -1418,6 +1418,7 @@ def bounded_document_action_input(
         "assignment": assignment_manifest.run_input,
         "source_artifact": _artifact_payload(source_artifact),
     }
+    local_execution_evidence = None
     from ai_office.engine.local_execution import FILE_CHANGE_SET_CONTENT_TYPE
 
     if source_artifact.content_type == FILE_CHANGE_SET_CONTENT_TYPE:
@@ -1428,41 +1429,61 @@ def bounded_document_action_input(
         )
         values["local_execution_evidence"] = local_execution_evidence
     if slot.input_source == "revision_input":
-        # Aggregate every reviewer's outcome from this round. A PASS never
-        # cancels another reviewer's grounded findings, and at least one
-        # CHANGES_REQUIRED is required to authorize a revision at all.
+        # A trusted, completed validation failure independently authorizes the
+        # bounded revision. Otherwise aggregate every reviewer's outcome; a
+        # PASS never cancels another reviewer's grounded findings.
+        validation_failure = (
+            type(local_execution_evidence) is dict
+            and local_execution_evidence.get("status") == "validation_failed"
+        )
         reviewers = _round_review_ordinals(scope.actions, ordinal)
         review_payloads = []
         changes_requested = False
-        for review_ordinal in reviewers:
-            review = _artifact_for_action(
-                store, job_id, review_ordinal, verify_lineage=verify_lineage
-            )
-            review_manifest = load_workflow_run_manifest(store, review.run_id)
-            verdict = _review_verdict(
-                review.content.decode("utf-8"),
-                review_input=review_manifest.run_input,
-            )
-            if verdict == "BLOCKED":
-                raise WorkflowJobAuthorizationError("document_job_review_blocked")
-            if verdict == "CHANGES_REQUIRED":
-                changes_requested = True
-            review_payloads.append(_artifact_payload(review))
-        if not changes_requested:
+        if not validation_failure:
+            for review_ordinal in reviewers:
+                review = _artifact_for_action(
+                    store, job_id, review_ordinal, verify_lineage=verify_lineage
+                )
+                review_manifest = load_workflow_run_manifest(store, review.run_id)
+                verdict = _review_verdict(
+                    review.content.decode("utf-8"),
+                    review_input=review_manifest.run_input,
+                )
+                if verdict == "BLOCKED":
+                    raise WorkflowJobAuthorizationError(
+                        "document_job_review_blocked"
+                    )
+                if verdict == "CHANGES_REQUIRED":
+                    changes_requested = True
+                review_payloads.append(_artifact_payload(review))
+        if not validation_failure and not changes_requested:
             raise WorkflowJobAuthorizationError("document_job_revision_not_authorized")
-        values["review_artifacts"] = review_payloads
+        if validation_failure:
+            values["revision_reason"] = "validation_failure"
+        if review_payloads:
+            values["review_artifacts"] = review_payloads
     elif slot.input_source == "re_review_input":
         if source_ordinal == 0:
             raise WorkflowJobAuthorizationError("job_action_predecessor")
-        prior_reviewers = _round_review_ordinals(scope.actions, source_ordinal)
-        values["prior_review_artifacts"] = [
-            _artifact_payload(
-                _artifact_for_action(
-                    store, job_id, index, verify_lineage=verify_lineage
+        revision_input = json.loads(
+            load_workflow_run_manifest(store, source_artifact.run_id).run_input
+        )
+        if (
+            type(revision_input) is dict
+            and revision_input.get("revision_reason") == "validation_failure"
+        ):
+            values["revision_reason"] = "validation_failure"
+            values["prior_review_artifacts"] = []
+        else:
+            prior_reviewers = _round_review_ordinals(scope.actions, source_ordinal)
+            values["prior_review_artifacts"] = [
+                _artifact_payload(
+                    _artifact_for_action(
+                        store, job_id, index, verify_lineage=verify_lineage
+                    )
                 )
-            )
-            for index in prior_reviewers
-        ]
+                for index in prior_reviewers
+            ]
     return _canonical(values).decode("utf-8")
 
 
@@ -1653,7 +1674,7 @@ def _persist_local_execution_evidence_link(
         authorization.artifact_id == artifact.artifact_id
         and authorization.artifact_sha256 == artifact.content_sha256
         and authorization.manifest_digest == artifact.manifest_digest
-        and evidence.get("status") == "verified"
+        and type(evidence.get("status")) is str
         and evidence.get("run_id") == artifact.run_id
         and evidence.get("artifact_id") == artifact.artifact_id
         and evidence.get("artifact_sha256") == artifact.content_sha256
@@ -1716,7 +1737,7 @@ def _load_local_execution_link_and_evidence_for_action(
         and authorization.artifact_id == artifact.artifact_id
         and authorization.artifact_sha256 == artifact.content_sha256
         and authorization.manifest_digest == artifact.manifest_digest
-        and evidence.get("status") == "verified"
+        and type(evidence.get("status")) is str
         and evidence.get("run_id") == artifact.run_id
         and evidence.get("artifact_id") == artifact.artifact_id
         and evidence.get("artifact_sha256") == artifact.content_sha256
@@ -2135,6 +2156,7 @@ def inspect_bounded_document_job(
                 "authorization_id": link["authorization_id"],
                 "evidence_sha256": link["evidence_sha256"],
                 "run_id": final_artifact.run_id,
+                "status": evidence["status"],
                 "scope_sha256": scope.digest,
             }
     review_index = next(
@@ -2214,12 +2236,12 @@ def _verify_positive_terminal_status(
     if status["status"] not in {"candidate", "reviewed"}:
         raise WorkflowJobAuthorizationError("document_job_status")
     reservations = _reservation_records(store.root, scope.job_id)
-    completed_ordinals = {item.get("ordinal") for item in reservations}
+    used_ordinals = {item.get("ordinal") for item in reservations}
     final_review_ordinal = next(
         (
             index
             for index in reversed(range(len(scope.actions)))
-            if index in completed_ordinals
+            if index in used_ordinals
             and scope.actions[index].input_source in {"review_input", "re_review_input"}
         ),
         None,
@@ -2227,30 +2249,68 @@ def _verify_positive_terminal_status(
     if final_review_ordinal is None:
         raise WorkflowJobAuthorizationError("document_job_status_accounting")
     final_ordinal = _producer_ordinal(scope.actions, final_review_ordinal)
+    reviewer_count = sum(
+        1 for item in scope.actions if item.input_source == "review_input"
+    )
+    first_review_ordinal = next(
+        index
+        for index, item in enumerate(scope.actions)
+        if item.input_source == "review_input"
+    )
+    skipped_review_ordinals: set[int] = set()
+    from ai_office.engine.local_execution import FILE_CHANGE_SET_CONTENT_TYPE
+
+    # A known validation failure skips its review round and consumes the
+    # already-authorized revision slot. No other action may be skipped.
+    round_start = first_review_ordinal
+    while round_start <= final_review_ordinal:
+        round_end = round_start + reviewer_count - 1
+        if round_end > final_review_ordinal:
+            raise WorkflowJobAuthorizationError("document_job_terminal_evidence")
+        producer_ordinal = _producer_ordinal(scope.actions, round_start)
+        producer_artifact = _artifact_for_action(
+            store, scope.job_id, producer_ordinal
+        )
+        validation_failed = False
+        if producer_artifact.content_type == FILE_CHANGE_SET_CONTENT_TYPE:
+            _, evidence = _load_local_execution_link_and_evidence_for_action(
+                store, scope, producer_ordinal, producer_artifact
+            )
+            validation_failed = evidence.get("status") == "validation_failed"
+        if validation_failed:
+            revision_ordinal = round_end + 1
+            if (
+                round_end == final_review_ordinal
+                or revision_ordinal >= len(scope.actions)
+                or scope.actions[revision_ordinal].input_source != "revision_input"
+                or revision_ordinal not in used_ordinals
+            ):
+                raise WorkflowJobAuthorizationError("document_job_terminal_evidence")
+            skipped_review_ordinals.update(range(round_start, round_end + 1))
+            round_start = revision_ordinal + 1
+        else:
+            round_start += reviewer_count + 1
+
+    expected_ordinals = set(range(final_review_ordinal + 1)) - skipped_review_ordinals
     expected_revisions = sum(
         1
-        for item in scope.actions[:final_review_ordinal]
-        if item.input_source == "revision_input"
+        for ordinal in expected_ordinals
+        if scope.actions[ordinal].input_source == "revision_input"
     )
-    expected_calls = final_review_ordinal + 1
+    expected_calls = len(expected_ordinals)
     if (status["status"] == "candidate") != (expected_revisions == 0):
         raise WorkflowJobAuthorizationError("document_job_status_accounting")
-    expected_ordinals = set(range(expected_calls))
-    retries_consumed = sum(1 for item in reservations if item.get("retry_index", 0) > 0)
+    retries_consumed = sum(
+        1 for item in reservations if item.get("retry_index", 0) > 0
+    )
     if (
         len(reservations) != expected_calls + retries_consumed
         or len(reservations) > scope.max_provider_attempts
         or retries_consumed > scope.max_retries
-        or {item.get("ordinal") for item in reservations} != expected_ordinals
-        or sum(
-            1
-            for index in expected_ordinals
-            if scope.actions[index].input_source == "revision_input"
-        )
-        != expected_revisions
+        or used_ordinals != expected_ordinals
     ):
         raise WorkflowJobAuthorizationError("document_job_status_accounting")
-    for ordinal in range(expected_calls):
+    for ordinal in sorted(expected_ordinals):
         action_records = [
             item for item in reservations if item.get("ordinal") == ordinal
         ]
@@ -2273,22 +2333,15 @@ def _verify_positive_terminal_status(
                     raise WorkflowJobAuthorizationError("document_job_retry_evidence")
     try:
         review_artifact = None
-        reviewer_count = sum(
-            1 for item in scope.actions if item.input_source == "review_input"
-        )
-        first_review_ordinal = next(
-            index
-            for index, item in enumerate(scope.actions)
-            if item.input_source == "review_input"
-        )
-        # Rebuild each declared round. The final round must be an all-PASS
-        # round; every earlier round must have requested at least one change,
-        # or the shared loop would have returned a candidate earlier.
         round_start = first_review_ordinal
         while round_start <= final_review_ordinal:
+            round_end = round_start + reviewer_count - 1
+            review_ordinals = set(range(round_start, round_end + 1))
+            if review_ordinals <= skipped_review_ordinals:
+                round_start = round_end + 2
+                continue
             round_verdicts = []
-            for offset in range(reviewer_count):
-                ordinal = round_start + offset
+            for ordinal in range(round_start, round_end + 1):
                 item = _artifact_for_action(store, scope.job_id, ordinal)
                 item_manifest = load_workflow_run_manifest(store, item.run_id)
                 round_verdicts.append(
@@ -2298,9 +2351,7 @@ def _verify_positive_terminal_status(
                     )
                 )
                 review_artifact = item
-            round_is_final = (
-                round_start + reviewer_count - 1 == final_review_ordinal
-            )
+            round_is_final = round_end == final_review_ordinal
             if round_is_final:
                 if any(verdict != "PASS" for verdict in round_verdicts):
                     raise WorkflowJobAuthorizationError(
@@ -2311,6 +2362,37 @@ def _verify_positive_terminal_status(
             round_start += reviewer_count + 1
         if review_artifact is None:
             raise WorkflowJobAuthorizationError("document_job_terminal_evidence")
+
+        for revision_ordinal in sorted(
+            ordinal
+            for ordinal in expected_ordinals
+            if scope.actions[ordinal].input_source == "revision_input"
+        ):
+            producer_ordinal = _producer_ordinal(scope.actions, revision_ordinal)
+            producer_artifact = _artifact_for_action(
+                store, scope.job_id, producer_ordinal
+            )
+            expected_input = bounded_document_action_input(
+                store,
+                scope.job_id,
+                revision_ordinal,
+                (
+                    producer_artifact.run_id,
+                    producer_artifact.artifact_id,
+                    producer_artifact.content_sha256,
+                ),
+                verify_lineage=False,
+            )
+            revision_action = load_bounded_job_action_by_identity(
+                store, scope.job_id, revision_ordinal, verify_lineage=False
+            )
+            if (
+                load_workflow_run_manifest(store, revision_action.run_id).run_input
+                != expected_input
+            ):
+                raise WorkflowJobAuthorizationError(
+                    "document_job_terminal_evidence"
+                )
         final_artifact = _artifact_for_action(store, scope.job_id, final_ordinal)
     except WorkflowJobAuthorizationError:
         raise
@@ -2722,11 +2804,11 @@ def _execute_bounded_document_job(
         store, scope.job_id, creator_action_count - 1
     )
 
-    def verify_local_effect(ordinal: int, artifact) -> None:
+    def verify_local_effect(ordinal: int, artifact) -> str | None:
         from ai_office.engine.local_execution import FILE_CHANGE_SET_CONTENT_TYPE
 
         if artifact.content_type != FILE_CHANGE_SET_CONTENT_TYPE:
-            return
+            return None
         if local_effect_handler is None:
             raise WorkflowJobAuthorizationError("job_local_effect_not_authorized")
         try:
@@ -2737,11 +2819,17 @@ def _execute_bounded_document_job(
             raise WorkflowJobAuthorizationError("job_local_effect_failed") from None
         if type(authorization_id) is not str or not _valid_digest(authorization_id):
             raise WorkflowJobAuthorizationError("job_local_effect_authorization")
-        _persist_local_execution_evidence_link(
+        evidence = _persist_local_execution_evidence_link(
             store, scope, ordinal, artifact, authorization_id
         )
+        status = evidence["status"]
+        if status not in {"verified", "validation_failed"}:
+            raise WorkflowJobAuthorizationError("job_local_effect_unverified")
+        return str(status)
 
-    verify_local_effect(creator_action_count - 1, source_artifact)
+    local_execution_status = verify_local_effect(
+        creator_action_count - 1, source_artifact
+    )
 
     def materialize(ordinal: int, predecessor):
         # Each predecessor is selected from an Artifact that was just loaded
@@ -2756,6 +2844,32 @@ def _execute_bounded_document_job(
         )
         return run_id, run_input
 
+    def run_revision(revision_ordinal: int, source_artifact):
+        predecessor = (
+            source_artifact.run_id,
+            source_artifact.artifact_id,
+            source_artifact.content_sha256,
+        )
+        revision_run_id, revision_input = materialize(
+            revision_ordinal, predecessor
+        )
+        revision_result, _, _, _ = run_fresh(
+            revision_ordinal,
+            revision_run_id,
+            revision_input,
+            predecessor,
+        )
+        if (
+            type(revision_result) is not WorkflowProgressionDecision
+            or revision_result.decision != "workflow_complete"
+        ):
+            raise WorkflowJobAuthorizationError("document_job_revision_stopped")
+        revised_artifact = _artifact_for_action(
+            store, scope.job_id, revision_ordinal
+        )
+        effect_status = verify_local_effect(revision_ordinal, revised_artifact)
+        return revised_artifact, effect_status
+
     current_artifact = source_artifact
     ordinal = creator_action_count
     reviewer_count = sum(
@@ -2763,11 +2877,24 @@ def _execute_bounded_document_job(
     )
     revisions_used = 0
     while ordinal < len(scope.actions):
+        has_revision_slot = ordinal + reviewer_count < len(scope.actions)
+        if local_execution_status == "validation_failed":
+            if not has_revision_slot:
+                raise WorkflowJobAuthorizationError(
+                    "document_job_validation_revision_budget_exhausted"
+                )
+            revision_ordinal = ordinal + reviewer_count
+            current_artifact, local_execution_status = run_revision(
+                revision_ordinal, current_artifact
+            )
+            revisions_used += 1
+            ordinal = revision_ordinal + 1
+            continue
+
         # One round: every declared reviewer independently assesses the same
         # immutable Artifact version supplied as the shared predecessor.
         round_reviews = []
         verdicts = []
-        has_revision_slot = ordinal + reviewer_count < len(scope.actions)
         for offset in range(reviewer_count):
             review_ordinal = ordinal + offset
             predecessor = (
@@ -2815,27 +2942,9 @@ def _execute_bounded_document_job(
             )
 
         revision_ordinal = ordinal + reviewer_count
-        revision_predecessor = (
-            current_artifact.run_id,
-            current_artifact.artifact_id,
-            current_artifact.content_sha256,
+        current_artifact, local_execution_status = run_revision(
+            revision_ordinal, current_artifact
         )
-        revision_run_id, revision_input = materialize(
-            revision_ordinal, revision_predecessor
-        )
-        revision_result, _, _, _ = run_fresh(
-            revision_ordinal,
-            revision_run_id,
-            revision_input,
-            revision_predecessor,
-        )
-        if (
-            type(revision_result) is not WorkflowProgressionDecision
-            or revision_result.decision != "workflow_complete"
-        ):
-            raise WorkflowJobAuthorizationError("document_job_revision_stopped")
-        current_artifact = _artifact_for_action(store, scope.job_id, revision_ordinal)
-        verify_local_effect(revision_ordinal, current_artifact)
         revisions_used += 1
         ordinal = revision_ordinal + 1
     raise WorkflowJobAuthorizationError("document_job_review_missing")

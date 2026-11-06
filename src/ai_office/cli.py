@@ -1463,7 +1463,9 @@ def bounded_document_job_workflow(
 
     store = _load_run_store_or_exit(run_store)
     try:
-        inspection = inspect_bounded_document_job(store, job_id)
+        inspection = inspect_bounded_document_job(
+            store, job_id, include_local_effect=True
+        )
     except Exception:
         _workflow_cli_error("Bounded document Job evidence is invalid or unavailable")
     _emit_json({**inspection, "operation": "bounded-job"})
@@ -1931,6 +1933,17 @@ def run_bounded_document_job_workflow(
                 "read_paths": list(local_effect_policy.read_paths),
                 "write_paths": list(local_effect_policy.write_paths),
                 "commands": [list(command) for command in local_effect_policy.commands],
+                "validation_modules": list(local_effect_policy.validation_modules),
+                "validation_failure_exit_codes": list(
+                    local_effect_policy.validation_failure_exit_codes
+                ),
+                "trusted_executable_paths": list(
+                    local_effect_policy.trusted_executable_paths
+                ),
+                "trusted_bundle_path": local_effect_policy.trusted_bundle_path,
+                "trusted_bundle_manifest_sha256": (
+                    local_effect_policy.trusted_bundle_manifest_sha256
+                ),
                 "limits": local_effect_policy.limits.model_dump(mode="json"),
                 "max_candidates": max_revisions + 1,
                 "approval_is_separate_from_provider_grants": True,
@@ -2054,8 +2067,8 @@ def run_bounded_document_job_workflow(
             authorization_id=approval.authorization_id,
             workspace=local_effect_workspace,
         )
-        if evidence.get("status") != "verified":
-            raise LocalExecutionError("local_effect_failed")
+        if type(evidence) is not dict or type(evidence.get("status")) is not str:
+            raise LocalExecutionError("local_effect_result")
         return approval.authorization_id
 
     try:
@@ -3985,6 +3998,13 @@ def authorize_local_effect(
             "authorization_id": authorization.authorization_id,
             "base_revision": authorization.policy.base_revision,
             "commands": authorization.policy.commands,
+            "validation_modules": authorization.policy.validation_modules,
+            "validation_failure_exit_codes": (
+                authorization.policy.validation_failure_exit_codes
+            ),
+            "trusted_executable_paths": (
+                authorization.policy.trusted_executable_paths
+            ),
             "expires_at_ns": authorization.policy.expires_at_ns,
             "manifest_digest": authorization.manifest_digest,
             "read_paths": authorization.policy.read_paths,

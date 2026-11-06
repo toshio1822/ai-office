@@ -22,6 +22,55 @@
         "max_processes": 64,
         "max_open_files": 64
       }
+    },
+    "python-tests-and-ruff": {
+      "description": "Run the selected fixed-base Python tests and Ruff with dependencies preflighted from an operator-pinned trusted bundle; exit code 1 is a known validation failure.",
+      "commands": [
+        [
+          "/usr/bin/python3",
+          "-S",
+          "-B",
+          "-m",
+          "pytest",
+          "-p",
+          "no:cacheprovider",
+          "--maxfail=1",
+          "/workspace"
+        ],
+        [
+          "/input/trusted/site-packages/bin/ruff",
+          "check",
+          "--isolated",
+          "--no-cache",
+          "--select",
+          "E,F,I,UP",
+          "--target-version",
+          "py312",
+          "--line-length",
+          "88",
+          "/workspace"
+        ]
+      ],
+      "validation_modules": [
+        "pytest"
+      ],
+      "trusted_executable_paths": [
+        "site-packages/bin/ruff"
+      ],
+      "validation_failure_exit_codes": [
+        1
+      ],
+      "trusted_bundle_path_env": "AI_OFFICE_PYTHON_VALIDATION_BUNDLE",
+      "limits": {
+        "wall_timeout_seconds": 300,
+        "cpu_seconds": 300,
+        "memory_bytes": 1073741824,
+        "workspace_bytes": 134217728,
+        "max_file_bytes": 16777216,
+        "max_output_bytes": 1048576,
+        "max_processes": 256,
+        "max_open_files": 64
+      }
     }
   }
 }

@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import difflib
 import hashlib
+import importlib
 import json
 import os
+import re
 import resource
 import selectors
 import signal
@@ -129,14 +131,14 @@ def _verify_trusted_bundle(expected_sha256: object) -> str | None:
             or relative <= previous_path
             or len(item["sha256"]) != 64
             or any(character not in "0123456789abcdef" for character in item["sha256"])
-            or not 0 <= item["size"] <= 16_777_216
+            or not 0 <= item["size"] <= 33_554_432
             or relative in expected_files
         ):
             raise ValueError
         previous_path = relative
         roots.add(first)
         total += item["size"]
-        if total > 33_554_432:
+        if total > 134_217_728:
             raise ValueError
         expected_files.add(relative)
         parent = PurePosixPath(relative).parent
@@ -167,7 +169,7 @@ def _verify_trusted_bundle(expected_sha256: object) -> str | None:
     for item in manifest["files"]:
         path = root.joinpath(*item["path"].split("/"))
         metadata = path.lstat()
-        if metadata.st_size != item["size"] or metadata.st_size > 16_777_216:
+        if metadata.st_size != item["size"] or metadata.st_size > 33_554_432:
             raise ValueError
         if _digest(path.read_bytes()) != item["sha256"]:
             raise ValueError
@@ -261,6 +263,65 @@ def _run_command(
 def run(plan_path: Path) -> dict[str, object]:
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     pythonpath = _verify_trusted_bundle(plan.get("trusted_bundle_manifest_sha256"))
+    validation_modules = plan["validation_modules"]
+    validation_failure_exit_codes = plan["validation_failure_exit_codes"]
+    trusted_executable_paths = plan["trusted_executable_paths"]
+    if (
+        type(validation_modules) is not list
+        or len(validation_modules) > 16
+        or any(
+            type(name) is not str
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}", name) is None
+            for name in validation_modules
+        )
+        or len(set(validation_modules)) != len(validation_modules)
+        or type(validation_failure_exit_codes) is not list
+        or len(validation_failure_exit_codes) > 16
+        or any(
+            type(code) is not int or not 1 <= code <= 255
+            for code in validation_failure_exit_codes
+        )
+        or len(set(validation_failure_exit_codes))
+        != len(validation_failure_exit_codes)
+        or type(trusted_executable_paths) is not list
+        or len(trusted_executable_paths) > 8
+        or any(
+            type(path) is not str
+            or _safe_path(path) != path
+            or not path.startswith(("oracle/", "site-packages/"))
+            for path in trusted_executable_paths
+        )
+        or len(set(trusted_executable_paths)) != len(trusted_executable_paths)
+        or (trusted_executable_paths and pythonpath is None)
+    ):
+        raise ValueError
+    commands = plan["commands"]
+    if type(commands) is not list or not commands or len(commands) > 8:
+        raise ValueError
+    for argv in commands:
+        if (
+            type(argv) is not list
+            or not argv
+            or any(type(argument) is not str or not argument for argument in argv)
+        ):
+            raise ValueError
+        executable = argv[0]
+        if executable.startswith("/input/trusted/"):
+            relative = executable.removeprefix("/input/trusted/")
+            if relative not in trusted_executable_paths:
+                raise ValueError
+        elif not Path(executable).is_absolute() or not executable.startswith(
+            "/usr/bin/"
+        ):
+            raise ValueError
+        elif pythonpath is not None and (
+            executable != "/usr/bin/python3" or argv[1:3] != ["-S", "-B"]
+        ):
+            raise ValueError
+    for relative in trusted_executable_paths:
+        executable = Path("/input/trusted").joinpath(*relative.split("/"))
+        if not executable.stat().st_mode & 0o111:
+            raise ValueError
     limits = plan["limits"]
     resource.setrlimit(
         resource.RLIMIT_CPU, (limits["cpu_seconds"], limits["cpu_seconds"])
@@ -281,6 +342,25 @@ def run(plan_path: Path) -> dict[str, object]:
         (limits["max_open_files"], limits["max_open_files"]),
     )
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    if validation_modules:
+        if pythonpath is None:
+            raise ValueError
+        trusted_paths = tuple(Path(item) for item in pythonpath.split(":"))
+        sys.path[:0] = list(pythonpath.split(":"))
+        for name in validation_modules:
+            module = importlib.import_module(name)
+            locations = list(getattr(module, "__path__", ()))
+            origin = getattr(module, "__file__", None)
+            if origin is not None:
+                locations.append(origin)
+            if not locations or any(
+                not any(
+                    Path(location).resolve().is_relative_to(root)
+                    for root in trusted_paths
+                )
+                for location in locations
+            ):
+                raise ValueError
     sources = plan["sources"]
     changes = plan["changes"]
     workspace = Path("/workspace")
@@ -334,8 +414,10 @@ def run(plan_path: Path) -> dict[str, object]:
     after_patch_digest = _tree_digest(after_patch)
     command_results: list[dict[str, object]] = []
     output_used = 0
+    validation_failure_exit_codes = set(plan["validation_failure_exit_codes"])
+    validation_failed = False
     status = "verified"
-    for argv in plan["commands"]:
+    for argv in commands:
         remaining_budget = plan["limits"]["max_output_bytes"] - output_used
         command_result, return_code = _run_command(
             argv,
@@ -351,13 +433,19 @@ def run(plan_path: Path) -> dict[str, object]:
             status = str(command_result["status"])
             break
         if return_code != 0:
-            status = "command_failed"
-            command_result["status"] = "command_failed"
-            break
+            if return_code in validation_failure_exit_codes:
+                command_result["status"] = "validation_failed"
+                validation_failed = True
+            else:
+                status = "command_failed"
+                command_result["status"] = "command_failed"
+                break
         if _tree_digest(_snapshot(workspace)) != after_patch_digest:
             status = "workspace_changed_by_validation"
             break
-    for argv in plan["commands"][len(command_results) :]:
+    if status == "verified" and validation_failed:
+        status = "validation_failed"
+    for argv in commands[len(command_results) :]:
         command_results.append(
             {
                 "argv": argv,

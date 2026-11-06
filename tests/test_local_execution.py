@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import importlib.metadata
 import importlib.util
 import json
 import os
@@ -195,6 +196,26 @@ def test_trusted_bundle_policy_requires_paired_pin_and_isolated_python(
     with pytest.raises(ValueError):
         LocalExecutionPolicy.model_validate(values)
     values["trusted_bundle_manifest_sha256"] = "0" * 64
+    with pytest.raises(ValueError):
+        LocalExecutionPolicy.model_validate(values)
+
+
+def test_trusted_bundle_policy_allows_only_manifest_pinned_executable(
+    tmp_path: Path,
+) -> None:
+    values = _policy(
+        "0" * 40,
+        commands=(("/usr/bin/python3", "-S", "-B", "-c", "pass"),),
+    ).model_dump()
+    values["trusted_bundle_path"] = str(tmp_path / "bundle")
+    values["trusted_bundle_manifest_sha256"] = "0" * 64
+    values["trusted_executable_paths"] = ("site-packages/bin/ruff",)
+    values["commands"] = (("/input/trusted/site-packages/bin/ruff", "check"),)
+
+    policy = LocalExecutionPolicy.model_validate(values)
+    assert policy.commands[0][0] == "/input/trusted/site-packages/bin/ruff"
+
+    values["trusted_executable_paths"] = ()
     with pytest.raises(ValueError):
         LocalExecutionPolicy.model_validate(values)
 
@@ -466,14 +487,16 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
     require_local_sandbox: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Issue URL alone resolves a ready research Run and starts a fake Job."""
+    """Issue URL runs a fake Job through failed tests, revision, and review."""
     from types import SimpleNamespace
 
     import ai_office.cli as cli_module
     import ai_office.engineering_issue as engineering_issue
     from ai_office.github_snapshot import GitHubRawResponse
 
-    repository, revision, _source = _temporary_repo(tmp_path)
+    repository, revision, source = _temporary_repo(tmp_path)
+    bundle, bundle_sha256 = _python_validation_bundle(tmp_path)
+    monkeypatch.setenv("AI_OFFICE_PYTHON_VALIDATION_BUNDLE", str(bundle))
     _git(
         repository,
         "remote",
@@ -512,7 +535,7 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
         max_provider_input_bytes=900_000,
         max_provider_total_bytes=3_600_000,
         max_provider_attempts=1,
-        oracle_profile="python-syntax",
+        oracle_profile="python-tests-and-ruff",
         send_issue_body=True,
         github_transport=issue_transport,
     )
@@ -545,7 +568,16 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
         },
         sort_keys=True,
     )
-    candidate_diff = (
+    failing_candidate_diff = (
+        "--- a/calculator.py\n"
+        "+++ b/calculator.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " def answer():\n"
+        "-    return 1 + 1\n"
+        "+    import os\n"
+        "+    return 3\n"
+    )
+    revised_candidate_diff = (
         "--- a/calculator.py\n"
         "+++ b/calculator.py\n"
         "@@ -1,2 +1,2 @@\n"
@@ -562,11 +594,22 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
         "Assessment: The single-file change meets the requested scope.\n\n"
         "Unresolved material issues: none"
     )
-    fake_outputs = [ready_plan, candidate_diff, passing_review, passing_review]
+    fake_outputs = [
+        ready_plan,
+        failing_candidate_diff,
+        revised_candidate_diff,
+        passing_review,
+        passing_review,
+    ]
     provider_requests: list[object] = []
+    provider_request_bodies: list[str] = []
 
     def fake_provider(request):
         provider_requests.append(request)
+        body = request.body
+        provider_request_bodies.append(
+            body.decode("utf-8") if isinstance(body, bytes) else str(body)
+        )
         output = fake_outputs.pop(0)
         payload = {
             "id": f"offline-{len(provider_requests)}",
@@ -729,7 +772,7 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
         "--step-model",
         "revise-candidate=glm-5.3-flash",
         "--max-revisions",
-        "0",
+        "1",
     ]
     bounded_result = CliRunner().invoke(app, bounded_args)
     assert bounded_result.exit_code == 0, bounded_result.output
@@ -742,15 +785,21 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
     assert launch["repository_id"] == 805001
     assert launch["base_ref"] == "main"
     assert completed["operation"] == "bounded-job-run"
-    assert completed["status"] == "candidate"
+    assert completed["status"] == "reviewed", json.dumps(completed)
+    assert completed["revisions_used"] == 1
     assert completed["final_artifact_id"] is not None
     assert len(confirmations) == 3
     assert "Business grant" in confirmations[0]
     assert "Execution grant" in confirmations[1]
     assert "sandbox verification" in confirmations[2]
     assert len(metadata_reads) == 1
-    assert len(provider_requests) == 4
+    assert len(provider_requests) == 5
     assert fake_outputs == []
+    revision_body = provider_request_bodies[2]
+    assert "validation_failure" in revision_body
+    assert "validation_failed" in revision_body
+    assert "review_artifacts" not in revision_body
+    assert bundle_sha256 in revision_body
     from ai_office.engine.artifact import read_run_artifact
 
     job_store = WorkflowRunManifestStore(run_store)
@@ -763,7 +812,22 @@ def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
     assert base64.b64decode(
         candidate_change["changes"][0]["content_base64"], validate=True
     ) == b"def answer():\n    return 2\n"
-    assert (repository / "calculator.py").read_bytes() == _source
+    inspected_result = CliRunner().invoke(
+        app,
+        [
+            "workflows",
+            "bounded-job",
+            launch["job_id"],
+            "--run-store",
+            str(run_store),
+        ],
+    )
+    assert inspected_result.exit_code == 0, inspected_result.output
+    inspection = json.loads(inspected_result.stdout)
+    assert inspection["status"] == "reviewed"
+    assert inspection["revisions_used"] == 1
+    assert inspection["final_local_effect"]["status"] == "verified"
+    assert (repository / "calculator.py").read_bytes() == source
     assert "--assignment-file" not in bounded_args
     assert "--run-id" not in bounded_args
     assert research_run_id not in bounded_args
@@ -1073,6 +1137,110 @@ def test_trusted_bundle_tampering_fails_closed_before_effect(
         )
 
 
+def _write_trusted_bundle_manifest(
+    bundle: Path, *, python_identity: tuple[str, str] | None = None
+) -> tuple[Path, str]:
+    files = []
+    for path in sorted(
+        (
+            item
+            for item in bundle.rglob("*")
+            if item.is_file() and item.relative_to(bundle).as_posix() != "manifest.json"
+        ),
+        key=lambda item: item.relative_to(bundle).as_posix(),
+    ):
+        relative = path.relative_to(bundle).as_posix()
+        content = path.read_bytes()
+        files.append(
+            {
+                "path": relative,
+                "sha256": sha256(content).hexdigest(),
+                "size": len(content),
+            }
+        )
+    python_cache_tag, python_platform = python_identity or (
+        sys.implementation.cache_tag,
+        sysconfig.get_platform(),
+    )
+    manifest = {
+        "files": files,
+        "python_cache_tag": python_cache_tag,
+        "python_platform": python_platform,
+        "schema_version": "local-execution-trusted-bundle.v1",
+    }
+    manifest_bytes = json.dumps(
+        manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    (bundle / "manifest.json").write_bytes(manifest_bytes)
+    return bundle, sha256(manifest_bytes).hexdigest()
+
+
+def _python_validation_bundle(tmp_path: Path) -> tuple[Path, str]:
+    bundle, _ = _trusted_bundle(tmp_path)
+    site_packages = bundle / "site-packages"
+    for module_name in (
+        "pytest",
+        "_pytest",
+        "py",
+        "pluggy",
+        "iniconfig",
+        "packaging",
+        "pygments",
+    ):
+        spec = importlib.util.find_spec(module_name)
+        assert spec is not None
+        if spec.submodule_search_locations:
+            shutil.copytree(
+                Path(next(iter(spec.submodule_search_locations))),
+                site_packages / module_name,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+        else:
+            assert spec.origin is not None
+            shutil.copy2(spec.origin, site_packages / Path(spec.origin).name)
+    for distribution_name in (
+        "pytest",
+        "pluggy",
+        "iniconfig",
+        "packaging",
+        "pygments",
+    ):
+        distribution = importlib.metadata.distribution(distribution_name)
+        distribution_root = Path(distribution._path)
+        shutil.copytree(
+            distribution_root,
+            site_packages / distribution_root.name,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+    from ruff import find_ruff_bin
+
+    ruff_executable = site_packages / "bin" / "ruff"
+    ruff_executable.parent.mkdir()
+    shutil.copyfile(find_ruff_bin(), ruff_executable)
+    ruff_executable.chmod(0o755)
+    runtime_identity = json.loads(
+        subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-S",
+                "-B",
+                "-c",
+                (
+                    "import json,sys,sysconfig; "
+                    "print(json.dumps([sys.implementation.cache_tag, "
+                    "sysconfig.get_platform()]))"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    return _write_trusted_bundle_manifest(
+        bundle, python_identity=tuple(runtime_identity)
+    )
+
+
 def _trusted_bundle(tmp_path: Path) -> tuple[Path, str]:
     bundle = tmp_path / "trusted-bundle"
     site_packages = bundle / "site-packages"
@@ -1144,31 +1312,7 @@ def _trusted_bundle(tmp_path: Path) -> tuple[Path, str]:
         "print('pydantic-runtime-and-readonly-oracle-ok')\n"
     )
     (oracle_root / "test_review_verdict.py").write_text(oracle, encoding="utf-8")
-    files = []
-    for path in sorted(
-        (item for item in bundle.rglob("*") if item.is_file()),
-        key=lambda item: item.relative_to(bundle).as_posix(),
-    ):
-        relative = path.relative_to(bundle).as_posix()
-        content = path.read_bytes()
-        files.append(
-            {
-                "path": relative,
-                "sha256": sha256(content).hexdigest(),
-                "size": len(content),
-            }
-        )
-    manifest = {
-        "files": files,
-        "python_cache_tag": sys.implementation.cache_tag,
-        "python_platform": sysconfig.get_platform(),
-        "schema_version": "local-execution-trusted-bundle.v1",
-    }
-    manifest_bytes = json.dumps(
-        manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    (bundle / "manifest.json").write_bytes(manifest_bytes)
-    return bundle, sha256(manifest_bytes).hexdigest()
+    return _write_trusted_bundle_manifest(bundle)
 
 
 def _small_trusted_bundle(
