@@ -98,9 +98,13 @@ ai-office workflows engineering-issue-status \
 It reports the existing candidate/stop evidence and, once delivered, verifies
 the stored delivery result against the same Issue, PR, exact HEAD, same-repo
 base/head, Draft/open state, body markers, and changed paths. Check runs are
-read from that exact PR HEAD; pending, failed, partial, or unavailable results
-are not represented as CI success. Before separate GitHub approval, status
-remains `awaiting_separate_github_approval`. It never creates or changes a PR.
+read from that exact PR HEAD. The required gate is the GitHub Actions `test` job
+defined in `.github/workflows/ci.yml` (pytest followed by Ruff); unrelated green
+checks do not substitute for it. Only one matching `test` check completed with
+success is reported as CI success. A missing, unavailable, or ambiguous
+required check is unknown; a pending check stays pending and a failed check is
+failure. Before separate GitHub approval, status remains
+`awaiting_separate_github_approval`. It never creates or changes a PR.
 
 ## Offline validation
 

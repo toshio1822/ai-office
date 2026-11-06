@@ -3603,6 +3603,18 @@ def _engineering_issue_ci_status(
         for item in unavailable
     ):
         return "unknown"
+    if any(type(item) is not dict for item in checks):
+        return "unknown"
+    # The only required gate in .github/workflows/ci.yml is the `test` job,
+    # which runs pytest and then Ruff. Other green checks do not replace it.
+    required_checks = [
+        item
+        for item in checks
+        if type(item) is dict and item.get("name") == "test"
+    ]
+    if len(required_checks) != 1:
+        return "unknown"
+    required = required_checks[0]
     failed = {
         "action_required",
         "cancelled",
@@ -3611,25 +3623,11 @@ def _engineering_issue_ci_status(
         "stale",
         "timed_out",
     }
-    if any(
-        type(item) is dict
-        and item.get("status") == "completed"
-        and item.get("conclusion") in failed
-        for item in checks
-    ):
+    if required.get("status") == "completed" and required.get("conclusion") in failed:
         return "failure"
-    if any(
-        type(item) is dict
-        and item.get("status") in {"queued", "in_progress", "waiting", "requested"}
-        for item in checks
-    ):
+    if required.get("status") in {"queued", "in_progress", "waiting", "requested"}:
         return "pending"
-    if any(
-        type(item) is not dict
-        or item.get("status") != "completed"
-        or item.get("conclusion") != "success"
-        for item in checks
-    ):
+    if required.get("status") != "completed" or required.get("conclusion") != "success":
         return "unknown"
     return "success"
 

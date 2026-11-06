@@ -295,22 +295,87 @@ def test_snapshot_cli_writes_once_and_partial_exits_nonzero(
 
 
 @pytest.mark.parametrize(
-    ("pull_overrides", "expected_error"),
+    ("pull_overrides", "checks", "unavailable", "expected_error", "expected_ci"),
     [
-        pytest.param({}, None, id="exact-draft-head-ci"),
+        pytest.param(
+            {},
+            [{"name": "test", "status": "completed", "conclusion": "success"}],
+            [],
+            None,
+            "success",
+            id="required-test-job-success",
+        ),
+        pytest.param(
+            {},
+            [{"name": "docs-check", "status": "completed", "conclusion": "success"}],
+            [],
+            None,
+            "unknown",
+            id="unrelated-green-check-is-not-enough",
+        ),
+        pytest.param(
+            {},
+            [
+                {"name": "test", "status": "in_progress", "conclusion": None},
+                {"name": "docs-check", "status": "completed", "conclusion": "success"},
+            ],
+            [],
+            None,
+            "pending",
+            id="required-test-job-pending",
+        ),
+        pytest.param(
+            {},
+            [
+                {"name": "test", "status": "completed", "conclusion": "failure"},
+                {"name": "docs-check", "status": "completed", "conclusion": "success"},
+            ],
+            [],
+            None,
+            "failure",
+            id="required-test-job-failed",
+        ),
+        pytest.param(
+            {},
+            [
+                {"name": "test", "status": "completed", "conclusion": "success"},
+                {"name": "test", "status": "completed", "conclusion": "success"},
+            ],
+            [],
+            None,
+            "unknown",
+            id="ambiguous-required-check",
+        ),
+        pytest.param(
+            {},
+            [{"name": "test", "status": "completed", "conclusion": "success"}],
+            ["ci.check_runs: HTTP 403"],
+            None,
+            "unknown",
+            id="required-check-unavailable",
+        ),
         pytest.param(
             {"draft": False},
+            [{"name": "test", "status": "completed", "conclusion": "success"}],
+            [],
             "pull_request_binding_mismatch",
+            None,
             id="ready-pr-is-not-accepted",
         ),
         pytest.param(
             {"head_repository": "fork/acme-widget"},
+            [{"name": "test", "status": "completed", "conclusion": "success"}],
+            [],
             "pull_request_binding_mismatch",
+            None,
             id="cross-repository-pr-is-not-accepted",
         ),
         pytest.param(
             {"head_sha": "c" * 40},
+            [{"name": "test", "status": "completed", "conclusion": "success"}],
+            [],
             "pull_request_binding_mismatch",
+            None,
             id="different-head-is-not-accepted",
         ),
     ],
@@ -319,7 +384,10 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     pull_overrides: dict[str, object],
+    checks: list[dict[str, object]],
+    unavailable: list[str],
     expected_error: str | None,
+    expected_ci: str | None,
 ) -> None:
     issue_url = "https://github.com/example/acme-widget/issues/10"
     pull_url = "https://github.com/example/acme-widget/pull/20"
@@ -449,11 +517,9 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
         },
         "validation": {
             "head_sha": HEAD_SHA,
-            "check_runs": [
-                {"name": "CI", "status": "completed", "conclusion": "success"}
-            ],
+            "check_runs": checks,
         },
-        "unavailable_or_omitted_fields": [],
+        "unavailable_or_omitted_fields": unavailable,
     }
     payload["pull_request"].update(pull_overrides)
     snapshot = GitHubChangeSnapshot(
@@ -498,7 +564,7 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
     assert value["pull_request"]["draft"] is True
     assert value["pull_request"]["head_sha"] == HEAD_SHA
     assert value["ci"]["head_sha"] == HEAD_SHA
-    assert value["ci"]["status"] == "success"
+    assert value["ci"]["status"] == expected_ci
     assert len(collected) == 1
     assert collected[0]["repository"] == "example/acme-widget"
     assert collected[0]["issue_number"] == 10
@@ -510,19 +576,49 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
 @pytest.mark.parametrize(
     ("checks", "unavailable", "expected"),
     [
-        ([{"status": "completed", "conclusion": "success"}], [], "success"),
-        ([{"status": "in_progress", "conclusion": None}], [], "pending"),
-        ([{"status": "completed", "conclusion": "failure"}], [], "failure"),
+        (
+            [{"name": "test", "status": "completed", "conclusion": "success"}],
+            [],
+            "success",
+        ),
+        (
+            [{"name": "test", "status": "in_progress", "conclusion": None}],
+            [],
+            "pending",
+        ),
+        (
+            [{"name": "test", "status": "completed", "conclusion": "failure"}],
+            [],
+            "failure",
+        ),
+        (
+            [{"name": "docs-check", "status": "completed", "conclusion": "success"}],
+            [],
+            "unknown",
+        ),
+        (
+            [{"name": "test", "status": "completed", "conclusion": "success"}] * 2,
+            [],
+            "unknown",
+        ),
+        (
+            [
+                {"name": "test", "status": "completed", "conclusion": "success"},
+                None,
+            ],
+            [],
+            "unknown",
+        ),
         ([], [], "unknown"),
         (
-            [{"status": "completed", "conclusion": "success"}],
+            [{"name": "test", "status": "completed", "conclusion": "success"}],
             ["ci.check_runs: HTTP 403"],
             "unknown",
         ),
     ],
 )
 def test_engineering_issue_ci_status_is_conservative(
-    checks: list[dict[str, object]],
+    checks: list[object],
     unavailable: list[str],
     expected: str,
 ) -> None:

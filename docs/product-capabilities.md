@@ -40,7 +40,7 @@
 | C13 | リポジトリを読み取り専用で探索し対象候補を提案 | **有限Workflow実装済み（live AI未実証）** | `engineering-issue-investigation` が根拠・引用・path候補を返す。追加資料は成功Runから次の通常Runとして有限準備し、Git bytes/scope/budgetを再検証する。 |
 | C14 | 承認済み対象からRun Inputを自動構成 | **入力準備実装済み（offline proof）** | `prepare-engineering-job-input` が選択対象の固定base bytes/hash、既存bounded-change-review assignment、operator選択の登録policy profile由来local-effect policyを生成する。JSON/argv手組みやJob起動を求めず、既存承認は維持。 |
 | C15 | 計画提示→人間承認→Job→納品の一貫した操作 | **第1段階実装済み（offline fake E2E）** | `bounded-job-run --issue-url` → 別確認付き`draft-pr --issue-url`で既存Run/Job/Artifact/Evidenceを再利用。JSON/IDの手動転記なし。実Provider/製品Job/実GitHub配信は未実証。 |
-| C16 | PR後のCIを候補の最終品質ゲートとして提示 | **第1段階実装済み（read-only経路）** | `engineering-issue-status --issue-url` が保存済みDraft PRと同一repo/base/正確なHEADを検査し、そのHEADのGitHub check-runsを成功/失敗/進行中/不明として提示する。CI失敗時のJob再実行・再送はしない。 |
+| C16 | PR後のCIを候補の最終品質ゲートとして提示 | **第1段階実装済み（read-only経路）** | `engineering-issue-status --issue-url` が保存済みDraft PRと同一repo/base/正確なHEADを検査し、そのHEADにおける必須GitHub Actions `test` job（`.github/workflows/ci.yml`のpytest＋Ruff）のcheckだけを必須ゲートとして成功/失敗/進行中/不明に提示する。別checkの成功では代替せず、重複・欠落・取得不能は成功としない。CI失敗時のJob再実行・再送はしない。 |
 | C17 | 仕事の進捗・停止理由・成果物を一画面/一コマンドで把握 | **部分実装** | Issue URL statusで既存Job・停止理由・Artifact/Evidence・Draft PR・HEAD CIを集約する。調査Runの実行/続行や候補レビュー自体はそれぞれ既存CLI操作。 |
 | C18 | 記事制作を同じEngineで実行 | **実装済み** | `article-production`が共通のbounded reviewを利用。記事の実モデルによる品質保証と、入力準備自動化は別の課題。 |
 

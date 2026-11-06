@@ -461,6 +461,314 @@ def _temporary_repo(root: Path) -> tuple[Path, str, bytes]:
     return repository, revision, source
 
 
+def test_issue_url_cli_runs_bounded_job_from_ready_research_run(
+    tmp_path: Path,
+    require_local_sandbox: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue URL alone resolves a ready research Run and starts a fake Job."""
+    from types import SimpleNamespace
+
+    import ai_office.cli as cli_module
+    import ai_office.engineering_issue as engineering_issue
+    from ai_office.github_snapshot import GitHubRawResponse
+
+    repository, revision, _source = _temporary_repo(tmp_path)
+    _git(
+        repository,
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/offline-owner/offline-repository.git",
+    )
+    issue_url = (
+        "https://github.com/offline-owner/offline-repository/issues/829"
+    )
+    issue_response = {
+        "number": 829,
+        "title": "Change answer() to return 2",
+        "body": "Change the calculation and keep its unit test passing.",
+    }
+
+    def issue_transport(request):
+        assert request.method == "GET"
+        assert request.path == "/repos/offline-owner/offline-repository/issues/829"
+        return GitHubRawResponse(
+            200, json.dumps(issue_response).encode("utf-8")
+        )
+
+    research_input, _summary = engineering_issue.prepare_engineering_issue_input(
+        issue_url=issue_url,
+        repository="offline-owner/offline-repository",
+        repository_path=repository,
+        base_revision=revision,
+        search_patterns=("*.py",),
+        read_patterns=("*.py",),
+        send_patterns=("*.py",),
+        write_patterns=("calculator.py",),
+        initial_files=2,
+        max_files=2,
+        max_source_bytes=100_000,
+        max_provider_input_bytes=900_000,
+        max_provider_total_bytes=3_600_000,
+        max_provider_attempts=1,
+        oracle_profile="python-syntax",
+        send_issue_body=True,
+        github_transport=issue_transport,
+    )
+    ready_plan = json.dumps(
+        {
+            "outcome": "ready",
+            "cause_hypotheses": [
+                {
+                    "hypothesis": (
+                        "answer() currently returns an arithmetic expression."
+                    ),
+                    "confidence": "medium",
+                    "evidence": ["calculator.py"],
+                }
+            ],
+            "evidence": [
+                {
+                    "path": "calculator.py",
+                    "start_line": 2,
+                    "end_line": 2,
+                    "quote": "    return 1 + 1",
+                    "reason": "This is the implementation targeted by the Issue.",
+                }
+            ],
+            "read_paths": ["calculator.py", "test_calculator.py"],
+            "additional_read_paths": [],
+            "write_paths": ["calculator.py"],
+            "test_paths": ["test_calculator.py"],
+            "acceptance_criteria": ["answer() returns 2 and its test passes."],
+        },
+        sort_keys=True,
+    )
+    candidate_diff = (
+        "--- a/calculator.py\n"
+        "+++ b/calculator.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def answer():\n"
+        "-    return 1 + 1\n"
+        "+    return 2\n"
+    )
+    passing_review = (
+        "Verdict: PASS\n\n"
+        "### Check 1\n"
+        "Requirement: Follow the fixed Issue and path scope.\n"
+        "Artifact location: calculator.py\n"
+        "Evidence source/reference: Candidate Artifact and fixed-base source.\n"
+        "Assessment: The single-file change meets the requested scope.\n\n"
+        "Unresolved material issues: none"
+    )
+    fake_outputs = [ready_plan, candidate_diff, passing_review, passing_review]
+    provider_requests: list[object] = []
+
+    def fake_provider(request):
+        provider_requests.append(request)
+        output = fake_outputs.pop(0)
+        payload = {
+            "id": f"offline-{len(provider_requests)}",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": output},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        return OpenAIResponsesRawHttpResponse(
+            200, "synthetic", (), json.dumps(payload).encode("utf-8")
+        )
+
+    repository_root = Path(__file__).resolve().parents[1]
+    destinations = repository_root / "docs/examples/openai-compatible-destinations.yaml"
+    monkeypatch.setattr(
+        cli_module,
+        "os",
+        SimpleNamespace(
+            getuid=lambda: 1001,
+            geteuid=lambda: 1001,
+            environ=os.environ,
+        ),
+    )
+    monkeypatch.setattr(
+        cli_module, "sys", SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True))
+    )
+    monkeypatch.setattr(cli_module.getpass, "getuser", lambda: "offline-proof")
+    monkeypatch.setattr(
+        cli_module,
+        "_load_api_key_for_target",
+        lambda _target: OpenAIApiKey(value=SecretStr("synthetic-only")),
+    )
+    monkeypatch.setattr(cli_module, "send_openai_responses_http_request", fake_provider)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    research_store = tmp_path / "research-runs"
+    research_run_id = "offline-ready-research-829"
+    start_args = [
+        "workflows",
+        "start",
+        "engineering-issue-investigation",
+        "--run-id",
+        research_run_id,
+        "--run-input",
+        research_input,
+        "--run-store",
+        str(research_store),
+        "--execution-target",
+        "opencode-go-chat",
+        "--execution-destinations",
+        str(destinations),
+        "--step-model",
+        "investigate=glm-5.3-flash",
+        "--preview-only",
+    ]
+    preview_result = CliRunner().invoke(app, start_args)
+    assert preview_result.exit_code == 0, preview_result.output
+    preview = json.loads(preview_result.stdout)
+    assert preview["workflow_id"] == "engineering-issue-investigation"
+    assert preview["step_id"] == "investigate"
+
+    executed_research = CliRunner().invoke(
+        app,
+        start_args[:-1]
+        + [
+            "--approve-business",
+            "--business-approved-by",
+            "offline-proof",
+            "--business-approval-id",
+            "offline-research-business",
+            "--approve-execution",
+            "--execution-approved-by",
+            "offline-proof",
+            "--execution-approval-id",
+            "offline-research-execution",
+            "--expected-step-id",
+            preview["step_id"],
+            "--expected-step-index",
+            str(preview["step_index"]),
+            "--expected-employee-id",
+            preview["employee_id"],
+            "--expected-request-fingerprint",
+            preview["request_fingerprint"],
+        ],
+    )
+    assert executed_research.exit_code == 0, executed_research.output
+    assert json.loads(executed_research.stdout)["status"] == "workflow_complete"
+
+    metadata_reads: list[object] = []
+
+    def metadata_transport(request):
+        metadata_reads.append(request)
+        assert request.method == "GET"
+        assert request.path == "/repos/offline-owner/offline-repository"
+        return GitHubRawResponse(
+            200,
+            json.dumps(
+                {
+                    "id": 805001,
+                    "full_name": "offline-owner/offline-repository",
+                    "default_branch": "main",
+                }
+            ).encode("utf-8"),
+        )
+
+    original_prepare_for_issue = (
+        engineering_issue.prepare_bounded_job_inputs_for_issue
+    )
+
+    def prepare_for_issue(url, run_store, **kwargs):
+        return original_prepare_for_issue(
+            url,
+            run_store,
+            github_transport=metadata_transport,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        engineering_issue,
+        "prepare_bounded_job_inputs_for_issue",
+        prepare_for_issue,
+    )
+    confirmations: list[str] = []
+
+    def approve(prompt: str, *, default: bool = False) -> bool:
+        confirmations.append(prompt)
+        return True
+
+    monkeypatch.setattr(cli_module.typer, "confirm", approve)
+    run_store = tmp_path / "engineering-job-runs"
+    bounded_args = [
+        "workflows",
+        "bounded-job-run",
+        "--issue-url",
+        issue_url,
+        "--research-run-store",
+        str(research_store),
+        "--run-store",
+        str(run_store),
+        "--workflow",
+        "bounded-change-review",
+        "--directory",
+        str(repository_root / "workflows"),
+        "--employees-directory",
+        str(repository_root / "employees"),
+        "--execution-target",
+        "opencode-go-chat",
+        "--execution-destinations",
+        str(destinations),
+        "--step-model",
+        "create-candidate=glm-5.3-flash",
+        "--step-model",
+        "review-scope=glm-5.3-flash",
+        "--step-model",
+        "review-verification=glm-5.3-flash",
+        "--step-model",
+        "revise-candidate=glm-5.3-flash",
+        "--max-revisions",
+        "0",
+    ]
+    bounded_result = CliRunner().invoke(app, bounded_args)
+    assert bounded_result.exit_code == 0, bounded_result.output
+    lines = bounded_result.stdout.splitlines()
+    launch = json.loads(lines[0])
+    completed = json.loads(lines[-1])
+    assert launch["operation"] == "bounded-job-launch-confirmation"
+    assert launch["issue_url"] == issue_url
+    assert launch["research_run_id"] == research_run_id
+    assert launch["repository_id"] == 805001
+    assert launch["base_ref"] == "main"
+    assert completed["operation"] == "bounded-job-run"
+    assert completed["status"] == "candidate"
+    assert completed["final_artifact_id"] is not None
+    assert len(confirmations) == 3
+    assert "Business grant" in confirmations[0]
+    assert "Execution grant" in confirmations[1]
+    assert "sandbox verification" in confirmations[2]
+    assert len(metadata_reads) == 1
+    assert len(provider_requests) == 4
+    assert fake_outputs == []
+    from ai_office.engine.artifact import read_run_artifact
+
+    job_store = WorkflowRunManifestStore(run_store)
+    candidate = read_run_artifact(
+        job_store,
+        completed["final_artifact_run_id"],
+        completed["final_artifact_id"],
+    )
+    candidate_change = json.loads(candidate.content)
+    assert base64.b64decode(
+        candidate_change["changes"][0]["content_base64"], validate=True
+    ) == b"def answer():\n    return 2\n"
+    assert (repository / "calculator.py").read_bytes() == _source
+    assert "--assignment-file" not in bounded_args
+    assert "--run-id" not in bounded_args
+    assert research_run_id not in bounded_args
+
+
 def _change_set(
     revision: str,
     source: bytes,
