@@ -388,10 +388,17 @@ def test_candidate_count_over_budget_selects_a_finite_reported_subset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository, revision, _ = fixed_repository
-    for index in range(133):
+    for index in range(70):
         path = repository / f"src/pkg/module_{index:03}.py"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"VALUE_{index} = {index}\n", encoding="utf-8")
+    for index in range(63):
+        path = repository / f"tests/unit/test_module_{index:03}.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"def test_value_{index}():\n    assert {index} == {index}\n",
+            encoding="utf-8",
+        )
     _git(repository, "add", ".")
     _git(repository, "commit", "-qm", "add bounded-search candidates")
     revision = _git(repository, "rev-parse", "HEAD")
@@ -413,8 +420,12 @@ def test_candidate_count_over_budget_selects_a_finite_reported_subset(
     assert len(value["available_sources"]) == 12
     assert selection["matched_tree_path_count"] == 136
     assert selection["eligible_python_candidate_count"] == 136
+    assert selection["write_candidate_count"] == 72
+    assert selection["read_only_candidate_count"] == 64
     assert selection["candidate_limit"] == 12
     assert selection["provided_candidate_count"] == 12
+    assert selection["provided_write_candidate_count"] == 6
+    assert selection["provided_read_only_candidate_count"] == 6
     assert selection["unselected_candidate_count"] == 124
     assert selection["omitted_candidate_count"] == 124
     assert selection["truncated"] is True
@@ -430,7 +441,13 @@ def test_candidate_count_over_budget_selects_a_finite_reported_subset(
     assert selection["limitation"]
     assert read_paths == summary["selected_initial_paths"]
     assert len(read_paths) == 1
-    assert all(item["write_allowed"] for item in value["available_sources"])
+    assert sum(item["write_allowed"] for item in value["available_sources"]) == 6
+    assert sum(not item["write_allowed"] for item in value["available_sources"]) == 6
+    assert all(
+        item["path"].startswith("tests/")
+        for item in value["available_sources"]
+        if not item["write_allowed"]
+    )
     assert set(summary["selected_candidate_reasons"]) == {
         item["path"] for item in value["available_sources"]
     }

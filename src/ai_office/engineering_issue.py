@@ -80,7 +80,9 @@ _ORACLE_CATALOG_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "engineering-issue-oracles.json"
 )
 _CANDIDATE_SELECTION_METHOD = (
-    "write-scope first, then descending Issue-path token overlap, then lexical path"
+    "reserve ceil(max_files/2) write and floor(max_files/2) read-only slots; "
+    "rank each group by descending Issue title/body path-token overlap then "
+    "lexical path; redistribute unused slots to write then read-only candidates"
 )
 _CANDIDATE_LIMITATION = (
     "Only Git path metadata matching the search patterns was examined. File "
@@ -181,15 +183,24 @@ def prepare_engineering_issue_input(
     ]
     if not eligible_candidates:
         _fail("no_provider_sendable_python_sources")
-    if not any(_matches_any(entry.path, write_scope) for entry in eligible_candidates):
+    write_candidates = [
+        entry for entry in eligible_candidates if _matches_any(entry.path, write_scope)
+    ]
+    read_only_candidates = [
+        entry
+        for entry in eligible_candidates
+        if not _matches_any(entry.path, write_scope)
+    ]
+    if not write_candidates:
         _fail("no_provider_sendable_write_candidates")
-    eligible_candidates.sort(
-        key=lambda item: (
-            not _matches_any(item.path, write_scope),
-            *_path_rank(item.path, issue_text),
-        )
+    write_candidates.sort(key=lambda item: _path_rank(item.path, issue_text))
+    read_only_candidates.sort(key=lambda item: _path_rank(item.path, issue_text))
+    provided_write_count, provided_read_only_count = _candidate_slot_counts(
+        len(write_candidates), len(read_only_candidates), max_files
     )
-    allowed = eligible_candidates[:max_files]
+    allowed = write_candidates[:provided_write_count] + read_only_candidates[
+        :provided_read_only_count
+    ]
     unselected_count = len(eligible_candidates) - len(allowed)
     omitted_count = unselected_count + len(oversized_candidates)
     candidate_selection = {
@@ -199,8 +210,12 @@ def prepare_engineering_issue_input(
         "matched_tree_path_count": len(tree),
         "eligible_python_candidate_count": len(eligible_candidates),
         "oversized_python_candidate_count": len(oversized_candidates),
+        "write_candidate_count": len(write_candidates),
+        "read_only_candidate_count": len(read_only_candidates),
         "candidate_limit": max_files,
         "provided_candidate_count": len(allowed),
+        "provided_write_candidate_count": provided_write_count,
+        "provided_read_only_candidate_count": provided_read_only_count,
         "unselected_candidate_count": unselected_count,
         "omitted_candidate_count": omitted_count,
         "truncated": omitted_count > 0,
@@ -1510,8 +1525,12 @@ def _validate_candidate_selection(
         "matched_tree_path_count",
         "eligible_python_candidate_count",
         "oversized_python_candidate_count",
+        "write_candidate_count",
+        "read_only_candidate_count",
         "candidate_limit",
         "provided_candidate_count",
+        "provided_write_candidate_count",
+        "provided_read_only_candidate_count",
         "unselected_candidate_count",
         "omitted_candidate_count",
         "truncated",
@@ -1524,8 +1543,12 @@ def _validate_candidate_selection(
         "matched_tree_path_count",
         "eligible_python_candidate_count",
         "oversized_python_candidate_count",
+        "write_candidate_count",
+        "read_only_candidate_count",
         "candidate_limit",
         "provided_candidate_count",
+        "provided_write_candidate_count",
+        "provided_read_only_candidate_count",
         "unselected_candidate_count",
         "omitted_candidate_count",
     )
@@ -1543,7 +1566,11 @@ def _validate_candidate_selection(
     )
     eligible_count = selection["eligible_python_candidate_count"]
     oversized_count = selection["oversized_python_candidate_count"]
+    write_count = selection["write_candidate_count"]
+    read_only_count = selection["read_only_candidate_count"]
     offered_count = selection["provided_candidate_count"]
+    offered_write_count = selection["provided_write_candidate_count"]
+    offered_read_only_count = selection["provided_read_only_candidate_count"]
     unselected_count = selection["unselected_candidate_count"]
     omitted_count = selection["omitted_candidate_count"]
     maximum = _as_int(authorization.get("max_source_files"))
@@ -1551,12 +1578,17 @@ def _validate_candidate_selection(
     issue = _object(value.get("issue"))
     issue_text = _as_string(issue.get("title")) + "\n" + _as_string(issue.get("body"))
     write_scope = _string_tuple(authorization.get("write_patterns"))
-    expected_order = sorted(
-        available,
-        key=lambda path: (
-            not _matches_any(path, write_scope),
-            *_path_rank(path, issue_text),
-        ),
+    write_paths = sorted(
+        (path for path in available if _matches_any(path, write_scope)),
+        key=lambda path: _path_rank(path, issue_text),
+    )
+    read_only_paths = sorted(
+        (path for path in available if not _matches_any(path, write_scope)),
+        key=lambda path: _path_rank(path, issue_text),
+    )
+    expected_order = write_paths + read_only_paths
+    expected_write_count, expected_read_only_count = _candidate_slot_counts(
+        write_count, read_only_count, maximum
     )
     if (
         search_patterns != _string_tuple(authorization.get("search_patterns"))
@@ -1564,10 +1596,15 @@ def _validate_candidate_selection(
         or send_patterns != _string_tuple(authorization.get("provider_send_patterns"))
         or selection["matched_tree_path_count"] < eligible_count + oversized_count
         or selection["candidate_limit"] != maximum
+        or eligible_count != write_count + read_only_count
         or offered_count != len(available)
         or offered_count != len(raw_available)
         or offered_count > maximum
         or eligible_count < offered_count
+        or offered_write_count != expected_write_count
+        or offered_read_only_count != expected_read_only_count
+        or offered_write_count != len(write_paths)
+        or offered_read_only_count != len(read_only_paths)
         or unselected_count != eligible_count - offered_count
         or omitted_count != unselected_count + oversized_count
         or type(selection.get("truncated")) is not bool
@@ -1661,11 +1698,28 @@ def _path_rank(path: str, issue_text: str) -> tuple[int, str]:
     return -score, path
 
 
+def _candidate_slot_counts(
+    write_count: int, read_only_count: int, max_files: int
+) -> tuple[int, int]:
+    write_slots = (max_files + 1) // 2
+    read_only_slots = max_files // 2
+    provided_write = min(write_count, write_slots)
+    provided_read_only = min(read_only_count, read_only_slots)
+    remaining = max_files - provided_write - provided_read_only
+    extra_write = min(remaining, write_count - provided_write)
+    provided_write += extra_write
+    remaining -= extra_write
+    provided_read_only += min(remaining, read_only_count - provided_read_only)
+    return provided_write, provided_read_only
+
+
 def _selection_reason(path: str, issue_text: str, write_scope: Sequence[str]) -> str:
     score = -_path_rank(path, issue_text)[0]
-    reasons = []
-    if _matches_any(path, write_scope):
-        reasons.append("write-authorized path prioritized")
+    reasons = [
+        "selected from write-authorized candidates"
+        if _matches_any(path, write_scope)
+        else "selected from read-only candidates"
+    ]
     if score:
         reasons.append(f"{score} Issue title/body path-token match(es)")
     else:

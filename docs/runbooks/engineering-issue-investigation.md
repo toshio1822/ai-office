@@ -71,15 +71,17 @@ operations. It writes `engineering-issue-round-1.json` exclusively with mode
 `0600`; the output summary reports base, hashes, selected path names, and byte
 counts, not source contents. Candidate discovery walks Git path metadata matching
 the approved search patterns, then intersects it with read and Provider-send
-scopes. Eligible paths are ranked by write authorization, Issue title/body
-path-token overlap, and lexical path order. `--max-files` bounds the candidate
-list offered to the AI; it does not prevent a broad approved search from
-starting. The summary and Run Input report the search/read/send patterns, tree
-path count, eligible and omitted candidate counts, each offered path's
-selection reason, and the limit. Omitted or individually over-budget file
-contents were not read or sent, so the AI must not claim the candidate set is
-exhaustive. A missing or invalid Issue, secret-like text, dirty/moved base,
-unapproved path, or byte/attempt budget excess still stops before output.
+scopes. The `--max-files` shortlist reserves half its slots (rounding up) for
+write-authorized sources and half (rounding down) for read-only sources such as
+tests. Within each group, Issue title/body path-token overlap ranks above
+lexical path order; unused slots are reallocated first to remaining
+write-authorized paths, then read-only paths. The summary and Run Input report
+the counts for both groups, search/read/send patterns, omissions, each offered
+path's selection reason, and any remaining limit. Omitted or individually
+over-budget file contents were not read or sent, so the AI must not claim the
+candidate set is exhaustive. A missing or invalid Issue, secret-like text,
+dirty/moved base, unapproved path, or byte/attempt budget excess still stops
+before output.
 Omitting `--send-issue-body` deliberately stops preparation before the GET.
 
 ## Run the investigation and continue finitely
