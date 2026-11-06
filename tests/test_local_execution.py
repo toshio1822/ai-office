@@ -200,6 +200,26 @@ def test_trusted_bundle_policy_requires_paired_pin_and_isolated_python(
         LocalExecutionPolicy.model_validate(values)
 
 
+def test_trusted_bundle_policy_allows_only_manifest_pinned_executable(
+    tmp_path: Path,
+) -> None:
+    values = _policy(
+        "0" * 40,
+        commands=(("/usr/bin/python3", "-S", "-B", "-c", "pass"),),
+    ).model_dump()
+    values["trusted_bundle_path"] = str(tmp_path / "bundle")
+    values["trusted_bundle_manifest_sha256"] = "0" * 64
+    values["trusted_executable_paths"] = ("site-packages/bin/ruff",)
+    values["commands"] = (("/input/trusted/site-packages/bin/ruff", "check"),)
+
+    policy = LocalExecutionPolicy.model_validate(values)
+    assert policy.commands[0][0] == "/input/trusted/site-packages/bin/ruff"
+
+    values["trusted_executable_paths"] = ()
+    with pytest.raises(ValueError):
+        LocalExecutionPolicy.model_validate(values)
+
+
 def test_cli_requires_and_persists_explicit_local_effect_approval(
     tmp_path: Path,
 ) -> None:
@@ -1117,7 +1137,9 @@ def test_trusted_bundle_tampering_fails_closed_before_effect(
         )
 
 
-def _write_trusted_bundle_manifest(bundle: Path) -> tuple[Path, str]:
+def _write_trusted_bundle_manifest(
+    bundle: Path, *, python_identity: tuple[str, str] | None = None
+) -> tuple[Path, str]:
     files = []
     for path in sorted(
         (
@@ -1136,10 +1158,14 @@ def _write_trusted_bundle_manifest(bundle: Path) -> tuple[Path, str]:
                 "size": len(content),
             }
         )
+    python_cache_tag, python_platform = python_identity or (
+        sys.implementation.cache_tag,
+        sysconfig.get_platform(),
+    )
     manifest = {
         "files": files,
-        "python_cache_tag": sys.implementation.cache_tag,
-        "python_platform": sysconfig.get_platform(),
+        "python_cache_tag": python_cache_tag,
+        "python_platform": python_platform,
         "schema_version": "local-execution-trusted-bundle.v1",
     }
     manifest_bytes = json.dumps(
@@ -1160,7 +1186,6 @@ def _python_validation_bundle(tmp_path: Path) -> tuple[Path, str]:
         "iniconfig",
         "packaging",
         "pygments",
-        "ruff",
     ):
         spec = importlib.util.find_spec(module_name)
         assert spec is not None
@@ -1179,7 +1204,6 @@ def _python_validation_bundle(tmp_path: Path) -> tuple[Path, str]:
         "iniconfig",
         "packaging",
         "pygments",
-        "ruff",
     ):
         distribution = importlib.metadata.distribution(distribution_name)
         distribution_root = Path(distribution._path)
@@ -1194,7 +1218,27 @@ def _python_validation_bundle(tmp_path: Path) -> tuple[Path, str]:
     ruff_executable.parent.mkdir()
     shutil.copyfile(find_ruff_bin(), ruff_executable)
     ruff_executable.chmod(0o755)
-    return _write_trusted_bundle_manifest(bundle)
+    runtime_identity = json.loads(
+        subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-S",
+                "-B",
+                "-c",
+                (
+                    "import json,sys,sysconfig; "
+                    "print(json.dumps([sys.implementation.cache_tag, "
+                    "sysconfig.get_platform()]))"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    return _write_trusted_bundle_manifest(
+        bundle, python_identity=tuple(runtime_identity)
+    )
 
 
 def _trusted_bundle(tmp_path: Path) -> tuple[Path, str]:

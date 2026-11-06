@@ -180,16 +180,27 @@ class LocalExecutionPolicy(BaseModel):
             if not argv or argv in seen:
                 raise ValueError("commands must be non-empty and distinct")
             seen.add(argv)
-            executable = Path(argv[0])
-            if not executable.is_absolute() or not str(executable).startswith(
-                "/usr/bin/"
-            ):
-                raise ValueError("commands must use an absolute /usr/bin path")
-            resolved = executable.resolve(strict=True)
-            if not resolved.is_file() or not os.access(resolved, os.X_OK):
-                raise ValueError("command is unavailable")
-            if not resolved.is_relative_to(Path("/usr/bin")):
-                raise ValueError("command resolves outside /usr/bin")
+            trusted_relative = None
+            if argv[0].startswith("/input/trusted/"):
+                trusted_relative = argv[0].removeprefix("/input/trusted/")
+                if (
+                    self.trusted_bundle_path is None
+                    or trusted_relative not in self.trusted_executable_paths
+                ):
+                    raise ValueError("command is not a pinned trusted executable")
+            else:
+                executable = Path(argv[0])
+                if not executable.is_absolute() or not str(executable).startswith(
+                    "/usr/bin/"
+                ):
+                    raise ValueError(
+                        "commands must use /usr/bin or a pinned trusted executable"
+                    )
+                resolved = executable.resolve(strict=True)
+                if not resolved.is_file() or not os.access(resolved, os.X_OK):
+                    raise ValueError("command is unavailable")
+                if not resolved.is_relative_to(Path("/usr/bin")):
+                    raise ValueError("command resolves outside /usr/bin")
             if any(
                 not isinstance(arg, str) or not arg or "\x00" in arg for arg in argv
             ):
@@ -197,9 +208,13 @@ class LocalExecutionPolicy(BaseModel):
             if any(_SENSITIVE.search(arg) for arg in argv):
                 raise ValueError("secret-like command argument")
             if self.trusted_bundle_path is not None and (
-                argv[0] != "/usr/bin/python3" or argv[1:3] != ("-S", "-B")
+                trusted_relative is None
+                and (argv[0] != "/usr/bin/python3" or argv[1:3] != ("-S", "-B"))
             ):
-                raise ValueError("trusted bundle commands must use python3 -S -B")
+                raise ValueError(
+                    "trusted bundle commands must use python3 -S -B "
+                    "or a pinned executable"
+                )
         return self
 
 

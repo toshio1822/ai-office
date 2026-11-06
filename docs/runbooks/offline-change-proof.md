@@ -68,13 +68,15 @@ the current 1,024-file / 4,096-directory / 128-MiB total / 32-MiB per-file
 bounds before running commands. A missing, changed, extra, unsupported, or
 malformed bundle fails closed.
 
-Only explicitly approved `/usr/bin/python3 -S -B ...` commands may use a bundle.
-The `python-tests-and-ruff` Oracle profile imports its pinned `pytest` and
-`ruff` modules before patching the candidate, so a missing or broken runtime is
-not confused with a test failure. It runs `pytest -p no:cacheprovider
---maxfail=1 /workspace`, followed by Ruff with fixed lint settings over
-`/workspace`; its pinned Ruff executable is `site-packages/bin/ruff`, which is
-made executable only by the matching explicit policy. Exit code 1 alone is a
+Only explicitly approved `/usr/bin/python3 -S -B ...` commands and exact
+manifest-pinned executables may use a trusted bundle.
+The `python-tests-and-ruff` Oracle profile imports its pinned `pytest` module
+before patching the candidate, so a missing or broken runtime is not confused
+with a test failure. It runs `pytest -p no:cacheprovider
+--maxfail=1 /workspace`, followed by the exact `site-packages/bin/ruff`
+executable from the pinned bundle with fixed lint settings over `/workspace`.
+Only the listed bundle file is made executable by the matching explicit
+policy. Exit code 1 alone is a
 known validation failure for these commands. Other nonzero codes, startup
 errors, timeouts, output limits, or integrity failures stop without a revision.
 The existing bootstrap passes a fixed `PYTHONPATH` containing only
@@ -144,9 +146,9 @@ policy file with this shape:
   "write_paths": ["calculator.py"],
   "commands": [
     ["/usr/bin/python3", "-S", "-B", "-m", "pytest", "-p", "no:cacheprovider", "--maxfail=1", "/workspace"],
-    ["/usr/bin/python3", "-S", "-B", "-m", "ruff", "check", "--isolated", "--no-cache", "--select", "E,F,I,UP", "--target-version", "py312", "--line-length", "88", "/workspace"]
+    ["/input/trusted/site-packages/bin/ruff", "check", "--isolated", "--no-cache", "--select", "E,F,I,UP", "--target-version", "py312", "--line-length", "88", "/workspace"]
   ],
-  "validation_modules": ["pytest", "ruff"],
+  "validation_modules": ["pytest"],
   "validation_failure_exit_codes": [1],
   "trusted_executable_paths": ["site-packages/bin/ruff"],
   "trusted_bundle_path": "/absolute/operator/managed/python-proof-bundle",

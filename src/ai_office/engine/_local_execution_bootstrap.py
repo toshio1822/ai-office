@@ -295,6 +295,29 @@ def run(plan_path: Path) -> dict[str, object]:
         or (trusted_executable_paths and pythonpath is None)
     ):
         raise ValueError
+    commands = plan["commands"]
+    if type(commands) is not list or not commands or len(commands) > 8:
+        raise ValueError
+    for argv in commands:
+        if (
+            type(argv) is not list
+            or not argv
+            or any(type(argument) is not str or not argument for argument in argv)
+        ):
+            raise ValueError
+        executable = argv[0]
+        if executable.startswith("/input/trusted/"):
+            relative = executable.removeprefix("/input/trusted/")
+            if relative not in trusted_executable_paths:
+                raise ValueError
+        elif not Path(executable).is_absolute() or not executable.startswith(
+            "/usr/bin/"
+        ):
+            raise ValueError
+        elif pythonpath is not None and (
+            executable != "/usr/bin/python3" or argv[1:3] != ["-S", "-B"]
+        ):
+            raise ValueError
     for relative in trusted_executable_paths:
         executable = Path("/input/trusted").joinpath(*relative.split("/"))
         if not executable.stat().st_mode & 0o111:
@@ -394,7 +417,7 @@ def run(plan_path: Path) -> dict[str, object]:
     validation_failure_exit_codes = set(plan["validation_failure_exit_codes"])
     validation_failed = False
     status = "verified"
-    for argv in plan["commands"]:
+    for argv in commands:
         remaining_budget = plan["limits"]["max_output_bytes"] - output_used
         command_result, return_code = _run_command(
             argv,
@@ -422,7 +445,7 @@ def run(plan_path: Path) -> dict[str, object]:
             break
     if status == "verified" and validation_failed:
         status = "validation_failed"
-    for argv in plan["commands"][len(command_results) :]:
+    for argv in commands[len(command_results) :]:
         command_results.append(
             {
                 "argv": argv,

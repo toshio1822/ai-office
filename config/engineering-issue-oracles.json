@@ -38,11 +38,7 @@
           "/workspace"
         ],
         [
-          "/usr/bin/python3",
-          "-S",
-          "-B",
-          "-m",
-          "ruff",
+          "/input/trusted/site-packages/bin/ruff",
           "check",
           "--isolated",
           "--no-cache",
@@ -56,8 +52,7 @@
         ]
       ],
       "validation_modules": [
-        "pytest",
-        "ruff"
+        "pytest"
       ],
       "trusted_executable_paths": [
         "site-packages/bin/ruff"

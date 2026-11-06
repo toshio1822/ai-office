@@ -1458,9 +1458,8 @@ def bounded_document_action_input(
                 review_payloads.append(_artifact_payload(review))
         if not validation_failure and not changes_requested:
             raise WorkflowJobAuthorizationError("document_job_revision_not_authorized")
-        values["revision_reason"] = (
-            "validation_failure" if validation_failure else "review_changes_required"
-        )
+        if validation_failure:
+            values["revision_reason"] = "validation_failure"
         if review_payloads:
             values["review_artifacts"] = review_payloads
     elif slot.input_source == "re_review_input":
