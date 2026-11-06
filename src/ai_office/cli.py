@@ -937,6 +937,160 @@ def snapshot_github_change(
         raise typer.Exit(code=2)
 
 
+@workflows_app.command("prepare-engineering-issue")
+def prepare_engineering_issue_workflow(
+    issue_url: str = typer.Option(..., "--issue-url"),
+    repository: str = typer.Option(..., "--repository"),
+    repository_path: Path = typer.Option(..., "--repository-path"),
+    base_revision: str = typer.Option(..., "--base-revision"),
+    search_pattern: list[str] = typer.Option(..., "--search-pattern"),
+    read_pattern: list[str] = typer.Option(..., "--read-pattern"),
+    send_pattern: list[str] = typer.Option(..., "--send-pattern"),
+    write_pattern: list[str] = typer.Option(..., "--write-pattern"),
+    initial_files: int = typer.Option(..., "--initial-files", min=1, max=64),
+    max_files: int = typer.Option(..., "--max-files", min=1, max=64),
+    max_source_bytes: int = typer.Option(..., "--max-source-bytes", min=1),
+    max_provider_input_bytes: int = typer.Option(
+        ..., "--max-provider-input-bytes", min=1024, max=1_048_576
+    ),
+    max_provider_total_bytes: int = typer.Option(
+        ..., "--max-provider-total-bytes", min=1024, max=5_242_880
+    ),
+    max_provider_attempts: int = typer.Option(
+        ..., "--max-provider-attempts", min=1, max=5
+    ),
+    oracle_profile: str = typer.Option(
+        ...,
+        "--oracle-profile",
+        help=(
+            "Operator-selected registered policy profile (currently "
+            "python-syntax; syntax parsing only, not project tests)."
+        ),
+    ),
+    output_directory: Path = typer.Option(..., "--output-directory"),
+    send_issue_body: bool = typer.Option(False, "--send-issue-body"),
+    token_environment_variable: str = typer.Option(
+        "GITHUB_TOKEN", "--token-environment-variable"
+    ),
+) -> None:
+    """Prepare one bounded Issue-investigation Run Input without invoking AI."""
+    from ai_office.engineering_issue import (
+        EngineeringIssueError,
+        prepare_engineering_issue_input,
+        validate_private_output_directory,
+        write_private_outputs,
+    )
+
+    if not token_environment_variable.isidentifier():
+        _workflow_cli_error("GitHub token environment variable name is invalid")
+    try:
+        validate_private_output_directory(output_directory, repository_path)
+        run_input, summary = prepare_engineering_issue_input(
+            issue_url=issue_url,
+            repository=repository,
+            repository_path=repository_path,
+            base_revision=base_revision,
+            search_patterns=search_pattern,
+            read_patterns=read_pattern,
+            send_patterns=send_pattern,
+            write_patterns=write_pattern,
+            initial_files=initial_files,
+            max_files=max_files,
+            max_source_bytes=max_source_bytes,
+            max_provider_input_bytes=max_provider_input_bytes,
+            max_provider_total_bytes=max_provider_total_bytes,
+            max_provider_attempts=max_provider_attempts,
+            oracle_profile=oracle_profile,
+            send_issue_body=send_issue_body,
+            github_token=os.environ.get(token_environment_variable),
+        )
+        name = "engineering-issue-round-1.json"
+        sizes = write_private_outputs(
+            output_directory,
+            {name: run_input},
+            repository_path=Path(str(summary["repository_path"])),
+        )
+    except EngineeringIssueError as error:
+        _workflow_cli_error(
+            f"engineering Issue preparation stopped ({error.classification})"
+        )
+    except OSError:
+        _workflow_cli_error("engineering Issue Run Input could not be written")
+    _emit_json({**summary, "output": name, "output_bytes": sizes[name]})
+
+
+@workflows_app.command("prepare-next-engineering-issue")
+def prepare_next_engineering_issue_workflow(
+    run_id: str = typer.Argument(...),
+    run_store: Path = typer.Option(Path("runs"), "--run-store"),
+    output_directory: Path = typer.Option(..., "--output-directory"),
+) -> None:
+    """Prepare the next finite investigation Run from a successful prior Run."""
+    from ai_office.engineering_issue import (
+        EngineeringIssueError,
+        prepare_next_engineering_issue_input,
+        write_private_outputs,
+    )
+
+    try:
+        run_input, summary = prepare_next_engineering_issue_input(run_store, run_id)
+        name = f"engineering-issue-round-{summary['research_round']}.json"
+        sizes = write_private_outputs(
+            output_directory,
+            {name: run_input},
+            repository_path=Path(str(summary["repository_path"])),
+        )
+    except EngineeringIssueError as error:
+        _workflow_cli_error(
+            f"engineering Issue continuation stopped ({error.classification})"
+        )
+    except OSError:
+        _workflow_cli_error("engineering Issue Run Input could not be written")
+    _emit_json({**summary, "output": name, "output_bytes": sizes[name]})
+
+
+@workflows_app.command("prepare-engineering-job-input")
+def prepare_engineering_job_input_workflow(
+    run_id: str = typer.Argument(...),
+    run_store: Path = typer.Option(Path("runs"), "--run-store"),
+    output_directory: Path = typer.Option(..., "--output-directory"),
+) -> None:
+    """Prepare bounded-change-review assignment and local-effect policy files."""
+    from ai_office.engineering_issue import (
+        EngineeringIssueError,
+        prepare_bounded_job_inputs,
+        write_private_outputs,
+    )
+
+    try:
+        assignment, policy, summary = prepare_bounded_job_inputs(
+            run_store, run_id
+        )
+        run_suffix = sha256(run_id.encode("utf-8")).hexdigest()[:12]
+        assignment_name = f"assignment-{run_suffix}.json"
+        policy_name = f"local-effect-policy-{run_suffix}.json"
+        sizes = write_private_outputs(
+            output_directory,
+            {assignment_name: assignment, policy_name: policy},
+            repository_path=Path(str(summary["repository_path"])),
+        )
+    except EngineeringIssueError as error:
+        _workflow_cli_error(
+            f"engineering Job input preparation stopped ({error.classification})"
+        )
+    except OSError:
+        _workflow_cli_error("engineering Job input files could not be written")
+    _emit_json(
+        {
+            **summary,
+            "assignment_file": assignment_name,
+            "assignment_bytes": sizes[assignment_name],
+            "local_effect_policy_file": policy_name,
+            "local_effect_policy_file_bytes": sizes[policy_name],
+        }
+    )
+
+
 @workflows_app.command("collect-engineering-evidence")
 def collect_engineering_evidence_workflow(
     request_file: Path = typer.Option(..., "--request"),
