@@ -614,6 +614,47 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
         == "bounded-change-review"
     )
 
+    metadata_requests: list[object] = []
+
+    def fake_repository_metadata(request):
+        metadata_requests.append(request)
+        return GitHubRawResponse(
+            200,
+            json.dumps(
+                {
+                    "id": 828001,
+                    "full_name": _REPOSITORY,
+                    "default_branch": "main",
+                }
+            ).encode("utf-8"),
+        )
+
+    issue_assignment, issue_policy, issue_summary = (
+        engineering_issue.prepare_bounded_job_inputs_for_issue(
+            _ISSUE_URL,
+            run_store,
+            now_ns=1_000_000_000,
+            github_transport=fake_repository_metadata,
+        )
+    )
+    issue_value = json.loads(issue_assignment)
+    assert len(metadata_requests) == 1
+    assert metadata_requests[0].method == "GET"
+    assert metadata_requests[0].path == "/repos/example/project"
+    assert issue_value["repository"] == {
+        **job_input["repository"],
+        "base_ref": "main",
+        "full_name": _REPOSITORY,
+        "id": 828001,
+    }
+    issue_request = json.loads(issue_value["request"])
+    assert issue_request["issue"]["url"] == _ISSUE_URL
+    assert issue_value["investigation"]["research_run_id"] == "issue-round-2"
+    assert issue_policy == policy_text
+    assert issue_summary["research_run_id"] == "issue-round-2"
+    assert issue_summary["issue_url"] == _ISSUE_URL
+    assert issue_summary["github_repository_id"] == 828001
+
 
 def test_unlisted_additional_path_and_changed_base_stop_without_preparation(
     tmp_path: Path,
