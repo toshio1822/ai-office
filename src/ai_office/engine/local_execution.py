@@ -30,6 +30,26 @@ from ai_office.engine.workflow_run_manifest import (
 
 _SCHEMA = "local-execution-authorization.v1"
 _EVIDENCE_SCHEMA = "local-execution-evidence.v1"
+_EVIDENCE_STATUSES = frozenset(
+    {
+        "verified",
+        "validation_failed",
+        "command_failed",
+        "timeout",
+        "output_limit",
+        "workspace_changed_by_validation",
+        "unexpected_file_set",
+        "sandbox_setup_failed",
+        "sandbox_timeout",
+        "sandbox_output_limit",
+        "sandbox_failed",
+        "sandbox_result",
+        "sandbox_result_commands",
+        "sandbox_result_integrity",
+        "sandbox_result_size",
+        "network_isolation",
+    }
+)
 _FILE_CHANGE_TYPE = "application/vnd.ai-office.file-change-set+json"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -53,10 +73,10 @@ _MAX_SOURCE_BYTES = 2_097_152
 _MAX_CHANGE_BYTES = 1_048_576
 _MAX_RESULT_BYTES = 8_388_608
 _MAX_TRUSTED_MANIFEST_BYTES = 1_048_576
-_MAX_TRUSTED_FILE_BYTES = 16_777_216
+_MAX_TRUSTED_FILE_BYTES = 33_554_432
 _MAX_TRUSTED_FILES = 1024
 _MAX_TRUSTED_DIRECTORIES = 4096
-_MAX_TRUSTED_TOTAL_BYTES = 33_554_432
+_MAX_TRUSTED_TOTAL_BYTES = 134_217_728
 _PATH_TYPE = type(Path())
 FILE_CHANGE_SET_CONTENT_TYPE = "application/vnd.ai-office.file-change-set+json"
 
@@ -85,6 +105,9 @@ class LocalExecutionPolicy(BaseModel):
     read_paths: tuple[str, ...] = Field(min_length=1, max_length=64)
     write_paths: tuple[str, ...] = Field(min_length=1, max_length=64)
     commands: tuple[tuple[str, ...], ...] = Field(min_length=1, max_length=8)
+    validation_modules: tuple[str, ...] = Field(default=(), max_length=16)
+    validation_failure_exit_codes: tuple[int, ...] = Field(default=(), max_length=16)
+    trusted_executable_paths: tuple[str, ...] = Field(default=(), max_length=8)
     expires_at_ns: int = Field(gt=0)
     limits: LocalExecutionLimits
     trusted_bundle_path: str | None = None
@@ -114,6 +137,42 @@ class LocalExecutionPolicy(BaseModel):
             raise ValueError("read paths must be distinct")
         if len(set(self.write_paths)) != len(self.write_paths):
             raise ValueError("write paths must be distinct")
+        if (
+            any(
+                type(name) is not str
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}", name) is None
+                for name in self.validation_modules
+            )
+            or len(set(self.validation_modules)) != len(self.validation_modules)
+        ):
+            raise ValueError("validation modules must be distinct import names")
+        if (
+            any(
+                type(code) is not int or not 1 <= code <= 255
+                for code in self.validation_failure_exit_codes
+            )
+            or len(set(self.validation_failure_exit_codes))
+            != len(self.validation_failure_exit_codes)
+        ):
+            raise ValueError(
+                "validation failure exit codes must be distinct non-zero bytes"
+            )
+        if (
+            (self.validation_modules or self.trusted_executable_paths)
+            and self.trusted_bundle_path is None
+        ) or any(
+            type(path) is not str
+            or PurePosixPath(path).is_absolute()
+            or PurePosixPath(path).as_posix() != path
+            or PurePosixPath(path).parts[0] not in {"oracle", "site-packages"}
+            or any(part in {"", ".", ".."} for part in PurePosixPath(path).parts)
+            for path in self.trusted_executable_paths
+        ) or len(set(self.trusted_executable_paths)) != len(
+            self.trusted_executable_paths
+        ):
+            raise ValueError(
+                "trusted executable paths must be distinct pinned bundle files"
+            )
         if self.limits.max_file_bytes > self.limits.workspace_bytes:
             raise ValueError("file limit exceeds workspace limit")
         seen: set[tuple[str, ...]] = set()
@@ -173,6 +232,13 @@ class _TrustedBundle:
     manifest_sha256: str
     manifest_bytes: bytes
     files: dict[str, bytes]
+
+
+def _validate_trusted_executable_paths(
+    policy: LocalExecutionPolicy, bundle: _TrustedBundle
+) -> None:
+    if not set(policy.trusted_executable_paths) <= set(bundle.files):
+        _raise("trusted_bundle_executable")
 
 
 def _load_trusted_bundle(
@@ -417,12 +483,13 @@ def issue_local_execution_authorization(
         _fixed_run_input_for_effect(manifest.run_input), root, policy
     )
     if policy.trusted_bundle_path is not None:
-        _load_trusted_bundle(
+        trusted_bundle = _load_trusted_bundle(
             policy.trusted_bundle_path,
             policy.trusted_bundle_manifest_sha256 or "",
             workspace=root,
             run_store=store.root.resolve(strict=True),
         )
+        _validate_trusted_executable_paths(policy, trusted_bundle)
     value = {
         "approval_id": approval_id,
         "approved_by": approved_by,
@@ -576,6 +643,7 @@ def execute_local_change(
             workspace=root,
             run_store=store.root.resolve(strict=True),
         )
+        _validate_trusted_executable_paths(authorization.policy, trusted_bundle)
     bwrap = Path("/usr/bin/bwrap")
     if not bwrap.is_file() or not os.access(bwrap, os.X_OK):
         _raise("sandbox_unavailable")
@@ -616,14 +684,27 @@ def execute_local_change(
                     trusted_root / "manifest.json", trusted_bundle.manifest_bytes
                 )
                 for relative, content in trusted_bundle.files.items():
-                    _write_input_file(trusted_root, relative, content)
+                    _write_input_file(
+                        trusted_root,
+                        relative,
+                        content,
+                        executable=relative
+                        in authorization.policy.trusted_executable_paths,
+                    )
             plan = {
                 "changes": changes,
                 "commands": [list(item) for item in authorization.policy.commands],
+                "validation_modules": list(authorization.policy.validation_modules),
+                "validation_failure_exit_codes": list(
+                    authorization.policy.validation_failure_exit_codes
+                ),
                 "limits": authorization.policy.limits.model_dump(mode="json"),
                 "sources": source_descriptors,
                 "trusted_bundle_manifest_sha256": (
                     trusted_bundle.manifest_sha256 if trusted_bundle else None
+                ),
+                "trusted_executable_paths": list(
+                    authorization.policy.trusted_executable_paths
                 ),
             }
             _write_private_file(input_root / "plan.json", _canonical(plan))
@@ -713,9 +794,42 @@ def load_local_execution_evidence(
         or value.get("authorization_id") != authorization_id
         or value.get("trusted_bundle_manifest_sha256")
         != authorization.policy.trusted_bundle_manifest_sha256
+        or value.get("status") not in _EVIDENCE_STATUSES
         or raw != _canonical(value)
     ):
         _raise("evidence_integrity")
+    commands = value.get("commands")
+    if value["status"] in {"verified", "validation_failed"}:
+        if not isinstance(commands, list) or len(commands) != len(
+            authorization.policy.commands
+        ):
+            _raise("evidence_integrity")
+        for item, argv in zip(commands, authorization.policy.commands, strict=True):
+            if not isinstance(item, dict) or item.get("argv") != list(argv):
+                _raise("evidence_integrity")
+            if value["status"] == "verified" and (
+                item.get("status") != "completed"
+                or type(item.get("exit_code")) is not int
+                or item.get("exit_code") != 0
+            ):
+                _raise("evidence_integrity")
+            if value["status"] == "validation_failed" and (
+                item.get("status") not in {"completed", "validation_failed"}
+                or type(item.get("exit_code")) is not int
+                or (
+                    item["status"] == "completed" and item["exit_code"] != 0
+                )
+                or (
+                    item["status"] == "validation_failed"
+                    and item["exit_code"]
+                    not in authorization.policy.validation_failure_exit_codes
+                )
+            ):
+                _raise("evidence_integrity")
+        if value["status"] == "validation_failed" and not any(
+            item.get("status") == "validation_failed" for item in commands
+        ):
+            _raise("evidence_integrity")
     return value
 
 
@@ -1055,6 +1169,7 @@ def _parse_sandbox_result(
         or value.get("status")
         not in {
             "verified",
+            "validation_failed",
             "command_failed",
             "timeout",
             "output_limit",
@@ -1083,6 +1198,7 @@ def _parse_sandbox_result(
             _raise("sandbox_result_commands")
         if item.get("status") not in {
             "completed",
+            "validation_failed",
             "timeout",
             "output_limit",
             "command_failed",
@@ -1092,6 +1208,19 @@ def _parse_sandbox_result(
             _raise("sandbox_result_commands")
         if item.get("status") == "completed" and (
             type(item.get("exit_code")) is not int or item["exit_code"] != 0
+        ):
+            _raise("sandbox_result_commands")
+        if item.get("status") == "validation_failed" and (
+            type(item.get("exit_code")) is not int
+            or item["exit_code"]
+            not in authorization.policy.validation_failure_exit_codes
+        ):
+            _raise("sandbox_result_commands")
+        if item.get("status") == "command_failed" and (
+            type(item.get("exit_code")) is not int
+            or item["exit_code"] == 0
+            or item["exit_code"]
+            in authorization.policy.validation_failure_exit_codes
         ):
             _raise("sandbox_result_commands")
         for key in ("stdout_base64", "stderr_base64"):
@@ -1105,6 +1234,14 @@ def _parse_sandbox_result(
             del item[key]
     if value["status"] == "verified" and any(
         item["status"] != "completed" for item in command_results
+    ):
+        _raise("sandbox_result_commands")
+    if value["status"] == "validation_failed" and (
+        not any(item["status"] == "validation_failed" for item in command_results)
+        or any(
+            item["status"] not in {"completed", "validation_failed"}
+            for item in command_results
+        )
     ):
         _raise("sandbox_result_commands")
     value.update(
@@ -1485,10 +1622,14 @@ def _require_tmpfs(path: Path) -> None:
         _raise("tmpfs_unavailable")
 
 
-def _write_input_file(root: Path, relative: str, content: bytes) -> None:
+def _write_input_file(
+    root: Path, relative: str, content: bytes, *, executable: bool = False
+) -> None:
     destination = root.joinpath(*relative.split("/"))
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _write_private_file(destination, content)
+    if executable:
+        os.chmod(destination, 0o500)
 
 
 def _write_private_file(path: Path, contents: bytes) -> None:

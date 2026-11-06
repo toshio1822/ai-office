@@ -32,7 +32,7 @@
 | C05 | Artifact・Manifest・Evidence・出所を保存 | **実装済み・実Job実証済み** | Artifact lineageとlocal-effect証跡をJob #02で検証。 |
 | C06 | ファイル変更を不変Artifactとして生成 | **実装済み・実Job実証済み** | Unified diff→`file-change-set.v1`変換。許可ファイルだけを扱う。 |
 | C07 | 隔離されたローカル変更・固定コマンド検証 | **実装済み・対象Oracle実証済み** | Bubblewrap、承認済みargv、固定 read/write、リソース上限、local-effect Evidence。対象Oracleのexit 0は確認済み。 |
-| C08 | Sandbox内でpytestとRuffを併用 | **現構成では不可** | 現trusted bundleにpytest依存なし。Ruff native executableはbundleのmode/コマンド制約と不一致。一般的な静的解析をJob内で完遂したとはいえない。 |
+| C08 | Sandbox内でpytestとRuffを併用 | **実装済み（offline CLI E2E）** | 固定`python-tests-and-ruff` Oracle profileが、operator-pinned trusted bundleのABI/moduleを事前確認してからpytest/Ruffを既存Bubblewrap local executionで実行する。終了コード1だけを既知の検証不合格とし、その他の実行不能・不明は停止する。 |
 | C09 | 検証済み候補をDraft PRへ配信 | **実装済み・実GitHub実証済み** | `workflows draft-pr`。PR #826のcommit/push/Draft PR、後のmain mergeとCI成功。Github書込みは別承認。 |
 | C10 | 固定対象のGitHub Issue・ソース証拠取得 | **実装済み** | `collect-engineering-evidence`等。取得対象repo/commit/pathは人間が明示。任意の対象探索ではない。 |
 | C11 | ツール名の定義・API用tool schema変換 | **実装済み** | `ToolCatalog`は定義解決とProvider payloadの生成。**モデルが要求したFileRead等を実行するランタイムではない。** |
@@ -91,7 +91,7 @@
 
 ### 第2段階（Issue C）— 必須の後続機能
 
-- **Job内pytest/Ruff:** 現行sandboxではpytest依存とRuff native実行が課題。既存local executionを再利用し、承認済みのテスト/静的解析をJob内で実行する。
+- **Job内pytest/Ruff:** `python-tests-and-ruff` Oracle profile、operator-pinned trusted bundle、既存local executionを再利用して実行する。実モデルまたは製品配信の実証とは区別する。
 - **既知の不合格からの有限自律修正:** pytest/Ruffの検証不合格をEvidenceとしてAIへ渡し、同じ承認範囲と予算で新Artifact→再検証→独立レビューを行う。実行不能・結果不明・予算超過は停止する。
 
 ### 別途実需が確認されたら検討

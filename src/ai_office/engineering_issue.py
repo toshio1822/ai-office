@@ -568,6 +568,13 @@ def prepare_bounded_job_inputs(
                     "read_paths": sorted(selected_read),
                     "write_paths": sorted(write_paths),
                     "commands": template["commands"],
+                    "validation_modules": template.get("validation_modules", []),
+                    "validation_failure_exit_codes": template.get(
+                        "validation_failure_exit_codes", []
+                    ),
+                    "trusted_executable_paths": template.get(
+                        "trusted_executable_paths", []
+                    ),
                     "expires_at_ns": expiry + _LOCAL_POLICY_LIFETIME_NS,
                     "limits": template["limits"],
                     "trusted_bundle_path": template.get("trusted_bundle_path"),
@@ -1234,15 +1241,69 @@ def _load_oracle_profile(profile_id: str) -> tuple[dict[str, object], str]:
     ):
         _fail("oracle_catalog_invalid")
     profile = profiles.get(profile_id)
+    required_profile_keys = {"description", "commands", "limits"}
+    optional_profile_keys = {
+        "trusted_executable_paths",
+        "trusted_bundle_path_env",
+        "validation_failure_exit_codes",
+        "validation_modules",
+    }
     if (
         type(profile) is not dict
-        or set(profile) != {"description", "commands", "limits"}
+        or not required_profile_keys <= set(profile)
+        or set(profile) - required_profile_keys - optional_profile_keys
         or not _nonblank(profile.get("description"), 512)
     ):
         _fail("oracle_profile_invalid")
-    template_bytes = _canonical_json(
-        {"commands": profile["commands"], "limits": profile["limits"]}
-    ).encode("utf-8")
+    template_value = {
+        "commands": profile["commands"],
+        "limits": profile["limits"],
+    }
+    if "validation_failure_exit_codes" in profile:
+        template_value["validation_failure_exit_codes"] = profile[
+            "validation_failure_exit_codes"
+        ]
+    if "validation_modules" in profile:
+        template_value["validation_modules"] = profile["validation_modules"]
+    if "trusted_executable_paths" in profile:
+        template_value["trusted_executable_paths"] = profile[
+            "trusted_executable_paths"
+        ]
+    bundle_path_env = profile.get("trusted_bundle_path_env")
+    if bundle_path_env is not None:
+        if (
+            type(bundle_path_env) is not str
+            or re.fullmatch(r"[A-Z_][A-Z0-9_]{0,127}", bundle_path_env) is None
+        ):
+            _fail("oracle_profile_invalid")
+        bundle_path_value = os.environ.get(bundle_path_env)
+        if type(bundle_path_value) is not str or not bundle_path_value:
+            _fail("oracle_bundle_unavailable")
+        bundle_path = Path(bundle_path_value)
+        try:
+            bundle_root = bundle_path.resolve(strict=True)
+            manifest_path = bundle_root / "manifest.json"
+            manifest_info = manifest_path.lstat()
+        except OSError:
+            _fail("oracle_bundle_unavailable")
+        if (
+            not bundle_path.is_absolute()
+            or os.path.abspath(bundle_path) != bundle_path_value
+            or bundle_path != bundle_root
+            or not bundle_root.is_dir()
+            or stat.S_ISLNK(manifest_info.st_mode)
+            or not stat.S_ISREG(manifest_info.st_mode)
+            or manifest_info.st_size > 1_048_576
+        ):
+            _fail("oracle_bundle_unavailable")
+        manifest_bytes = _read_limited(
+            manifest_path, 1_048_576, "oracle_bundle_manifest"
+        )
+        template_value["trusted_bundle_path"] = str(bundle_root)
+        template_value["trusted_bundle_manifest_sha256"] = hashlib.sha256(
+            manifest_bytes
+        ).hexdigest()
+    template_bytes = _canonical_json(template_value).encode("utf-8")
     template = _validate_oracle_policy(template_bytes)
     return template, hashlib.sha256(template_bytes).hexdigest()
 
@@ -1258,6 +1319,9 @@ def _validate_oracle_policy(raw: bytes) -> dict[str, object]:
         "limits",
         "trusted_bundle_path",
         "trusted_bundle_manifest_sha256",
+        "trusted_executable_paths",
+        "validation_failure_exit_codes",
+        "validation_modules",
     }
     if set(value) - allowed_keys or not {"commands", "limits"} <= set(value):
         _fail("oracle_profile_invalid")
@@ -1277,6 +1341,26 @@ def _validate_oracle_policy(raw: bytes) -> dict[str, object]:
         LocalExecutionLimits.model_validate(value["limits"])
     except Exception:
         _fail("oracle_profile_invalid")
+    failure_codes = value.get("validation_failure_exit_codes", [])
+    if (
+        type(failure_codes) is not list
+        or len(failure_codes) > 16
+        or any(type(code) is not int or not 1 <= code <= 255 for code in failure_codes)
+        or len(set(failure_codes)) != len(failure_codes)
+    ):
+        _fail("oracle_profile_invalid")
+    validation_modules = value.get("validation_modules", [])
+    if (
+        type(validation_modules) is not list
+        or len(validation_modules) > 16
+        or any(
+            type(name) is not str
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}", name)
+            for name in validation_modules
+        )
+        or len(set(validation_modules)) != len(validation_modules)
+    ):
+        _fail("oracle_profile_invalid")
     if "trusted_bundle_path" in value and type(value["trusted_bundle_path"]) is not str:
         _fail("oracle_profile_invalid")
     if "trusted_bundle_manifest_sha256" in value and (
@@ -1285,6 +1369,25 @@ def _validate_oracle_policy(raw: bytes) -> dict[str, object]:
     ):
         _fail("oracle_profile_invalid")
     if ("trusted_bundle_path" in value) != ("trusted_bundle_manifest_sha256" in value):
+        _fail("oracle_profile_invalid")
+    if validation_modules and "trusted_bundle_path" not in value:
+        _fail("oracle_profile_invalid")
+    executable_paths = value.get("trusted_executable_paths", [])
+    if (
+        type(executable_paths) is not list
+        or len(executable_paths) > 8
+        or any(
+            type(path) is not str
+            or path.startswith("/")
+            or "\\" in path
+            or not path.startswith(("oracle/", "site-packages/"))
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            for path in executable_paths
+        )
+        or len(set(executable_paths)) != len(executable_paths)
+    ):
+        _fail("oracle_profile_invalid")
+    if executable_paths and "trusted_bundle_path" not in value:
         _fail("oracle_profile_invalid")
     return value
 
