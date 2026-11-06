@@ -14,6 +14,9 @@ steps:
       `authorization.read_patterns`, `authorization.provider_send_patterns`,
       `authorization.write_patterns`, and its finite budgets are fixed human
       permissions; never broaden them.
+      The optional `bounded_job_plan` is a fixed operator plan for a possible
+      later handoff. Do not alter it or treat it as approval to run the Job;
+      the existing Job approvals remain separate.
       The registered Oracle profile and digest were selected by the operator;
       never choose or change a profile, or claim syntax parsing proves behavior.
 

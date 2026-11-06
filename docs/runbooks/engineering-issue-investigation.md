@@ -1,4 +1,4 @@
-# Bounded Engineering Issue Investigation → Draft PR (Issues #828–#829)
+# Bounded Engineering Issue Investigation → Draft PR (Issues #828–#834)
 
 The Issue #828 workflow prepares a bounded investigation Run and then constructs
 the existing `bounded-change-review` assignment and a matching local-effect
@@ -206,3 +206,61 @@ The end-to-end proof uses fake Provider transport, temporary local Git data,
 and fake GitHub/`gh`; these tests do not exercise a real Provider API, model
 Job, or product GitHub delivery. The development PR for #829 is also separate
 from, and does not authorize, such a live product run.
+
+## Continue a finite investigation and hand off in one command (Issue #834)
+
+For the integrated path, `engineering-issue-run` pins the research scopes,
+budgets, models, destination, existing bounded Job plan, and fixed Git base
+before the first Provider request. The command continues successful
+`needs_more_evidence` results as ordinary Workflow Runs, up to the approved
+research-attempt limit. It never silently widens a scope or changes a budget.
+Each Run still displays its exact preview and requires that Run's normal
+Business and Execution confirmations. A denied confirmation stops there; run
+the same command with the same options and Run store to continue from durable
+Run evidence without replaying completed Provider requests.
+
+The bounded Job starts only when the latest successful research result is
+`ready`. It receives the source Research Run, cited evidence, fixed scope and
+budgets, cumulative research usage, and the pre-pinned existing Job plan. Its
+separate Business, Execution, and local-effect confirmations still apply.
+`blocked`, invalid, ambiguous, failed, or exhausted research stops without
+starting the Job. An already-populated nested Job store is inspect-only on a
+rerun; inspect its durable evidence instead of starting another Job.
+
+```sh
+base="$(git -C /path/to/clean/checkout rev-parse HEAD)"
+ai-office workflows engineering-issue-run \
+  --issue-url https://github.com/OWNER/REPO/issues/NUMBER \
+  --repository OWNER/REPO \
+  --repository-path /path/to/clean/checkout \
+  --base-revision "$base" \
+  --search-pattern 'src/**/*.py' \
+  --search-pattern 'tests/**/*.py' \
+  --read-pattern 'src/**/*.py' \
+  --read-pattern 'tests/**/*.py' \
+  --send-pattern 'src/**/*.py' \
+  --send-pattern 'tests/**/*.py' \
+  --write-pattern 'src/**/*.py' \
+  --initial-files 2 \
+  --max-files 12 \
+  --max-source-bytes 300000 \
+  --max-provider-input-bytes 900000 \
+  --max-provider-total-bytes 3600000 \
+  --max-provider-attempts 3 \
+  --oracle-profile python-syntax \
+  --send-issue-body \
+  --research-model MODEL \
+  --job-step-model create-candidate=MODEL \
+  --job-step-model review-scope=MODEL \
+  --job-step-model review-verification=MODEL \
+  --job-step-model revise-candidate=MODEL \
+  --execution-target APPROVED_DESTINATION \
+  --execution-destinations /private/path/to/destinations.yaml \
+  --run-store /private/path/to/engineering-issue-runs
+```
+
+Research Runs and the existing Job use the supplied store; the Job store is
+reported in the initial plan as `<run-store>/bounded-job-runs`. A ready Job
+does not trigger GitHub writes: Draft PR delivery and exact-HEAD CI inspection
+remain separate commands and approvals. This is an offline-tested orchestration
+path, not evidence of real Provider execution or product GitHub delivery.
