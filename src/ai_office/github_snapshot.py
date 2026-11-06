@@ -183,12 +183,34 @@ def collect_github_change_snapshot(
         pull_after, "base"
     ) != base_sha:
         raise GitHubSnapshotError("Pull Request revision changed during collection")
+    before_repositories = (
+        _nested_repository_name(pull_before, "base"),
+        _nested_repository_name(pull_before, "head"),
+    )
+    after_repositories = (
+        _nested_repository_name(pull_after, "base"),
+        _nested_repository_name(pull_after, "head"),
+    )
+    if before_repositories != after_repositories or (
+        type(pull_before.get("draft")) is bool
+        and pull_after.get("draft") != pull_before.get("draft")
+    ):
+        raise GitHubSnapshotError("Pull Request identity changed during collection")
 
     files, described_file_count = _normalize_files(
         files_value, pull_before, unavailable
     )
     checks = _normalize_checks(checks_value, unavailable)
     linked = _normalize_relationship(timeline_value, pull_number, unavailable)
+    base_repository, head_repository = before_repositories
+    if base_repository is None:
+        unavailable.append("pull_request.base_repository: unavailable")
+    if head_repository is None:
+        unavailable.append("pull_request.head_repository: unavailable")
+    draft = pull_before.get("draft")
+    if type(draft) is not bool:
+        draft = None
+        unavailable.append("pull_request.draft: unavailable")
     issue_body, issue_body_truncated = _bounded_redacted_text(issue.get("body"))
     pull_body, pull_body_truncated = _bounded_redacted_text(
         pull_before.get("body")
@@ -215,13 +237,16 @@ def collect_github_change_snapshot(
         },
         "pull_request": {
             "base_ref": _nested_text(pull_before, "base", "ref"),
+            "base_repository": base_repository,
             "base_sha": base_sha,
             "body": pull_body,
             "body_truncated": pull_body_truncated,
             "changed_file_count_described": described_file_count,
             "changed_files": files,
+            "draft": draft,
             "diff_content_included": False,
             "head_ref": _nested_text(pull_before, "head", "ref"),
+            "head_repository": head_repository,
             "head_sha": head_sha,
             "html_url": _required_text(pull_before, "html_url", "Pull Request"),
             "issue_cross_reference_observed": linked if linked else None,
@@ -350,6 +375,19 @@ def _nested_sha(value: dict[str, object], parent: str) -> str:
     return _validate_sha(
         _nested_text(value, parent, "sha"), f"Pull Request {parent} SHA"
     )
+
+
+def _nested_repository_name(value: dict[str, object], parent: str) -> str | None:
+    nested = value.get(parent)
+    if type(nested) is not dict:
+        return None
+    repository = nested.get("repo")
+    if type(repository) is not dict:
+        return None
+    name = repository.get("full_name")
+    if type(name) is not str or not name.strip():
+        return None
+    return name
 
 
 def _normalize_files(

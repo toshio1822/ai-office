@@ -1,6 +1,6 @@
-# Bounded Engineering Issue Investigation (Issue #828)
+# Bounded Engineering Issue Investigation → Draft PR (Issues #828–#829)
 
-This Issue A workflow prepares a bounded investigation Run and then constructs
+The Issue #828 workflow prepares a bounded investigation Run and then constructs
 the existing `bounded-change-review` assignment and a matching local-effect
 policy from its successful result. It reuses ordinary Workflow Runs, immutable
 Run Manifests and execution history, GitHub's existing GET-only transport,
@@ -138,7 +138,71 @@ only a proposal. Existing `bounded-job-run` Business, Execution, and
 local-effect approval remains necessary. Use the exact fixed base checkout; do
 not write candidate changes into it during preparation.
 
-This is the input-preparation boundary delivered by #828. The unified Issue →
-Job → independently reviewed candidate → separately approved Draft PR → exact
-HEAD CI operator flow is Issue #829. No GitHub PR write, merge, provider call,
-or model Job is performed by either preparation command.
+## Start the existing bounded Job by Issue URL
+
+Issue #829 connects that prepared investigation to the existing bounded Job.
+After the latest investigation Run for the Issue has completed successfully
+with a `ready` result, the operator can start `bounded-change-review` without
+copying its Run ID, assignment JSON, policy JSON, source hashes, or Job ID.
+The command resolves the unique latest research round from the selected
+research Run store, revalidates its Manifest/history/source bytes, and uses a
+GET-only GitHub repository read to pin its numeric identity, full name, and
+default branch into the existing Job assignment. A missing, ambiguous,
+non-terminal, non-ready, stale-base, or mismatched-repository result stops
+before Job creation.
+
+Use a fresh, private Job Run store for this Issue and the already configured
+execution-destination registry. This command retains the existing separate
+Business, Execution, and local-effect confirmation prompts; the selected
+Workflow, Oracle policy, and finite reviewer/revision plan remain authoritative.
+The `bounded-change-review` Job continues to use the independently configured
+reviewers and bounded Oracle. Job-internal pytest/Ruff and test-failure-driven
+autofix are not part of this first-stage path.
+
+```sh
+ai-office workflows bounded-job-run \
+  --issue-url https://github.com/OWNER/REPO/issues/NUMBER \
+  --research-run-store /private/path/to/research-runs \
+  --run-store /private/path/to/issue-job-runs \
+  --workflow bounded-change-review \
+  --execution-target APPROVED_DESTINATION \
+  --execution-destinations /private/path/to/destinations.yaml
+```
+
+The launch preview reports the Issue URL, selected research Run, pinned
+repository identity/default branch, assignment digest, Workflow and finite
+Step plan before the existing approvals. A failed/stopped Job is visible
+without creating a PR. A successful `candidate` or `reviewed` result is not
+GitHub authorization.
+
+## Separately approve Draft PR and inspect exact-HEAD CI
+
+After candidate review, the existing Draft PR command resolves the sole Job
+for that Issue by URL. It still performs the existing explicit confirmation
+before creating a local commit, pushing a new branch, and opening a Draft PR.
+`--yes` is only an operator-intent flag; use the interactive confirmation for
+normal operation. It never marks the PR ready, merges, or closes the Issue.
+
+```sh
+ai-office workflows draft-pr \
+  --issue-url https://github.com/OWNER/REPO/issues/NUMBER \
+  --run-store /private/path/to/issue-job-runs
+
+ai-office workflows engineering-issue-status \
+  --issue-url https://github.com/OWNER/REPO/issues/NUMBER \
+  --run-store /private/path/to/issue-job-runs
+```
+
+The status command aggregates the existing Job inspection and delivery records,
+then performs only read-only GitHub GETs. It accepts a PR only when the stored
+attempt/result, Issue marker, Artifact/review/Evidence, changed paths, target
+repository/base, open Draft state, and PR HEAD all remain bound to the same
+candidate. CI is fetched for that exact HEAD SHA; failure, pending, missing, or
+inaccessible checks are reported distinctly, never as success. Before a Draft
+PR exists the command reports that separate GitHub approval is still pending.
+An ambiguous delivery result is inspect-only and never automatically retried.
+
+The end-to-end proof uses fake Provider transport, temporary local Git data,
+and fake GitHub/`gh`; these tests do not exercise a real Provider API, model
+Job, or product GitHub delivery. The development PR for #829 is also separate
+from, and does not authorize, such a live product run.

@@ -1471,9 +1471,19 @@ def bounded_document_job_workflow(
 
 @workflows_app.command("bounded-job-run")
 def run_bounded_document_job_workflow(
-    job_id: str,
-    initial_run_id: str = typer.Option(..., "--run-id"),
-    assignment_file: Path = typer.Option(..., "--assignment-file"),
+    job_id: str | None = typer.Argument(None),
+    initial_run_id: str | None = typer.Option(None, "--run-id"),
+    assignment_file: Path | None = typer.Option(None, "--assignment-file"),
+    issue_url: str | None = typer.Option(
+        None,
+        "--issue-url",
+        help=(
+            "Resolve the latest ready Issue research Run without copying IDs or JSON."
+        ),
+    ),
+    research_run_store: Path = typer.Option(
+        Path("runs/research"), "--research-run-store"
+    ),
     style_profile_id: str | None = typer.Option(
         None,
         "--style-profile",
@@ -1525,8 +1535,30 @@ def run_bounded_document_job_workflow(
         build_workflow_run_manifest,
         persist_workflow_run_manifest,
     )
+    from ai_office.engineering_issue import (
+        EngineeringIssueError,
+        prepare_bounded_job_inputs_for_issue,
+    )
 
     _reject_legacy_execution_model(legacy_execution_model)
+    issue_mode = issue_url is not None
+    if issue_mode == (assignment_file is not None):
+        _workflow_cli_error(
+            "provide exactly one of --issue-url or --assignment-file"
+        )
+    if issue_mode:
+        job_id = job_id or f"issue-job-{uuid.uuid4().hex[:24]}"
+        initial_run_id = initial_run_id or f"issue-run-{uuid.uuid4().hex[:24]}"
+        if run_store == Path("runs"):
+            run_store = Path("runs/engineering-jobs")
+    elif job_id is None or initial_run_id is None:
+        _workflow_cli_error(
+            "a Job ID and --run-id are required with --assignment-file"
+        )
+    assert job_id is not None
+    assert initial_run_id is not None
+    prepared_policy_text: str | None = None
+    prepared_issue_summary: dict[str, object] | None = None
     try:
         if os.geteuid() == 0 or os.geteuid() != os.getuid() or not sys.stdin.isatty():
             raise WorkflowJobAuthorizationError("operator_context")
@@ -1536,7 +1568,30 @@ def run_bounded_document_job_workflow(
             raise WorkflowJobAuthorizationError("pilot_store_not_empty")
         if run_store.parent.is_symlink():
             raise WorkflowJobAuthorizationError("pilot_store_parent")
-        assignment = _resolve_run_input(None, assignment_file)
+        if issue_url is not None:
+            if workflow_id != "bounded-change-review":
+                raise WorkflowJobAuthorizationError("job_issue_workflow_mismatch")
+            if local_effect_policy_file is not None:
+                raise WorkflowJobAuthorizationError("job_issue_policy_source")
+            assignment, prepared_policy_text, prepared_issue_summary = (
+                prepare_bounded_job_inputs_for_issue(
+                    issue_url,
+                    research_run_store,
+                    github_token=os.environ.get("GITHUB_TOKEN"),
+                )
+            )
+            assignment_repository = json.loads(assignment)["repository"]
+            pinned_workspace = Path(assignment_repository["path"])
+            if (
+                local_effect_workspace is not None
+                and local_effect_workspace.resolve(strict=True)
+                != pinned_workspace.resolve(strict=True)
+            ):
+                raise WorkflowJobAuthorizationError("job_issue_workspace_mismatch")
+            local_effect_workspace = pinned_workspace
+        else:
+            assert assignment_file is not None
+            assignment = _resolve_run_input(None, assignment_file)
         selected_style_profile = None
         if style_profile_id is not None:
             try:
@@ -1594,7 +1649,21 @@ def run_bounded_document_job_workflow(
         )
         local_effect_policy = None
         if local_effect_required:
-            if not (
+            if issue_mode:
+                if (
+                    prepared_policy_text is None
+                    or local_effect_workspace is None
+                ):
+                    _workflow_cli_error(
+                        "Issue handoff requires a separately confirmed "
+                        "local-effect policy"
+                    )
+                policy_value = json.loads(
+                    prepared_policy_text, object_pairs_hook=_unique_json_object
+                )
+                if not isinstance(policy_value, dict):
+                    _workflow_cli_error("prepared local-effect policy is invalid")
+            elif not (
                 local_effect_policy_file is not None
                 and local_effect_workspace is not None
                 and approve_local_effect
@@ -1603,14 +1672,16 @@ def run_bounded_document_job_workflow(
                     "file-change Workflow requires --local-effect-policy, "
                     "--local-effect-workspace, and --approve-local-effect"
                 )
-            policy_bytes = local_effect_policy_file.read_bytes()
-            if len(policy_bytes) > 65_536:
-                _workflow_cli_error("local-effect policy is too large")
-            policy_value = json.loads(
-                policy_bytes, object_pairs_hook=_unique_json_object
-            )
-            if not isinstance(policy_value, dict):
-                _workflow_cli_error("local-effect policy must be an object")
+            else:
+                assert local_effect_policy_file is not None
+                policy_bytes = local_effect_policy_file.read_bytes()
+                if len(policy_bytes) > 65_536:
+                    _workflow_cli_error("local-effect policy is too large")
+                policy_value = json.loads(
+                    policy_bytes, object_pairs_hook=_unique_json_object
+                )
+                if not isinstance(policy_value, dict):
+                    _workflow_cli_error("local-effect policy must be an object")
             policy_value["expires_at_ns"] = time.time_ns() + 2 * 60 * 60 * 1_000_000_000
             local_effect_policy = LocalExecutionPolicy.model_validate_json(
                 json.dumps(policy_value, ensure_ascii=False, sort_keys=True).encode()
@@ -1702,6 +1773,10 @@ def run_bounded_document_job_workflow(
         ):
             raise WorkflowJobAuthorizationError("pilot_store_not_empty")
         assignment_digest = sha256(assignment.encode("utf-8")).hexdigest()
+    except EngineeringIssueError as error:
+        _workflow_cli_error(
+            f"bounded Job Issue preparation stopped safely ({error.classification})"
+        )
     except Exception:
         _workflow_cli_error(
             "bounded Job definition or execution destination is invalid"
@@ -1748,6 +1823,16 @@ def run_bounded_document_job_workflow(
             "operation": "bounded-job-launch-confirmation",
             "job_id": job_id,
             "run_id": initial_run_id,
+            **(
+                {
+                    "issue_url": issue_url,
+                    "research_run_id": prepared_issue_summary["research_run_id"],
+                    "repository_id": prepared_issue_summary["github_repository_id"],
+                    "base_ref": prepared_issue_summary["base_ref"],
+                }
+                if prepared_issue_summary is not None
+                else {}
+            ),
             "assignment_sha256": assignment_digest,
             "workflow_id": workflow_id,
             "workflow_snapshot_sha256": snapshot_digest(
@@ -1807,22 +1892,35 @@ def run_bounded_document_job_workflow(
             ),
         }
     )
-    confirmation = typer.prompt(
-        "After reviewing this launch summary, type the Job ID to "
-        "issue the Business grant for this exact bounded Job",
-        default="",
-        show_default=False,
-    )
-    if confirmation != job_id:
-        _workflow_cli_error("Business grant was not confirmed", code=1)
-    execution_confirmation = typer.prompt(
-        "Type the same Job ID to issue the separate Execution grant and start "
-        "this Job once",
-        default="",
-        show_default=False,
-    )
-    if execution_confirmation != job_id:
-        _workflow_cli_error("Execution grant was not confirmed", code=1)
+    if issue_mode:
+        if not typer.confirm(
+            "After reviewing the Issue, scope, models and limits, approve the "
+            "separate Business grant for this Job?",
+            default=False,
+        ):
+            _workflow_cli_error("Business grant was not confirmed", code=1)
+        if not typer.confirm(
+            "Separately approve the pinned Execution grant and start this Job once?",
+            default=False,
+        ):
+            _workflow_cli_error("Execution grant was not confirmed", code=1)
+    else:
+        confirmation = typer.prompt(
+            "After reviewing this launch summary, type the Job ID to "
+            "issue the Business grant for this exact bounded Job",
+            default="",
+            show_default=False,
+        )
+        if confirmation != job_id:
+            _workflow_cli_error("Business grant was not confirmed", code=1)
+        execution_confirmation = typer.prompt(
+            "Type the same Job ID to issue the separate Execution grant and start "
+            "this Job once",
+            default="",
+            show_default=False,
+        )
+        if execution_confirmation != job_id:
+            _workflow_cli_error("Execution grant was not confirmed", code=1)
     if local_effect_policy is not None:
         _emit_json(
             {
@@ -1838,13 +1936,21 @@ def run_bounded_document_job_workflow(
                 "approval_is_separate_from_provider_grants": True,
             }
         )
-        local_confirmation = typer.prompt(
-            "Type the Job ID to separately approve this finite local-effect policy",
-            default="",
-            show_default=False,
-        )
-        if local_confirmation != job_id:
-            _workflow_cli_error("local-effect grant was not confirmed", code=1)
+        if issue_mode:
+            if not typer.confirm(
+                "Separately approve this fixed-base sandbox verification and "
+                "its finite command/resource limits?",
+                default=False,
+            ):
+                _workflow_cli_error("local-effect grant was not confirmed", code=1)
+        else:
+            local_confirmation = typer.prompt(
+                "Type the Job ID to separately approve this finite local-effect policy",
+                default="",
+                show_default=False,
+            )
+            if local_confirmation != job_id:
+                _workflow_cli_error("local-effect grant was not confirmed", code=1)
 
     try:
         # Re-read the administrator policy only as a veto. The approved
@@ -2022,6 +2128,18 @@ class _DraftPRDeliveryError(ValueError):
     def __init__(self, classification: str) -> None:
         super().__init__(classification)
         self.classification = classification
+
+
+def _engineering_issue_url_parts(value: object) -> tuple[str, str, int]:
+    if type(value) is not str:
+        raise _DraftPRDeliveryError("issue_url_invalid")
+    match = re.fullmatch(
+        r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)/?",
+        value,
+    )
+    if match is None:
+        raise _DraftPRDeliveryError("issue_url_invalid")
+    return match.group(1), match.group(2), int(match.group(3))
 
 
 def _draft_pr_canonical(value: object) -> bytes:
@@ -2555,6 +2673,30 @@ def _draft_pr_load_candidate(
         paths = {item["path"] for item in changes}
         if len(paths) != len(changes):
             raise _DraftPRDeliveryError("change_set_duplicate_path")
+        request_value = None
+        if type(assignment.get("request")) is str:
+            try:
+                request_value = json.loads(assignment["request"])
+            except json.JSONDecodeError:
+                pass
+        issue_value = (
+            request_value.get("issue") if type(request_value) is dict else None
+        )
+        issue_url = None
+        issue_number = None
+        if issue_value is not None:
+            if type(issue_value) is not dict:
+                raise _DraftPRDeliveryError("source_issue_invalid")
+            issue_owner, issue_repository, issue_number = (
+                _engineering_issue_url_parts(issue_value.get("url"))
+            )
+            issue_url = issue_value["url"]
+            if (
+                issue_value.get("number") != issue_number
+                or f"{issue_owner}/{issue_repository}".casefold()
+                != repo_name.casefold()
+            ):
+                raise _DraftPRDeliveryError("source_issue_mismatch")
     except _DraftPRDeliveryError:
         raise
     except (OSError, TypeError, ValueError, KeyError, WorkflowJobAuthorizationError):
@@ -2628,6 +2770,8 @@ def _draft_pr_load_candidate(
         "evidence": evidence,
         "evidence_sha256": sha256(_draft_pr_canonical(evidence)).hexdigest(),
         "expected_diff": expected_diff,
+        "issue_number": issue_number,
+        "issue_url": issue_url,
         "job_status": status,
         "manifest": manifest,
         "paths": paths,
@@ -2637,6 +2781,72 @@ def _draft_pr_load_candidate(
         "scope": scope,
         "tree_modes": tree_modes,
     }
+
+
+def _find_bounded_job_for_issue(
+    store: WorkflowRunManifestStore, issue_url: str
+) -> tuple[str, dict[str, object], dict[str, object]]:
+    """Resolve one Issue's persisted bounded Job without a second task index."""
+    target = _engineering_issue_url_parts(issue_url)
+    target_key = (target[0].casefold(), target[1].casefold(), target[2])
+    from ai_office.engine.workflow_bounded_job import inspect_bounded_document_job
+
+    prefix = "workflow-bounded-job."
+    matches: list[tuple[str, dict[str, object], dict[str, object]]] = []
+    for path in sorted(store.root.glob(f"{prefix}*.json")):
+        tail = path.name[len(prefix) : -len(".json")]
+        if any(
+            marker in tail
+            for marker in (
+                ".action.",
+                ".reservation.",
+                ".dispatch.",
+                ".retry.",
+                ".local-effect.",
+                ".revoked",
+                ".start",
+                ".status",
+            )
+        ):
+            continue
+        if not tail:
+            raise _DraftPRDeliveryError("issue_job_scope_invalid")
+        try:
+            inspection = inspect_bounded_document_job(
+                store, tail, include_local_effect=True
+            )
+            assignment = json.loads(inspection["assignment"])
+        except Exception:
+            raise _DraftPRDeliveryError("issue_job_scope_invalid") from None
+        request_text = assignment.get("request")
+        if type(request_text) is not str:
+            raise _DraftPRDeliveryError("issue_job_scope_invalid")
+        try:
+            request = json.loads(request_text)
+        except json.JSONDecodeError:
+            continue
+        issue = request.get("issue") if type(request) is dict else None
+        if type(issue) is not dict or issue.get("url") is None:
+            continue
+        found = _engineering_issue_url_parts(issue.get("url"))
+        found_key = (found[0].casefold(), found[1].casefold(), found[2])
+        if found_key == target_key:
+            repository = assignment.get("repository")
+            issue_repository = issue.get("repository")
+            if (
+                type(repository) is not dict
+                or type(issue_repository) is not str
+                or issue.get("number") != found[2]
+                or issue_repository.casefold()
+                != f"{found[0]}/{found[1]}".casefold()
+            ):
+                raise _DraftPRDeliveryError("issue_job_scope_invalid")
+            matches.append((tail, inspection, assignment))
+    if not matches:
+        raise _DraftPRDeliveryError("issue_job_not_found")
+    if len(matches) != 1:
+        raise _DraftPRDeliveryError("issue_job_ambiguous")
+    return matches[0]
 
 
 def _draft_pr_build_tree(
@@ -2758,6 +2968,8 @@ def _draft_pr_pr_body(
     diff_sha256: str,
     paths: set[str],
     protected: bool | None,
+    issue_url: str | None,
+    issue_number: int | None,
 ) -> tuple[str, tuple[str, ...]]:
     markers = (
         f"AI-Office-Job: {job_id}",
@@ -2766,6 +2978,8 @@ def _draft_pr_pr_body(
         f"AI-Office-Verification-Evidence-SHA256: {evidence_sha256}",
         f"AI-Office-Diff-SHA256: {diff_sha256}",
     )
+    if issue_url is not None and issue_number is not None:
+        markers = (*markers, f"AI-Office-Issue: {issue_url}")
     protection = (
         "protected=true"
         if protected is True
@@ -2775,8 +2989,11 @@ def _draft_pr_pr_body(
     )
     body = "\n".join(
         [
-            "Draft delivery for Issue #805 using ai-office's standard Git and "
-            "GitHub CLI path.",
+            (
+                f"Draft delivery for Issue #{issue_number}: {issue_url}."
+                if issue_url is not None and issue_number is not None
+                else "Draft delivery of an AI Office verified Artifact."
+            ),
             "",
             f"- Job: `{job_id}` ({job_status})",
             (
@@ -2806,11 +3023,16 @@ def _draft_pr_pr_body(
 
 @workflows_app.command("draft-pr")
 def deliver_verified_artifact_as_draft_pr(
-    job_id: str,
-    repository: str = typer.Option(..., "--repository"),
-    base_ref_option: str = typer.Option(..., "--base-ref"),
-    branch_option: str = typer.Option(..., "--branch"),
-    git_repository_option: Path = typer.Option(..., "--git-repository"),
+    job_id: str | None = typer.Argument(None),
+    repository: str | None = typer.Option(None, "--repository"),
+    base_ref_option: str | None = typer.Option(None, "--base-ref"),
+    branch_option: str | None = typer.Option(None, "--branch"),
+    git_repository_option: Path | None = typer.Option(None, "--git-repository"),
+    issue_url: str | None = typer.Option(
+        None,
+        "--issue-url",
+        help="Resolve the verified Issue Job from its existing Run/Job evidence.",
+    ),
     remote_name: str = typer.Option("origin", "--remote"),
     run_store: Path = typer.Option(Path("runs"), "--run-store", "--run-root"),
     yes: bool = typer.Option(False, "--yes"),
@@ -2822,7 +3044,71 @@ def deliver_verified_artifact_as_draft_pr(
     boundary; the local GitHub credential remains available to this process.
     """
     try:
-        repo_name = _draft_pr_repository_name(repository)
+        issue_mode = issue_url is not None
+        if issue_mode == (job_id is not None):
+            raise _DraftPRDeliveryError(
+                "provide exactly one of JOB_ID or --issue-url"
+            )
+        if issue_mode:
+            if run_store == Path("runs"):
+                run_store = Path("runs/engineering-jobs")
+            store = _load_run_store_or_exit(run_store)
+            job_id, _inspection, assignment = _find_bounded_job_for_issue(
+                store, issue_url
+            )
+            repository_value = assignment.get("repository")
+            if type(repository_value) is not dict:
+                raise _DraftPRDeliveryError("issue_job_scope_invalid")
+            pinned_repository = repository_value.get("full_name")
+            pinned_base_ref = repository_value.get("base_ref")
+            pinned_git_path = repository_value.get("path")
+            if (
+                type(pinned_repository) is not str
+                or type(repository_value.get("id")) is not int
+                or isinstance(repository_value.get("id"), bool)
+                or type(pinned_base_ref) is not str
+                or type(pinned_git_path) is not str
+            ):
+                raise _DraftPRDeliveryError("issue_job_scope_invalid")
+            if (
+                repository is not None
+                and repository.casefold() != pinned_repository.casefold()
+            ):
+                raise _DraftPRDeliveryError("issue_repository_mismatch")
+            if base_ref_option is not None and base_ref_option != pinned_base_ref:
+                raise _DraftPRDeliveryError("issue_base_ref_mismatch")
+            pinned_root = Path(pinned_git_path).resolve(strict=True)
+            if (
+                git_repository_option is not None
+                and git_repository_option.expanduser().resolve(strict=True)
+                != pinned_root
+            ):
+                raise _DraftPRDeliveryError("issue_repository_path_mismatch")
+            request = json.loads(assignment["request"])
+            issue_number = request["issue"]["number"]
+            if type(issue_number) is not int or issue_number < 1:
+                raise _DraftPRDeliveryError("issue_job_scope_invalid")
+            repo_name = pinned_repository
+            base_ref_option = pinned_base_ref
+            git_repository_option = pinned_root
+            branch_option = branch_option or (
+                f"ai-office/issue-{issue_number}-{job_id[-12:]}"
+            )
+        else:
+            if (
+                job_id is None
+                or repository is None
+                or base_ref_option is None
+                or branch_option is None
+                or git_repository_option is None
+            ):
+                raise _DraftPRDeliveryError(
+                    "JOB_ID requires --repository, --base-ref, --branch "
+                    "and --git-repository"
+                )
+            store = _load_run_store_or_exit(run_store)
+            repo_name = repository
+        repo_name = _draft_pr_repository_name(repo_name)
         base_ref = _draft_pr_branch_name(base_ref_option, allow_heads_prefix=True)
         branch = _draft_pr_branch_name(branch_option)
         if (
@@ -2831,8 +3117,9 @@ def deliver_verified_artifact_as_draft_pr(
             or any(char.isspace() for char in remote_name)
         ):
             raise _DraftPRDeliveryError("invalid_remote_name")
+        assert job_id is not None
+        assert git_repository_option is not None
         git_repository = git_repository_option.expanduser().resolve(strict=True)
-        store = _load_run_store_or_exit(run_store)
         git_root = Path(
             _draft_pr_git(git_repository, "rev-parse", "--show-toplevel")
             .decode("utf-8", "strict")
@@ -2907,6 +3194,9 @@ def deliver_verified_artifact_as_draft_pr(
             "source_manifest_digest": source["manifest"].digest,
             "tree_sha": tree_sha,
         }
+        if source["issue_url"] is not None:
+            plan["issue_number"] = source["issue_number"]
+            plan["issue_url"] = source["issue_url"]
         record_prefix = f"{job_id}.draft-pr-delivery"
         attempt_path = store.root / f"{record_prefix}.attempt.json"
         result_path = store.root / f"{record_prefix}.result.json"
@@ -2995,6 +3285,10 @@ def deliver_verified_artifact_as_draft_pr(
             else "unknown (do not assume GitHub-side protection)"
         )
         typer.echo("Draft PR delivery plan")
+        if source["issue_url"] is not None:
+            typer.echo(
+                f"Issue: #{source['issue_number']} ({source['issue_url']})"
+            )
         typer.echo(f"Job: {job_id} ({source['job_status']})")
         typer.echo(f"Repository: {repo_name}")
         typer.echo(f"Base: {base_ref} @ {base_sha}")
@@ -3133,6 +3427,8 @@ def deliver_verified_artifact_as_draft_pr(
             diff_sha256=evidence["diff_sha256"],
             paths=paths,
             protected=protection,
+            issue_url=source["issue_url"],
+            issue_number=source["issue_number"],
         )
         attempt = {
             **plan,
@@ -3279,6 +3575,294 @@ def deliver_verified_artifact_as_draft_pr(
         )
     except Exception:
         _workflow_cli_error("Draft PR delivery stopped safely (unexpected_local_error)")
+
+
+def _github_snapshot_payload(markdown: str) -> dict[str, object]:
+    matches = re.findall(r"\x60\x60\x60json\n(.*?)\n\x60\x60\x60", markdown, re.DOTALL)
+    if len(matches) != 1:
+        raise _DraftPRDeliveryError("github_snapshot_invalid")
+    try:
+        value = json.loads(matches[0])
+    except (json.JSONDecodeError, TypeError):
+        raise _DraftPRDeliveryError("github_snapshot_invalid") from None
+    if type(value) is not dict:
+        raise _DraftPRDeliveryError("github_snapshot_invalid")
+    return value
+
+
+def _engineering_issue_ci_status(
+    checks: object, unavailable_fields: object
+) -> str:
+    if type(checks) is not list or not checks:
+        return "unknown"
+    unavailable = (
+        unavailable_fields if type(unavailable_fields) is list else []
+    )
+    if any(
+        type(item) is str and item.startswith("ci.check_runs")
+        for item in unavailable
+    ):
+        return "unknown"
+    failed = {
+        "action_required",
+        "cancelled",
+        "failure",
+        "startup_failure",
+        "stale",
+        "timed_out",
+    }
+    if any(
+        type(item) is dict
+        and item.get("status") == "completed"
+        and item.get("conclusion") in failed
+        for item in checks
+    ):
+        return "failure"
+    if any(
+        type(item) is dict
+        and item.get("status") in {"queued", "in_progress", "waiting", "requested"}
+        for item in checks
+    ):
+        return "pending"
+    if any(
+        type(item) is not dict
+        or item.get("status") != "completed"
+        or item.get("conclusion") != "success"
+        for item in checks
+    ):
+        return "unknown"
+    return "success"
+
+
+@workflows_app.command("engineering-issue-status")
+def inspect_engineering_issue_status(
+    issue_url: str = typer.Option(..., "--issue-url"),
+    run_store: Path = typer.Option(
+        Path("runs/engineering-jobs"), "--run-store", "--run-root"
+    ),
+    token_environment_variable: str = typer.Option(
+        "GITHUB_TOKEN", "--token-environment-variable"
+    ),
+) -> None:
+    """Aggregate persisted Issue Job, delivery, and exact-head CI evidence read-only."""
+    if not token_environment_variable.isidentifier():
+        _workflow_cli_error("GitHub token environment variable name is invalid")
+    try:
+        owner, repository_name, issue_number = _engineering_issue_url_parts(issue_url)
+        repository = f"{owner}/{repository_name}"
+        store = _load_run_store_or_exit(run_store)
+        job_id, inspection, assignment = _find_bounded_job_for_issue(
+            store, issue_url
+        )
+        repo_assignment = assignment["repository"]
+        repository = repo_assignment.get("full_name")
+        if (
+            type(repository) is not str
+            or repository.casefold() != f"{owner}/{repository_name}".casefold()
+        ):
+            raise _DraftPRDeliveryError("issue_repository_mismatch")
+        job_status = inspection.get("status")
+        candidate = {
+            "job_id": job_id,
+            "status": job_status,
+            "stop_reason": inspection.get("stop_reason"),
+            "research_run_id": assignment.get("investigation", {}).get(
+                "research_run_id"
+            ),
+            "final_artifact_run_id": inspection.get("final_artifact_run_id"),
+            "final_artifact_id": inspection.get("final_artifact_id"),
+            "review_artifact_run_id": inspection.get("review_artifact_run_id"),
+            "review_artifact_id": inspection.get("review_artifact_id"),
+            "local_verification": inspection.get("final_local_effect"),
+        }
+        record_prefix = f"{job_id}.draft-pr-delivery"
+        attempt = _draft_pr_read_record(
+            store.root / f"{record_prefix}.attempt.json"
+        )
+        result = _draft_pr_read_record(
+            store.root / f"{record_prefix}.result.json"
+        )
+        stop = _draft_pr_read_record(store.root / f"{record_prefix}.stop.json")
+        if result is None:
+            if attempt is not None:
+                delivery_status = (
+                    "stopped_no_retry"
+                    if stop is not None
+                    else "uncertain_no_retry"
+                )
+            elif job_status in {"candidate", "reviewed"}:
+                delivery_status = "awaiting_separate_github_approval"
+            else:
+                delivery_status = "not_started"
+            _emit_json(
+                {
+                    "candidate": candidate,
+                    "delivery": {
+                        "status": delivery_status,
+                        "stop_classification": (
+                            stop.get("classification") if stop is not None else None
+                        ),
+                    },
+                    "issue_url": issue_url,
+                    "operation": "engineering-issue-status",
+                    "pull_request": None,
+                }
+            )
+            return
+
+        if (
+            attempt is None
+            or result.get("schema_version") != "ai-office-draft-pr-result.v1"
+            or attempt.get("schema_version") != "ai-office-draft-pr-attempt.v1"
+            or result.get("attempt_sha256")
+            != sha256(_draft_pr_canonical(attempt)).hexdigest()
+            or attempt.get("job_id") != job_id
+            or attempt.get("issue_url") != issue_url
+            or attempt.get("issue_number") != issue_number
+            or attempt.get("repository") != repo_assignment.get("full_name")
+            or attempt.get("base_ref") != repo_assignment.get("base_ref")
+            or attempt.get("base_sha") != repo_assignment.get("base_revision")
+            or result.get("job_id") != job_id
+            or result.get("repository") != repository
+            or result.get("base_ref") != attempt.get("base_ref")
+            or result.get("base_sha") != attempt.get("base_sha")
+            or result.get("branch") != attempt.get("branch")
+            or result.get("commit_sha") != attempt.get("commit_sha")
+            or result.get("artifact_id") != attempt.get("artifact_id")
+            or result.get("artifact_sha256") != attempt.get("artifact_sha256")
+            or result.get("diff_sha256") != attempt.get("diff_sha256")
+            or result.get("status") != "completed"
+        ):
+            raise _DraftPRDeliveryError("delivery_record_mismatch")
+        expected_url_prefix = f"https://github.com/{repository}/pull/"
+        result_url = result.get("pr_url")
+        if (
+            type(result_url) is not str
+            or not result_url.startswith(expected_url_prefix)
+            or not result_url[len(expected_url_prefix) :].isdigit()
+        ):
+            raise _DraftPRDeliveryError("delivery_result_url_invalid")
+        pull_number = int(result_url[len(expected_url_prefix) :])
+        git_root = Path(repo_assignment["path"]).resolve(strict=True)
+        source = _draft_pr_load_candidate(
+            store,
+            job_id,
+            git_root,
+            repository,
+            result["base_ref"],
+        )
+        source_artifact = source["artifact"]
+        source_review_artifact = source["review_artifact"]
+        source_evidence = source["evidence"]
+        if (
+            attempt.get("artifact_run_id") != source_artifact.run_id
+            or attempt.get("artifact_id") != source_artifact.artifact_id
+            or attempt.get("artifact_sha256") != source_artifact.content_sha256
+            or attempt.get("review_artifact_run_id") != source_review_artifact.run_id
+            or attempt.get("review_artifact_id") != source_review_artifact.artifact_id
+            or attempt.get("review_artifact_sha256")
+            != source_review_artifact.content_sha256
+            or attempt.get("evidence_sha256") != source["evidence_sha256"]
+            or attempt.get("diff_sha256") != source_evidence.get("diff_sha256")
+            or attempt.get("source_manifest_digest") != source["manifest"].digest
+        ):
+            raise _DraftPRDeliveryError("delivery_source_binding_mismatch")
+        body_markers = attempt.get("body_markers")
+        expected_markers = [
+            f"AI-Office-Job: {job_id}",
+            f"AI-Office-Artifact: {source_artifact.artifact_id}",
+            f"AI-Office-Artifact-SHA256: {source_artifact.content_sha256}",
+            f"AI-Office-Verification-Evidence-SHA256: {source['evidence_sha256']}",
+            f"AI-Office-Diff-SHA256: {source_evidence['diff_sha256']}",
+            f"AI-Office-Issue: {issue_url}",
+        ]
+        if (
+            type(body_markers) is not list
+            or body_markers != expected_markers
+            or any(type(marker) is not str for marker in body_markers)
+        ):
+            raise _DraftPRDeliveryError("delivery_record_mismatch")
+        snapshot = collect_github_change_snapshot(
+            repository=repository,
+            issue_number=issue_number,
+            pull_number=pull_number,
+            expected_head_sha=result["commit_sha"],
+            observed_at=datetime.now(UTC).isoformat(timespec="seconds").replace(
+                "+00:00", "Z"
+            ),
+            token=os.environ.get(token_environment_variable),
+        )
+        payload = _github_snapshot_payload(snapshot.markdown)
+        pull = payload.get("pull_request")
+        validation = payload.get("validation")
+        if (
+            type(pull) is not dict
+            or type(validation) is not dict
+            or payload.get("repository") != repository
+            or pull.get("number") != pull_number
+            or pull.get("html_url") != result_url
+            or pull.get("head_sha") != result.get("commit_sha")
+            or pull.get("base_sha") != result.get("base_sha")
+            or pull.get("head_ref") != result.get("branch")
+            or pull.get("base_ref") != result.get("base_ref")
+            or pull.get("base_repository") != repository
+            or pull.get("head_repository") != repository
+            or pull.get("draft") is not True
+            or pull.get("state") != "open"
+            or validation.get("head_sha") != result.get("commit_sha")
+            or type(pull.get("body")) is not str
+            or not all(marker in pull["body"] for marker in body_markers)
+        ):
+            raise _DraftPRDeliveryError("pull_request_binding_mismatch")
+        changed_files = pull.get("changed_files")
+        if (
+            type(changed_files) is not list
+            or {item.get("filename") for item in changed_files if type(item) is dict}
+            != source["paths"]
+        ):
+            raise _DraftPRDeliveryError("pull_request_changed_paths_mismatch")
+        unavailable_fields = payload.get("unavailable_or_omitted_fields")
+        check_runs = validation.get("check_runs")
+        ci_status = _engineering_issue_ci_status(check_runs, unavailable_fields)
+        _emit_json(
+            {
+                "candidate": candidate,
+                "delivery": {
+                    "status": "completed",
+                    "reconciled_read_only": result.get("reconciled_read_only"),
+                },
+                "issue_url": issue_url,
+                "operation": "engineering-issue-status",
+                "pull_request": {
+                    "base_ref": pull["base_ref"],
+                    "base_sha": pull["base_sha"],
+                    "branch": pull["head_ref"],
+                    "changed_paths": sorted(
+                        item["filename"] for item in changed_files
+                    ),
+                    "draft": True,
+                    "head_sha": pull["head_sha"],
+                    "number": pull_number,
+                    "url": result_url,
+                },
+                "ci": {
+                    "check_runs": check_runs,
+                    "head_sha": pull["head_sha"],
+                    "status": ci_status,
+                    "unavailable_or_omitted_fields": unavailable_fields,
+                },
+            }
+        )
+    except _DraftPRDeliveryError as error:
+        _workflow_cli_error(
+            f"engineering Issue status stopped safely ({error.classification})"
+        )
+    except GitHubSnapshotError:
+        _workflow_cli_error("engineering Issue status stopped safely (github_read)")
+    except Exception:
+        _workflow_cli_error(
+            "engineering Issue status stopped safely (invalid_evidence)"
+        )
 
 
 @workflows_app.command("artifacts")

@@ -1356,7 +1356,24 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 "requested_effects": list(PUBLICATION_INTENT_EFFECTS),
                 "target_ref": "refs/heads/codex/issue-805-intent-handoff",
             },
-            "request": "Change answer() to return 2 without changing the test.",
+            "request": json.dumps(
+                {
+                    "issue": {
+                        "number": 829,
+                        "repository": "offline-owner/offline-repository",
+                        "title": "Change answer() to return 2.",
+                        "url": (
+                            "https://github.com/offline-owner/"
+                            "offline-repository/issues/829"
+                        ),
+                    },
+                    "instruction": (
+                        "Change answer() to return 2 without changing the test."
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             "source_context": source_context,
             "source_sha256": source_sha256,
         },
@@ -2096,9 +2113,8 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         "AI_OFFICE_TEST_DROP_PR_RESPONSE", "1" if needs_revision else "0"
     )
 
-    product_branch = (
-        f"ai-office/{scope.job_id}-{'reviewed' if needs_revision else 'candidate'}"
-    )
+    issue_url = "https://github.com/offline-owner/offline-repository/issues/829"
+    product_branch = f"ai-office/issue-829-{scope.job_id[-12:]}"
     worktree_before = _git(
         repository, "status", "--porcelain=v1", "--untracked-files=all"
     )
@@ -2106,17 +2122,10 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     command = [
         "workflows",
         "draft-pr",
-        scope.job_id,
+        "--issue-url",
+        issue_url,
         "--run-store",
         str(store.root),
-        "--git-repository",
-        str(repository),
-        "--repository",
-        "offline-owner/offline-repository",
-        "--base-ref",
-        "main",
-        "--branch",
-        product_branch,
         "--yes",
     ]
 
@@ -2225,6 +2234,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     assert pull_request["head"]["repo"]["full_name"] == (
         "offline-owner/offline-repository"
     )
+    assert f"AI-Office-Issue: {issue_url}" in pull_request["body"]
     assert "Closes #805" not in pull_request["body"]
     assert "Fixes #805" not in pull_request["body"]
     assert (tmp_path / "push.log").read_text(encoding="utf-8").splitlines() == ["push"]

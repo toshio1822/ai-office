@@ -2,7 +2,7 @@
 
 人間が定義した業務ワークフローを、明示的な状態遷移と検証のもとで AI が処理するための基盤です。
 
-**製品としてのAI Officeは、OpenClawやCodexなどの外部AIエージェントなしで単独利用できることを目指します。** 現時点ではIssueの調査・Run Input準備を含む一貫した操作は未完成です。
+**製品としてのAI Officeは、OpenClawやCodexなどの外部AIエージェントなしで単独利用できることを目指します。** Issue #828–#829で、Issue調査・Run Input準備から既存bounded Job、別確認付きDraft PR、実HEADのCI確認までをIssue URLでつなぐオフライン検証済み経路を追加しました。実Provider・実モデルJob・実GitHub配信による製品動作は別途未実証です。
 
 ドキュメントの役割:
 
@@ -12,7 +12,7 @@
 - [Current Architecture](docs/architecture.md) — 実装経緯と歴史的なPhase記録
 - [Runbooks](docs/runbooks/) — 現行の操作手順
 
-有限Job、Artifact、独立レビュー、隔離検証、Draft PR配信は既に存在します。Issue受付・対象探索・Run Input自動準備・統一的な操作は未実装または部分対応であり、区別して扱います。
+有限Job、Artifact、独立レビュー、隔離検証、Draft PR配信に加えて、小規模Python Issueから候補・Draft PR・HEAD CIを追う統合CLI経路があります。Job内pytest/Ruffやテスト失敗からの自律修正は後続Issue #830の範囲です。
 
 ## 開発
 
@@ -28,6 +28,8 @@ ai-office --help
 検証済み bounded Job Artifact を標準GitとGitHub CLIでDraft PRにする手順は、
 [Draft PR delivery runbook](docs/runbooks/draft-pr-delivery.md)を参照してください。
 この機能はローカルの`ai-office` CLIから使え、OpenClawを必要としません。
+Issue調査から bounded Job・Draft PR・PR HEAD CIまでの操作は
+[Engineering Issue runbook](docs/runbooks/engineering-issue-investigation.md)を参照してください。
 
 ## 社員定義
 

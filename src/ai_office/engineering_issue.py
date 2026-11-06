@@ -605,6 +605,158 @@ def prepare_bounded_job_inputs(
     )
 
 
+def prepare_bounded_job_inputs_for_issue(
+    issue_url: str,
+    research_run_store: Path,
+    *,
+    now_ns: int | None = None,
+    github_token: str | None = None,
+    github_transport: GitHubTransport = send_github_read_request,
+) -> tuple[str, str, dict[str, object]]:
+    """Resolve a ready research Run by Issue URL and prepare its existing Job.
+
+    Repository numeric identity and default branch are read from GitHub and
+    pinned into the Job assignment for the existing Draft PR verifier. This
+    remains a read-only preparation step; it creates no Run, Job, or grant.
+    """
+    match = _ISSUE_URL.fullmatch(issue_url) if type(issue_url) is str else None
+    if match is None:
+        _fail("issue_url_or_repository_invalid")
+    owner, repository_name, _issue_number = match.groups()
+    repository = f"{owner}/{repository_name}"
+    run_id = find_latest_engineering_issue_run_id(
+        research_run_store, issue_url
+    )
+    assignment_text, policy_text, summary = prepare_bounded_job_inputs(
+        research_run_store, run_id, now_ns=now_ns
+    )
+    assignment = _parse_json_object(assignment_text, _MAX_RUN_INPUT_BYTES)
+    repository_value = _object(assignment.get("repository"))
+    if repository_value.get("identity") != repository:
+        _fail("research_repository_mismatch")
+    metadata = _read_github_repository_metadata(
+        repository,
+        github_token=github_token,
+        transport=github_transport,
+    )
+    repository_value.update(
+        {
+            "base_ref": metadata["default_branch"],
+            "full_name": metadata["full_name"],
+            "id": metadata["id"],
+        }
+    )
+    assignment["repository"] = repository_value
+    assignment_text = _canonical_json(assignment)
+    summary = {
+        **summary,
+        "base_ref": metadata["default_branch"],
+        "github_repository_id": metadata["id"],
+        "issue_url": issue_url,
+        "operation": "prepare-engineering-job-input-for-issue",
+    }
+    return assignment_text, policy_text, summary
+
+
+def find_latest_engineering_issue_run_id(
+    run_store_root: Path, issue_url: str
+) -> str:
+    """Find the unique latest investigation round for one Issue URL.
+
+    ``prepare_bounded_job_inputs`` then validates its terminal evidence and
+    requires a ready plan before any Job input is returned.
+    """
+    match = _ISSUE_URL.fullmatch(issue_url) if type(issue_url) is str else None
+    if match is None:
+        _fail("issue_url_or_repository_invalid")
+    if not isinstance(run_store_root, Path):
+        _fail("research_run_unavailable")
+    try:
+        store = WorkflowRunManifestStore(run_store_root)
+        manifest_paths = sorted(store.root.glob("*.manifest.json"))
+    except Exception:
+        _fail("research_run_unavailable")
+    matching: list[tuple[int, str]] = []
+    for path in manifest_paths:
+        if path.is_symlink() or not path.name.endswith(".manifest.json"):
+            _fail("research_store_invalid")
+        run_id = path.name[: -len(".manifest.json")]
+        try:
+            manifest = load_workflow_run_manifest(store, run_id)
+        except Exception:
+            _fail("research_store_invalid")
+        if manifest.workflow_id != _WORKFLOW_ID:
+            continue
+        try:
+            run_input = _parse_json_object(manifest.run_input, _MAX_RUN_INPUT_BYTES)
+            _validate_research_input(run_input)
+        except Exception:
+            _fail("research_store_invalid")
+        issue = _object(run_input.get("issue"))
+        if issue.get("url") == issue_url:
+            matching.append((_as_int(run_input.get("round")), run_id))
+    if not matching:
+        _fail("research_run_not_found")
+    latest_round = max(item[0] for item in matching)
+    latest = [
+        run_id for round_number, run_id in matching if round_number == latest_round
+    ]
+    if len(latest) != 1:
+        _fail("research_run_ambiguous")
+    return latest[0]
+
+
+def _read_github_repository_metadata(
+    repository: str,
+    *,
+    github_token: str | None,
+    transport: GitHubTransport,
+) -> dict[str, object]:
+    if type(repository) is not str or not _REPOSITORY.fullmatch(repository):
+        _fail("github_repository_invalid")
+    try:
+        response = transport(
+            build_github_read_request(
+                f"/repos/{repository}", token=github_token
+            )
+        )
+    except Exception:
+        _fail("github_repository_read_failed")
+    if (
+        type(response) is not GitHubRawResponse
+        or response.status_code != 200
+        or type(response.body) is not bytes
+        or len(response.body) > 2_000_000
+    ):
+        _fail("github_repository_unavailable")
+    try:
+        value = _parse_json_object(
+            response.body.decode("utf-8", "strict"), 2_000_000
+        )
+    except Exception:
+        _fail("github_repository_invalid")
+    repository_id = value.get("id")
+    full_name = value.get("full_name")
+    default_branch = value.get("default_branch")
+    if (
+        type(repository_id) is not int
+        or repository_id < 1
+        or type(full_name) is not str
+        or full_name.casefold() != repository.casefold()
+        or type(default_branch) is not str
+        or not default_branch.strip()
+        or default_branch != default_branch.strip()
+        or len(default_branch) > 255
+        or any(ord(character) < 32 for character in default_branch)
+    ):
+        _fail("github_repository_identity_mismatch")
+    return {
+        "default_branch": default_branch,
+        "full_name": full_name,
+        "id": repository_id,
+    }
+
+
 def validate_private_output_directory(
     output_directory: Path, repository_path: Path
 ) -> Path:
