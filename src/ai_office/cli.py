@@ -2477,12 +2477,19 @@ def run_engineering_issue_workflow(
                     != prior_research[: prior_round - 1]
                 ):
                     _workflow_cli_error("prior engineering Issue Run lineage changed")
-                _prior_manifest, _prior_input, prior_output, prior_output_sha256 = (
+                _prior_manifest, prior_input, prior_output, prior_output_sha256 = (
                     _load_research_result(run_store, prior_run_id)
                 )
+                prior_plan = _parse_plan(prior_output)
+                verified_prior_plan = {
+                    **prior_plan,
+                    "evidence": engineering_issue._verify_evidence_quotes(
+                        prior_plan, prior_input["source_context"]
+                    ),
+                }
                 if (
                     prior_output_sha256 != prior_record["output_sha256"]
-                    or _parse_plan(prior_output) != prior_record["output"]
+                    or verified_prior_plan != prior_record["output"]
                 ):
                     _workflow_cli_error(
                         "prior engineering Issue result does not match its Run evidence"
