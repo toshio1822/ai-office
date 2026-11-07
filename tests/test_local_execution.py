@@ -91,7 +91,12 @@ from tests._offline_git_delivery import (
     revoke_test_delivery_grant,
     run_offline_delivery,
 )
-from tests.test_artifact import _commit_success, _route, _start_fixture
+from tests.test_artifact import (
+    _adjust_hunk_counts,
+    _commit_success,
+    _route,
+    _start_fixture,
+)
 
 _CHANGE_TYPE = "application/vnd.ai-office.file-change-set+json"
 _SAMPLE_ROOT = Path(__file__).parents[1]
@@ -1877,28 +1882,44 @@ def test_output_limit_is_durable_and_redacted(
 
 
 @pytest.mark.parametrize(
-    ("needs_revision", "artifact_failure"),
+    ("needs_revision", "artifact_failure", "candidate_hunk_count_delta"),
     [
-        pytest.param(True, None, id="reviewed-after-revision"),
-        pytest.param(False, None, id="candidate-no-revision"),
+        pytest.param(True, None, 0, id="reviewed-after-revision"),
+        pytest.param(False, None, 0, id="candidate-no-revision"),
+        pytest.param(
+            False, None, 1, id="candidate-repairs-header-overstating-body"
+        ),
+        pytest.param(
+            False, None, -1, id="candidate-repairs-body-exceeding-header"
+        ),
         pytest.param(
             False,
             "invalid-diff",
+            0,
             id="invalid-candidate-diff-stops-before-artifact",
         ),
         pytest.param(
             False,
+            "invalid-diff-hunk-count",
+            -1,
+            id="count-repair-keeps-invalid-source-context-rejected",
+        ),
+        pytest.param(
+            False,
             "invalid-diff-space-trailer",
+            0,
             id="space-prefixed-diff-trailer-stops-before-review-and-effect",
         ),
         pytest.param(
             False,
             "persistence-failure",
+            0,
             id="artifact-persistence-failure-remains-uncertain",
         ),
         pytest.param(
             False,
             "temporary-io-failure",
+            0,
             id="artifact-temporary-io-failure-remains-uncertain",
         ),
     ],
@@ -1908,6 +1929,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     require_local_sandbox: None,
     needs_revision: bool,
     artifact_failure: str | None,
+    candidate_hunk_count_delta: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ai_office.engine.artifact import read_run_artifact
@@ -2126,8 +2148,8 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         "Requirement: This supplemental check repeats the requirement label."
     )
 
-    def candidate_diff(replacement: bytes) -> str:
-        return "".join(
+    def candidate_diff(replacement: bytes, hunk_count_delta: int = 0) -> str:
+        result = "".join(
             difflib.unified_diff(
                 source.decode("utf-8").splitlines(keepends=True),
                 replacement.decode("utf-8").splitlines(keepends=True),
@@ -2135,6 +2157,11 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 tofile="b/calculator.py",
                 n=3,
             )
+        )
+        return (
+            _adjust_hunk_counts(result, hunk_count_delta)
+            if hunk_count_delta
+            else result
         )
 
     def fake_transport(request: object) -> OpenAIResponsesRawHttpResponse:
@@ -2146,13 +2173,16 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             reviewer_inputs.append(run_input)
         index = len(calls) - 1
         if index == 0:
-            if artifact_failure == "invalid-diff":
+            if artifact_failure in {"invalid-diff", "invalid-diff-hunk-count"}:
                 output = (
-                    "Explanation of the change:\n"
                     "--- a/calculator.py\n+++ b/calculator.py\n"
                     "@@ -1,2 +1,2 @@\n def answer():\n"
                     "-    return 404\n+    return 2\n"
                 )
+                if artifact_failure == "invalid-diff-hunk-count":
+                    output = _adjust_hunk_counts(output, -1)
+                else:
+                    output = "Explanation of the change:\n" + output
             elif artifact_failure == "invalid-diff-space-trailer":
                 output = (
                     candidate_diff(b"def answer():\n    return 2\n")
@@ -2162,7 +2192,8 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 output = candidate_diff(
                     b"def answer():\n    return 2  # unnecessary comment\n"
                     if needs_revision
-                    else b"def answer():\n    return 2\n"
+                    else b"def answer():\n    return 2\n",
+                    candidate_hunk_count_delta,
                 )
         elif needs_revision and index == 1:
             output = findings
@@ -2230,7 +2261,11 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         expected_reason = (
             "document_job_file_change_set_diff"
             if artifact_failure
-            in {"invalid-diff", "invalid-diff-space-trailer"}
+            in {
+                "invalid-diff",
+                "invalid-diff-hunk-count",
+                "invalid-diff-space-trailer",
+            }
             else "document_job_execution_uncertain"
         )
         assert outcome.status == "stopped"
