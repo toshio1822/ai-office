@@ -539,8 +539,8 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
             "evidence": [
                 {
                     "path": "calculator.py",
-                    "start_line": 2,
-                    "end_line": 2,
+                    "start_line": 99,
+                    "end_line": 99,
                     "quote": "    return 1 + 1",
                     "reason": (
                         "The implementation is known but its test contract is not."
@@ -570,8 +570,8 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
             "evidence": [
                 {
                     "path": "calculator.py",
-                    "start_line": 2,
-                    "end_line": 2,
+                    "start_line": 99,
+                    "end_line": 99,
                     "quote": "    return 1 + 1",
                     "reason": "This is the implementation targeted by the Issue.",
                 }
@@ -888,11 +888,20 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
 
     first_result = _load_research_result(research_store, research_run_ids[0])
     assert json.loads(first_result[2])["outcome"] == "needs_more_evidence"
+    assert json.loads(first_result[2])["evidence"][0]["start_line"] == 99
+
+    second_run_input = json.loads(research_manifests[1].run_input)
+    assert (
+        second_run_input["prior_research"][0]["output"]["evidence"][0]["start_line"]
+        == 2
+    )
 
     job_manifest = load_workflow_run_manifest(
         job_store, completed["run_id"]
     )
     job_run_input = json.loads(job_manifest.run_input)
+    assert job_run_input["investigation"]["evidence"][0]["start_line"] == 2
+    assert job_run_input["investigation"]["evidence"][0]["end_line"] == 2
     handoff = job_run_input["investigation"]["research_handoff"]
     assert handoff["research_rounds_used"] == 2
     assert job_run_input["investigation"]["research_run_id"] == research_run_id
@@ -907,6 +916,48 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     job_request = json.loads(job_run_input["request"])
     assert job_request["research_handoff"] == handoff
     assert job_request["research_handoff"]["bounded_job_plan"]["max_revisions"] == 1
+
+    invalid_research_output = json.dumps(
+        {
+            "outcome": "ready",
+            "cause_hypotheses": [
+                {
+                    "hypothesis": "The quoted source text is not present.",
+                    "confidence": "medium",
+                    "evidence": ["calculator.py"],
+                }
+            ],
+            "evidence": [
+                {
+                    "path": "calculator.py",
+                    "start_line": 99,
+                    "end_line": 100,
+                    "quote": "not present in the fixed source",
+                    "reason": "This intentionally exercises the safe stop.",
+                }
+            ],
+            "read_paths": ["calculator.py", "test_calculator.py"],
+            "additional_read_paths": [],
+            "write_paths": ["calculator.py"],
+            "test_paths": ["test_calculator.py"],
+            "acceptance_criteria": ["The exact source quote must be verified."],
+        },
+        sort_keys=True,
+    )
+    fake_outputs[:] = [invalid_research_output]
+    confirmations.clear()
+    before_stop_requests = len(provider_requests)
+    stop_store = tmp_path / "engineering-issue-stop-runs"
+    stop_args = list(issue_run_args)
+    stop_args[stop_args.index("--run-store") + 1] = str(stop_store)
+    stop_args[stop_args.index("--initial-files") + 1] = "2"
+    stopped = CliRunner().invoke(app, stop_args)
+    assert stopped.exit_code == 2, stopped.output
+    assert "evidence_quote_mismatch" in stopped.output
+    assert len(confirmations) == 2
+    assert len(provider_requests) == before_stop_requests + 1
+    assert metadata_reads and len(metadata_reads) == 1
+    assert not list((stop_store / "bounded-job-runs").glob("*.manifest.json"))
 
 
 def _change_set(
