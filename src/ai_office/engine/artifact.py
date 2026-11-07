@@ -520,28 +520,41 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
             sources[path] = source
 
         patch_bytes = patch.encode("utf-8")
-        # Preserve Evidence verbatim; terminate only the bytes passed to Git.
-        git_patch_bytes = (
-            patch_bytes if patch_bytes.endswith(b"\n") else patch_bytes + b"\n"
-        )
-        if not patch_bytes or len(git_patch_bytes) > 1_048_576:
+        if not patch_bytes:
             _raise_load("file_change_set_diff")
         patch_lines = patch.splitlines()
-        # This is only an envelope check: Git remains the sole parser and
-        # applicability check for hunk syntax and source context. Count only
-        # declared hunk records here so Git cannot silently ignore trailing
-        # lines after an otherwise valid hunk.
+        patch_lines_with_endings = patch.splitlines(keepends=True)
+        if len(patch_lines) != len(patch_lines_with_endings):
+            _raise_load("file_change_set_diff")
+        line_endings = tuple(
+            ended_line[len(line) :]
+            for line, ended_line in zip(
+                patch_lines, patch_lines_with_endings, strict=True
+            )
+        )
+        # Derive only hunk counts and reject unsupported surrounding text;
+        # Git remains the authority for applying the patch to fixed sources.
         if (
             len(patch_lines) < 3
             or not patch_lines[0].startswith("--- ")
             or not patch_lines[1].startswith("+++ ")
-            or not _has_complete_unified_diff_hunks(patch_lines)
+            or not _normalize_unified_diff_hunk_counts(patch_lines)
             or any(
                 not line.startswith(("--- ", "+++ ", "@@ ", " ", "+", "-"))
                 and line != r"\ No newline at end of file"
                 for line in patch_lines
             )
         ):
+            _raise_load("file_change_set_diff")
+        # Rebuild with only hunk counts changed, preserving all other model
+        # bytes. Evidence continues to store the original response unchanged.
+        git_patch_bytes = "".join(
+            line + ending
+            for line, ending in zip(patch_lines, line_endings, strict=True)
+        ).encode("utf-8")
+        if not git_patch_bytes.endswith(b"\n"):
+            git_patch_bytes += b"\n"
+        if len(git_patch_bytes) > 1_048_576:
             _raise_load("file_change_set_diff")
         with tempfile.TemporaryDirectory(prefix="ai-office-unified-diff-") as root:
             workspace = Path(root)
@@ -659,8 +672,8 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
         _raise_load("file_change_set_diff")
 
 
-def _has_complete_unified_diff_hunks(patch_lines: list[str]) -> bool:
-    """Reject lines outside declared hunks; Git validates and applies syntax."""
+def _normalize_unified_diff_hunk_counts(patch_lines: list[str]) -> bool:
+    """Derive hunk counts from body lines; Git validates and applies syntax."""
     marker = r"\ No newline at end of file"
     index = 2
     has_hunk = False
@@ -668,35 +681,46 @@ def _has_complete_unified_diff_hunks(patch_lines: list[str]) -> bool:
         line = patch_lines[index]
         if line.startswith("@@ "):
             header = re.match(
-                r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line
+                r"^(@@ -\d+)(?:,(\d+))?( \+\d+)(?:,(\d+))?( @@.*)$", line
             )
             if header is None:
                 return False
-            old_remaining = int(header.group(1) or 1)
-            new_remaining = int(header.group(2) or 1)
+            old_count = 0
+            new_count = 0
             has_hunk = True
-            index += 1
-            while old_remaining or new_remaining:
-                if index >= len(patch_lines):
-                    return False
-                body_line = patch_lines[index]
+            body_index = index + 1
+            while body_index < len(patch_lines):
+                body_line = patch_lines[body_index]
+                if body_line.startswith("@@ ") or (
+                    body_line.startswith("--- ")
+                    and body_index + 2 < len(patch_lines)
+                    and patch_lines[body_index + 1].startswith("+++ ")
+                    and patch_lines[body_index + 2].startswith("@@ ")
+                ):
+                    break
                 if body_line == marker:
-                    index += 1
+                    body_index += 1
                     continue
                 if body_line.startswith(" "):
-                    old_remaining -= 1
-                    new_remaining -= 1
+                    old_count += 1
+                    new_count += 1
                 elif body_line.startswith("-"):
-                    old_remaining -= 1
+                    old_count += 1
                 elif body_line.startswith("+"):
-                    new_remaining -= 1
+                    new_count += 1
                 else:
-                    return False
-                if old_remaining < 0 or new_remaining < 0:
-                    return False
-                index += 1
-            while index < len(patch_lines) and patch_lines[index] == marker:
-                index += 1
+                    break
+                body_index += 1
+            old_header = header.group(1)
+            if header.group(2) is not None or old_count != 1:
+                old_header += f",{old_count}"
+            new_header = header.group(3)
+            if header.group(4) is not None or new_count != 1:
+                new_header += f",{new_count}"
+            patch_lines[index] = (
+                old_header + new_header + header.group(5)
+            )
+            index = body_index
             continue
         if line.startswith("--- "):
             if (
