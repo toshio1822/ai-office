@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import difflib
 import json
+import re
 import subprocess
 from dataclasses import replace
 from hashlib import sha256
@@ -364,8 +365,30 @@ def _unified_diff(sources: dict[str, str], replacements: dict[str, str]) -> str:
     return "".join(sections)
 
 
+def _adjust_hunk_counts(patch: str, delta: int) -> str:
+    lines = patch.splitlines()
+    pattern = re.compile(r"^(@@ -\d+),(\d+) (\+\d+),(\d+)( @@.*)$")
+    adjusted = 0
+    for index, line in enumerate(lines):
+        match = pattern.match(line)
+        if match is None:
+            continue
+        lines[index] = (
+            f"{match.group(1)},{int(match.group(2)) + delta} "
+            f"{match.group(3)},{int(match.group(4)) + delta}{match.group(5)}"
+        )
+        adjusted += 1
+    assert adjusted
+    return "\n".join(lines) + ("\n" if patch.endswith("\n") else "")
+
+
+@pytest.mark.parametrize(
+    "hunk_count_delta",
+    [0, 1, -1],
+    ids=["correct-counts", "header-overstates-body", "body-exceeds-header"],
+)
 def test_unified_diff_artifact_applies_to_fixed_sources_and_keeps_raw_evidence(
-    tmp_path: Path,
+    tmp_path: Path, hunk_count_delta: int
 ) -> None:
     sources = {
         "src/example.py": "def answer():\n    return 1\n",
@@ -376,6 +399,8 @@ def test_unified_diff_artifact_applies_to_fixed_sources_and_keeps_raw_evidence(
         "tests/test_example.py": "def test_answer():\n    assert answer() == 2\n",
     }
     output = _unified_diff(sources, replacements)
+    if hunk_count_delta:
+        output = _adjust_hunk_counts(output, hunk_count_delta)
     workflow, evidence, calls, result = _start_fixture(
         tmp_path,
         artifact_content_type="application/vnd.ai-office.file-change-set+json",
@@ -413,6 +438,58 @@ def test_unified_diff_artifact_applies_to_fixed_sources_and_keeps_raw_evidence(
     assert (
         artifact.raw_response_evidence_sha256
         == normalized.raw_response_evidence_sha256
+    )
+
+
+def test_unified_diff_artifact_derives_insert_count_from_hunk_body(
+    tmp_path: Path,
+) -> None:
+    sources = {"src/example.py": "def answer():\n    return 1\n"}
+    output = (
+        "--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n"
+        "-    return 1\n+    return 2\n+# candidate note\n"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+    attempts = list_run_execution_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id
+    )
+    assert len(attempts) == 1
+    attempt_id = attempts[0].attempt_id
+    raw_path = execution_raw_response_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    normalized_path = execution_normalized_result_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    evidence_before = (raw_path.read_bytes(), normalized_path.read_bytes())
+
+    decision = _route(workflow, evidence)
+
+    artifacts = list_run_artifacts(
+        evidence.run.store, evidence.run.binding.run_id
+    )
+    normalized = load_normalized_result_evidence(
+        evidence.run.store.root,
+        evidence.run.binding.run_id,
+        attempt_id,
+    )
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert len(artifacts) == 1
+    assert normalized.text == output
+    assert (raw_path.read_bytes(), normalized_path.read_bytes()) == evidence_before
+    change = json.loads(artifacts[0].content)["changes"][0]
+    assert change["path"] == "src/example.py"
+    assert base64.b64decode(change["content_base64"]) == (
+        b"def answer():\n    return 2\n# candidate note\n"
     )
 
 
@@ -584,9 +661,6 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         " This is explanation text\n",
         "--- a/src/example.py\n+++ b/src/example.py\n"
         "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
-        "+This is explanation text\n",
-        "--- a/src/example.py\n+++ b/src/example.py\n"
-        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
         "-This is explanation text\n",
         "```diff\n"
         "--- a/src/example.py\n+++ b/src/example.py\n"
@@ -609,7 +683,6 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "explanation-preamble",
         "explanation-trailer",
         "space-prefixed-hunk-trailer",
-        "addition-prefixed-hunk-trailer",
         "deletion-prefixed-hunk-trailer",
         "markdown-fence",
         "git-metadata",
