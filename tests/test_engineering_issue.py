@@ -509,8 +509,8 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
         "evidence": [
             {
                 "path": "src/pkg/engine.py",
-                "start_line": 2,
-                "end_line": 2,
+                "start_line": 99,
+                "end_line": 99,
                 "quote": "return sum(values)",
                 "reason": "This is the code being investigated.",
             }
@@ -546,15 +546,25 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
         == hashlib.sha256(test_bytes).hexdigest()
     )
     assert second_value["prior_research"][0]["run_id"] == "issue-round-1"
+    assert (
+        second_value["prior_research"][0]["output"]["evidence"][0]["start_line"]
+        == 2
+    )
+    first_result = engineering_issue._load_research_result(run_store, "issue-round-1")
+    assert json.loads(first_result[2])["evidence"][0]["start_line"] == 99
+    assert second_value["prior_research"][0]["output_sha256"] == first_result[3]
     assert next_summary["provider_attempts_used"] == 2
 
+    ready_plan = _ready_plan()
+    ready_plan["evidence"][0]["start_line"] = 99
+    ready_plan["evidence"][0]["end_line"] = 99
     second_state_path = _successful_run(
         run_store,
         "issue-round-2",
         second_input,
-        _ready_plan(),
+        ready_plan,
     )
-    histories[second_state_path] = json.dumps(_ready_plan())
+    histories[second_state_path] = json.dumps(ready_plan)
     _install_successful_history(monkeypatch, histories)
     assignment, policy_text, summary = engineering_issue.prepare_bounded_job_inputs(
         run_store,
@@ -568,6 +578,12 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
         "read": ["src/pkg/engine.py", "tests/unit/test_engine.py"],
         "write": ["src/pkg/engine.py"],
     }
+    assert job_input["investigation"]["evidence"][0]["start_line"] == 2
+    assert job_input["investigation"]["evidence"][0]["end_line"] == 2
+    second_result = engineering_issue._load_research_result(
+        run_store, "issue-round-2"
+    )
+    assert json.loads(second_result[2])["evidence"][0]["start_line"] == 99
     assert (
         job_input["source_context"]["tests/unit/test_engine.py"] == test_bytes.decode()
     )
@@ -654,6 +670,83 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
     assert issue_summary["research_run_id"] == "issue-round-2"
     assert issue_summary["issue_url"] == _ISSUE_URL
     assert issue_summary["github_repository_id"] == 828001
+
+
+@pytest.mark.parametrize("invalid_evidence", ["missing", "other_path", "ambiguous"])
+def test_bounded_job_input_stops_when_fixed_source_cannot_resolve_quote(
+    tmp_path: Path,
+    fixed_repository: tuple[Path, str, dict[str, bytes]],
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_evidence: str,
+) -> None:
+    repository, revision, _ = fixed_repository
+    if invalid_evidence == "ambiguous":
+        source_path = repository / "src/pkg/engine.py"
+        source_path.write_bytes(
+            b"def calculate(values):\n"
+            b"    return sum(values)\n"
+            b"    return sum(values)\n"
+        )
+        _git(repository, "add", "src/pkg/engine.py")
+        _git(repository, "commit", "-qm", "duplicate evidence quote")
+        revision = _git(repository, "rev-parse", "HEAD")
+
+    run_input, _summary, _requests = _prepare(
+        repository, revision, initial_files=2, max_files=2
+    )
+    plan = _ready_plan()
+    evidence = plan["evidence"][0]
+    evidence["start_line"] = 99
+    evidence["end_line"] = 99
+    if invalid_evidence == "missing":
+        evidence["quote"] = "not present in the fixed Git source"
+    elif invalid_evidence == "other_path":
+        evidence["path"] = "tests/unit/test_engine.py"
+    else:
+        evidence["quote"] = "return sum(values)"
+
+    run_store = tmp_path / "runs"
+    state_path = _successful_run(run_store, "unverifiable-quote", run_input, plan)
+    _install_successful_history(monkeypatch, {state_path: json.dumps(plan)})
+
+    with pytest.raises(engineering_issue.EngineeringIssueError) as caught:
+        engineering_issue.prepare_bounded_job_inputs(
+            run_store, "unverifiable-quote", now_ns=1_000_000_000
+        )
+    assert caught.value.classification == "evidence_quote_mismatch"
+
+
+def test_bounded_job_input_keeps_line_range_that_disambiguates_duplicate_quote(
+    tmp_path: Path,
+    fixed_repository: tuple[Path, str, dict[str, bytes]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _revision, _ = fixed_repository
+    source_path = repository / "src/pkg/engine.py"
+    source_path.write_bytes(
+        b"def calculate(values):\n"
+        b"    return sum(values)\n"
+        b"    return sum(values)\n"
+    )
+    _git(repository, "add", "src/pkg/engine.py")
+    _git(repository, "commit", "-qm", "duplicate evidence quote")
+    revision = _git(repository, "rev-parse", "HEAD")
+    run_input, _summary, _requests = _prepare(
+        repository, revision, initial_files=2, max_files=2
+    )
+    plan = _ready_plan()
+    plan["evidence"][0]["start_line"] = 3
+    plan["evidence"][0]["end_line"] = 3
+    run_store = tmp_path / "runs"
+    state_path = _successful_run(run_store, "selected-duplicate-quote", run_input, plan)
+    _install_successful_history(monkeypatch, {state_path: json.dumps(plan)})
+
+    assignment, _policy, _summary = engineering_issue.prepare_bounded_job_inputs(
+        run_store, "selected-duplicate-quote", now_ns=1_000_000_000
+    )
+    evidence = json.loads(assignment)["investigation"]["evidence"][0]
+    assert evidence["start_line"] == 3
+    assert evidence["end_line"] == 3
 
 
 def test_unlisted_additional_path_and_changed_base_stop_without_preparation(

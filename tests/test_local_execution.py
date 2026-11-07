@@ -539,8 +539,8 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
             "evidence": [
                 {
                     "path": "calculator.py",
-                    "start_line": 2,
-                    "end_line": 2,
+                    "start_line": 99,
+                    "end_line": 99,
                     "quote": "    return 1 + 1",
                     "reason": (
                         "The implementation is known but its test contract is not."
@@ -570,8 +570,8 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
             "evidence": [
                 {
                     "path": "calculator.py",
-                    "start_line": 2,
-                    "end_line": 2,
+                    "start_line": 99,
+                    "end_line": 99,
                     "quote": "    return 1 + 1",
                     "reason": "This is the implementation targeted by the Issue.",
                 }
@@ -701,7 +701,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
         prepare_for_issue,
     )
     confirmations: list[str] = []
-    deny_confirmation_number: int | None = 3
+    deny_confirmation_number: int | None = 5
 
     def approve(prompt: str, *, default: bool = False) -> bool:
         confirmations.append(prompt)
@@ -767,38 +767,41 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
         str(repository_root / "employees"),
     ]
     first_result = CliRunner().invoke(app, issue_run_args)
-    assert first_result.exit_code == 0, first_result.output
+    assert first_result.exit_code == 1, first_result.output
+    assert "Business grant was not confirmed" in first_result.output
     first_records = [
         json.loads(line) for line in first_result.stdout.splitlines()
     ]
-    assert not any(
-        item["operation"] == "bounded-job-launch-confirmation"
+    first_launch = next(
+        item
         for item in first_records
+        if item["operation"] == "bounded-job-launch-confirmation"
     )
-    assert first_records[-1]["operation"] == "engineering-issue-run"
-    assert first_records[-1]["status"] == "approval_required"
-    assert first_records[-1]["research_round"] == 2
-    assert len(provider_requests) == 1
-    assert len(list(research_store.glob("*.manifest.json"))) == 1
+    assert first_launch["research_run_id"].startswith("engineering-issue-829-r2-")
+    assert len(provider_requests) == 2
+    assert len(list(research_store.glob("*.manifest.json"))) == 2
+    job_store = research_store / "bounded-job-runs"
+    assert not job_store.exists() or not list(job_store.glob("*.manifest.json"))
     changed_plan_args = list(issue_run_args)
     max_files_index = changed_plan_args.index("--max-files") + 1
     changed_plan_args[max_files_index] = "3"
     changed_plan_result = CliRunner().invoke(app, changed_plan_args)
     assert changed_plan_result.exit_code == 2
     assert "resume with the original plan" in changed_plan_result.output
-    assert len(provider_requests) == 1
-    assert len(list(research_store.glob("*.manifest.json"))) == 1
+    assert len(provider_requests) == 2
+    assert len(list(research_store.glob("*.manifest.json"))) == 2
     changed_job_plan_args = list(issue_run_args)
     revisions_index = changed_job_plan_args.index("--max-revisions") + 1
     changed_job_plan_args[revisions_index] = "0"
     changed_job_plan_result = CliRunner().invoke(app, changed_job_plan_args)
     assert changed_job_plan_result.exit_code == 2
     assert "resume with the original plan" in changed_job_plan_result.output
-    assert len(provider_requests) == 1
-    assert len(list(research_store.glob("*.manifest.json"))) == 1
+    assert len(provider_requests) == 2
+    assert len(list(research_store.glob("*.manifest.json"))) == 2
     confirmations.clear()
     deny_confirmation_number = None
 
+    provider_requests_before_resume = len(provider_requests)
     result = CliRunner().invoke(app, issue_run_args)
     assert result.exit_code == 0, result.output
     records = [json.loads(line) for line in result.stdout.splitlines()]
@@ -824,14 +827,13 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     assert completed["status"] == "reviewed", json.dumps(completed)
     assert completed["revisions_used"] == 1
     assert completed["final_artifact_id"] is not None
-    assert len(confirmations) == 5
-    assert "Business step for research Run" in confirmations[0]
-    assert "one Provider request for research Run" in confirmations[1]
-    assert "Business grant" in confirmations[2]
-    assert "Execution grant" in confirmations[3]
-    assert "sandbox verification" in confirmations[4]
-    assert len(metadata_reads) == 1
+    assert len(confirmations) == 3
+    assert "Business grant" in confirmations[0]
+    assert "Execution grant" in confirmations[1]
+    assert "sandbox verification" in confirmations[2]
+    assert len(metadata_reads) == 2
     assert len(provider_requests) == 6
+    assert len(provider_requests) - provider_requests_before_resume == 4
     assert fake_outputs == []
     revision_body = provider_request_bodies[3]
     assert "validation_failure" in revision_body
@@ -888,11 +890,21 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
 
     first_result = _load_research_result(research_store, research_run_ids[0])
     assert json.loads(first_result[2])["outcome"] == "needs_more_evidence"
+    assert json.loads(first_result[2])["evidence"][0]["start_line"] == 99
+
+    second_run_input = json.loads(research_manifests[1].run_input)
+    assert (
+        second_run_input["prior_research"][0]["output"]["evidence"][0]["start_line"]
+        == 2
+    )
+    assert second_run_input["prior_research"][0]["output_sha256"] == first_result[3]
 
     job_manifest = load_workflow_run_manifest(
         job_store, completed["run_id"]
     )
     job_run_input = json.loads(job_manifest.run_input)
+    assert job_run_input["investigation"]["evidence"][0]["start_line"] == 2
+    assert job_run_input["investigation"]["evidence"][0]["end_line"] == 2
     handoff = job_run_input["investigation"]["research_handoff"]
     assert handoff["research_rounds_used"] == 2
     assert job_run_input["investigation"]["research_run_id"] == research_run_id
@@ -907,6 +919,48 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     job_request = json.loads(job_run_input["request"])
     assert job_request["research_handoff"] == handoff
     assert job_request["research_handoff"]["bounded_job_plan"]["max_revisions"] == 1
+
+    invalid_research_output = json.dumps(
+        {
+            "outcome": "ready",
+            "cause_hypotheses": [
+                {
+                    "hypothesis": "The quoted source text is not present.",
+                    "confidence": "medium",
+                    "evidence": ["calculator.py"],
+                }
+            ],
+            "evidence": [
+                {
+                    "path": "calculator.py",
+                    "start_line": 99,
+                    "end_line": 100,
+                    "quote": "not present in the fixed source",
+                    "reason": "This intentionally exercises the safe stop.",
+                }
+            ],
+            "read_paths": ["calculator.py", "test_calculator.py"],
+            "additional_read_paths": [],
+            "write_paths": ["calculator.py"],
+            "test_paths": ["test_calculator.py"],
+            "acceptance_criteria": ["The exact source quote must be verified."],
+        },
+        sort_keys=True,
+    )
+    fake_outputs[:] = [invalid_research_output]
+    confirmations.clear()
+    before_stop_requests = len(provider_requests)
+    stop_store = tmp_path / "engineering-issue-stop-runs"
+    stop_args = list(issue_run_args)
+    stop_args[stop_args.index("--run-store") + 1] = str(stop_store)
+    stop_args[stop_args.index("--initial-files") + 1] = "2"
+    stopped = CliRunner().invoke(app, stop_args)
+    assert stopped.exit_code == 2, stopped.output
+    assert "evidence_quote_mismatch" in stopped.output
+    assert len(confirmations) == 2
+    assert len(provider_requests) == before_stop_requests + 1
+    assert metadata_reads and len(metadata_reads) == 2
+    assert not list((stop_store / "bounded-job-runs").glob("*.manifest.json"))
 
 
 def _change_set(

@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import time
+from bisect import bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -361,7 +362,10 @@ def prepare_next_engineering_issue_input(
         or not set(_path_list(plan, "read_paths")) <= set(source_context)
     ):
         _fail("research_continuation_result_invalid")
-    _verify_evidence_quotes(plan, source_context)
+    verified_plan = {
+        **plan,
+        "evidence": _verify_evidence_quotes(plan, source_context),
+    }
     used_bytes = sum(len(text.encode("utf-8")) for text in source_context.values())
     max_source_bytes = _as_int(authorization.get("max_source_bytes"))
     repository = _object(run_input.get("repository"))
@@ -416,7 +420,7 @@ def prepare_next_engineering_issue_input(
             "run_id": run_id,
             "manifest_digest": manifest.digest,
             "output_sha256": output_sha256,
-            "output": plan,
+            "output": verified_plan,
         },
     ]
     next_value["request"] = _CONTINUATION_REQUEST
@@ -467,7 +471,7 @@ def prepare_bounded_job_inputs(
             if plan["outcome"] == "needs_more_evidence"
             else "research_blocked"
         )
-    _validate_ready_plan(plan, run_input)
+    plan = _validate_ready_plan(plan, run_input)
     authorization = _object(run_input.get("authorization"))
     repository = _object(run_input.get("repository"))
     root = _validate_repository(
@@ -1776,7 +1780,9 @@ def _parse_plan(text: str) -> dict[str, object]:
     return plan
 
 
-def _validate_ready_plan(plan: dict[str, object], run_input: dict[str, object]) -> None:
+def _validate_ready_plan(
+    plan: dict[str, object], run_input: dict[str, object]
+) -> dict[str, object]:
     hypotheses = plan["cause_hypotheses"]
     evidence = plan["evidence"]
     if (
@@ -1815,32 +1821,69 @@ def _validate_ready_plan(plan: dict[str, object], run_input: dict[str, object]) 
         path = item["path"]
         if path not in source_context or path not in reads:
             _fail("evidence_source_not_sent")
-    _verify_evidence_quotes(plan, source_context)
+    evidence = _verify_evidence_quotes(plan, source_context)
+    return {**plan, "evidence": evidence}
 
 
 def _verify_evidence_quotes(
     plan: dict[str, object], source_context: Mapping[str, str]
-) -> None:
+) -> list[dict[str, object]]:
     evidence_paths: set[str] = set()
+    verified_evidence: list[dict[str, object]] = []
     for item in plan["evidence"]:
         path = item["path"]
         text = source_context.get(path)
         if text is None:
             _fail("evidence_source_not_sent")
-        lines = text.splitlines()
+        quote = item["quote"]
         start = item["start_line"]
         end = item["end_line"]
-        if start > len(lines) or end > len(lines):
-            _fail("evidence_line_out_of_bounds")
-        exact_lines = "\n".join(lines[start - 1 : end])
-        if item["quote"] not in exact_lines:
+        match_count = 0
+        unique_match: tuple[int, int, int] | None = None
+        selected_match: tuple[int, int, int] | None = None
+        selected_count = 0
+        line_starts = [0]
+        line_starts.extend(
+            index + 1 for index, character in enumerate(text) if character == "\n"
+        )
+        offset = 0
+        while (position := text.find(quote, offset)) >= 0:
+            last_character = position + len(quote) - 1
+            match = (
+                position,
+                bisect_right(line_starts, position),
+                bisect_right(line_starts, last_character),
+            )
+            match_count += 1
+            unique_match = match
+            if start <= match[1] and match[2] <= end:
+                selected_count += 1
+                selected_match = match
+            offset = position + 1
+        if match_count == 0:
             _fail("evidence_quote_mismatch")
+
+        if match_count == 1:
+            if unique_match is None:
+                _fail("evidence_quote_mismatch")
+            match = unique_match
+        elif selected_count == 1:
+            if selected_match is None:
+                _fail("evidence_quote_mismatch")
+            match = selected_match
+        else:
+            _fail("evidence_quote_mismatch")
+
+        verified_evidence.append(
+            {**item, "start_line": match[1], "end_line": match[2]}
+        )
         evidence_paths.add(path)
     if any(
         not set(hypothesis["evidence"]) <= evidence_paths
         for hypothesis in plan["cause_hypotheses"]
     ):
         _fail("hypothesis_evidence_missing")
+    return verified_evidence
 
 
 def _available_sources(value: Mapping[str, object]) -> dict[str, _TreeEntry]:
