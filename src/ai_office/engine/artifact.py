@@ -527,9 +527,14 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
             patch_parts.pop()
         patch_lines = []
         line_endings = []
+        no_newline_marker = r"\ No newline at end of file"
         for part_index, part in enumerate(patch_parts):
             has_lf = part_index < len(patch_parts) - 1 or patch.endswith("\n")
-            if has_lf and part.endswith("\r"):
+            followed_by_no_newline_marker = (
+                part_index + 1 < len(patch_parts)
+                and patch_parts[part_index + 1] == no_newline_marker
+            )
+            if has_lf and part.endswith("\r") and not followed_by_no_newline_marker:
                 patch_lines.append(part[:-1])
                 line_endings.append("\r\n")
             else:
@@ -544,7 +549,7 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
             or not _normalize_unified_diff_hunks(patch_lines, sources)
             or any(
                 not line.startswith(("--- ", "+++ ", "@@ ", " ", "+", "-"))
-                and line != r"\ No newline at end of file"
+                and line != no_newline_marker
                 for line in patch_lines
             )
         ):

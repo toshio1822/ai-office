@@ -554,6 +554,95 @@ def test_unified_diff_artifact_uses_lf_line_boundaries(
     assert base64.b64decode(change["content_base64"]) == expected
 
 
+def test_unified_diff_artifact_preserves_terminal_cr_before_no_newline_marker(
+    tmp_path: Path,
+) -> None:
+    path = "src/example.py"
+    source = b"before\nold\r"
+    replacement = b"before\nnew\r"
+    repository = tmp_path / "git-diff"
+    target = repository / path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source)
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Offline Test"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "config",
+            "user.email",
+            "offline@example.invalid",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "core.autocrlf", "false"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "--", path], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-q", "-m", "baseline"],
+        check=True,
+    )
+    target.write_bytes(replacement)
+    git_output = subprocess.run(
+        ["git", "-C", str(repository), "diff", "--", path],
+        capture_output=True,
+        check=True,
+    ).stdout.decode("utf-8")
+    output = git_output[git_output.index(f"--- a/{path}\n") :]
+    assert (
+        b"-old\r\n\\ No newline at end of file\n+new\r\n"
+        b"\\ No newline at end of file\n"
+        in output.encode("utf-8")
+    )
+
+    source_text = source.decode("utf-8")
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path / "artifact",
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input({path: source_text}),
+    )
+    _commit_success(workflow, evidence, result)
+    attempts = list_run_execution_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id
+    )
+    assert len(attempts) == 1
+    attempt_id = attempts[0].attempt_id
+    raw_path = execution_raw_response_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    normalized_path = execution_normalized_result_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    evidence_before = (raw_path.read_bytes(), normalized_path.read_bytes())
+
+    decision = _route(workflow, evidence)
+
+    artifacts = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)
+    normalized = load_normalized_result_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert len(artifacts) == 1
+    assert normalized.text == output
+    assert (raw_path.read_bytes(), normalized_path.read_bytes()) == evidence_before
+    change = json.loads(artifacts[0].content)["changes"][0]
+    assert change["path"] == path
+    assert change["before_sha256"] == sha256(source).hexdigest()
+    assert base64.b64decode(change["content_base64"]) == replacement
+
+
 @pytest.mark.parametrize(
     ("source", "context"),
     [
