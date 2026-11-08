@@ -556,6 +556,11 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
     assert next_summary["provider_attempts_used"] == 2
 
     ready_plan = _ready_plan()
+    ready_plan["acceptance_criteria"] = [
+        "The candidate must pass the selected AST syntax Oracle in this stage.",
+        "The existing pytest suite must pass in the later exact-head Draft PR CI.",
+        "Ruff must pass in the later exact-head Draft PR CI.",
+    ]
     ready_plan["evidence"][0]["start_line"] = 99
     ready_plan["evidence"][0]["end_line"] = 99
     second_state_path = _successful_run(
@@ -612,11 +617,21 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
     assert verification_stage["oracle_policy_sha256"] == summary[
         "oracle_policy_sha256"
     ]
-    assert "full Issue acceptance criteria remain authoritative" in (
-        verification_stage["instructions"]
-    )
-    assert "later-gate criteria as pending" in verification_stage["instructions"]
-    assert "overall Issue acceptance is complete" in verification_stage["instructions"]
+    assert verification_stage["required_now_commands"] == policy["commands"]
+    assert verification_stage["deferred_checks"] == [
+        {
+            "acceptance_criterion": ready_plan["acceptance_criteria"][1],
+            "checks": ["pytest"],
+            "gate": "exact-head GitHub CI for the resulting Draft PR",
+            "status": "pending",
+        },
+        {
+            "acceptance_criterion": ready_plan["acceptance_criteria"][2],
+            "checks": ["Ruff"],
+            "gate": "exact-head GitHub CI for the resulting Draft PR",
+            "status": "pending",
+        },
+    ]
     assert (
         validate_local_execution_scope(
             assignment,

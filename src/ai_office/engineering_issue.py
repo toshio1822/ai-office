@@ -484,6 +484,27 @@ def prepare_bounded_job_inputs(
     expected_policy_digest = _as_string(authorization.get("oracle_policy_sha256"))
     if policy_sha256 != expected_policy_digest:
         _fail("oracle_profile_changed")
+    approved_commands = " ".join(
+        argument for command in template["commands"] for argument in command
+    ).casefold()
+    deferred_checks = []
+    for criterion in plan["acceptance_criteria"]:
+        criterion_text = criterion.casefold()
+        checks = [
+            name
+            for name in ("pytest", "Ruff")
+            if name.casefold() in criterion_text
+            and name.casefold() not in approved_commands
+        ]
+        if checks:
+            deferred_checks.append(
+                {
+                    "acceptance_criterion": criterion,
+                    "checks": checks,
+                    "gate": "exact-head GitHub CI for the resulting Draft PR",
+                    "status": "pending",
+                }
+            )
 
     available = _available_sources(run_input)
     current_sources = _string_map(run_input.get("source_context"))
@@ -532,15 +553,15 @@ def prepare_bounded_job_inputs(
         "verification_stage": {
             "oracle_profile": oracle_profile,
             "oracle_policy_sha256": policy_sha256,
+            "required_now_commands": template["commands"],
+            "deferred_checks": deferred_checks,
             "instructions": (
-                "The full Issue acceptance criteria remain authoritative. This Job "
-                "is limited to the verification stage selected by this pinned Oracle "
-                "policy. Distinguish criteria verified by this stage from criteria "
-                "explicitly assigned to a later gate in the accepted execution plan; "
-                "report later-gate criteria as pending rather than as a candidate "
-                "defect solely because they were not run here. Do not claim overall "
-                "Issue acceptance is complete, and do not run or request validation "
-                "outside the approved plan."
+                "Keep all Issue acceptance criteria authoritative. Use "
+                "required_now_commands as this Job's verification scope and report "
+                "deferred_checks as pending until their listed gate; missing evidence "
+                "for those checks alone is not a candidate defect. Do not claim "
+                "overall Issue acceptance is complete or run validation outside the "
+                "approved Oracle policy."
             ),
         },
         "instruction": (
