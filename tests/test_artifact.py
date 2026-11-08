@@ -441,6 +441,56 @@ def test_unified_diff_artifact_applies_to_fixed_sources_and_keeps_raw_evidence(
     )
 
 
+def test_unified_diff_artifact_accepts_outer_diff_fence_and_preserves_evidence(
+    tmp_path: Path,
+) -> None:
+    path = "src/example.py"
+    sources = {path: "def answer():\n    return 1\n"}
+    replacement = "def answer():\n    return 2\n"
+    patch = _unified_diff(sources, {path: replacement})
+    output = f"```diff\n{patch}```\n"
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+    attempts = list_run_execution_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id
+    )
+    assert len(attempts) == 1
+    attempt_id = attempts[0].attempt_id
+    raw_path = execution_raw_response_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    normalized_path = execution_normalized_result_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    evidence_before = raw_path.read_bytes(), normalized_path.read_bytes()
+
+    decision = _route(workflow, evidence)
+
+    artifacts = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)
+    normalized = load_normalized_result_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    change = json.loads(artifacts[0].content)["changes"][0]
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert len(artifacts) == 1
+    assert normalized.text == output
+    assert (raw_path.read_bytes(), normalized_path.read_bytes()) == evidence_before
+    assert (
+        artifacts[0].raw_response_evidence_sha256
+        == normalized.raw_response_evidence_sha256
+    )
+    assert change["path"] == path
+    assert change["before_sha256"] == sha256(sources[path].encode()).hexdigest()
+    assert base64.b64decode(change["content_base64"]) == replacement.encode()
+
+
 def test_unified_diff_artifact_reanchors_unique_hunk_to_fixed_preimage(
     tmp_path: Path,
 ) -> None:
@@ -977,7 +1027,17 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "```diff\n"
         "--- a/src/example.py\n+++ b/src/example.py\n"
         "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n"
-        "```\n",
+        "```\ntrailing text\n",
+        "```diff\n--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n````\n",
+        "```python\n--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n```\n",
+        "```diff\n--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n",
+        "```diff\n--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n```\n"
+        "```diff\n--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n```\n",
         "diff --git a/src/example.py b/src/example.py\n"
         "index 0123456..abcdef0 100644\n"
         "--- a/src/example.py\n+++ b/src/example.py\n"
@@ -996,7 +1056,11 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "explanation-trailer",
         "space-prefixed-hunk-trailer",
         "deletion-prefixed-hunk-trailer",
-        "markdown-fence",
+        "trailing-text-after-fence",
+        "four-backtick-fence",
+        "wrong-fence-language",
+        "unclosed-fence",
+        "multiple-fences",
         "git-metadata",
     ],
 )
@@ -1012,12 +1076,23 @@ def test_unified_diff_artifact_rejects_unsafe_or_ambiguous_patches(
         run_input=_diff_run_input(sources),
     )
     _commit_success(workflow, evidence, result)
+    attempt = list_run_execution_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id
+    )[0]
+    raw_path = execution_raw_response_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt.attempt_id
+    )
+    normalized_path = execution_normalized_result_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt.attempt_id
+    )
+    evidence_before = raw_path.read_bytes(), normalized_path.read_bytes()
 
     with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
         _route(workflow, evidence)
 
     assert error.value.detail.classification == "file_change_set_diff"
     assert calls == [1]
+    assert (raw_path.read_bytes(), normalized_path.read_bytes()) == evidence_before
     assert not tuple(
         tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
     )

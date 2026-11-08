@@ -1887,6 +1887,9 @@ def test_output_limit_is_durable_and_redacted(
         pytest.param(True, None, 0, id="reviewed-after-revision"),
         pytest.param(False, None, 0, id="candidate-no-revision"),
         pytest.param(
+            False, "fenced-diff", 0, id="candidate-complete-diff-fence"
+        ),
+        pytest.param(
             False, None, 1, id="candidate-repairs-header-overstating-body"
         ),
         pytest.param(
@@ -1909,6 +1912,12 @@ def test_output_limit_is_durable_and_redacted(
             "invalid-diff-space-trailer",
             0,
             id="space-prefixed-diff-trailer-stops-before-review-and-effect",
+        ),
+        pytest.param(
+            False,
+            "invalid-fenced-diff",
+            0,
+            id="fenced-diff-trailing-text-stops-before-review-and-effect",
         ),
         pytest.param(
             False,
@@ -2188,6 +2197,9 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                     candidate_diff(b"def answer():\n    return 2\n")
                     + " This is explanation text\n"
                 )
+            elif artifact_failure == "invalid-fenced-diff":
+                invalid_fenced_patch = candidate_diff(b"def answer():\n    return 2\n")
+                output = f"```diff\n{invalid_fenced_patch}```\ntrailing text\n"
             else:
                 output = candidate_diff(
                     b"def answer():\n    return 2  # unnecessary comment\n"
@@ -2195,6 +2207,8 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                     else b"def answer():\n    return 2\n",
                     candidate_hunk_count_delta,
                 )
+                if artifact_failure == "fenced-diff":
+                    output = f"```diff\n{output}```\n"
         elif needs_revision and index == 1:
             output = findings
         elif needs_revision and index == 2:
@@ -2257,7 +2271,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         local_effect_handler=authorize_and_validate,
     )
 
-    if artifact_failure is not None:
+    if artifact_failure is not None and artifact_failure != "fenced-diff":
         expected_reason = (
             "document_job_file_change_set_diff"
             if artifact_failure
@@ -2265,6 +2279,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 "invalid-diff",
                 "invalid-diff-hunk-count",
                 "invalid-diff-space-trailer",
+                "invalid-fenced-diff",
             }
             else "document_job_execution_uncertain"
         )

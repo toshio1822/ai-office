@@ -519,6 +519,13 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
                 _raise_load("file_change_set_diff")
             sources[path] = source
 
+        fenced = re.fullmatch(
+            r"```diff[ \t]*\r?\n(.*?)(?:\r?\n)?```(?:\r?\n)?",
+            patch,
+            flags=re.DOTALL,
+        )
+        if fenced is not None:
+            patch = fenced.group(1)
         patch_bytes = patch.encode("utf-8")
         if not patch_bytes:
             _raise_load("file_change_set_diff")

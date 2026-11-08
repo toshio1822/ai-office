@@ -604,9 +604,19 @@ def test_finite_additional_read_and_job_input_use_exact_sent_bytes(
     assert summary["base_revision"] == revision
     assert summary["oracle_profile"] == _ORACLE_PROFILE
     assert summary["candidate_selection"]["limitation"]
-    assert json.loads(job_input["request"])["candidate_search"] == summary[
-        "candidate_selection"
+    request_value = json.loads(job_input["request"])
+    assert request_value["candidate_search"] == summary["candidate_selection"]
+    assert job_input["acceptance_criteria"] == ready_plan["acceptance_criteria"]
+    verification_stage = request_value["verification_stage"]
+    assert verification_stage["oracle_profile"] == summary["oracle_profile"]
+    assert verification_stage["oracle_policy_sha256"] == summary[
+        "oracle_policy_sha256"
     ]
+    assert "full Issue acceptance criteria remain authoritative" in (
+        verification_stage["instructions"]
+    )
+    assert "later-gate criteria as pending" in verification_stage["instructions"]
+    assert "overall Issue acceptance is complete" in verification_stage["instructions"]
     assert (
         validate_local_execution_scope(
             assignment,
