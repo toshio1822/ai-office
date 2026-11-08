@@ -522,16 +522,19 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
         patch_bytes = patch.encode("utf-8")
         if not patch_bytes:
             _raise_load("file_change_set_diff")
-        patch_lines = patch.splitlines()
-        patch_lines_with_endings = patch.splitlines(keepends=True)
-        if len(patch_lines) != len(patch_lines_with_endings):
-            _raise_load("file_change_set_diff")
-        line_endings = tuple(
-            ended_line[len(line) :]
-            for line, ended_line in zip(
-                patch_lines, patch_lines_with_endings, strict=True
-            )
-        )
+        patch_parts = patch.split("\n")
+        if patch.endswith("\n"):
+            patch_parts.pop()
+        patch_lines = []
+        line_endings = []
+        for part_index, part in enumerate(patch_parts):
+            has_lf = part_index < len(patch_parts) - 1 or patch.endswith("\n")
+            if has_lf and part.endswith("\r"):
+                patch_lines.append(part[:-1])
+                line_endings.append("\r\n")
+            else:
+                patch_lines.append(part)
+                line_endings.append("\n" if has_lf else "")
         # Derive only hunk counts and reject unsupported surrounding text;
         # Git remains the authority for applying the patch to fixed sources.
         if (
@@ -695,7 +698,20 @@ def _normalize_unified_diff_hunks(
             if old_path.startswith("a/") and new_path == f"b/{old_path[2:]}":
                 source = sources.get(old_path[2:])
                 if source is not None:
-                    source_lines = source.decode("utf-8").splitlines()
+                    source_text = source.decode("utf-8")
+                    source_lines = source_text.split("\n") if source_text else []
+                    if source_text.endswith("\n"):
+                        source_lines.pop()
+                    source_lines = [
+                        source_line[:-1]
+                        if (
+                            line_index < len(source_lines) - 1
+                            or source_text.endswith("\n")
+                        )
+                        and source_line.endswith("\r")
+                        else source_line
+                        for line_index, source_line in enumerate(source_lines)
+                    ]
             index += 2
             continue
         if line.startswith("@@ "):

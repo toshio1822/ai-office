@@ -494,6 +494,67 @@ def test_unified_diff_artifact_reanchors_unique_hunk_to_fixed_preimage(
 
 
 @pytest.mark.parametrize(
+    ("source", "output", "expected"),
+    [
+        (
+            "header\fother\nbefore\nold\nafter\n",
+            "--- a/src/example.py\n+++ b/src/example.py\n"
+            "@@ -2,3 +2,3 @@\n before\n-old\n+new\n after\n",
+            b"header\fother\nbefore\nnew\nafter\n",
+        ),
+        (
+            "before\r\nold\r\nafter\r\n",
+            "--- a/src/example.py\r\n+++ b/src/example.py\r\n"
+            "@@ -1,3 +1,3 @@\r\n before\r\n-old\r\n+new\r\n after\r\n",
+            b"before\r\nnew\r\nafter\r\n",
+        ),
+    ],
+    ids=["form-feed-is-not-a-line-break", "crlf-source-and-patch"],
+)
+def test_unified_diff_artifact_uses_lf_line_boundaries(
+    tmp_path: Path, source: str, output: str, expected: bytes
+) -> None:
+    path = "src/example.py"
+    sources = {path: source}
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+    attempts = list_run_execution_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id
+    )
+    assert len(attempts) == 1
+    attempt_id = attempts[0].attempt_id
+    raw_path = execution_raw_response_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    normalized_path = execution_normalized_result_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    evidence_before = (raw_path.read_bytes(), normalized_path.read_bytes())
+
+    decision = _route(workflow, evidence)
+
+    artifacts = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)
+    normalized = load_normalized_result_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert len(artifacts) == 1
+    assert normalized.text == output
+    assert (raw_path.read_bytes(), normalized_path.read_bytes()) == evidence_before
+    change = json.loads(artifacts[0].content)["changes"][0]
+    assert change["path"] == path
+    assert change["before_sha256"] == sha256(source.encode()).hexdigest()
+    assert base64.b64decode(change["content_base64"]) == expected
+
+
+@pytest.mark.parametrize(
     ("source", "context"),
     [
         (
