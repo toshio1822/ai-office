@@ -538,7 +538,7 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
             len(patch_lines) < 3
             or not patch_lines[0].startswith("--- ")
             or not patch_lines[1].startswith("+++ ")
-            or not _normalize_unified_diff_hunk_counts(patch_lines)
+            or not _normalize_unified_diff_hunks(patch_lines, sources)
             or any(
                 not line.startswith(("--- ", "+++ ", "@@ ", " ", "+", "-"))
                 and line != r"\ No newline at end of file"
@@ -672,21 +672,42 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
         _raise_load("file_change_set_diff")
 
 
-def _normalize_unified_diff_hunk_counts(patch_lines: list[str]) -> bool:
-    """Derive hunk counts from body lines; Git validates and applies syntax."""
+def _normalize_unified_diff_hunks(
+    patch_lines: list[str], sources: dict[str, bytes]
+) -> bool:
+    """Derive hunk counts and anchor shifted hunks to unique fixed preimages."""
     marker = r"\ No newline at end of file"
-    index = 2
+    index = 0
     has_hunk = False
+    source_lines: list[str] | None = None
     while index < len(patch_lines):
         line = patch_lines[index]
+        if line.startswith("--- "):
+            if (
+                index + 2 >= len(patch_lines)
+                or not patch_lines[index + 1].startswith("+++ ")
+                or not patch_lines[index + 2].startswith("@@ ")
+            ):
+                return False
+            old_path = patch_lines[index][4:].split("\t", 1)[0]
+            new_path = patch_lines[index + 1][4:].split("\t", 1)[0]
+            source_lines = None
+            if old_path.startswith("a/") and new_path == f"b/{old_path[2:]}":
+                source = sources.get(old_path[2:])
+                if source is not None:
+                    source_lines = source.decode("utf-8").splitlines()
+            index += 2
+            continue
         if line.startswith("@@ "):
             header = re.match(
-                r"^(@@ -\d+)(?:,(\d+))?( \+\d+)(?:,(\d+))?( @@.*)$", line
+                r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?( @@.*)$", line
             )
             if header is None:
                 return False
+            old_start = int(header.group(1))
             old_count = 0
             new_count = 0
+            old_hunk_lines: list[str] = []
             has_hunk = True
             body_index = index + 1
             while body_index < len(patch_lines):
@@ -704,32 +725,43 @@ def _normalize_unified_diff_hunk_counts(patch_lines: list[str]) -> bool:
                 if body_line.startswith(" "):
                     old_count += 1
                     new_count += 1
+                    old_hunk_lines.append(body_line[1:])
                 elif body_line.startswith("-"):
                     old_count += 1
+                    old_hunk_lines.append(body_line[1:])
                 elif body_line.startswith("+"):
                     new_count += 1
                 else:
                     break
                 body_index += 1
-            old_header = header.group(1)
+            new_start = int(header.group(3))
+            if old_hunk_lines and source_lines is not None:
+                matches = []
+                for position in range(len(source_lines) - len(old_hunk_lines) + 1):
+                    if (
+                        source_lines[position : position + len(old_hunk_lines)]
+                        == old_hunk_lines
+                    ):
+                        matches.append(position)
+                        if len(matches) > 1:
+                            break
+                declared_position = old_start - 1
+                if declared_position not in matches:
+                    if len(matches) != 1:
+                        return False
+                    line_offset = matches[0] - declared_position
+                    old_start = matches[0] + 1
+                    new_start += line_offset
+                    if new_start < 0:
+                        return False
+            old_header = f"@@ -{old_start}"
             if header.group(2) is not None or old_count != 1:
                 old_header += f",{old_count}"
-            new_header = header.group(3)
+            new_header = f" +{new_start}"
             if header.group(4) is not None or new_count != 1:
                 new_header += f",{new_count}"
-            patch_lines[index] = (
-                old_header + new_header + header.group(5)
-            )
+            patch_lines[index] = old_header + new_header + header.group(5)
             index = body_index
-            continue
-        if line.startswith("--- "):
-            if (
-                index + 2 >= len(patch_lines)
-                or not patch_lines[index + 1].startswith("+++ ")
-                or not patch_lines[index + 2].startswith("@@ ")
-            ):
-                return False
-            index += 2
             continue
         return False
     return has_hunk

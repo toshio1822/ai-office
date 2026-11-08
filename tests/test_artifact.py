@@ -441,6 +441,130 @@ def test_unified_diff_artifact_applies_to_fixed_sources_and_keeps_raw_evidence(
     )
 
 
+def test_unified_diff_artifact_reanchors_unique_hunk_to_fixed_preimage(
+    tmp_path: Path,
+) -> None:
+    path = "src/example.py"
+    sources = {
+        path: "# header\n\ndef target():\n    return 1\n\nafter = 2\n"
+    }
+    output = (
+        f"--- a/{path}\n+++ b/{path}\n"
+        "@@ -4,3 +4,3 @@\n def target():\n"
+        "-    return 1\n+    return 2\n \n"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input(sources),
+    )
+    _commit_success(workflow, evidence, result)
+    attempts = list_run_execution_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id
+    )
+    assert len(attempts) == 1
+    attempt_id = attempts[0].attempt_id
+    raw_path = execution_raw_response_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    normalized_path = execution_normalized_result_evidence_path(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    evidence_before = (raw_path.read_bytes(), normalized_path.read_bytes())
+
+    decision = _route(workflow, evidence)
+
+    artifacts = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)
+    normalized = load_normalized_result_evidence(
+        evidence.run.store.root, evidence.run.binding.run_id, attempt_id
+    )
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert len(artifacts) == 1
+    assert normalized.text == output
+    assert (raw_path.read_bytes(), normalized_path.read_bytes()) == evidence_before
+    change = json.loads(artifacts[0].content)["changes"][0]
+    assert change["path"] == path
+    assert change["before_sha256"] == sha256(sources[path].encode()).hexdigest()
+    assert base64.b64decode(change["content_base64"]) == (
+        b"# header\n\ndef target():\n    return 2\n\nafter = 2\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "context"),
+    [
+        (
+            "begin\nvalue = 1\nfinish\nmiddle\nbegin\nvalue = 1\nfinish\n",
+            "begin\n-value = 1\n+value = 2\n finish\n",
+        ),
+        (
+            "begin\nvalue = 1\nfinish\n",
+            "missing\n-value = 1\n+value = 2\n finish\n",
+        ),
+    ],
+    ids=["ambiguous-preimage", "missing-preimage"],
+)
+def test_unified_diff_artifact_rejects_offset_without_unique_preimage(
+    tmp_path: Path, source: str, context: str
+) -> None:
+    path = "src/example.py"
+    output = (
+        f"--- a/{path}\n+++ b/{path}\n"
+        f"@@ -2,3 +2,3 @@\n {context}"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input({path: source}),
+    )
+    _commit_success(workflow, evidence, result)
+
+    with pytest.raises(PersistedExecutionOutcomeRoutingError) as error:
+        _route(workflow, evidence)
+
+    assert error.value.detail.classification == "file_change_set_diff"
+    assert calls == [1]
+    assert not tuple(
+        tmp_path.glob(f"{evidence.run.binding.run_id}.artifact.*.json")
+    )
+
+
+def test_unified_diff_artifact_keeps_correct_multi_hunk_positions(
+    tmp_path: Path,
+) -> None:
+    path = "src/example.py"
+    source = "top\nold one\nmiddle\nspacer\nother\nold two\nlast\nend\n"
+    output = (
+        f"--- a/{path}\n+++ b/{path}\n"
+        "@@ -1,3 +1,3 @@\n top\n-old one\n+new one\n middle\n"
+        "@@ -5,3 +5,3 @@\n other\n-old two\n+new two\n last\n"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input({path: source}),
+    )
+    _commit_success(workflow, evidence, result)
+
+    decision = _route(workflow, evidence)
+
+    artifacts = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)
+    change = json.loads(artifacts[0].content)["changes"][0]
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert len(artifacts) == 1
+    assert base64.b64decode(change["content_base64"]) == (
+        b"top\nnew one\nmiddle\nspacer\nother\nnew two\nlast\nend\n"
+    )
+
+
 def test_unified_diff_artifact_derives_insert_count_from_hunk_body(
     tmp_path: Path,
 ) -> None:
