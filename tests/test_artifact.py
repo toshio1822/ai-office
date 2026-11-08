@@ -534,6 +534,44 @@ def test_unified_diff_artifact_rejects_offset_without_unique_preimage(
     )
 
 
+def test_unified_diff_artifact_keeps_declared_third_repeated_preimage(
+    tmp_path: Path,
+) -> None:
+    path = "src/example.py"
+    source = (
+        "begin\nvalue = 1\nfinish\nseparator one\n"
+        "begin\nvalue = 1\nfinish\nseparator two\n"
+        "begin\nvalue = 1\nfinish\n"
+    )
+    output = (
+        f"--- a/{path}\n+++ b/{path}\n"
+        "@@ -9,3 +9,3 @@\n begin\n"
+        "-value = 1\n+value = 2\n finish\n"
+    )
+    workflow, evidence, calls, result = _start_fixture(
+        tmp_path,
+        artifact_content_type="application/vnd.ai-office.file-change-set+json",
+        model_output_format="unified-diff",
+        output=output,
+        run_input=_diff_run_input({path: source}),
+    )
+    _commit_success(workflow, evidence, result)
+
+    decision = _route(workflow, evidence)
+
+    artifacts = list_run_artifacts(evidence.run.store, evidence.run.binding.run_id)
+    change = json.loads(artifacts[0].content)["changes"][0]
+    assert decision.decision == "prepare_next_step"
+    assert calls == [1]
+    assert len(artifacts) == 1
+    assert change["path"] == path
+    assert base64.b64decode(change["content_base64"]) == (
+        b"begin\nvalue = 1\nfinish\nseparator one\n"
+        b"begin\nvalue = 1\nfinish\nseparator two\n"
+        b"begin\nvalue = 2\nfinish\n"
+    )
+
+
 def test_unified_diff_artifact_keeps_correct_multi_hunk_positions(
     tmp_path: Path,
 ) -> None:

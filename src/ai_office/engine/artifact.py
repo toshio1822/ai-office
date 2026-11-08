@@ -736,17 +736,26 @@ def _normalize_unified_diff_hunks(
                 body_index += 1
             new_start = int(header.group(3))
             if old_hunk_lines and source_lines is not None:
-                matches = []
-                for position in range(len(source_lines) - len(old_hunk_lines) + 1):
-                    if (
-                        source_lines[position : position + len(old_hunk_lines)]
-                        == old_hunk_lines
-                    ):
-                        matches.append(position)
-                        if len(matches) > 1:
-                            break
                 declared_position = old_start - 1
-                if declared_position not in matches:
+                declared_matches = (
+                    declared_position >= 0
+                    and source_lines[
+                        declared_position : declared_position + len(old_hunk_lines)
+                    ]
+                    == old_hunk_lines
+                )
+                if not declared_matches:
+                    matches = []
+                    for position in range(
+                        len(source_lines) - len(old_hunk_lines) + 1
+                    ):
+                        if (
+                            source_lines[position : position + len(old_hunk_lines)]
+                            == old_hunk_lines
+                        ):
+                            matches.append(position)
+                            if len(matches) > 1:
+                                break
                     if len(matches) != 1:
                         return False
                     line_offset = matches[0] - declared_position
