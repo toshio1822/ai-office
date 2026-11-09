@@ -1039,6 +1039,8 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "```\ntrailing text\n",
         "```diff\n--- a/src/example.py\n+++ b/src/example.py\n"
         "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n````\n",
+        "```diff\n--- a/src/example.py\n+++ b/src/example.py\n"
+        "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2```\n",
         "```python\n--- a/src/example.py\n+++ b/src/example.py\n"
         "@@ -1,2 +1,2 @@\n def answer():\n-    return 1\n+    return 2\n```\n",
         "```diff\n--- a/src/example.py\n+++ b/src/example.py\n"
@@ -1067,6 +1069,7 @@ def test_unified_diff_artifact_rejects_internal_payload_over_local_limit(
         "deletion-prefixed-hunk-trailer",
         "trailing-text-after-fence",
         "four-backtick-fence",
+        "fence-attached-to-hunk-line",
         "wrong-fence-language",
         "unclosed-fence",
         "multiple-fences",

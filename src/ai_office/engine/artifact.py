@@ -520,7 +520,7 @@ def _canonicalize_unified_diff(run_input: str, patch: str) -> bytes:
             sources[path] = source
 
         fenced = re.fullmatch(
-            r"```diff[ \t]*\r?\n(.*?)```(?:\r?\n)?",
+            r"```diff[ \t]*\r?\n(.*?\r?\n)```(?:\r?\n)?",
             patch,
             flags=re.DOTALL,
         )
