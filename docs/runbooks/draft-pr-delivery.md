@@ -44,11 +44,21 @@ Issue's repository identity, exact existing Job, Artifact, review Artifact,
 verification Evidence, and pinned checkout must agree; missing or ambiguous
 Job evidence stops before effects.
 
-The CLI re-reads the final Job/Artifact/Evidence, verifies the exact diff
-against the pinned base, checks repository identity and base SHA, and checks
-that the target branch and PR do not already exist. It then displays the
-repository, base SHA, new branch, protected-branch status, effect summary and
-verified diff. Confirm interactively to proceed.
+The CLI re-reads the final Job/Artifact/Evidence and verifies the exact diff
+against the Artifact's fixed edit base. It separately reads and pins the
+current delivery base SHA, fetches that commit, and requires every changed
+path's blob bytes and Git mode on the delivery base to match the Artifact's
+preimage. Unrelated commits on the delivery base are allowed. The CLI builds
+the tree from that delivery base and makes it the new commit's sole parent.
+It displays both base SHAs, the new branch, protected-branch status, effect
+summary and verified diff. Confirmation authorizes only the displayed delivery
+base. The CLI rechecks it after confirmation and again after push; a detected
+move before PR creation stops without retry and retains any pushed branch for
+human inspection. GitHub does not make the final ref check plus PR creation
+atomic. If main moves in that remaining race, the command records the pinned
+delivery base separately from the PR's observed base SHA and reports success
+only if the exact Draft PR and allowed diff can be proven; otherwise it records
+a stop. It never deletes a branch/PR or retries automatically.
 
 For an explicitly scripted invocation, provide all target fields and pass
 `--yes`. This records operator intent only; it is not an identity or security
@@ -66,7 +76,14 @@ are disabled for the delivery Git commands. No credential value is copied to
 the Run store, PR body, or command output.
 
 The PR and Run store carry the Job, Artifact, review Artifact, verification
-Evidence, base, commit/tree, changed paths and diff digests. A minimal attempt
+Evidence, separate Artifact edit and delivery base SHAs, commit/tree, changed
+paths and diff digests. New records use v2 schemas; existing v1 records remain
+readable with their original base interpreted as both bases and are never
+rewritten. The recorded delivery base remains historical evidence: if the PR
+is later based on a newer main SHA, read-only reconciliation reports the
+Artifact edit base, recorded delivery base, PR-base observation captured when
+the delivery result was confirmed, and current PR base SHA separately without
+invalidating completed delivery. A minimal attempt
 record is written before the first remote write. If an effect result is
 ambiguous, repeat invocation performs read-only comparison only; it returns a
 Draft PR only when the exact branch, commit and PR can be proven, otherwise it
@@ -74,6 +91,10 @@ stops without resending. Inspect `<JOB_ID>.draft-pr-delivery.attempt.json`,
 `<JOB_ID>.draft-pr-delivery.result.json`, or
 `<JOB_ID>.draft-pr-delivery.stop.json` in the Run store when diagnosing a
 stopped attempt.
+
+If a `gh pr create` response is ambiguous, the command accepts completion only
+when read-only reconciliation proves the exact Draft PR. Otherwise it records
+a stop; it never treats uncertainty as success.
 
 If an attempt exists without a result, status reports `uncertain_no_retry`.
 Invoking the same Issue-based `draft-pr` command again performs the existing

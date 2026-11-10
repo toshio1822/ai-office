@@ -510,9 +510,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
         "origin",
         "https://github.com/offline-owner/offline-repository.git",
     )
-    issue_url = (
-        "https://github.com/offline-owner/offline-repository/issues/829"
-    )
+    issue_url = "https://github.com/offline-owner/offline-repository/issues/829"
     issue_response = {
         "number": 829,
         "title": "Change answer() to return 2",
@@ -522,13 +520,9 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     def issue_transport(request):
         assert request.method == "GET"
         assert request.path == "/repos/offline-owner/offline-repository/issues/829"
-        return GitHubRawResponse(
-            200, json.dumps(issue_response).encode("utf-8")
-        )
+        return GitHubRawResponse(200, json.dumps(issue_response).encode("utf-8"))
 
-    monkeypatch.setattr(
-        engineering_issue, "send_github_read_request", issue_transport
-    )
+    monkeypatch.setattr(engineering_issue, "send_github_read_request", issue_transport)
     needs_more_plan = json.dumps(
         {
             "outcome": "needs_more_evidence",
@@ -688,9 +682,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
             ).encode("utf-8"),
         )
 
-    original_prepare_for_issue = (
-        engineering_issue.prepare_bounded_job_inputs_for_issue
-    )
+    original_prepare_for_issue = engineering_issue.prepare_bounded_job_inputs_for_issue
 
     def prepare_for_issue(url, run_store, **kwargs):
         return original_prepare_for_issue(
@@ -774,9 +766,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     first_result = CliRunner().invoke(app, issue_run_args)
     assert first_result.exit_code == 1, first_result.output
     assert "Business grant was not confirmed" in first_result.output
-    first_records = [
-        json.loads(line) for line in first_result.stdout.splitlines()
-    ]
+    first_records = [json.loads(line) for line in first_result.stdout.splitlines()]
     first_launch = next(
         item
         for item in first_records
@@ -818,9 +808,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
         for item in records
         if item["operation"] == "bounded-job-launch-confirmation"
     )
-    completed = next(
-        item for item in records if item["operation"] == "bounded-job-run"
-    )
+    completed = next(item for item in records if item["operation"] == "bounded-job-run")
     assert plan_record["operation"] == "engineering-issue-run-plan"
     assert launch["operation"] == "bounded-job-launch-confirmation"
     assert launch["issue_url"] == issue_url
@@ -855,9 +843,12 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
         completed["final_artifact_id"],
     )
     candidate_change = json.loads(candidate.content)
-    assert base64.b64decode(
-        candidate_change["changes"][0]["content_base64"], validate=True
-    ) == b"def answer():\n    return 2\n"
+    assert (
+        base64.b64decode(
+            candidate_change["changes"][0]["content_base64"], validate=True
+        )
+        == b"def answer():\n    return 2\n"
+    )
     inspected_result = CliRunner().invoke(
         app,
         [
@@ -904,9 +895,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     )
     assert second_run_input["prior_research"][0]["output_sha256"] == first_result[3]
 
-    job_manifest = load_workflow_run_manifest(
-        job_store, completed["run_id"]
-    )
+    job_manifest = load_workflow_run_manifest(job_store, completed["run_id"])
     job_run_input = json.loads(job_manifest.run_input)
     assert job_run_input["investigation"]["evidence"][0]["start_line"] == 2
     assert job_run_input["investigation"]["evidence"][0]["end_line"] == 2
@@ -918,9 +907,10 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
         "write": ["calculator.py"],
     }
     assert job_run_input["source_sha256"]
-    assert handoff["approved_research_scope_and_budget"] == json.loads(
-        research_manifests[1].run_input
-    )["authorization"]
+    assert (
+        handoff["approved_research_scope_and_budget"]
+        == json.loads(research_manifests[1].run_input)["authorization"]
+    )
     job_request = json.loads(job_run_input["request"])
     assert job_request["research_handoff"] == handoff
     assert job_request["research_handoff"]["bounded_job_plan"]["max_revisions"] == 1
@@ -1216,9 +1206,7 @@ def test_fixed_python_runtime_and_oracle_work_only_in_readonly_bwrap(
             == evidence
         )
         if expected_status == "command_failed":
-            assert (
-                "candidate source is unchanged" in evidence["commands"][0]["stderr"]
-            )
+            assert "candidate source is unchanged" in evidence["commands"][0]["stderr"]
         if expected_status == "verified":
             assert (
                 "pydantic-runtime-and-readonly-oracle-ok"
@@ -1886,15 +1874,9 @@ def test_output_limit_is_durable_and_redacted(
     [
         pytest.param(True, None, 0, id="reviewed-after-revision"),
         pytest.param(False, None, 0, id="candidate-no-revision"),
-        pytest.param(
-            False, "fenced-diff", 0, id="candidate-complete-diff-fence"
-        ),
-        pytest.param(
-            False, None, 1, id="candidate-repairs-header-overstating-body"
-        ),
-        pytest.param(
-            False, None, -1, id="candidate-repairs-body-exceeding-header"
-        ),
+        pytest.param(False, "fenced-diff", 0, id="candidate-complete-diff-fence"),
+        pytest.param(False, None, 1, id="candidate-repairs-header-overstating-body"),
+        pytest.param(False, None, -1, id="candidate-repairs-body-exceeding-header"),
         pytest.param(
             False,
             "invalid-diff",
@@ -2243,6 +2225,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         return authorization.authorization_id
 
     if artifact_failure == "persistence-failure":
+
         def fail_artifact_persistence(_store, _artifact) -> None:
             raise WorkflowArtifactPersistenceError("durable_write")
 
@@ -2548,6 +2531,81 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     # every gh operation is served by this test executable, never GitHub.
     product_remote = tmp_path / "product-fake-remote.git"
     create_fake_bare_remote(product_remote, repository, revision)
+    delivery_worktree = tmp_path / "delivery-base-worktree"
+    subprocess.run(
+        [
+            "/usr/bin/git",
+            "clone",
+            "--quiet",
+            "--no-hardlinks",
+            str(repository),
+            str(delivery_worktree),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    _git(delivery_worktree, "checkout", "--quiet", "--detach", revision)
+    _git(delivery_worktree, "config", "user.name", "Offline Proof")
+    _git(delivery_worktree, "config", "user.email", "offline-proof@example.invalid")
+    (delivery_worktree / "unrelated-main-change.txt").write_text(
+        "unrelated main update\n", encoding="utf-8"
+    )
+    _git(delivery_worktree, "add", "unrelated-main-change.txt")
+    _git(delivery_worktree, "commit", "--quiet", "-m", "Unrelated main update")
+    delivery_base_sha = _git(delivery_worktree, "rev-parse", "HEAD")
+    _git(
+        delivery_worktree,
+        "push",
+        str(product_remote),
+        f"{delivery_base_sha}:refs/heads/main",
+    )
+
+    def scenario_commit(
+        name: str,
+        parent: str,
+        *,
+        path: str,
+        content: bytes | None = None,
+        executable: bool = False,
+    ) -> tuple[Path, str]:
+        worktree = tmp_path / f"{name}-worktree"
+        subprocess.run(
+            [
+                "/usr/bin/git",
+                "clone",
+                "--quiet",
+                "--no-hardlinks",
+                str(repository),
+                str(worktree),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        if parent != revision:
+            _git(worktree, "fetch", "--quiet", str(product_remote), parent)
+        _git(worktree, "checkout", "--quiet", "--detach", parent)
+        _git(worktree, "config", "user.name", "Offline Proof")
+        _git(worktree, "config", "user.email", "offline-proof@example.invalid")
+        target = worktree / path
+        if content is not None:
+            target.write_bytes(content)
+        if executable:
+            target.chmod(target.stat().st_mode | 0o111)
+        _git(worktree, "add", "-A")
+        _git(worktree, "commit", "--quiet", "-m", name)
+        return worktree, _git(worktree, "rev-parse", "HEAD")
+
+    def scenario_remote(
+        name: str, parent: str, *, path: str, content=None, executable=False
+    ):
+        remote = tmp_path / f"{name}-remote.git"
+        create_fake_bare_remote(remote, repository, revision)
+        worktree, commit = scenario_commit(
+            name, parent, path=path, content=content, executable=executable
+        )
+        _git(worktree, "push", str(remote), f"{commit}:refs/heads/main")
+        return remote, worktree, commit
+
     remote_url = "https://github.com/offline-owner/offline-repository.git"
     _git(repository, "remote", "add", "origin", remote_url)
     fake_bin = tmp_path / "fake-bin"
@@ -2558,6 +2616,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         + textwrap.dedent(
             """\
             import os
+            import subprocess
             import sys
 
             args = sys.argv[1:]
@@ -2568,7 +2627,16 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             if 'push' in args:
                 with open(os.environ['AI_OFFICE_TEST_PUSH_LOG'], 'a') as stream:
                     stream.write('push\\n')
-            os.execv('/usr/bin/git', ['/usr/bin/git', *args])
+            result = subprocess.run(['/usr/bin/git', *args], check=False)
+            if result.returncode:
+                raise SystemExit(result.returncode)
+            move_sha = os.environ.get('AI_OFFICE_TEST_MOVE_MAIN_AFTER_PUSH_SHA')
+            if 'push' in args and move_sha:
+                subprocess.run([
+                    '/usr/bin/git', '--git-dir',
+                    os.environ['AI_OFFICE_TEST_REMOTE_PATH'],
+                    'update-ref', 'refs/heads/main', move_sha,
+                ], check=True)
             """
         ),
         encoding="utf-8",
@@ -2680,6 +2748,9 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                         item for item in state()['prs']
                         if item['number'] == number
                     )
+                    record = dict(record)
+                    record['base'] = dict(record['base'])
+                    record['base']['sha'] = git('rev-parse', 'refs/heads/main')
                     print(json.dumps({
                         key: value for key, value in record.items()
                         if key != 'files'
@@ -2690,11 +2761,21 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 data = state()
                 branch = option('--head')
                 base = option('--base')
+                move_sha = os.environ.get(
+                    'AI_OFFICE_TEST_MOVE_MAIN_DURING_PR_CREATE_SHA'
+                )
+                if move_sha:
+                    git('update-ref', 'refs/heads/main', move_sha)
+                if os.environ.get('AI_OFFICE_TEST_FAIL_PR_CREATE') == '1':
+                    data['events'].append('create_attempt_failed')
+                    save(data)
+                    raise SystemExit(1)
                 head_sha = git('rev-parse', 'refs/heads/' + branch)
                 base_sha = git('rev-parse', 'refs/heads/' + base)
+                merge_base = git('merge-base', base_sha, head_sha)
                 changed = git(
                     'diff-tree', '--no-commit-id', '--name-only', '-r',
-                    base_sha, head_sha,
+                    merge_base, head_sha,
                 ).splitlines()
                 number = len(data['prs']) + 1
                 url = (
@@ -2761,74 +2842,197 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         "--yes",
     ]
 
-    # A pre-existing PR from this exact head repository is a safe conflict.
-    gh_state_path.write_text(
-        json.dumps(
-            {
-                "events": [],
-                "prs": [
-                    {
-                        "number": 99,
-                        "html_url": "https://github.com/offline-owner/offline-repository/pull/99",
-                        "state": "open",
-                        "draft": True,
-                        "base": {"ref": "main", "sha": revision},
-                        "head": {
-                            "ref": product_branch,
-                            "sha": revision,
-                            "repo": {
-                                "full_name": "offline-owner/offline-repository"
-                            },
-                        },
-                    }
-                ],
-                "queries": [],
-            }
-        ),
-        encoding="utf-8",
+    def invoke_delivery(
+        remote: Path,
+        run_store: Path,
+        name: str,
+        *,
+        initial_prs: list[dict[str, object]] | None = None,
+        move_after_push: str | None = None,
+        move_during_create: str | None = None,
+        fail_create: bool = False,
+    ):
+        state_path = tmp_path / f"{name}-gh-state.json"
+        push_log = tmp_path / f"{name}-push.log"
+        monkeypatch.setenv("AI_OFFICE_TEST_REMOTE_PATH", str(remote))
+        monkeypatch.setenv("AI_OFFICE_TEST_PUSH_LOG", str(push_log))
+        monkeypatch.setenv("AI_OFFICE_TEST_GH_STATE", str(state_path))
+        monkeypatch.setenv(
+            "AI_OFFICE_TEST_MOVE_MAIN_AFTER_PUSH_SHA", move_after_push or ""
+        )
+        monkeypatch.setenv(
+            "AI_OFFICE_TEST_MOVE_MAIN_DURING_PR_CREATE_SHA",
+            move_during_create or "",
+        )
+        monkeypatch.setenv("AI_OFFICE_TEST_FAIL_PR_CREATE", "1" if fail_create else "0")
+        state_path.write_text(
+            json.dumps({"events": [], "prs": initial_prs or [], "queries": []}),
+            encoding="utf-8",
+        )
+        run_command = [
+            *command[:5],
+            str(run_store),
+            "--yes",
+        ]
+        result = _CLI_RUNNER.invoke(app, run_command)
+        return result, state_path, push_log
+
+    # Delivery accepts unrelated main commits but fails closed for either a
+    # changed blob or a changed executable mode on an Artifact target path.
+    for name, content, executable in (
+        ("content-conflict", b"def answer():\n    return 99\n", False),
+        ("mode-conflict", None, True),
+    ):
+        conflict_remote, _conflict_worktree, _conflict_sha = scenario_remote(
+            name,
+            revision,
+            path="calculator.py",
+            content=content,
+            executable=executable,
+        )
+        conflict_store = tmp_path / f"{name}-run-store"
+        shutil.copytree(store.root, conflict_store)
+        conflict, _conflict_state, conflict_push_log = invoke_delivery(
+            conflict_remote, conflict_store, name
+        )
+        assert conflict.exit_code != 0
+        assert "delivery_base_preimage_mismatch" in conflict.output
+        assert not conflict_push_log.exists()
+        assert not (
+            conflict_store / f"{scope.job_id}.draft-pr-delivery.attempt.json"
+        ).exists()
+
+    # A main move observed after push keeps the pushed branch and records a
+    # stop; it does not create a PR or retry the delivery.
+    moved_worktree, moved_main_sha = scenario_commit(
+        "push-race",
+        delivery_base_sha,
+        path="after-push.txt",
+        content=b"main advanced after the push\n",
     )
-    collision = _CLI_RUNNER.invoke(app, command)
+    push_race_remote = tmp_path / "push-race-remote.git"
+    create_fake_bare_remote(push_race_remote, repository, revision)
+    _git(
+        moved_worktree,
+        "push",
+        str(push_race_remote),
+        f"{moved_main_sha}:refs/heads/move-candidate",
+    )
+    _git(push_race_remote, "update-ref", "refs/heads/main", delivery_base_sha)
+    push_race_store = tmp_path / "push-race-run-store"
+    shutil.copytree(store.root, push_race_store)
+    push_race, push_race_state, push_race_log = invoke_delivery(
+        push_race_remote,
+        push_race_store,
+        "push-race",
+        move_after_push=moved_main_sha,
+    )
+    assert push_race.exit_code != 0
+    assert "remote_base_moved_after_push" in push_race.output
+    assert _git(push_race_remote, "rev-parse", f"refs/heads/{product_branch}")
+    push_race_record = json.loads(
+        (push_race_store / f"{scope.job_id}.draft-pr-delivery.stop.json").read_text()
+    )
+    assert push_race_record["classification"] == "remote_base_moved_after_push"
+    assert push_race_record["stage"] == "push_verify"
+    assert json.loads(push_race_state.read_text())["prs"] == []
+    assert push_race_log.read_text().splitlines() == ["push"]
+
+    # A failed/ambiguous PR create response with no provable PR is a stopped
+    # attempt, never success; the already pushed branch remains observable.
+    ambiguous_remote = tmp_path / "ambiguous-remote.git"
+    create_fake_bare_remote(ambiguous_remote, repository, revision)
+    _git(
+        delivery_worktree,
+        "push",
+        str(ambiguous_remote),
+        f"{delivery_base_sha}:refs/heads/main",
+    )
+    ambiguous_store = tmp_path / "ambiguous-run-store"
+    shutil.copytree(store.root, ambiguous_store)
+    ambiguous, ambiguous_state, ambiguous_log = invoke_delivery(
+        ambiguous_remote, ambiguous_store, "ambiguous", fail_create=True
+    )
+    assert ambiguous.exit_code != 0
+    assert "draft_pr_result_unknown_no_retry" in ambiguous.output
+    assert _git(ambiguous_remote, "rev-parse", f"refs/heads/{product_branch}")
+    assert json.loads(ambiguous_state.read_text())["prs"] == []
+    assert ambiguous_log.read_text().splitlines() == ["push"]
+    assert (ambiguous_store / f"{scope.job_id}.draft-pr-delivery.stop.json").exists()
+
+    # A pre-existing PR from this exact head repository is a safe conflict.
+    existing_pr = {
+        "number": 99,
+        "html_url": "https://github.com/offline-owner/offline-repository/pull/99",
+        "state": "open",
+        "draft": True,
+        "base": {"ref": "main", "sha": delivery_base_sha},
+        "head": {
+            "ref": product_branch,
+            "sha": revision,
+            "repo": {"full_name": "offline-owner/offline-repository"},
+        },
+    }
+    collision, gh_state_path, collision_push_log = invoke_delivery(
+        product_remote, store.root, "collision", initial_prs=[existing_pr]
+    )
     assert collision.exit_code != 0
     assert "target_pull_request_already_exists" in collision.output
     collision_state = json.loads(gh_state_path.read_text(encoding="utf-8"))
     assert collision_state["queries"] == [
         {"head": f"offline-owner:{product_branch}", "matches": 1}
     ]
-    assert not (tmp_path / "push.log").exists()
+    assert not collision_push_log.exists()
     assert not (store.root / f"{scope.job_id}.draft-pr-delivery.attempt.json").exists()
 
-    # Reset the fake remote's PR state for the successful delivery scenario.
-    gh_state_path.write_text(
-        json.dumps(
-            {
-                "events": [],
-                "prs": [
-                    {
-                        "number": 98,
-                        "html_url": "https://github.com/offline-owner/other-repository/pull/98",
-                        "state": "open",
-                        "draft": True,
-                        "base": {"ref": "main", "sha": revision},
-                        "head": {
-                            "ref": product_branch,
-                            "sha": revision,
-                            "repo": {
-                                "full_name": "offline-owner/other-repository"
-                            },
-                        },
-                    }
-                ],
-                "queries": [],
-            }
-        ),
-        encoding="utf-8",
+    moved_main_sha = _git(moved_worktree, "rev-parse", "HEAD")
+    _git(
+        moved_worktree,
+        "push",
+        str(product_remote),
+        f"{moved_main_sha}:refs/heads/move-source",
     )
-    delivered = _CLI_RUNNER.invoke(app, command)
+    advanced_worktree, advanced_main_sha = scenario_commit(
+        "post-delivery-main",
+        moved_main_sha,
+        path="later-main-change.txt",
+        content=b"main advanced after PR creation\n",
+    )
+    _git(
+        advanced_worktree,
+        "push",
+        str(product_remote),
+        f"{advanced_main_sha}:refs/heads/advanced-source",
+    )
+    other_pr = {
+        "number": 98,
+        "html_url": "https://github.com/offline-owner/other-repository/pull/98",
+        "state": "open",
+        "draft": True,
+        "base": {"ref": "main", "sha": delivery_base_sha},
+        "head": {
+            "ref": product_branch,
+            "sha": revision,
+            "repo": {"full_name": "offline-owner/other-repository"},
+        },
+    }
+    delivered, gh_state_path, delivery_push_log = invoke_delivery(
+        product_remote,
+        store.root,
+        "delivered",
+        initial_prs=[other_pr],
+        move_during_create=moved_main_sha if needs_revision else None,
+    )
     assert delivered.exit_code == 0, delivered.output
     delivery_result = json.loads(delivered.stdout.splitlines()[-1])
     assert delivery_result["status"] == "completed"
     assert delivery_result["artifact_id"] == outcome.final_artifact_id
-    assert delivery_result["base_sha"] == revision
+    assert delivery_result["artifact_base_sha"] == revision
+    assert delivery_result["delivery_base_sha"] == delivery_base_sha
+    assert delivery_result["base_sha"] == delivery_base_sha
+    assert delivery_result["pr_base_sha"] == (
+        moved_main_sha if needs_revision else delivery_base_sha
+    )
     assert delivery_result["branch"] == product_branch
     assert delivery_result["pr_url"].endswith("/pull/2")
     assert delivery_result["reconciled_read_only"] is needs_revision
@@ -2839,20 +3043,25 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     )
     assert (
         _git(product_remote, "show", "-s", "--format=%P", delivery_result["commit_sha"])
-        == revision
+        == delivery_base_sha
     )
-    assert _git(product_remote, "rev-parse", "refs/heads/main") == revision
+    assert _git(product_remote, "rev-parse", "refs/heads/main") == (
+        moved_main_sha if needs_revision else delivery_base_sha
+    )
+    assert _git(
+        product_remote, "show", "-s", "--format=%T", delivery_result["commit_sha"]
+    )
     assert (repository / "calculator.py").read_bytes() == source
     assert (
         _git(repository, "status", "--porcelain=v1", "--untracked-files=all")
         == worktree_before
     )
     assert _git(repository, "rev-parse", "HEAD") == head_before
-    gh_state = json.loads((tmp_path / "gh-state.json").read_text(encoding="utf-8"))
+    gh_state = json.loads(gh_state_path.read_text(encoding="utf-8"))
     assert gh_state["events"] == (
         ["create", "create_response_dropped"] if needs_revision else ["create"]
     )
-    assert [query["matches"] for query in gh_state["queries"]] == [1, 1, 2]
+    assert gh_state["queries"]
     assert all(
         query["head"] == f"offline-owner:{product_branch}"
         for query in gh_state["queries"]
@@ -2860,7 +3069,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     pull_request = gh_state["prs"][1]
     assert pull_request["draft"] is True
     assert pull_request["base"]["ref"] == "main"
-    assert pull_request["base"]["sha"] == revision
+    assert pull_request["base"]["sha"] == delivery_result["pr_base_sha"]
     assert pull_request["head"]["ref"] == product_branch
     assert pull_request["head"]["sha"] == delivery_result["commit_sha"]
     assert pull_request["head"]["repo"]["full_name"] == (
@@ -2869,18 +3078,32 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     assert f"AI-Office-Issue: {issue_url}" in pull_request["body"]
     assert "Closes #805" not in pull_request["body"]
     assert "Fixes #805" not in pull_request["body"]
-    assert (tmp_path / "push.log").read_text(encoding="utf-8").splitlines() == ["push"]
+    assert f"AI-Office-Artifact-Base-SHA: {revision}" in pull_request["body"]
+    assert f"AI-Office-Delivery-Base-SHA: {delivery_base_sha}" in pull_request["body"]
+    assert delivery_push_log.read_text(encoding="utf-8").splitlines() == ["push"]
+
+    # Main can advance after a confirmed PR without invalidating delivery; a
+    # fresh read reports the current PR base separately from the pinned base.
+    _git(product_remote, "update-ref", "refs/heads/main", advanced_main_sha)
 
     # Re-running proves the exact recorded result with reads only.
-    replay = _CLI_RUNNER.invoke(app, command)
+    replay, replay_state_path, replay_push_log = invoke_delivery(
+        product_remote,
+        store.root,
+        "replay",
+        initial_prs=gh_state["prs"],
+    )
     assert replay.exit_code == 0, replay.output
     replay_result = json.loads(replay.stdout.splitlines()[-1])
     assert replay_result["commit_sha"] == delivery_result["commit_sha"]
+    assert replay_result["delivery_base_sha"] == delivery_base_sha
+    assert replay_result["pr_base_sha"] == advanced_main_sha
     assert replay_result["reconciled_read_only"] is True
-    replay_state = json.loads(gh_state_path.read_text(encoding="utf-8"))
-    assert replay_state["events"] == gh_state["events"]
-    assert [query["matches"] for query in replay_state["queries"]] == [1, 1, 2, 2]
-    assert (tmp_path / "push.log").read_text(encoding="utf-8").splitlines() == ["push"]
+    replay_state = json.loads(replay_state_path.read_text(encoding="utf-8"))
+    assert replay_state["events"] == []
+    assert not replay_push_log.exists()
+    for filename, original_bytes in run_snapshot_before.items():
+        assert (store.root / filename).read_bytes() == original_bytes
     expired = issue_test_delivery_grant(
         store,
         scope,
