@@ -294,6 +294,7 @@ def test_snapshot_cli_writes_once_and_partial_exits_nonzero(
     assert json.loads(partial_result.stdout)["collection_status"] == "partial"
 
 
+@pytest.mark.parametrize("delivery_base_advanced", [False, True])
 @pytest.mark.parametrize(
     ("pull_overrides", "checks", "unavailable", "expected_error", "expected_ci"),
     [
@@ -388,6 +389,7 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
     unavailable: list[str],
     expected_error: str | None,
     expected_ci: str | None,
+    delivery_base_advanced: bool,
 ) -> None:
     issue_url = "https://github.com/example/acme-widget/issues/10"
     pull_url = "https://github.com/example/acme-widget/pull/20"
@@ -424,8 +426,17 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
         f"AI-Office-Artifact-SHA256: {artifact.content_sha256}",
         f"AI-Office-Verification-Evidence-SHA256: {evidence_sha256}",
         f"AI-Office-Diff-SHA256: {diff_sha256}",
-        f"AI-Office-Issue: {issue_url}",
     ]
+    delivery_base_sha = "d" * 40 if delivery_base_advanced else BASE_SHA
+    current_pr_base_sha = "c" * 40 if delivery_base_advanced else BASE_SHA
+    if delivery_base_advanced:
+        body_markers.extend(
+            [
+                f"AI-Office-Artifact-Base-SHA: {BASE_SHA}",
+                f"AI-Office-Delivery-Base-SHA: {delivery_base_sha}",
+            ]
+        )
+    body_markers.append(f"AI-Office-Issue: {issue_url}")
     attempt = {
         "artifact_run_id": artifact.run_id,
         "artifact_id": artifact.artifact_id,
@@ -447,6 +458,15 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
         "body_markers": body_markers,
         "schema_version": "ai-office-draft-pr-attempt.v1",
     }
+    if delivery_base_advanced:
+        attempt.pop("base_sha")
+        attempt.update(
+            {
+                "artifact_base_sha": BASE_SHA,
+                "delivery_base_sha": delivery_base_sha,
+                "schema_version": "ai-office-draft-pr-attempt.v2",
+            }
+        )
     result = {
         "attempt_sha256": cli_module.sha256(
             cli_module._draft_pr_canonical(attempt)
@@ -462,8 +482,17 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
         "pr_url": pull_url,
         "repository": "example/acme-widget",
         "status": "completed",
-        "schema_version": "ai-office-draft-pr-result.v1",
+        "schema_version": (
+            "ai-office-draft-pr-result.v2"
+            if delivery_base_advanced
+            else "ai-office-draft-pr-result.v1"
+        ),
     }
+    if delivery_base_advanced:
+        result.pop("base_sha")
+        result["artifact_base_sha"] = BASE_SHA
+        result["delivery_base_sha"] = delivery_base_sha
+        result["pr_base_sha"] = current_pr_base_sha
     assignment = {
         "request": json.dumps(
             {"issue": {"number": 10, "url": issue_url}}, sort_keys=True
@@ -504,7 +533,7 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
         "pull_request": {
             "base_ref": "main",
             "base_repository": "example/acme-widget",
-            "base_sha": BASE_SHA,
+            "base_sha": current_pr_base_sha,
             "body": "\n".join(body_markers),
             "changed_files": [{"filename": "src/widget/validation.py"}],
             "draft": True,
@@ -530,7 +559,7 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
         ),
         collection_status="complete",
         head_sha=HEAD_SHA,
-        base_sha=BASE_SHA,
+        base_sha=current_pr_base_sha,
         unavailable_fields=(),
     )
     collected: list[dict[str, object]] = []
@@ -563,6 +592,11 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
     assert value["delivery"]["status"] == "completed"
     assert value["pull_request"]["draft"] is True
     assert value["pull_request"]["head_sha"] == HEAD_SHA
+    assert value["pull_request"]["artifact_base_sha"] == BASE_SHA
+    assert value["pull_request"]["delivery_base_sha"] == delivery_base_sha
+    assert value["pull_request"]["pr_base_sha_recorded"] == current_pr_base_sha
+    assert value["pull_request"]["current_pr_base_sha"] == current_pr_base_sha
+    assert value["pull_request"]["pr_base_sha"] == current_pr_base_sha
     assert value["ci"]["head_sha"] == HEAD_SHA
     assert value["ci"]["status"] == expected_ci
     assert len(collected) == 1

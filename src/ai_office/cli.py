@@ -2956,6 +2956,27 @@ def _draft_pr_ls_remote(repository: Path, remote_url: str, ref: str) -> str | No
     return rows[0][0]
 
 
+def _draft_pr_tree_blob(
+    repository: Path, revision: str, path: str
+) -> tuple[str, bytes]:
+    entry = _draft_pr_git(
+        repository, "ls-tree", "-z", "--full-tree", revision, "--", path
+    )
+    rows = [item for item in entry.split(b"\x00") if item]
+    if len(rows) != 1:
+        raise _DraftPRDeliveryError("change_preimage_missing")
+    header, raw_path = rows[0].split(b"\t", 1)
+    mode, object_type, object_id = header.split(b" ")
+    if (
+        raw_path.decode("utf-8") != path
+        or object_type != b"blob"
+        or mode not in {b"100644", b"100755"}
+    ):
+        raise _DraftPRDeliveryError("change_preimage_invalid")
+    content = _draft_pr_git(repository, "cat-file", "blob", object_id.decode("ascii"))
+    return mode.decode("ascii"), content
+
+
 def _draft_pr_head_is_from_repository(
     record: dict[str, object], repository: str
 ) -> bool:
@@ -3041,7 +3062,6 @@ def _draft_pr_pr_matches(
     *,
     repository: str,
     base_ref: str,
-    base_sha: str,
     branch: str,
     head_sha: str,
     body_markers: tuple[str, ...],
@@ -3058,7 +3078,8 @@ def _draft_pr_pr_matches(
         and record.get("draft") is True
         and type(base) is dict
         and base.get("ref") == base_ref
-        and base.get("sha") == base_sha
+        and type(base.get("sha")) is str
+        and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", base["sha"])
         and type(head) is dict
         and head.get("ref") == branch
         and head.get("sha") == head_sha
@@ -3145,20 +3166,28 @@ def _draft_pr_confirmed_result(
     paths: set[str],
 ) -> dict[str, object]:
     branch_ref = f"refs/heads/{branch}"
-    base_ref_full = f"refs/heads/{base_ref}"
-    base_sha = attempt.get("base_sha")
+    schema_version = attempt.get("schema_version")
+    legacy = schema_version == "ai-office-draft-pr-attempt.v1"
+    artifact_base_sha = (
+        attempt.get("base_sha") if legacy else attempt.get("artifact_base_sha")
+    )
+    delivery_base_sha = (
+        attempt.get("base_sha") if legacy else attempt.get("delivery_base_sha")
+    )
     commit_sha = attempt.get("commit_sha")
     tree_sha = attempt.get("tree_sha")
     commit_message = attempt.get("commit_message")
     markers = attempt.get("body_markers")
     if (
-        type(base_sha) is not str
+        type(artifact_base_sha) is not str
+        or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", artifact_base_sha)
+        or type(delivery_base_sha) is not str
+        or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", delivery_base_sha)
         or type(commit_sha) is not str
         or type(tree_sha) is not str
         or type(commit_message) is not str
         or type(markers) is not list
         or any(type(item) is not str for item in markers)
-        or _draft_pr_ls_remote(repository_path, remote_url, base_ref_full) != base_sha
     ):
         raise _DraftPRDeliveryError("prior_delivery_not_confirmed")
     _draft_pr_verify_remote_commit(
@@ -3166,7 +3195,7 @@ def _draft_pr_confirmed_result(
         remote_url,
         branch_ref,
         expected_sha=commit_sha,
-        base_sha=base_sha,
+        base_sha=delivery_base_sha,
         tree_sha=tree_sha,
         message=commit_message,
         paths=paths,
@@ -3184,7 +3213,6 @@ def _draft_pr_confirmed_result(
         record,
         repository=repo_name,
         base_ref=base_ref,
-        base_sha=base_sha,
         branch=branch,
         head_sha=commit_sha,
         body_markers=tuple(markers),
@@ -3192,9 +3220,34 @@ def _draft_pr_confirmed_result(
         actual_paths=_draft_pr_read_pr_files(repo_name, record["number"]),
     ):
         raise _DraftPRDeliveryError("prior_draft_pr_not_confirmed")
+    pr_base = record.get("base")
+    pr_base_sha = pr_base.get("sha") if type(pr_base) is dict else None
+    if type(pr_base_sha) is not str or not re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", pr_base_sha
+    ):
+        raise _DraftPRDeliveryError("prior_draft_pr_not_confirmed")
+    if legacy:
+        return {
+            "base_ref": base_ref,
+            "base_sha": delivery_base_sha,
+            "branch": branch,
+            "commit_sha": commit_sha,
+            "diff_sha256": attempt["diff_sha256"],
+            "job_id": attempt["job_id"],
+            "artifact_id": attempt["artifact_id"],
+            "artifact_sha256": attempt["artifact_sha256"],
+            "pr_url": url,
+            "repository": repo_name,
+            "reconciled_read_only": True,
+            "status": "completed",
+            "tree_sha": tree_sha,
+        }
     return {
+        "artifact_base_sha": artifact_base_sha,
         "base_ref": base_ref,
-        "base_sha": base_sha,
+        "base_sha": delivery_base_sha,
+        "delivery_base_sha": delivery_base_sha,
+        "pr_base_sha": pr_base_sha,
         "branch": branch,
         "commit_sha": commit_sha,
         "diff_sha256": attempt["diff_sha256"],
@@ -3205,6 +3258,7 @@ def _draft_pr_confirmed_result(
         "repository": repo_name,
         "reconciled_read_only": True,
         "status": "completed",
+        "schema_version": "ai-office-draft-pr-result.v2",
         "tree_sha": tree_sha,
     }
 
@@ -3394,27 +3448,11 @@ def _draft_pr_load_candidate(
             path = change["path"]
             if "\n" in path or "\r" in path:
                 raise _DraftPRDeliveryError("change_path_invalid")
-            entry = _draft_pr_git(
-                git_repository, "ls-tree", "-z", "--full-tree", base_sha, "--", path
-            )
-            rows = [item for item in entry.split(b"\x00") if item]
-            if len(rows) != 1:
-                raise _DraftPRDeliveryError("change_preimage_missing")
-            header, raw_path = rows[0].split(b"\t", 1)
-            mode, object_type, object_id = header.split(b" ")
-            if (
-                raw_path.decode("utf-8") != path
-                or object_type != b"blob"
-                or mode not in {b"100644", b"100755"}
-            ):
-                raise _DraftPRDeliveryError("change_preimage_invalid")
-            before = _draft_pr_git(
-                git_repository, "cat-file", "blob", object_id.decode("ascii")
-            )
+            mode, before = _draft_pr_tree_blob(git_repository, base_sha, path)
             if sha256(before).hexdigest() != change["before_sha256"]:
                 raise _DraftPRDeliveryError("change_preimage_mismatch")
             before_by_path[path] = before
-            tree_modes[path] = mode.decode("ascii")
+            tree_modes[path] = mode
         expected_diff = "".join(
             line
             for change in sorted(changes, key=lambda item: item["path"])
@@ -3441,6 +3479,7 @@ def _draft_pr_load_candidate(
         raise _DraftPRDeliveryError("verification_diff_mismatch")
     return {
         "artifact": artifact,
+        "artifact_base_sha": base_sha,
         "authorization": authorization,
         "base_sha": base_sha,
         "changes": changes,
@@ -3638,6 +3677,7 @@ def _draft_pr_pr_body(
     review_artifact: WorkflowArtifact,
     base_ref: str,
     base_sha: str,
+    artifact_base_sha: str,
     branch: str,
     commit_sha: str,
     tree_sha: str,
@@ -3654,6 +3694,8 @@ def _draft_pr_pr_body(
         f"AI-Office-Artifact-SHA256: {artifact.content_sha256}",
         f"AI-Office-Verification-Evidence-SHA256: {evidence_sha256}",
         f"AI-Office-Diff-SHA256: {diff_sha256}",
+        f"AI-Office-Artifact-Base-SHA: {artifact_base_sha}",
+        f"AI-Office-Delivery-Base-SHA: {base_sha}",
     )
     if issue_url is not None and issue_number is not None:
         markers = (*markers, f"AI-Office-Issue: {issue_url}")
@@ -3683,7 +3725,8 @@ def _draft_pr_pr_body(
                 f"({review_artifact.content_sha256})"
             ),
             f"- Local verification Evidence SHA-256: `{evidence_sha256}`",
-            f"- Target: `{repo_name}` / `{base_ref}` at `{base_sha}`",
+            f"- Artifact edit base: `{artifact_base_sha}`",
+            f"- Delivery base: `{repo_name}` / `{base_ref}` at `{base_sha}`",
             f"- New head: `{branch}` at `{commit_sha}` (tree `{tree_sha}`)",
             f"- Verified diff SHA-256: `{diff_sha256}`",
             f"- Changed paths: {', '.join(f'`{path}`' for path in sorted(paths))}",
@@ -3809,16 +3852,18 @@ def deliver_verified_artifact_as_draft_pr(
         review_artifact = source["review_artifact"]
         evidence = source["evidence"]
         paths = source["paths"]
-        base_sha = source["base_sha"]
-        tree_sha = _draft_pr_build_tree(
-            git_root,
-            base_sha=base_sha,
-            changes=source["changes"],
-            tree_modes=source["tree_modes"],
-        )
+        artifact_base_sha = source["base_sha"]
         initial_worktree_status = _draft_pr_git(
             git_root, "status", "--porcelain=v1", "--untracked-files=all"
         )
+        record_prefix = f"{job_id}.draft-pr-delivery"
+        attempt_path = store.root / f"{record_prefix}.attempt.json"
+        result_path = store.root / f"{record_prefix}.result.json"
+        stop_path = store.root / f"{record_prefix}.stop.json"
+        attempt = _draft_pr_read_record(attempt_path)
+        prior_result = _draft_pr_read_record(result_path)
+        if prior_result is not None and attempt is None:
+            raise _DraftPRDeliveryError("delivery_record_invalid")
 
         _draft_pr_gh("auth", "status", "--hostname", "github.com")
         try:
@@ -3844,12 +3889,79 @@ def deliver_verified_artifact_as_draft_pr(
         )
         if _draft_pr_repo_from_url(remote_url) != repo_name:
             raise _DraftPRDeliveryError("git_remote_identity_mismatch")
-        _draft_pr_git(git_root, "cat-file", "-e", f"{base_sha}^{{commit}}")
         _draft_pr_git(git_root, "check-ref-format", "--branch", base_ref)
         base_ref_full = f"refs/heads/{base_ref}"
         branch_ref = f"refs/heads/{branch}"
-        if _draft_pr_ls_remote(git_root, remote_url, base_ref_full) != base_sha:
-            raise _DraftPRDeliveryError("remote_base_moved_or_mismatched")
+        legacy_attempt = (
+            attempt is not None
+            and attempt.get("schema_version") == "ai-office-draft-pr-attempt.v1"
+        )
+        if attempt is not None:
+            if legacy_attempt:
+                delivery_base_sha = attempt.get("base_sha")
+                if delivery_base_sha != artifact_base_sha:
+                    raise _DraftPRDeliveryError("prior_delivery_target_mismatch")
+            elif attempt.get("schema_version") == "ai-office-draft-pr-attempt.v2":
+                delivery_base_sha = attempt.get("delivery_base_sha")
+                if attempt.get("artifact_base_sha") != artifact_base_sha:
+                    raise _DraftPRDeliveryError("prior_delivery_target_mismatch")
+            else:
+                raise _DraftPRDeliveryError("delivery_record_invalid")
+            if type(delivery_base_sha) is not str:
+                raise _DraftPRDeliveryError("delivery_record_invalid")
+            if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", delivery_base_sha):
+                raise _DraftPRDeliveryError("delivery_record_invalid")
+            try:
+                _draft_pr_git(
+                    git_root, "cat-file", "-e", f"{delivery_base_sha}^{{commit}}"
+                )
+            except _DraftPRDeliveryError:
+                _draft_pr_git(
+                    git_root,
+                    "fetch",
+                    "--no-tags",
+                    "--no-write-fetch-head",
+                    remote_url,
+                    base_ref_full,
+                    timeout=120,
+                )
+                _draft_pr_git(
+                    git_root, "cat-file", "-e", f"{delivery_base_sha}^{{commit}}"
+                )
+        else:
+            delivery_base_sha = _draft_pr_ls_remote(git_root, remote_url, base_ref_full)
+            if type(delivery_base_sha) is not str:
+                raise _DraftPRDeliveryError("remote_base_unavailable")
+            _draft_pr_git(
+                git_root,
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                remote_url,
+                base_ref_full,
+                timeout=120,
+            )
+            _draft_pr_git(git_root, "cat-file", "-e", f"{delivery_base_sha}^{{commit}}")
+            if (
+                _draft_pr_ls_remote(git_root, remote_url, base_ref_full)
+                != delivery_base_sha
+            ):
+                raise _DraftPRDeliveryError("remote_base_moved_or_mismatched")
+        for change in source["changes"]:
+            delivery_mode, delivery_content = _draft_pr_tree_blob(
+                git_root, delivery_base_sha, change["path"]
+            )
+            if (
+                delivery_mode != source["tree_modes"][change["path"]]
+                or sha256(delivery_content).hexdigest() != change["before_sha256"]
+            ):
+                raise _DraftPRDeliveryError("delivery_base_preimage_mismatch")
+        tree_sha = _draft_pr_build_tree(
+            git_root,
+            base_sha=delivery_base_sha,
+            changes=source["changes"],
+            tree_modes=source["tree_modes"],
+        )
         _draft_pr_git(git_root, "check-ref-format", "--branch", branch)
         protection = _draft_pr_api_protection(repo_name, base_ref)
 
@@ -3858,7 +3970,8 @@ def deliver_verified_artifact_as_draft_pr(
             "artifact_run_id": artifact.run_id,
             "artifact_sha256": artifact.content_sha256,
             "base_ref": base_ref,
-            "base_sha": base_sha,
+            "artifact_base_sha": artifact_base_sha,
+            "delivery_base_sha": delivery_base_sha,
             "branch": branch,
             "diff_sha256": evidence["diff_sha256"],
             "evidence_sha256": source["evidence_sha256"],
@@ -3871,22 +3984,16 @@ def deliver_verified_artifact_as_draft_pr(
             "source_manifest_digest": source["manifest"].digest,
             "tree_sha": tree_sha,
         }
+        if legacy_attempt:
+            plan.pop("artifact_base_sha")
+            plan.pop("delivery_base_sha")
+            plan["base_sha"] = artifact_base_sha
         if source["issue_url"] is not None:
             plan["issue_number"] = source["issue_number"]
             plan["issue_url"] = source["issue_url"]
-        record_prefix = f"{job_id}.draft-pr-delivery"
-        attempt_path = store.root / f"{record_prefix}.attempt.json"
-        result_path = store.root / f"{record_prefix}.result.json"
-        stop_path = store.root / f"{record_prefix}.stop.json"
-        attempt = _draft_pr_read_record(attempt_path)
-        prior_result = _draft_pr_read_record(result_path)
-        if prior_result is not None and attempt is None:
-            raise _DraftPRDeliveryError("delivery_record_invalid")
         if attempt is not None:
             if any(attempt.get(key) != value for key, value in plan.items()):
                 raise _DraftPRDeliveryError("prior_delivery_target_mismatch")
-            if attempt.get("schema_version") != "ai-office-draft-pr-attempt.v1":
-                raise _DraftPRDeliveryError("delivery_record_invalid")
             if prior_result is not None:
                 if (
                     prior_result.get("attempt_sha256")
@@ -3899,7 +4006,7 @@ def deliver_verified_artifact_as_draft_pr(
                 if any(
                     prior_result.get(key) != value
                     for key, value in confirmed.items()
-                    if key not in {"reconciled_read_only"}
+                    if key not in {"reconciled_read_only", "pr_base_sha"}
                 ):
                     raise _DraftPRDeliveryError("stored_delivery_result_mismatch")
                 _emit_json({"operation": "draft-pr", **confirmed})
@@ -3925,7 +4032,11 @@ def deliver_verified_artifact_as_draft_pr(
                 {
                     **confirmed,
                     "attempt_sha256": sha256(_draft_pr_canonical(attempt)).hexdigest(),
-                    "schema_version": "ai-office-draft-pr-result.v1",
+                    "schema_version": (
+                        "ai-office-draft-pr-result.v1"
+                        if legacy_attempt
+                        else "ai-office-draft-pr-result.v2"
+                    ),
                 },
             )
             _emit_json({"operation": "draft-pr", **confirmed})
@@ -3968,7 +4079,8 @@ def deliver_verified_artifact_as_draft_pr(
             )
         typer.echo(f"Job: {job_id} ({source['job_status']})")
         typer.echo(f"Repository: {repo_name}")
-        typer.echo(f"Base: {base_ref} @ {base_sha}")
+        typer.echo(f"Artifact edit base: {artifact_base_sha}")
+        typer.echo(f"Delivery base: {base_ref} @ {delivery_base_sha}")
         typer.echo(f"New branch: {branch}")
         typer.echo(
             f"Artifact: {artifact.run_id}/{artifact.artifact_id} "
@@ -4006,7 +4118,8 @@ def deliver_verified_artifact_as_draft_pr(
         ):
             raise _DraftPRDeliveryError("candidate_changed_after_confirmation")
         if (
-            _draft_pr_ls_remote(git_root, remote_url, base_ref_full) != base_sha
+            _draft_pr_ls_remote(git_root, remote_url, base_ref_full)
+            != delivery_base_sha
             or _draft_pr_ls_remote(git_root, remote_url, branch_ref) is not None
             or _draft_pr_git(
                 git_root,
@@ -4031,19 +4144,22 @@ def deliver_verified_artifact_as_draft_pr(
             f"AI-Office-Artifact-SHA256: {artifact.content_sha256}",
             f"AI-Office-Verification-Evidence-SHA256: {source['evidence_sha256']}",
             f"AI-Office-Diff-SHA256: {evidence['diff_sha256']}",
+            f"AI-Office-Artifact-Base-SHA: {artifact_base_sha}",
+            f"AI-Office-Delivery-Base-SHA: {delivery_base_sha}",
         )
         commit_message = "\n".join(
             [
                 f"Deliver verified AI Office Artifact {artifact.artifact_id[:12]}",
                 "",
                 *body_markers,
-                f"AI-Office-Base-SHA: {base_sha}",
+                f"AI-Office-Artifact-Base-SHA: {artifact_base_sha}",
+                f"AI-Office-Delivery-Base-SHA: {delivery_base_sha}",
                 f"AI-Office-Tree-SHA: {tree_sha}",
             ]
         )
         commit_sha = _draft_pr_create_commit(
             git_root,
-            base_sha=base_sha,
+            base_sha=delivery_base_sha,
             tree_sha=tree_sha,
             message=commit_message,
         )
@@ -4055,7 +4171,7 @@ def deliver_verified_artifact_as_draft_pr(
                 "--name-status",
                 "--no-renames",
                 "-r",
-                base_sha,
+                delivery_base_sha,
                 commit_sha,
             )
             .decode("utf-8", "strict")
@@ -4096,7 +4212,8 @@ def deliver_verified_artifact_as_draft_pr(
             artifact=artifact,
             review_artifact=review_artifact,
             base_ref=base_ref,
-            base_sha=base_sha,
+            base_sha=delivery_base_sha,
+            artifact_base_sha=artifact_base_sha,
             branch=branch,
             commit_sha=commit_sha,
             tree_sha=tree_sha,
@@ -4113,7 +4230,7 @@ def deliver_verified_artifact_as_draft_pr(
             "commit_message": commit_message,
             "commit_sha": commit_sha,
             "created_at_ns": time.time_ns(),
-            "schema_version": "ai-office-draft-pr-attempt.v1",
+            "schema_version": "ai-office-draft-pr-attempt.v2",
             "tree_sha": tree_sha,
         }
         _draft_pr_write_once(attempt_path, attempt)
@@ -4153,18 +4270,23 @@ def deliver_verified_artifact_as_draft_pr(
             result_value = {
                 **confirmed,
                 "attempt_sha256": sha256(_draft_pr_canonical(attempt)).hexdigest(),
-                "schema_version": "ai-office-draft-pr-result.v1",
+                "schema_version": "ai-office-draft-pr-result.v1"
+                if legacy_attempt
+                else "ai-office-draft-pr-result.v2",
             }
             _draft_pr_write_once(result_path, result_value)
             _emit_json({"operation": "draft-pr", **confirmed})
             return
 
-        if (
-            _draft_pr_ls_remote(git_root, remote_url, branch_ref) != commit_sha
-            or _draft_pr_ls_remote(git_root, remote_url, base_ref_full) != base_sha
-        ):
-            stop_after_effect("push_verify", "remote_ref_or_base_mismatch")
+        if _draft_pr_ls_remote(git_root, remote_url, branch_ref) != commit_sha:
+            stop_after_effect("push_verify", "remote_branch_mismatch")
             raise _DraftPRDeliveryError("pushed_ref_or_base_mismatch")
+        if (
+            _draft_pr_ls_remote(git_root, remote_url, base_ref_full)
+            != delivery_base_sha
+        ):
+            stop_after_effect("push_verify", "remote_base_moved_after_push")
+            raise _DraftPRDeliveryError("remote_base_moved_after_push")
 
         with tempfile.TemporaryDirectory(
             prefix="ai-office-draft-pr-body-"
@@ -4213,7 +4335,11 @@ def deliver_verified_artifact_as_draft_pr(
                 result_value = {
                     **confirmed,
                     "attempt_sha256": sha256(_draft_pr_canonical(attempt)).hexdigest(),
-                    "schema_version": "ai-office-draft-pr-result.v1",
+                    "schema_version": (
+                        "ai-office-draft-pr-result.v1"
+                        if legacy_attempt
+                        else "ai-office-draft-pr-result.v2"
+                    ),
                 }
                 _draft_pr_write_once(result_path, result_value)
                 _emit_json({"operation": "draft-pr", **confirmed})
@@ -4226,9 +4352,13 @@ def deliver_verified_artifact_as_draft_pr(
         ):
             stop_after_effect("draft_pr_verify", "pull_request_url_invalid")
             raise _DraftPRDeliveryError("draft_pr_url_invalid")
-        confirmed = _draft_pr_confirmed_result(
-            git_root, remote_url, repo_name, base_ref, branch, attempt, paths
-        )
+        try:
+            confirmed = _draft_pr_confirmed_result(
+                git_root, remote_url, repo_name, base_ref, branch, attempt, paths
+            )
+        except _DraftPRDeliveryError as error:
+            stop_after_effect("draft_pr_verify", error.classification)
+            raise _DraftPRDeliveryError("draft_pr_result_unknown_no_retry") from None
         if (
             confirmed["pr_url"] != create_output
             or _draft_pr_git(
@@ -4242,7 +4372,9 @@ def deliver_verified_artifact_as_draft_pr(
         result_value = {
             **confirmed,
             "attempt_sha256": sha256(_draft_pr_canonical(attempt)).hexdigest(),
-            "schema_version": "ai-office-draft-pr-result.v1",
+            "schema_version": "ai-office-draft-pr-result.v1"
+            if legacy_attempt
+            else "ai-office-draft-pr-result.v2",
         }
         _draft_pr_write_once(result_path, result_value)
         _emit_json({"operation": "draft-pr", **confirmed})
@@ -4385,10 +4517,44 @@ def inspect_engineering_issue_status(
             )
             return
 
+        legacy_attempt = (
+            attempt is not None
+            and attempt.get("schema_version") == "ai-office-draft-pr-attempt.v1"
+        )
+        artifact_base_sha = (
+            None
+            if attempt is None
+            else attempt.get("base_sha")
+            if legacy_attempt
+            else attempt.get("artifact_base_sha")
+        )
+        delivery_base_sha = (
+            None
+            if attempt is None
+            else attempt.get("base_sha")
+            if legacy_attempt
+            else attempt.get("delivery_base_sha")
+        )
+        result_delivery_base_sha = (
+            None
+            if result is None
+            else result.get("base_sha")
+            if legacy_attempt
+            else result.get("delivery_base_sha")
+        )
         if (
             attempt is None
-            or result.get("schema_version") != "ai-office-draft-pr-result.v1"
-            or attempt.get("schema_version") != "ai-office-draft-pr-attempt.v1"
+            or result.get("schema_version")
+            != (
+                "ai-office-draft-pr-result.v1"
+                if legacy_attempt
+                else "ai-office-draft-pr-result.v2"
+            )
+            or attempt.get("schema_version")
+            not in {
+                "ai-office-draft-pr-attempt.v1",
+                "ai-office-draft-pr-attempt.v2",
+            }
             or result.get("attempt_sha256")
             != sha256(_draft_pr_canonical(attempt)).hexdigest()
             or attempt.get("job_id") != job_id
@@ -4396,11 +4562,15 @@ def inspect_engineering_issue_status(
             or attempt.get("issue_number") != issue_number
             or attempt.get("repository") != repo_assignment.get("full_name")
             or attempt.get("base_ref") != repo_assignment.get("base_ref")
-            or attempt.get("base_sha") != repo_assignment.get("base_revision")
+            or artifact_base_sha != repo_assignment.get("base_revision")
             or result.get("job_id") != job_id
             or result.get("repository") != repository
             or result.get("base_ref") != attempt.get("base_ref")
-            or result.get("base_sha") != attempt.get("base_sha")
+            or result_delivery_base_sha != delivery_base_sha
+            or (
+                not legacy_attempt
+                and result.get("artifact_base_sha") != artifact_base_sha
+            )
             or result.get("branch") != attempt.get("branch")
             or result.get("commit_sha") != attempt.get("commit_sha")
             or result.get("artifact_id") != attempt.get("artifact_id")
@@ -4449,12 +4619,26 @@ def inspect_engineering_issue_status(
             f"AI-Office-Artifact-SHA256: {source_artifact.content_sha256}",
             f"AI-Office-Verification-Evidence-SHA256: {source['evidence_sha256']}",
             f"AI-Office-Diff-SHA256: {source_evidence['diff_sha256']}",
-            f"AI-Office-Issue: {issue_url}",
         ]
+        if not legacy_attempt:
+            expected_markers.extend(
+                [
+                    f"AI-Office-Artifact-Base-SHA: {artifact_base_sha}",
+                    f"AI-Office-Delivery-Base-SHA: {delivery_base_sha}",
+                ]
+            )
+        expected_markers.append(f"AI-Office-Issue: {issue_url}")
         if (
             type(body_markers) is not list
             or body_markers != expected_markers
             or any(type(marker) is not str for marker in body_markers)
+        ):
+            raise _DraftPRDeliveryError("delivery_record_mismatch")
+        recorded_pr_base_sha = (
+            delivery_base_sha if legacy_attempt else result.get("pr_base_sha")
+        )
+        if type(recorded_pr_base_sha) is not str or not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", recorded_pr_base_sha
         ):
             raise _DraftPRDeliveryError("delivery_record_mismatch")
         snapshot = collect_github_change_snapshot(
@@ -4477,7 +4661,6 @@ def inspect_engineering_issue_status(
             or pull.get("number") != pull_number
             or pull.get("html_url") != result_url
             or pull.get("head_sha") != result.get("commit_sha")
-            or pull.get("base_sha") != result.get("base_sha")
             or pull.get("head_ref") != result.get("branch")
             or pull.get("base_ref") != result.get("base_ref")
             or pull.get("base_repository") != repository
@@ -4509,8 +4692,13 @@ def inspect_engineering_issue_status(
                 "issue_url": issue_url,
                 "operation": "engineering-issue-status",
                 "pull_request": {
+                    "artifact_base_sha": artifact_base_sha,
                     "base_ref": pull["base_ref"],
                     "base_sha": pull["base_sha"],
+                    "delivery_base_sha": delivery_base_sha,
+                    "pr_base_sha_recorded": recorded_pr_base_sha,
+                    "current_pr_base_sha": pull["base_sha"],
+                    "pr_base_sha": pull["base_sha"],
                     "branch": pull["head_ref"],
                     "changed_paths": sorted(
                         item["filename"] for item in changed_files
