@@ -11,7 +11,7 @@ from ai_office.planning.execution_plan import ExecutionPlan, ExecutionPlanStep
 
 
 class StepExecutionRequest(BaseModel):
-    """Immutable input for a future adapter to execute one planned step."""
+    """Immutable detached request for executing one planned workflow step."""
 
     model_config = ConfigDict(frozen=True)
 
