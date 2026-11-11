@@ -2939,6 +2939,52 @@ def _draft_pr_branch_name(value: str, *, allow_heads_prefix: bool = False) -> st
     return value
 
 
+def _draft_pr_assignment_repository(
+    value: object,
+) -> tuple[str, int | None, str | None] | None:
+    """Validate the repository binding saved in a bounded-Job Assignment.
+
+    Older Assignments bind a GitHub repository by its ``identity`` string and
+    do not contain a delivery base ref or repository database ID. Newer
+    Assignments carry those GitHub metadata fields. Do not infer missing
+    metadata from the caller or write it back into historical evidence.
+    """
+    if type(value) is not dict:
+        return None
+    metadata_present = any(key in value for key in ("full_name", "id", "base_ref"))
+    if metadata_present:
+        name = value.get("full_name")
+        repository_id = value.get("id")
+        base_ref = value.get("base_ref")
+        identity = value.get("identity", name)
+        if (
+            type(name) is not str
+            or type(repository_id) is not int
+            or isinstance(repository_id, bool)
+            or type(base_ref) is not str
+            or type(identity) is not str
+            or identity != name
+        ):
+            return None
+        try:
+            _draft_pr_repository_name(name)
+            normalized_base_ref = _draft_pr_branch_name(
+                base_ref, allow_heads_prefix=True
+            )
+        except _DraftPRDeliveryError:
+            return None
+        return name, repository_id, normalized_base_ref
+
+    identity = value.get("identity")
+    if type(identity) is not str:
+        return None
+    try:
+        _draft_pr_repository_name(identity)
+    except _DraftPRDeliveryError:
+        return None
+    return identity, None, None
+
+
 def _draft_pr_ls_remote(repository: Path, remote_url: str, ref: str) -> str | None:
     output = _draft_pr_git(repository, "ls-remote", remote_url, ref).decode(
         "ascii", "strict"
@@ -3355,16 +3401,19 @@ def _draft_pr_load_candidate(
         evidence = load_local_execution_evidence(store, final_run_id, authorization_id)
         assignment = json.loads(inspection["assignment"])
         repository = assignment.get("repository") if type(assignment) is dict else None
+        repository_binding = _draft_pr_assignment_repository(repository)
+        repository_name = repository_id = repository_base_ref = None
+        if repository_binding is not None:
+            repository_name, repository_id, repository_base_ref = repository_binding
         if (
             type(repository) is not dict
-            or repository.get("full_name") != repo_name
-            or type(repository.get("id")) is not int
-            or isinstance(repository.get("id"), bool)
-            or repository.get("base_revision") != authorization.policy.base_revision
-            or _draft_pr_branch_name(
-                repository.get("base_ref", ""), allow_heads_prefix=True
+            or repository_binding is None
+            or repository_name != repo_name
+            or (
+                repository_base_ref is not None
+                and repository_base_ref != base_ref
             )
-            != base_ref
+            or repository.get("base_revision") != authorization.policy.base_revision
             or type(repository.get("path")) is not str
             or Path(repository["path"]).resolve(strict=True) != git_repository
             or artifact.content_type != FILE_CHANGE_SET_CONTENT_TYPE
@@ -3493,7 +3542,7 @@ def _draft_pr_load_candidate(
         "paths": paths,
         "review_artifact": review_artifact,
         "review_run_id": review_run_id,
-        "repository_id": repository["id"],
+        "repository_id": repository_id,
         "scope": scope,
         "tree_modes": tree_modes,
     }
@@ -3762,6 +3811,8 @@ def deliver_verified_artifact_as_draft_pr(
     Uses the Run's final all-PASS Artifact and existing local-verification
     Evidence. `--yes` is an explicit operator-intent flag, not a security
     boundary; the local GitHub credential remains available to this process.
+    Identity-only Issue Assignments require explicit `--repository` and
+    `--base-ref` delivery targets.
     """
     try:
         issue_mode = issue_url is not None
@@ -3777,25 +3828,32 @@ def deliver_verified_artifact_as_draft_pr(
                 store, issue_url
             )
             repository_value = assignment.get("repository")
-            if type(repository_value) is not dict:
+            repository_binding = _draft_pr_assignment_repository(repository_value)
+            if repository_binding is None or type(repository_value) is not dict:
                 raise _DraftPRDeliveryError("issue_job_scope_invalid")
-            pinned_repository = repository_value.get("full_name")
-            pinned_base_ref = repository_value.get("base_ref")
+            pinned_repository, _repository_id, pinned_base_ref = repository_binding
             pinned_git_path = repository_value.get("path")
-            if (
-                type(pinned_repository) is not str
-                or type(repository_value.get("id")) is not int
-                or isinstance(repository_value.get("id"), bool)
-                or type(pinned_base_ref) is not str
-                or type(pinned_git_path) is not str
-            ):
+            if type(pinned_git_path) is not str:
                 raise _DraftPRDeliveryError("issue_job_scope_invalid")
             if (
                 repository is not None
-                and repository.casefold() != pinned_repository.casefold()
+                and _draft_pr_repository_name(repository).casefold()
+                != pinned_repository.casefold()
             ):
                 raise _DraftPRDeliveryError("issue_repository_mismatch")
-            if base_ref_option is not None and base_ref_option != pinned_base_ref:
+            if pinned_base_ref is None:
+                if repository is None or base_ref_option is None:
+                    raise _DraftPRDeliveryError("issue_delivery_target_required")
+                pinned_base_ref = _draft_pr_branch_name(
+                    base_ref_option, allow_heads_prefix=True
+                )
+            elif (
+                base_ref_option is not None
+                and _draft_pr_branch_name(
+                    base_ref_option, allow_heads_prefix=True
+                )
+                != pinned_base_ref
+            ):
                 raise _DraftPRDeliveryError("issue_base_ref_mismatch")
             pinned_root = Path(pinned_git_path).resolve(strict=True)
             if (
@@ -3874,7 +3932,10 @@ def deliver_verified_artifact_as_draft_pr(
             type(repo_view) is not dict
             or repo_view.get("full_name") != repo_name
             or type(repo_view.get("id")) is not int
-            or repo_view.get("id") != source["repository_id"]
+            or (
+                source["repository_id"] is not None
+                and repo_view.get("id") != source["repository_id"]
+            )
         ):
             raise _DraftPRDeliveryError("gh_repository_identity_mismatch")
         default_branch = repo_view.get("default_branch")
@@ -4461,11 +4522,21 @@ def inspect_engineering_issue_status(
         job_id, inspection, assignment = _find_bounded_job_for_issue(
             store, issue_url
         )
-        repo_assignment = assignment["repository"]
-        repository = repo_assignment.get("full_name")
+        repo_assignment = (
+            assignment.get("repository") if type(assignment) is dict else None
+        )
+        repository_binding = _draft_pr_assignment_repository(repo_assignment)
+        if repository_binding is None or type(repo_assignment) is not dict:
+            raise _DraftPRDeliveryError("issue_repository_mismatch")
+        repository, _repository_id, assigned_base_ref = repository_binding
         if (
-            type(repository) is not str
-            or repository.casefold() != f"{owner}/{repository_name}".casefold()
+            repository.casefold() != f"{owner}/{repository_name}".casefold()
+            or type(repo_assignment.get("path")) is not str
+            or type(repo_assignment.get("base_revision")) is not str
+            or not re.fullmatch(
+                r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                repo_assignment["base_revision"],
+            )
         ):
             raise _DraftPRDeliveryError("issue_repository_mismatch")
         job_status = inspection.get("status")
@@ -4560,8 +4631,11 @@ def inspect_engineering_issue_status(
             or attempt.get("job_id") != job_id
             or attempt.get("issue_url") != issue_url
             or attempt.get("issue_number") != issue_number
-            or attempt.get("repository") != repo_assignment.get("full_name")
-            or attempt.get("base_ref") != repo_assignment.get("base_ref")
+            or attempt.get("repository") != repository
+            or (
+                assigned_base_ref is not None
+                and attempt.get("base_ref") != assigned_base_ref
+            )
             or artifact_base_sha != repo_assignment.get("base_revision")
             or result.get("job_id") != job_id
             or result.get("repository") != repository

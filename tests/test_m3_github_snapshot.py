@@ -294,7 +294,50 @@ def test_snapshot_cli_writes_once_and_partial_exits_nonzero(
     assert json.loads(partial_result.stdout)["collection_status"] == "partial"
 
 
+@pytest.mark.parametrize(
+    ("saved", "expected"),
+    [
+        pytest.param(
+            {"identity": "example/acme-widget"},
+            ("example/acme-widget", None, None),
+            id="identity-does-not-invent-metadata",
+        ),
+        pytest.param(
+            {
+                "full_name": "example/acme-widget",
+                "id": 10,
+                "base_ref": "refs/heads/main",
+            },
+            ("example/acme-widget", 10, "main"),
+            id="metadata-is-preserved-and-normalized",
+        ),
+        pytest.param(
+            {"full_name": "example/acme-widget"},
+            None,
+            id="partial-metadata-does-not-downgrade-to-identity",
+        ),
+        pytest.param(
+            {
+                "identity": "other/acme-widget",
+                "full_name": "example/acme-widget",
+                "id": 10,
+                "base_ref": "main",
+            },
+            None,
+            id="mixed-identities-must-agree",
+        ),
+    ],
+)
+def test_draft_pr_assignment_repository_binding(
+    saved: dict[str, object], expected: tuple[str, int | None, str | None] | None
+) -> None:
+    assert cli_module._draft_pr_assignment_repository(saved) == expected
+
+
 @pytest.mark.parametrize("delivery_base_advanced", [False, True])
+@pytest.mark.parametrize(
+    "identity_repository", [False, True], ids=["metadata", "identity"]
+)
 @pytest.mark.parametrize(
     ("pull_overrides", "checks", "unavailable", "expected_error", "expected_ci"),
     [
@@ -390,6 +433,7 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
     expected_error: str | None,
     expected_ci: str | None,
     delivery_base_advanced: bool,
+    identity_repository: bool,
 ) -> None:
     issue_url = "https://github.com/example/acme-widget/issues/10"
     pull_url = "https://github.com/example/acme-widget/pull/20"
@@ -493,17 +537,25 @@ def test_engineering_issue_status_binds_draft_and_ci_to_exact_head(
         result["artifact_base_sha"] = BASE_SHA
         result["delivery_base_sha"] = delivery_base_sha
         result["pr_base_sha"] = current_pr_base_sha
+    repository_assignment = {
+        "base_revision": BASE_SHA,
+        "path": str(repo_path),
+    }
+    if identity_repository:
+        repository_assignment["identity"] = "example/acme-widget"
+    else:
+        repository_assignment.update(
+            {
+                "base_ref": "main",
+                "full_name": "example/acme-widget",
+                "id": 10,
+            }
+        )
     assignment = {
         "request": json.dumps(
             {"issue": {"number": 10, "url": issue_url}}, sort_keys=True
         ),
-        "repository": {
-            "base_ref": "main",
-            "base_revision": BASE_SHA,
-            "full_name": "example/acme-widget",
-            "id": 10,
-            "path": str(repo_path),
-        },
+        "repository": repository_assignment,
     }
     monkeypatch.setattr(
         cli_module,
@@ -659,8 +711,22 @@ def test_engineering_issue_ci_status_is_conservative(
     assert cli_module._engineering_issue_ci_status(checks, unavailable) == expected
 
 
+@pytest.mark.parametrize(
+    ("saved_identity", "expected_error"),
+    [
+        pytest.param(
+            "example/acme-widget", None, id="identity-matches-issue-repository"
+        ),
+        pytest.param(
+            "other/acme-widget", "issue_repository_mismatch", id="identity-mismatch"
+        ),
+    ],
+)
 def test_engineering_issue_status_waits_for_separate_github_approval(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    saved_identity: str,
+    expected_error: str | None,
 ) -> None:
     issue_url = "https://github.com/example/acme-widget/issues/10"
     repo_path = tmp_path / "repository"
@@ -669,7 +735,8 @@ def test_engineering_issue_status_waits_for_separate_github_approval(
     run_store.mkdir(mode=0o700)
     assignment = {
         "repository": {
-            "full_name": "example/acme-widget",
+            "identity": saved_identity,
+            "base_revision": BASE_SHA,
             "path": str(repo_path),
         }
     }
@@ -700,6 +767,11 @@ def test_engineering_issue_status_waits_for_separate_github_approval(
         ],
     )
 
+    if expected_error is not None:
+        assert status.exit_code == 2, status.output
+        assert expected_error in status.output
+        assert collected is False
+        return
     assert status.exit_code == 0, status.output
     value = json.loads(status.stdout)
     assert value["delivery"]["status"] == "awaiting_separate_github_approval"

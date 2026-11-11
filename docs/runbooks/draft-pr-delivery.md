@@ -29,14 +29,33 @@ ai-office workflows draft-pr JOB_ID \
 ```
 
 For an engineering Issue Job created by `bounded-job-run --issue-url`, the Job
-and its pinned repository/base are resolved from the Issue URL. This avoids
-hand-copying Job, repository, base, branch, or checkout values:
+is resolved from the Issue URL. When its saved Assignment contains complete
+GitHub repository metadata (`full_name`, `id`, and `base_ref`), the delivery
+repository and base can also be resolved from that Assignment, so the
+repository and base options remain optional:
 
 ```bash
 ai-office workflows draft-pr \
   --issue-url https://github.com/OWNER/REPOSITORY/issues/NUMBER \
   --run-store /path/to/issue-job-runs
 ```
+
+If the saved Assignment uses only the `repository.identity` form, explicitly
+provide both `--repository` and `--base-ref`:
+
+```bash
+ai-office workflows draft-pr \
+  --issue-url https://github.com/OWNER/REPOSITORY/issues/NUMBER \
+  --run-store /path/to/issue-job-runs \
+  --repository OWNER/REPOSITORY \
+  --base-ref main
+```
+
+An identity-only Assignment does not contain the complete structured GitHub
+destination metadata needed to select a delivery repository and base ref. The
+explicit values make that target unambiguous; the CLI checks them against the
+saved repository identity and path, pinned edit base, Git remote, and GitHub
+repository information. They do not replace the Artifact or preimage checks.
 
 This Issue mode still requires the same explicit interactive confirmation (or
 the deliberate `--yes` operator-intent flag) before Git/GitHub writes. The

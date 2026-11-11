@@ -1926,6 +1926,13 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     from ai_office.engine.artifact import read_run_artifact
 
     repository, revision, source = _temporary_repo(tmp_path)
+    # Exercise the persisted identity-only shape once without multiplying the
+    # sandbox-heavy matrix; revised Runs continue to cover metadata Assignments.
+    identity_repository = (
+        not needs_revision
+        and artifact_failure is None
+        and candidate_hunk_count_delta == 0
+    )
     source_context = {
         "calculator.py": source.decode("utf-8"),
         "test_calculator.py": (repository / "test_calculator.py").read_text(
@@ -1933,6 +1940,20 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         ),
     }
     source_sha256 = {"calculator.py": sha256(source).hexdigest()}
+    saved_repository = {
+        "base_revision": revision,
+        "path": str(repository),
+    }
+    if identity_repository:
+        saved_repository["identity"] = "offline-owner/offline-repository"
+    else:
+        saved_repository.update(
+            {
+                "base_ref": "refs/heads/main",
+                "full_name": "offline-owner/offline-repository",
+                "id": 805001,
+            }
+        )
     assignment = json.dumps(
         {
             "acceptance_criteria": ["answer() returns 2", "tests pass"],
@@ -1940,13 +1961,7 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 "read": ["calculator.py", "test_calculator.py"],
                 "write": ["calculator.py"],
             },
-            "repository": {
-                "base_ref": "refs/heads/main",
-                "base_revision": revision,
-                "full_name": "offline-owner/offline-repository",
-                "id": 805001,
-                "path": str(repository),
-            },
+            "repository": saved_repository,
             "publication": {
                 "requested_effects": list(PUBLICATION_INTENT_EFFECTS),
                 "target_ref": "refs/heads/codex/issue-805-intent-handoff",
@@ -2333,139 +2348,144 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
 
     # Publication intent is a signed, authority-free handoff derived from the
     # canonical Run/Job/Artifact/Evidence owners. No Run data is written.
-    intent_now = time.time_ns()
-    intent_expires = intent_now + 30 * 60 * 1_000_000_000
-    workflow_run_id = 805_000_001
-    workflow_run_attempt = 1
-    signing_key = Ed25519PrivateKey.generate()
-    public_key = signing_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    trusted_keys = {sha256(public_key).hexdigest(): public_key}
     run_snapshot_before = {
         path.name: path.read_bytes() for path in store.root.iterdir() if path.is_file()
     }
-    handoff = build_publication_intent_handoff(
-        store,
-        job_id=scope.job_id,
-        workflow_run_id=workflow_run_id,
-        workflow_run_attempt=workflow_run_attempt,
-        expires_at_ns=intent_expires,
-        signing_key=signing_key,
-        now_ns=intent_now,
-    )
-    expected_handoff_context = {
-        "expected_workflow_run_id": workflow_run_id,
-        "expected_workflow_run_attempt": workflow_run_attempt,
-        "expected_repository_id": 805001,
-        "expected_repository_full_name": "offline-owner/offline-repository",
-        "expected_base_ref": "refs/heads/main",
-        "expected_base_revision": revision,
-        "expected_target_ref": "refs/heads/codex/issue-805-intent-handoff",
-        "now_ns": intent_now,
-    }
-    intent = verify_publication_intent_handoff(
-        handoff, trusted_keys, **expected_handoff_context
-    )
-    assert intent.authority == "intent_only"
-    assert intent.job_status == ("reviewed" if needs_revision else "candidate")
-    assert intent.revisions_used == (1 if needs_revision else 0)
-    assert intent.artifact_id == final_artifact.artifact_id
-    assert intent.artifact_sha256 == final_artifact.content_sha256
-    assert base64.b64decode(intent.artifact_content_base64, validate=True) == (
-        final_artifact.content
-    )
-    handoff_record = json.loads(handoff)
-    assert "approved_by" not in handoff_record["intent"]
-    assert "approval" not in handoff_record["intent"]
-    assert (
-        handoff_record["intent"]["verification_authorization_id"] == authorizations[-1]
-    )
-    assert {
-        path.name: path.read_bytes() for path in store.root.iterdir() if path.is_file()
-    } == run_snapshot_before
-
-    # Handoff bytes cannot be replaced, reused for another run/attempt, or
-    # turned into a human approval by adding caller-controlled metadata.
-    tampered_signature = json.loads(handoff)
-    signature_bytes = bytearray(
-        base64.b64decode(tampered_signature["signature_base64"], validate=True)
-    )
-    signature_bytes[0] ^= 1
-    tampered_signature["signature_base64"] = base64.b64encode(signature_bytes).decode(
-        "ascii"
-    )
-    with pytest.raises(PublicationIntentError):
-        verify_publication_intent_handoff(
-            json.dumps(
-                tampered_signature,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8"),
-            trusted_keys,
-            **expected_handoff_context,
+    # This separate handoff requires saved GitHub metadata; it is not part of
+    # the identity-only Draft PR compatibility path.
+    if not identity_repository:
+        intent_now = time.time_ns()
+        intent_expires = intent_now + 30 * 60 * 1_000_000_000
+        workflow_run_id = 805_000_001
+        workflow_run_attempt = 1
+        signing_key = Ed25519PrivateKey.generate()
+        public_key = signing_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
         )
-
-    tampered_content = json.loads(handoff)
-    tampered_content["intent"]["artifact_content_base64"] = base64.b64encode(
-        b"different candidate"
-    ).decode("ascii")
-    with pytest.raises(PublicationIntentError):
-        verify_publication_intent_handoff(
-            json.dumps(
-                tampered_content,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8"),
-            trusted_keys,
-            **expected_handoff_context,
+        trusted_keys = {sha256(public_key).hexdigest(): public_key}
+        handoff = build_publication_intent_handoff(
+            store,
+            job_id=scope.job_id,
+            workflow_run_id=workflow_run_id,
+            workflow_run_attempt=workflow_run_attempt,
+            expires_at_ns=intent_expires,
+            signing_key=signing_key,
+            now_ns=intent_now,
         )
-    for context_change in (
-        {"expected_workflow_run_id": workflow_run_id + 1},
-        {"expected_workflow_run_attempt": workflow_run_attempt + 1},
-        {"expected_repository_id": 805002},
-        {"expected_repository_full_name": "other-owner/other-repository"},
-        {"expected_base_revision": "0" * 40},
-        {"expected_target_ref": "refs/heads/codex/other-intent"},
-    ):
+        expected_handoff_context = {
+            "expected_workflow_run_id": workflow_run_id,
+            "expected_workflow_run_attempt": workflow_run_attempt,
+            "expected_repository_id": 805001,
+            "expected_repository_full_name": "offline-owner/offline-repository",
+            "expected_base_ref": "refs/heads/main",
+            "expected_base_revision": revision,
+            "expected_target_ref": "refs/heads/codex/issue-805-intent-handoff",
+            "now_ns": intent_now,
+        }
+        intent = verify_publication_intent_handoff(
+            handoff, trusted_keys, **expected_handoff_context
+        )
+        assert intent.authority == "intent_only"
+        assert intent.job_status == ("reviewed" if needs_revision else "candidate")
+        assert intent.revisions_used == (1 if needs_revision else 0)
+        assert intent.artifact_id == final_artifact.artifact_id
+        assert intent.artifact_sha256 == final_artifact.content_sha256
+        assert base64.b64decode(intent.artifact_content_base64, validate=True) == (
+            final_artifact.content
+        )
+        handoff_record = json.loads(handoff)
+        assert "approved_by" not in handoff_record["intent"]
+        assert "approval" not in handoff_record["intent"]
+        assert handoff_record["intent"]["verification_authorization_id"] == (
+            authorizations[-1]
+        )
+        assert {
+            path.name: path.read_bytes()
+            for path in store.root.iterdir()
+            if path.is_file()
+        } == run_snapshot_before
+
+        # Handoff bytes cannot be replaced, reused for another run/attempt, or
+        # turned into a human approval by adding caller-controlled metadata.
+        tampered_signature = json.loads(handoff)
+        signature_bytes = bytearray(
+            base64.b64decode(tampered_signature["signature_base64"], validate=True)
+        )
+        signature_bytes[0] ^= 1
+        tampered_signature["signature_base64"] = base64.b64encode(
+            signature_bytes
+        ).decode("ascii")
+        with pytest.raises(PublicationIntentError):
+            verify_publication_intent_handoff(
+                json.dumps(
+                    tampered_signature,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+                trusted_keys,
+                **expected_handoff_context,
+            )
+
+        tampered_content = json.loads(handoff)
+        tampered_content["intent"]["artifact_content_base64"] = base64.b64encode(
+            b"different candidate"
+        ).decode("ascii")
+        with pytest.raises(PublicationIntentError):
+            verify_publication_intent_handoff(
+                json.dumps(
+                    tampered_content,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+                trusted_keys,
+                **expected_handoff_context,
+            )
+        for context_change in (
+            {"expected_workflow_run_id": workflow_run_id + 1},
+            {"expected_workflow_run_attempt": workflow_run_attempt + 1},
+            {"expected_repository_id": 805002},
+            {"expected_repository_full_name": "other-owner/other-repository"},
+            {"expected_base_revision": "0" * 40},
+            {"expected_target_ref": "refs/heads/codex/other-intent"},
+        ):
+            with pytest.raises(PublicationIntentError):
+                verify_publication_intent_handoff(
+                    handoff,
+                    trusted_keys,
+                    **{**expected_handoff_context, **context_change},
+                )
+        forged_approval = json.loads(handoff)
+        forged_approval["intent"]["approved_by"] = "pytest-forged-human"
+        forged_approval["signature_base64"] = base64.b64encode(
+            signing_key.sign(
+                json.dumps(
+                    forged_approval["intent"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+        ).decode("ascii")
+        with pytest.raises(PublicationIntentError):
+            verify_publication_intent_handoff(
+                json.dumps(
+                    forged_approval,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+                trusted_keys,
+                **expected_handoff_context,
+            )
         with pytest.raises(PublicationIntentError):
             verify_publication_intent_handoff(
                 handoff,
                 trusted_keys,
-                **{**expected_handoff_context, **context_change},
+                **{**expected_handoff_context, "now_ns": intent_expires},
             )
-    forged_approval = json.loads(handoff)
-    forged_approval["intent"]["approved_by"] = "pytest-forged-human"
-    forged_approval["signature_base64"] = base64.b64encode(
-        signing_key.sign(
-            json.dumps(
-                forged_approval["intent"],
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
-    ).decode("ascii")
-    with pytest.raises(PublicationIntentError):
-        verify_publication_intent_handoff(
-            json.dumps(
-                forged_approval,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8"),
-            trusted_keys,
-            **expected_handoff_context,
-        )
-    with pytest.raises(PublicationIntentError):
-        verify_publication_intent_handoff(
-            handoff,
-            trusted_keys,
-            **{**expected_handoff_context, "now_ns": intent_expires},
-        )
 
     # #807 offline proof: the reviewed Artifact is admitted only to a new
     # local branch, local bare remote, and persistent fake GitHub API.
@@ -2687,8 +2707,13 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
                 endpoint = next(item for item in args[1:] if item.startswith('repos/'))
                 if endpoint == 'repos/offline-owner/offline-repository':
                     print(json.dumps({
-                        'id': 805001,
-                        'full_name': 'offline-owner/offline-repository',
+                        'id': int(os.environ.get(
+                            'AI_OFFICE_TEST_GH_REPO_ID', '805001'
+                        )),
+                        'full_name': os.environ.get(
+                            'AI_OFFICE_TEST_GH_REPO_FULL_NAME',
+                            'offline-owner/offline-repository',
+                        ),
                         'default_branch': 'main',
                     }))
                 elif endpoint == (
@@ -2832,15 +2857,21 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         repository, "status", "--porcelain=v1", "--untracked-files=all"
     )
     head_before = _git(repository, "rev-parse", "HEAD")
-    command = [
+    command_prefix = [
         "workflows",
         "draft-pr",
         "--issue-url",
         issue_url,
-        "--run-store",
-        str(store.root),
-        "--yes",
     ]
+    if identity_repository:
+        command_prefix.extend(
+            [
+                "--repository",
+                "offline-owner/offline-repository",
+                "--base-ref",
+                "main",
+            ]
+        )
 
     def invoke_delivery(
         remote: Path,
@@ -2851,6 +2882,9 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
         move_after_push: str | None = None,
         move_during_create: str | None = None,
         fail_create: bool = False,
+        repository_override: str | None = None,
+        github_repository_full_name: str | None = None,
+        github_repository_id: int | None = None,
     ):
         state_path = tmp_path / f"{name}-gh-state.json"
         push_log = tmp_path / f"{name}-push.log"
@@ -2865,17 +2899,107 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
             move_during_create or "",
         )
         monkeypatch.setenv("AI_OFFICE_TEST_FAIL_PR_CREATE", "1" if fail_create else "0")
+        monkeypatch.setenv(
+            "AI_OFFICE_TEST_GH_REPO_FULL_NAME",
+            github_repository_full_name or "offline-owner/offline-repository",
+        )
+        monkeypatch.setenv(
+            "AI_OFFICE_TEST_GH_REPO_ID",
+            str(github_repository_id if github_repository_id is not None else 805001),
+        )
         state_path.write_text(
             json.dumps({"events": [], "prs": initial_prs or [], "queries": []}),
             encoding="utf-8",
         )
-        run_command = [
-            *command[:5],
-            str(run_store),
-            "--yes",
-        ]
+        run_command = list(command_prefix)
+        if repository_override is not None:
+            if "--repository" in run_command:
+                run_command[run_command.index("--repository") + 1] = (
+                    repository_override
+                )
+            else:
+                run_command.extend(["--repository", repository_override])
+            if "--base-ref" not in run_command:
+                run_command.extend(["--base-ref", "main"])
+        run_command.extend(["--run-store", str(run_store), "--yes"])
         result = _CLI_RUNNER.invoke(app, run_command)
         return result, state_path, push_log
+
+    if identity_repository:
+        missing_target_store = tmp_path / "identity-missing-target-run-store"
+        shutil.copytree(store.root, missing_target_store)
+        missing_target = _CLI_RUNNER.invoke(
+            app,
+            [
+                "workflows",
+                "draft-pr",
+                "--issue-url",
+                issue_url,
+                "--run-store",
+                str(missing_target_store),
+                "--yes",
+            ],
+        )
+        assert missing_target.exit_code != 0
+        assert "issue_delivery_target_required" in missing_target.output
+        assert not (
+            missing_target_store
+            / f"{scope.job_id}.draft-pr-delivery.attempt.json"
+        ).exists()
+
+        wrong_target_store = tmp_path / "identity-wrong-target-run-store"
+        shutil.copytree(store.root, wrong_target_store)
+        wrong_target, _wrong_target_state, wrong_target_push_log = invoke_delivery(
+            product_remote,
+            wrong_target_store,
+            "identity-wrong-target",
+            repository_override="other-owner/other-repository",
+        )
+        assert wrong_target.exit_code != 0
+        assert "issue_repository_mismatch" in wrong_target.output
+        assert not wrong_target_push_log.exists()
+        assert not (
+            wrong_target_store
+            / f"{scope.job_id}.draft-pr-delivery.attempt.json"
+        ).exists()
+
+        wrong_github_store = tmp_path / "identity-wrong-github-run-store"
+        shutil.copytree(store.root, wrong_github_store)
+        wrong_github, _wrong_github_state, wrong_github_push_log = invoke_delivery(
+            product_remote,
+            wrong_github_store,
+            "identity-wrong-github",
+            github_repository_full_name="other-owner/other-repository",
+        )
+        assert wrong_github.exit_code != 0
+        assert "gh_repository_identity_mismatch" in wrong_github.output
+        assert not wrong_github_push_log.exists()
+        assert not (
+            wrong_github_store
+            / f"{scope.job_id}.draft-pr-delivery.attempt.json"
+        ).exists()
+    elif (
+        needs_revision
+        and artifact_failure is None
+        and candidate_hunk_count_delta == 0
+    ):
+        metadata_mismatch_store = tmp_path / "metadata-mismatch-run-store"
+        shutil.copytree(store.root, metadata_mismatch_store)
+        metadata_mismatch, _metadata_mismatch_state, metadata_mismatch_push_log = (
+            invoke_delivery(
+                product_remote,
+                metadata_mismatch_store,
+                "metadata-repository-id-mismatch",
+                github_repository_id=805002,
+            )
+        )
+        assert metadata_mismatch.exit_code != 0
+        assert "gh_repository_identity_mismatch" in metadata_mismatch.output
+        assert not metadata_mismatch_push_log.exists()
+        assert not (
+            metadata_mismatch_store
+            / f"{scope.job_id}.draft-pr-delivery.attempt.json"
+        ).exists()
 
     # Delivery accepts unrelated main commits but fails closed for either a
     # changed blob or a changed executable mode on an Artifact target path.
@@ -3027,6 +3151,15 @@ def test_bounded_workflow_validates_revises_and_re_reviews_exact_artifacts(
     delivery_result = json.loads(delivered.stdout.splitlines()[-1])
     assert delivery_result["status"] == "completed"
     assert delivery_result["artifact_id"] == outcome.final_artifact_id
+    if identity_repository:
+        delivery_attempt = json.loads(
+            (
+                store.root
+                / f"{scope.job_id}.draft-pr-delivery.attempt.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert delivery_attempt["repository"] == "offline-owner/offline-repository"
+        assert "repository_id" not in delivery_attempt
     assert delivery_result["artifact_base_sha"] == revision
     assert delivery_result["delivery_base_sha"] == delivery_base_sha
     assert delivery_result["base_sha"] == delivery_base_sha
