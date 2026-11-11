@@ -2296,8 +2296,14 @@ def run_engineering_issue_workflow(
     retry_interval_seconds: int = typer.Option(
         30, "--retry-interval-seconds", min=1, max=3600
     ),
-    run_store: Path = typer.Option(
-        Path("runs/engineering-issues"), "--run-store", "--run-root"
+    run_store: Path | None = typer.Option(
+        None,
+        "--run-store",
+        "--run-root",
+        help=(
+            "Research Run store (default: runs/engineering-issues). Without an "
+            "explicit store, the Issue Job uses runs/engineering-jobs."
+        ),
     ),
     directory: Path = typer.Option(Path("workflows"), "--directory"),
     employees_directory: Path = typer.Option(
@@ -2324,6 +2330,9 @@ def run_engineering_issue_workflow(
         prepare_next_engineering_issue_input,
     )
 
+    use_standard_job_store = run_store is None
+    if run_store is None:
+        run_store = Path("runs/engineering-issues")
     if os.geteuid() == 0 or os.geteuid() != os.getuid() or not sys.stdin.isatty():
         _workflow_cli_error(
             "engineering Issue execution requires an interactive operator"
@@ -2393,7 +2402,11 @@ def run_engineering_issue_workflow(
         _workflow_cli_error("engineering Issue Run Input could not be prepared")
 
     authorization = initial_value["authorization"]
-    job_run_store = run_store / "bounded-job-runs"
+    job_run_store = (
+        Path("runs/engineering-jobs")
+        if use_standard_job_store
+        else run_store / "bounded-job-runs"
+    )
     _emit_json(
         {
             "operation": "engineering-issue-run-plan",
