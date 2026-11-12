@@ -488,10 +488,14 @@ def _temporary_repo(root: Path) -> tuple[Path, str, bytes]:
     return repository, revision, source
 
 
+@pytest.mark.parametrize(
+    "use_standard_store", [False, True], ids=["explicit-store", "standard-defaults"]
+)
 def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     tmp_path: Path,
     require_local_sandbox: None,
     monkeypatch: pytest.MonkeyPatch,
+    use_standard_store: bool,
 ) -> None:
     """Issue URL runs a fake Job through failed tests, revision, and review."""
     from types import SimpleNamespace
@@ -500,6 +504,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     import ai_office.engineering_issue as engineering_issue
     from ai_office.github_snapshot import GitHubRawResponse
 
+    monkeypatch.chdir(tmp_path)
     repository, revision, source = _temporary_repo(tmp_path)
     bundle, bundle_sha256 = _python_validation_bundle(tmp_path)
     monkeypatch.setenv("AI_OFFICE_PYTHON_VALIDATION_BUNDLE", str(bundle))
@@ -705,7 +710,12 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
         return len(confirmations) != deny_confirmation_number
 
     monkeypatch.setattr(cli_module.typer, "confirm", approve)
-    research_store = tmp_path / "engineering-issue-runs"
+    if use_standard_store:
+        research_store = tmp_path / "runs/engineering-issues"
+        job_run_store = tmp_path / "runs/engineering-jobs"
+    else:
+        research_store = tmp_path / "engineering-issue-runs"
+        job_run_store = research_store / "bounded-job-runs"
     issue_run_args = [
         "workflows",
         "engineering-issue-run",
@@ -756,13 +766,13 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
         "opencode-go-chat",
         "--execution-destinations",
         str(destinations),
-        "--run-store",
-        str(research_store),
         "--directory",
         str(repository_root / "workflows"),
         "--employees-directory",
         str(repository_root / "employees"),
     ]
+    if not use_standard_store:
+        issue_run_args.extend(["--run-store", str(research_store)])
     first_result = CliRunner().invoke(app, issue_run_args)
     assert first_result.exit_code == 1, first_result.output
     assert "Business grant was not confirmed" in first_result.output
@@ -775,8 +785,9 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     assert first_launch["research_run_id"].startswith("engineering-issue-829-r2-")
     assert len(provider_requests) == 2
     assert len(list(research_store.glob("*.manifest.json"))) == 2
-    job_store = research_store / "bounded-job-runs"
-    assert not job_store.exists() or not list(job_store.glob("*.manifest.json"))
+    assert not job_run_store.exists() or not list(
+        job_run_store.glob("*.manifest.json")
+    )
     changed_plan_args = list(issue_run_args)
     max_files_index = changed_plan_args.index("--max-files") + 1
     changed_plan_args[max_files_index] = "3"
@@ -803,6 +814,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     plan_record = next(
         item for item in records if item["operation"] == "engineering-issue-run-plan"
     )
+    assert Path(plan_record["job_run_store"]).resolve() == job_run_store.resolve()
     launch = next(
         item
         for item in records
@@ -835,7 +847,7 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     assert bundle_sha256 in revision_body
     from ai_office.engine.artifact import read_run_artifact
 
-    run_store = research_store / "bounded-job-runs"
+    run_store = job_run_store
     job_store = WorkflowRunManifestStore(run_store)
     candidate = read_run_artifact(
         job_store,
@@ -865,6 +877,59 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     assert inspection["revisions_used"] == 1
     assert inspection["final_local_effect"]["status"] == "verified"
     assert (repository / "calculator.py").read_bytes() == source
+
+    original_find_bounded_job = cli_module._find_bounded_job_for_issue
+    resolved_jobs: list[tuple[Path, str]] = []
+
+    def track_issue_job(store, url):
+        resolved = original_find_bounded_job(store, url)
+        resolved_jobs.append((store.root.resolve(), resolved[0]))
+        return resolved
+
+    monkeypatch.setattr(
+        cli_module, "_find_bounded_job_for_issue", track_issue_job
+    )
+    status_args = [
+        "workflows",
+        "engineering-issue-status",
+        "--issue-url",
+        issue_url,
+    ]
+    draft_pr_args = [
+        "workflows",
+        "draft-pr",
+        "--issue-url",
+        issue_url,
+        "--yes",
+    ]
+    if not use_standard_store:
+        status_args.extend(["--run-store", str(job_run_store)])
+        draft_pr_args.extend(["--run-store", str(job_run_store)])
+    status_result = CliRunner().invoke(app, status_args)
+    assert status_result.exit_code == 0, status_result.output
+    status_value = json.loads(status_result.stdout)
+    assert status_value["candidate"]["job_id"] == launch["job_id"]
+    assert status_value["delivery"]["status"] == "awaiting_separate_github_approval"
+
+    def guarded_git(_repository_path, *args, **_kwargs):
+        assert args == ("rev-parse", "--show-toplevel")
+        return f"{repository}\n".encode()
+
+    def stop_before_delivery(*_args, **_kwargs):
+        raise cli_module._DraftPRDeliveryError("fixture_stop_after_job_resolution")
+
+    monkeypatch.setattr(cli_module, "_draft_pr_git", guarded_git)
+    monkeypatch.setattr(
+        cli_module, "_draft_pr_load_candidate", stop_before_delivery
+    )
+    draft_pr_result = CliRunner().invoke(app, draft_pr_args)
+    assert draft_pr_result.exit_code == 2, draft_pr_result.output
+    assert "fixture_stop_after_job_resolution" in draft_pr_result.output
+    assert resolved_jobs == [
+        (job_run_store.resolve(), launch["job_id"]),
+        (job_run_store.resolve(), launch["job_id"]),
+    ]
+    assert fake_outputs == []
     assert "--assignment-file" not in issue_run_args
     assert "--run-id" not in issue_run_args
     assert research_run_id not in issue_run_args
@@ -947,7 +1012,10 @@ def test_engineering_issue_cli_resumes_finite_research_into_bounded_job(
     before_stop_requests = len(provider_requests)
     stop_store = tmp_path / "engineering-issue-stop-runs"
     stop_args = list(issue_run_args)
-    stop_args[stop_args.index("--run-store") + 1] = str(stop_store)
+    if "--run-store" in stop_args:
+        stop_args[stop_args.index("--run-store") + 1] = str(stop_store)
+    else:
+        stop_args.extend(["--run-store", str(stop_store)])
     stop_args[stop_args.index("--initial-files") + 1] = "2"
     stopped = CliRunner().invoke(app, stop_args)
     assert stopped.exit_code == 2, stopped.output

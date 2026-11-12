@@ -169,6 +169,13 @@ ai-office workflows bounded-job-run \
   --execution-destinations /private/path/to/destinations.yaml
 ```
 
+When `--run-store` is omitted, this independent Issue-based command uses
+`runs/engineering-jobs`, the same standard Job store used by the integrated
+`engineering-issue-run` path and by the default Issue-based `draft-pr` and
+status commands. If a custom Job store is supplied, pass that exact path to
+the later commands. Existing Job stores are not moved; an older store can be
+selected explicitly with `--run-store`.
+
 The launch preview reports the Issue URL, selected research Run, pinned
 repository identity/default branch, assignment digest, Workflow and finite
 Step plan before the existing approvals. A failed/stopped Job is visible
@@ -192,6 +199,17 @@ ai-office workflows engineering-issue-status \
   --issue-url https://github.com/OWNER/REPO/issues/NUMBER \
   --run-store /private/path/to/issue-job-runs
 ```
+
+For the standard `engineering-issue-run` invocation, omit `--run-store` on
+both commands above: its Research store is `runs/engineering-issues` and its
+Job store is `runs/engineering-jobs`, which the Issue-based delivery and
+status defaults resolve directly. Supplying `--run-store X` to
+`engineering-issue-run` preserves the existing explicit behavior: Research
+Runs go to `X` and the Job goes to `X/bounded-job-runs`; pass that exact nested
+Job path to `draft-pr` and `engineering-issue-status`. No saved Run, Job,
+Artifact, or Evidence is relocated. Older Job data under
+`runs/engineering-issues/bounded-job-runs` remains available by specifying
+that path explicitly.
 
 The status command aggregates the existing Job inspection and delivery records,
 then performs only read-only GitHub GETs. It accepts a PR only when the stored
@@ -259,8 +277,11 @@ ai-office workflows engineering-issue-run \
   --run-store /private/path/to/engineering-issue-runs
 ```
 
-Research Runs and the existing Job use the supplied store; the Job store is
-reported in the initial plan as `<run-store>/bounded-job-runs`. A ready Job
-does not trigger GitHub writes: Draft PR delivery and exact-HEAD CI inspection
-remain separate commands and approvals. This is an offline-tested orchestration
-path, not evidence of real Provider execution or product GitHub delivery.
+Research Runs use the supplied store; the Job store is reported in the initial
+plan. With the default Research store, the Job uses `runs/engineering-jobs` so
+the standard Issue-based delivery and status commands resolve it without a
+manual path. With explicit `--run-store X`, the Job remains at
+`X/bounded-job-runs`. A ready Job does not trigger GitHub writes: Draft PR
+delivery and exact-HEAD CI inspection remain separate commands and approvals.
+This is an offline-tested orchestration path, not evidence of real Provider
+execution or product GitHub delivery.

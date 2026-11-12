@@ -40,6 +40,15 @@ ai-office workflows draft-pr \
   --run-store /path/to/issue-job-runs
 ```
 
+For standard Issue-based invocations, `draft-pr` and
+`engineering-issue-status` default to `runs/engineering-jobs`. This is also
+the Job store used by `bounded-job-run --issue-url` and by
+`engineering-issue-run` when its Research `--run-store` is omitted. If a
+custom Research store `X` is passed to `engineering-issue-run`, its Job remains
+at `X/bounded-job-runs`; pass that exact Job path to the delivery and status
+commands. Previously saved Job data is not moved and can still be inspected by
+passing its existing store explicitly.
+
 If the saved Assignment uses only the `repository.identity` form, explicitly
 provide both `--repository` and `--base-ref`:
 
