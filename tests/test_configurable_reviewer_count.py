@@ -104,6 +104,44 @@ def test_declared_reviewer_count_drives_the_plan_without_engine_change(
         ] * reviewers
 
 
+@pytest.mark.parametrize("reviewers", [1, 2, 5])
+def test_explicit_format_correction_allowance_adds_conditional_reviewer_slots(
+    reviewers: int,
+) -> None:
+    from ai_office.engine.workflow_bounded_job import bounded_review_action_plan
+
+    workflow = _workflow_with_reviewers(reviewers)
+    plan = bounded_review_action_plan(
+        workflow, MAX_REVISIONS, max_review_verdict_corrections=1
+    )
+
+    assert len(plan) == (MAX_REVISIONS + 1) * (2 * reviewers + 1)
+    assert [item[2] for item in plan[1 : 1 + reviewers]] == [
+        "review_input"
+    ] * reviewers
+    correction_offset = 1 + reviewers
+    correction_block = plan[correction_offset : correction_offset + reviewers]
+    assert [item[2] for item in correction_block] == [
+        "review_verdict_correction_input"
+    ] * reviewers
+    assert [item[0] for item in correction_block] == [
+        f"review-{index + 1}" for index in range(reviewers)
+    ]
+    cursor = correction_offset + reviewers
+    for _ in range(MAX_REVISIONS):
+        assert plan[cursor] == ("revise", 1, "revision_input")
+        cursor += 1
+        assert [item[2] for item in plan[cursor : cursor + reviewers]] == [
+            "re_review_input"
+        ] * reviewers
+        cursor += reviewers
+        assert [item[2] for item in plan[cursor : cursor + reviewers]] == [
+            "review_verdict_correction_input"
+        ] * reviewers
+        cursor += reviewers
+    assert cursor == len(plan)
+
+
 @pytest.mark.parametrize("reviewers", [1, 2, 3, 4, 5])
 def test_every_declared_reviewer_is_a_private_one_step_view(
     reviewers: int,

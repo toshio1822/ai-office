@@ -1508,6 +1508,9 @@ def run_bounded_document_job_workflow(
     ),
     workflow_id: str = typer.Option(..., "--workflow"),
     max_revisions: int = typer.Option(1, "--max-revisions", min=0),
+    max_review_verdict_corrections: int = typer.Option(
+        0, "--max-review-verdict-corrections", min=0, max=1
+    ),
     max_retries: int = typer.Option(0, "--max-retries", min=0, max=2),
     retry_interval_seconds: int = typer.Option(
         30, "--retry-interval-seconds", min=1, max=3600
@@ -1641,7 +1644,9 @@ def run_bounded_document_job_workflow(
         target = execution_targets[0]
         destination_fingerprint = execution_target_fingerprint(target)
         employees_by_id = {item.definition.id: item for item in employees}
-        plan = bounded_review_action_plan(source_workflow, max_revisions)
+        plan = bounded_review_action_plan(
+            source_workflow, max_revisions, max_review_verdict_corrections
+        )
         if issue_mode:
             assignment_value = json.loads(assignment)
             investigation = assignment_value.get("investigation")
@@ -1818,17 +1823,23 @@ def run_bounded_document_job_workflow(
     )
     guaranteed_initial_actions = review_action_index + reviewer_count
     review_limit = 1 + max_revisions
-    max_normal_actions = min(
-        len(action_slots),
-        review_action_index + reviewer_count * (max_revisions + 1) + max_revisions,
+    correction_action_count = sum(
+        1
+        for slot in action_slots
+        if slot.input_source == "review_verdict_correction_input"
     )
+    max_normal_actions = len(action_slots) - correction_action_count
     actions_per_destination: dict[str, int] = {}
+    correction_slots_per_destination: dict[str, int] = {}
     destinations_by_fingerprint: dict[str, ModelExecutionTarget] = {}
     for slot in action_slots:
         fingerprint = slot.execution_target_fingerprint
-        actions_per_destination[fingerprint] = (
-            actions_per_destination.get(fingerprint, 0) + 1
+        destination_counts = (
+            correction_slots_per_destination
+            if slot.input_source == "review_verdict_correction_input"
+            else actions_per_destination
         )
+        destination_counts[fingerprint] = destination_counts.get(fingerprint, 0) + 1
         destinations_by_fingerprint[fingerprint] = target_by_step[slot.step_id]
     destination_limits = [
         {
@@ -1840,7 +1851,17 @@ def run_bounded_document_job_workflow(
                 selected_target.credential_environment_variable
             ),
             "planned_actions": actions_per_destination[fingerprint],
-            "maximum_attempts": actions_per_destination[fingerprint] + max_retries,
+            "review_verdict_correction_slots": correction_slots_per_destination.get(
+                fingerprint, 0
+            ),
+            "maximum_attempts": (
+                actions_per_destination[fingerprint]
+                + min(
+                    max_review_verdict_corrections,
+                    correction_slots_per_destination.get(fingerprint, 0),
+                )
+                + max_retries
+            ),
         }
         for fingerprint, selected_target in sorted(destinations_by_fingerprint.items())
     ]
@@ -1890,13 +1911,20 @@ def run_bounded_document_job_workflow(
                 for step in source_workflow.definition.steps
             ],
             "action_slots": len(action_slots),
+            "normal_action_slots": max_normal_actions,
+            "review_verdict_correction_slots": correction_action_count,
+            "max_review_verdict_corrections": max_review_verdict_corrections,
             "guaranteed_initial_actions": guaranteed_initial_actions,
             "max_normal_actions": max_normal_actions,
             "reviewer_count": reviewer_count,
             "max_retries": max_retries,
             "retry_interval_seconds": retry_interval_seconds,
             "retryable_http_statuses": list(_CURRENT_RETRYABLE_HTTP_STATUSES),
-            "provider_attempt_limit": max_normal_actions + max_retries,
+            "provider_attempt_limit": (
+                max_normal_actions
+                + max_retries
+                + max_review_verdict_corrections
+            ),
             "revision_limit": max_revisions,
             "review_limit": review_limit,
             "credential_environment_variable": (target.credential_environment_variable),
@@ -2043,9 +2071,15 @@ def run_bounded_document_job_workflow(
             assignment_sha256=assignment_digest,
             initial_input_sha256=assignment_digest,
             actions=tuple(action_slots),
-            max_provider_attempts=len(action_slots) + max_retries,
+            max_provider_attempts=(
+                len(action_slots)
+                - correction_action_count
+                + max_retries
+                + max_review_verdict_corrections
+            ),
             max_revisions=max_revisions,
             max_retries=max_retries,
+            max_review_verdict_corrections=max_review_verdict_corrections,
             retry_interval_seconds=retry_interval_seconds,
             source_manifest_run_id=source_manifest.run_id,
             source_manifest_digest=source_manifest.digest,
@@ -2773,6 +2807,7 @@ def run_engineering_issue_workflow(
         legacy_execution_model=None,
         workflow_id="bounded-change-review",
         max_revisions=max_revisions,
+        max_review_verdict_corrections=0,
         max_retries=max_retries,
         retry_interval_seconds=retry_interval_seconds,
         local_effect_policy_file=None,
