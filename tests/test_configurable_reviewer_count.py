@@ -264,3 +264,20 @@ def test_shipped_article_workflow_uses_two_declared_reviewers() -> None:
         "review-evidence": "glm-5.3-flash",
         "revise": "deepseek-v4-pro",
     }
+
+
+def test_shipped_reviewer_workflows_own_format_correction_instructions() -> None:
+    from ai_office.definitions.workflow import load_workflow_file
+
+    for path in (
+        REPOSITORY / "workflows/article-production.yaml",
+        REPOSITORY / "workflows/bounded-change-review.yaml",
+    ):
+        workflow = load_workflow_file(path).definition
+        assert workflow.bounded_review is not None
+        steps = {step.id: step for step in workflow.steps}
+        for review_id in workflow.bounded_review.review_steps:
+            instructions = steps[review_id].instructions
+            assert "format-correction invocation" in instructions
+            assert "change only the verdict line" in instructions
+            assert "original_review_artifact" in instructions

@@ -4176,6 +4176,15 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         )
         return task_input["run_input"]
 
+    def task_instructions_from_request(request) -> str:
+        request_value = json.loads(request.body)
+        task_input = (
+            json.loads(request_value["input"])
+            if "input" in request_value
+            else json.loads(request_value["messages"][1]["content"])
+        )
+        return task_input["task_instructions"]
+
     def grounded_changes(request) -> str:
         return (
             "Verdict: CHANGES_REQUIRED\n\n"
@@ -4285,6 +4294,10 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         correction_input = json.loads(run_input_from_request(sent[2]))
         assert correction_input["observed_format_violation"].startswith(
             "document_job_invalid_verdict"
+        )
+        assert "correction_instructions" not in correction_input
+        assert "format-correction invocation" in task_instructions_from_request(
+            sent[2]
         )
         assert correction_input["original_review_artifact"]["content"] == (
             "判定: 通过\n\nEvidence is sufficient."
