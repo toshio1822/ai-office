@@ -3548,6 +3548,7 @@ def _stopped_document_job_outcome(
             )
         except Exception:
             pass
+    reservations = _reservation_records(store.root, scope.job_id)
     final = next(
         (
             artifacts[index]
@@ -3560,19 +3561,18 @@ def _stopped_document_job_outcome(
     )
     review = next(
         (
-            artifacts[index]
-            for index in reversed(range(len(scope.actions)))
-            if scope.actions[index].input_source
+            artifacts[record["ordinal"]]
+            for record in reversed(reservations)
+            if record["ordinal"] in artifacts
+            and scope.actions[record["ordinal"]].input_source
             in {
                 "review_input",
                 "re_review_input",
                 _REVIEW_VERDICT_CORRECTION_SOURCE,
             }
-            and index in artifacts
         ),
         None,
     )
-    reservations = _reservation_records(store.root, scope.job_id)
     revisions_used = len(_consumed_revision_action_ordinals(scope, reservations))
     return BoundedDocumentJobOutcome(
         "stopped",

@@ -4047,6 +4047,14 @@ def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> No
             3,
             3,
         ),
+        (
+            "correction-then-blocked",
+            "Medium: note\nAudience: readers\nClaim: start with unknowns",
+            "FORMAT_CORRECTION_THEN_BLOCKED",
+            "stopped",
+            4,
+            4,
+        ),
     ],
 )
 def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
@@ -4193,6 +4201,12 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
             if index == 5:
                 return "# Revised draft\n\nOnly supplied claims remain."
             return _grounded_pass_for_request(request)
+        if verdict == "FORMAT_CORRECTION_THEN_BLOCKED":
+            if index == 2:
+                return "判定: 通过\n\nEvidence is sufficient."
+            if index == 3:
+                return "Verdict: PASS\n\nEvidence is sufficient."
+            return "Verdict: BLOCKED\n\nEvidence is insufficient."
         if verdict in {"FORMAT_CORRECTION_INVALID", "FORMAT_CORRECTION_TIMEOUT"}:
             if index == 2:
                 return "判定: 通过\n\nEvidence is sufficient."
@@ -4296,6 +4310,15 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         )
     elif verdict == "FORMAT_CORRECTION_TIMEOUT":
         assert inspection["stop_reason"] == "document_job_execution_uncertain"
+    elif verdict == "FORMAT_CORRECTION_THEN_BLOCKED":
+        assert inspection["stop_reason"] == "document_job_review_blocked"
+        run_prefix = "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-"
+        reviewer_two_artifact = list_run_artifacts(store, run_prefix + "2")[0]
+        assert reviewer_two_artifact.content.decode().startswith("Verdict: BLOCKED")
+        assert outcome.review_artifact_run_id == reviewer_two_artifact.run_id
+        assert outcome.review_artifact_id == reviewer_two_artifact.artifact_id
+        assert inspection["review_artifact_run_id"] == reviewer_two_artifact.run_id
+        assert inspection["review_artifact_id"] == reviewer_two_artifact.artifact_id
     if expected_status in {"candidate", "reviewed"}:
         review_manifest = load_workflow_run_manifest(
             store, outcome.review_artifact_run_id
