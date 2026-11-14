@@ -2218,20 +2218,23 @@ def _reject_sensitive_text(
         text.encode("utf-8")
     except UnicodeEncodeError:
         _fail("text_encoding_invalid")
-    checked = (
-        _mask_dynamic_python_secret_assignments(text) if python_source else text
-    )
-    pattern = _PYTHON_SENSITIVE_ASSIGNMENT if python_source else _SENSITIVE_ASSIGNMENT
+    checked = text
+    pattern = _SENSITIVE_ASSIGNMENT
+    if python_source:
+        masked = _mask_dynamic_python_secret_assignments(text)
+        if masked is not None:
+            checked = masked
+            pattern = _PYTHON_SENSITIVE_ASSIGNMENT
     if _redact(text, token=token) != text or pattern.search(checked) is not None:
         _fail("secret_suspected")
 
 
-def _mask_dynamic_python_secret_assignments(text: str) -> str:
+def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
     """Exclude dynamic Python assignments from the broad text secret check."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return text
+        return None
     content = bytearray(text.encode("utf-8"))
     line_offsets = [0]
     for line in content.splitlines(keepends=True):
