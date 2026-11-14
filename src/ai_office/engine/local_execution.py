@@ -1024,10 +1024,17 @@ def _source_contains_secret(relative: str, text: str) -> bool:
         elif isinstance(node, ast.AnnAssign):
             targets = [node.target]
             value = node.value
-            if value is None and any(
-                re.fullmatch(_SECRET_NAME, name, re.IGNORECASE) is not None
-                for target in targets
-                for name in _assignment_target_names(target)
+            if (
+                value is None
+                and not any(
+                    isinstance(child, ast.Constant)
+                    for child in ast.walk(node.annotation)
+                )
+                and any(
+                    re.fullmatch(_SECRET_NAME, name, re.IGNORECASE) is not None
+                    for target in targets
+                    for name in _assignment_target_names(target)
+                )
             ):
                 start = (
                     line_offsets[node.target.end_lineno - 1]

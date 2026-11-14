@@ -2271,10 +2271,17 @@ def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
         elif isinstance(node, ast.AnnAssign):
             targets = [node.target]
             value = node.value
-            if value is None and any(
-                _SENSITIVE_ASSIGNMENT_NAME.fullmatch(name) is not None
-                for target in targets
-                for name in _assignment_target_names(target)
+            if (
+                value is None
+                and not any(
+                    isinstance(child, ast.Constant)
+                    for child in ast.walk(node.annotation)
+                )
+                and any(
+                    _SENSITIVE_ASSIGNMENT_NAME.fullmatch(name) is not None
+                    for target in targets
+                    for name in _assignment_target_names(target)
+                )
             ):
                 start = (
                     line_offsets[node.target.end_lineno - 1]

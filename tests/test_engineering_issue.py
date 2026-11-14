@@ -263,6 +263,10 @@ def test_sensitive_text_screen_allows_dynamic_python_password_assignment() -> No
     assert caught.value.classification == "secret_suspected"
     with pytest.raises(engineering_issue.EngineeringIssueError):
         engineering_issue._reject_sensitive_text(
+            'password: "synthetic-test-secret"\n', python_source=True
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
             'def validate(password: str = "synthetic-test-secret") -> None:\n'
             "    pass\n",
             python_source=True,

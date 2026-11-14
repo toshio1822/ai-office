@@ -204,6 +204,9 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
         "module.py", 'password = "synthetic-test-secret"\n'
     )
     assert _source_contains_secret(
+        "module.py", 'password: "synthetic-test-secret"\n'
+    )
+    assert _source_contains_secret(
         "module.py",
         'def validate(password: str = "synthetic-test-secret") -> None:\n'
         "    pass\n",
