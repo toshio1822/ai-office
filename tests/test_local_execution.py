@@ -181,10 +181,30 @@ def test_redaction_covers_common_secret_assignments() -> None:
 
 def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
     assert not _source_contains_secret(
+        "module.py", "password = self.luks_password_input.text()\n"
+    )
+    assert not _source_contains_secret(
+        "module.py",
+        "def validate(password: str) -> None:\n"
+        "    if not password:\n"
+        "        raise ValueError(\"required\")\n",
+    )
+    assert not _source_contains_secret(
         "module.py",
         "call(api_key=api_key)\ncall(api_key=(\n    api_key[slot.provider]\n))\n",
     )
     assert _source_contains_secret("module.py", 'API_KEY = "literal-value"\n')
+    assert _source_contains_secret(
+        "module.py", 'password = "synthetic-test-secret"\n'
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'def validate(password: str = "synthetic-test-secret") -> None:\n'
+        "    pass\n",
+    )
+    assert _source_contains_secret(
+        "module.py", "token = 'Bearer synthetic-bearer-value'\n"
+    )
     assert _source_contains_secret(
         "module.py", 'call(api_key=(\n    "literal-value"\n))\n'
     )

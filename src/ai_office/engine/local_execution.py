@@ -60,6 +60,12 @@ _SENSITIVE = re.compile(
     r"|\b[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
     r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\s*[:=]\s*\S+)"
 )
+_PYTHON_SENSITIVE = re.compile(
+    r"(?i)(?:\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})"
+    r"|\bBearer[ \t]+[A-Za-z0-9._~+/=-]{12,}"
+    r"|\b[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
+    r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)[ \t]*[:=][ \t]*\S+)"
+)
 _ASSIGNMENT = re.compile(
     r"(?i)(\b[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
     r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\s*[:=]\s*)\S+"
@@ -975,7 +981,7 @@ def _read_sources(
 
 
 def _source_contains_secret(relative: str, text: str) -> bool:
-    """Keep literal secret detection while allowing Python keyword passthroughs."""
+    """Keep literal detection while allowing dynamic Python secret passthroughs."""
     if PurePosixPath(relative).suffix != ".py":
         return _SENSITIVE.search(text) is not None
     try:
@@ -987,6 +993,59 @@ def _source_contains_secret(relative: str, text: str) -> bool:
     for line in content.splitlines(keepends=True):
         line_offsets.append(line_offsets[-1] + len(line))
     for node in ast.walk(tree):
+        if isinstance(node, ast.arg):
+            annotation = node.annotation
+            if (
+                annotation is None
+                or re.fullmatch(_SECRET_NAME, node.arg, re.IGNORECASE) is None
+                or any(
+                    isinstance(child, ast.Constant)
+                    for child in ast.walk(annotation)
+                )
+                or annotation.end_lineno is None
+            ):
+                continue
+            start = (
+                line_offsets[node.lineno - 1]
+                + node.col_offset
+                + len(node.arg.encode("utf-8"))
+            )
+            end = (
+                line_offsets[annotation.end_lineno - 1]
+                + annotation.end_col_offset
+            )
+            for index in range(start, end):
+                if content[index] not in (0x0A, 0x0D):
+                    content[index] = 0x20
+            continue
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        else:
+            targets = []
+            value = None
+        if (
+            targets
+            and value is not None
+            and node.end_lineno is not None
+            and not any(
+                isinstance(child, ast.Constant) for child in ast.walk(value)
+            )
+            and any(
+                re.fullmatch(_SECRET_NAME, name, re.IGNORECASE) is not None
+                for target in targets
+                for name in _assignment_target_names(target)
+            )
+        ):
+            start = line_offsets[node.lineno - 1] + node.col_offset
+            end = line_offsets[node.end_lineno - 1] + node.end_col_offset
+            for index in range(start, end):
+                if content[index] not in (0x0A, 0x0D):
+                    content[index] = 0x20
+            continue
         if (
             not isinstance(node, ast.keyword)
             or node.arg is None
@@ -1009,7 +1068,21 @@ def _source_contains_secret(relative: str, text: str) -> bool:
         for index in range(start, end):
             if content[index] not in (0x0A, 0x0D):
                 content[index] = 0x20
-    return _SENSITIVE.search(content.decode("utf-8")) is not None
+    return _PYTHON_SENSITIVE.search(content.decode("utf-8")) is not None
+
+
+def _assignment_target_names(target: ast.expr) -> tuple[str, ...]:
+    if isinstance(target, ast.Name):
+        return (target.id,)
+    if isinstance(target, ast.Attribute):
+        return (target.attr,)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return tuple(
+            name
+            for element in target.elts
+            for name in _assignment_target_names(element)
+        )
+    return ()
 
 
 def _run_sandbox(
