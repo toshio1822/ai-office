@@ -244,6 +244,12 @@ def test_sensitive_text_screen_allows_dynamic_python_password_assignment() -> No
         "password = self.luks_password_input.text()\n", python_source=True
     )
     engineering_issue._reject_sensitive_text(
+        "class Config:\n    password: str\n", python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
+        'password = os.getenv("PASSWORD")\n', python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
         "def validate(password: str) -> None:\n"
         "    if not password:\n"
         "        raise ValueError(\"required\")\n",
@@ -259,6 +265,11 @@ def test_sensitive_text_screen_allows_dynamic_python_password_assignment() -> No
         engineering_issue._reject_sensitive_text(
             'def validate(password: str = "synthetic-test-secret") -> None:\n'
             "    pass\n",
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'password = os.getenv("PASSWORD", "synthetic-test-secret")\n',
             python_source=True,
         )
     with pytest.raises(engineering_issue.EngineeringIssueError):

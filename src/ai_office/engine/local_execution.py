@@ -1024,6 +1024,23 @@ def _source_contains_secret(relative: str, text: str) -> bool:
         elif isinstance(node, ast.AnnAssign):
             targets = [node.target]
             value = node.value
+            if value is None and any(
+                re.fullmatch(_SECRET_NAME, name, re.IGNORECASE) is not None
+                for target in targets
+                for name in _assignment_target_names(target)
+            ):
+                start = (
+                    line_offsets[node.target.end_lineno - 1]
+                    + node.target.end_col_offset
+                )
+                end = (
+                    line_offsets[node.annotation.end_lineno - 1]
+                    + node.annotation.end_col_offset
+                )
+                for index in range(start, end):
+                    if content[index] not in (0x0A, 0x0D):
+                        content[index] = 0x20
+                continue
         else:
             targets = []
             value = None
@@ -1031,8 +1048,11 @@ def _source_contains_secret(relative: str, text: str) -> bool:
             targets
             and value is not None
             and node.end_lineno is not None
-            and not any(
-                isinstance(child, ast.Constant) for child in ast.walk(value)
+            and (
+                not any(
+                    isinstance(child, ast.Constant) for child in ast.walk(value)
+                )
+                or _is_dynamic_secret_lookup(value)
             )
             and any(
                 re.fullmatch(_SECRET_NAME, name, re.IGNORECASE) is not None
@@ -1083,6 +1103,25 @@ def _assignment_target_names(target: ast.expr) -> tuple[str, ...]:
             for name in _assignment_target_names(element)
         )
     return ()
+
+
+def _is_dynamic_secret_lookup(value: ast.expr) -> bool:
+    if (
+        not isinstance(value, ast.Call)
+        or not isinstance(value.func, ast.Attribute)
+        or value.func.attr != "getenv"
+        or not isinstance(value.func.value, ast.Name)
+        or value.func.value.id != "os"
+        or len(value.args) != 1
+        or value.keywords
+    ):
+        return False
+    key = value.args[0]
+    return (
+        isinstance(key, ast.Constant)
+        and type(key.value) is str
+        and re.fullmatch(_SECRET_NAME, key.value, re.IGNORECASE) is not None
+    )
 
 
 def _run_sandbox(

@@ -2271,12 +2271,32 @@ def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
         elif isinstance(node, ast.AnnAssign):
             targets = [node.target]
             value = node.value
+            if value is None and any(
+                _SENSITIVE_ASSIGNMENT_NAME.fullmatch(name) is not None
+                for target in targets
+                for name in _assignment_target_names(target)
+            ):
+                start = (
+                    line_offsets[node.target.end_lineno - 1]
+                    + node.target.end_col_offset
+                )
+                end = (
+                    line_offsets[node.annotation.end_lineno - 1]
+                    + node.annotation.end_col_offset
+                )
+                for index in range(start, end):
+                    if content[index] not in (0x0A, 0x0D):
+                        content[index] = 0x20
+                continue
         else:
             continue
         if (
             value is None
             or node.end_lineno is None
-            or any(isinstance(child, ast.Constant) for child in ast.walk(value))
+            or (
+                any(isinstance(child, ast.Constant) for child in ast.walk(value))
+                and not _is_dynamic_secret_lookup(value)
+            )
         ):
             continue
         if not any(
@@ -2305,6 +2325,25 @@ def _assignment_target_names(target: ast.expr) -> tuple[str, ...]:
             for name in _assignment_target_names(element)
         )
     return ()
+
+
+def _is_dynamic_secret_lookup(value: ast.expr) -> bool:
+    if (
+        not isinstance(value, ast.Call)
+        or not isinstance(value.func, ast.Attribute)
+        or value.func.attr != "getenv"
+        or not isinstance(value.func.value, ast.Name)
+        or value.func.value.id != "os"
+        or len(value.args) != 1
+        or value.keywords
+    ):
+        return False
+    key = value.args[0]
+    return (
+        isinstance(key, ast.Constant)
+        and type(key.value) is str
+        and _SENSITIVE_ASSIGNMENT_NAME.fullmatch(key.value) is not None
+    )
 
 
 def _with_provider_usage(value: dict[str, object], *, previous_bytes: int) -> str:

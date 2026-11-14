@@ -184,6 +184,12 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
         "module.py", "password = self.luks_password_input.text()\n"
     )
     assert not _source_contains_secret(
+        "module.py", "class Config:\n    password: str\n"
+    )
+    assert not _source_contains_secret(
+        "module.py", 'password = os.getenv("PASSWORD")\n'
+    )
+    assert not _source_contains_secret(
         "module.py",
         "def validate(password: str) -> None:\n"
         "    if not password:\n"
@@ -201,6 +207,10 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
         "module.py",
         'def validate(password: str = "synthetic-test-secret") -> None:\n'
         "    pass\n",
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'password = os.getenv("PASSWORD", "synthetic-test-secret")\n',
     )
     assert _source_contains_secret(
         "module.py", "token = 'Bearer synthetic-bearer-value'\n"
