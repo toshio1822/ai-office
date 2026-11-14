@@ -4023,6 +4023,38 @@ def test_bounded_job_launcher_uses_generic_registered_destination_policy() -> No
             3,
             3,
         ),
+        (
+            "corrected-review",
+            "Medium: note\nAudience: readers\nClaim: start with unknowns",
+            "FORMAT_CORRECTED",
+            "reviewed",
+            7,
+            7,
+        ),
+        (
+            "invalid-correction",
+            "Medium: note\nAudience: readers\nClaim: start with unknowns",
+            "FORMAT_CORRECTION_INVALID",
+            "stopped",
+            3,
+            3,
+        ),
+        (
+            "unknown-correction-send",
+            "Medium: note\nAudience: readers\nClaim: start with unknowns",
+            "FORMAT_CORRECTION_TIMEOUT",
+            "stopped",
+            3,
+            3,
+        ),
+        (
+            "correction-then-blocked",
+            "Medium: note\nAudience: readers\nClaim: start with unknowns",
+            "FORMAT_CORRECTION_THEN_BLOCKED",
+            "stopped",
+            4,
+            4,
+        ),
     ],
 )
 def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
@@ -4050,8 +4082,13 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
     store_root.mkdir(mode=0o700)
     store = WorkflowRunManifestStore(store_root)
     target = DIRECT_OPENAI_EXECUTION_TARGET
-    revision_case = verdict == "CHANGES_REQUIRED"
+    revision_case = verdict in {"CHANGES_REQUIRED", "FORMAT_CORRECTED"}
     max_revisions = 1 if revision_case else 0
+    max_corrections = (
+        1
+        if verdict.startswith("FORMAT_CORRECTION") or verdict == "FORMAT_CORRECTED"
+        else 0
+    )
     initial_run_id = f"configured-{medium}-initial"
     source_manifest = create_workflow_run_manifest(
         store,
@@ -4067,7 +4104,7 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
 
     slots = []
     for ordinal, (step_id, step_index, input_source) in enumerate(
-        bounded_review_action_plan(workflow, max_revisions)
+        bounded_review_action_plan(workflow, max_revisions, max_corrections)
     ):
         view = bounded_job_execution_view(workflow, step_id)
         manifest = create_workflow_run_manifest(
@@ -4106,8 +4143,9 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
             assignment_sha256=assignment_sha,
             initial_input_sha256=assignment_sha,
             actions=actions,
-            max_provider_attempts=3 + 3 * max_revisions,
+            max_provider_attempts=3 + 3 * max_revisions + max_corrections,
             max_revisions=max_revisions,
+            max_review_verdict_corrections=max_corrections,
             source_manifest_run_id=source_manifest.run_id,
             source_manifest_digest=source_manifest.digest,
             expires_at_ns=9_999_999_999_999_999_999,
@@ -4129,6 +4167,24 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
     scope = issue_scope(tuple(slots))
     sent = []
 
+    def run_input_from_request(request) -> str:
+        request_value = json.loads(request.body)
+        task_input = (
+            json.loads(request_value["input"])
+            if "input" in request_value
+            else json.loads(request_value["messages"][1]["content"])
+        )
+        return task_input["run_input"]
+
+    def task_instructions_from_request(request) -> str:
+        request_value = json.loads(request.body)
+        task_input = (
+            json.loads(request_value["input"])
+            if "input" in request_value
+            else json.loads(request_value["messages"][1]["content"])
+        )
+        return task_input["task_instructions"]
+
     def grounded_changes(request) -> str:
         return (
             "Verdict: CHANGES_REQUIRED\n\n"
@@ -4144,6 +4200,26 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         index = len(sent)
         if index == 1:
             return "# Draft\n\nGenerated from supplied input only."
+        if verdict == "FORMAT_CORRECTED":
+            if index == 2:
+                return "判定: 通过\n\nEvidence is sufficient."
+            if index == 3:
+                return "Verdict: PASS\n\nEvidence is sufficient."
+            if index == 4:
+                return grounded_changes(request)
+            if index == 5:
+                return "# Revised draft\n\nOnly supplied claims remain."
+            return _grounded_pass_for_request(request)
+        if verdict == "FORMAT_CORRECTION_THEN_BLOCKED":
+            if index == 2:
+                return "判定: 通过\n\nEvidence is sufficient."
+            if index == 3:
+                return "Verdict: PASS\n\nEvidence is sufficient."
+            return "Verdict: BLOCKED\n\nEvidence is insufficient."
+        if verdict in {"FORMAT_CORRECTION_INVALID", "FORMAT_CORRECTION_TIMEOUT"}:
+            if index == 2:
+                return "判定: 通过\n\nEvidence is sufficient."
+            return "Verdict: MAYBE"
         if verdict == "PASS":
             return _grounded_pass_for_request(request)
         if verdict == "Verdict: BLOCKED":
@@ -4170,6 +4246,8 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
         sent.append(request)
         if verdict == "TIMEOUT" and len(sent) == 3:
             raise TimeoutError("offline ambiguous send")
+        if verdict == "FORMAT_CORRECTION_TIMEOUT" and len(sent) == 3:
+            raise TimeoutError("offline ambiguous correction send")
         output = describe(request)
         body = json.dumps(
             {
@@ -4203,6 +4281,57 @@ def test_single_article_workflow_uses_distinct_run_inputs_on_same_offline_path(
     assert inspection["status"] == expected_status
     assert inspection["consumed_provider_attempts"] == expected_sent
     assert len(inspection["dispatch_order"]) == expected_dispatches
+    assert inspection["max_review_verdict_corrections"] == max_corrections
+    correction_attempted = (
+        verdict.startswith("FORMAT_CORRECTION") or verdict == "FORMAT_CORRECTED"
+    )
+    assert inspection["review_verdict_corrections_consumed"] == int(
+        correction_attempted
+    )
+    if correction_attempted:
+        assert inspection["normal_actions_consumed"] == expected_sent - 1
+    if verdict == "FORMAT_CORRECTED":
+        correction_input = json.loads(run_input_from_request(sent[2]))
+        assert correction_input["observed_format_violation"].startswith(
+            "document_job_invalid_verdict"
+        )
+        assert "correction_instructions" not in correction_input
+        assert "format-correction invocation" in task_instructions_from_request(
+            sent[2]
+        )
+        assert correction_input["original_review_artifact"]["content"] == (
+            "判定: 通过\n\nEvidence is sufficient."
+        )
+        assert correction_input["original_review_input"]["assignment"] == assignment
+        revision_input = json.loads(run_input_from_request(sent[4]))
+        effective_reviews = revision_input["review_artifacts"]
+        assert any(
+            item["content"] == "Verdict: PASS\n\nEvidence is sufficient."
+            for item in effective_reviews
+        )
+        assert any(
+            item["content"] == grounded_changes(sent[3])
+            for item in effective_reviews
+        )
+        persisted_scope = load_bounded_workflow_job_scope(store, scope.job_id)
+        assert persisted_scope.schema_version == "workflow-bounded-job-scope.v4"
+        assert persisted_scope.max_review_verdict_corrections == 1
+        assert persisted_scope.max_provider_attempts == 7
+    elif verdict == "FORMAT_CORRECTION_INVALID":
+        assert inspection["stop_reason"] == (
+            "document_job_review_verdict_correction_invalid"
+        )
+    elif verdict == "FORMAT_CORRECTION_TIMEOUT":
+        assert inspection["stop_reason"] == "document_job_execution_uncertain"
+    elif verdict == "FORMAT_CORRECTION_THEN_BLOCKED":
+        assert inspection["stop_reason"] == "document_job_review_blocked"
+        run_prefix = "bounded-" + sha256(scope.job_id.encode()).hexdigest()[:16] + "-"
+        reviewer_two_artifact = list_run_artifacts(store, run_prefix + "2")[0]
+        assert reviewer_two_artifact.content.decode().startswith("Verdict: BLOCKED")
+        assert outcome.review_artifact_run_id == reviewer_two_artifact.run_id
+        assert outcome.review_artifact_id == reviewer_two_artifact.artifact_id
+        assert inspection["review_artifact_run_id"] == reviewer_two_artifact.run_id
+        assert inspection["review_artifact_id"] == reviewer_two_artifact.artifact_id
     if expected_status in {"candidate", "reviewed"}:
         review_manifest = load_workflow_run_manifest(
             store, outcome.review_artifact_run_id

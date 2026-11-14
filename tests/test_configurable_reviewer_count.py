@@ -104,6 +104,44 @@ def test_declared_reviewer_count_drives_the_plan_without_engine_change(
         ] * reviewers
 
 
+@pytest.mark.parametrize("reviewers", [1, 2, 5])
+def test_explicit_format_correction_allowance_adds_conditional_reviewer_slots(
+    reviewers: int,
+) -> None:
+    from ai_office.engine.workflow_bounded_job import bounded_review_action_plan
+
+    workflow = _workflow_with_reviewers(reviewers)
+    plan = bounded_review_action_plan(
+        workflow, MAX_REVISIONS, max_review_verdict_corrections=1
+    )
+
+    assert len(plan) == (MAX_REVISIONS + 1) * (2 * reviewers + 1)
+    assert [item[2] for item in plan[1 : 1 + reviewers]] == [
+        "review_input"
+    ] * reviewers
+    correction_offset = 1 + reviewers
+    correction_block = plan[correction_offset : correction_offset + reviewers]
+    assert [item[2] for item in correction_block] == [
+        "review_verdict_correction_input"
+    ] * reviewers
+    assert [item[0] for item in correction_block] == [
+        f"review-{index + 1}" for index in range(reviewers)
+    ]
+    cursor = correction_offset + reviewers
+    for _ in range(MAX_REVISIONS):
+        assert plan[cursor] == ("revise", 1, "revision_input")
+        cursor += 1
+        assert [item[2] for item in plan[cursor : cursor + reviewers]] == [
+            "re_review_input"
+        ] * reviewers
+        cursor += reviewers
+        assert [item[2] for item in plan[cursor : cursor + reviewers]] == [
+            "review_verdict_correction_input"
+        ] * reviewers
+        cursor += reviewers
+    assert cursor == len(plan)
+
+
 @pytest.mark.parametrize("reviewers", [1, 2, 3, 4, 5])
 def test_every_declared_reviewer_is_a_private_one_step_view(
     reviewers: int,
@@ -226,3 +264,20 @@ def test_shipped_article_workflow_uses_two_declared_reviewers() -> None:
         "review-evidence": "glm-5.3-flash",
         "revise": "deepseek-v4-pro",
     }
+
+
+def test_shipped_reviewer_workflows_own_format_correction_instructions() -> None:
+    from ai_office.definitions.workflow import load_workflow_file
+
+    for path in (
+        REPOSITORY / "workflows/article-production.yaml",
+        REPOSITORY / "workflows/bounded-change-review.yaml",
+    ):
+        workflow = load_workflow_file(path).definition
+        assert workflow.bounded_review is not None
+        steps = {step.id: step for step in workflow.steps}
+        for review_id in workflow.bounded_review.review_steps:
+            instructions = steps[review_id].instructions
+            assert "format-correction invocation" in instructions
+            assert "change only the verdict line" in instructions
+            assert "original_review_artifact" in instructions

@@ -201,6 +201,18 @@ share one UID. Supply credentials through the approved secret manager/environmen
 not CLI arguments, repository files, Run store, Issues, or logs. Check the
 current entitlement and billing setting before authorizing a live Job.
 
+By default, a successful HTTP response with an unsupported review-verdict
+format still stops the Job. To pre-authorize one bounded format correction for
+the same reviewer, include `--max-review-verdict-corrections 1` in the Job
+preview; the default is `0`, and the limit is at most one correction per Job.
+The correction reuses that reviewer's pinned Assignment, review input,
+Employee, model, destination, and grants. Its additional Provider attempt is
+included in the total attempt cap and is separate from `--max-retries`, which
+continues to apply only to eligible transient HTTP failures. The original
+response and correction remain separate Evidence. A second invalid verdict,
+`BLOCKED`, or an unknown Provider outcome stops without another correction or
+replay.
+
 The operator command shape is:
 
 ```console
