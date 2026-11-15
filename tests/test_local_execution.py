@@ -275,6 +275,13 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
     assert _source_contains_secret(
         "module.py", "password = sk-abcdefghijklmnopqrstuvwxyz\n"
     )
+    assert _source_contains_secret(
+        "module.py",
+        'if (password := "synthetic-test-secret"):\n    connect(password)\n',
+    )
+    assert _source_contains_secret(
+        "module.py", 'CONFIG = t"PASSWORD: synthetic-test-secret"\n'
+    )
 
 
 def test_trusted_bundle_policy_requires_paired_pin_and_isolated_python(

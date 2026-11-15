@@ -2234,7 +2234,8 @@ def _python_source_contains_secret(text: str) -> bool:
     literal_text = "\n".join(
         token.string
         for token in tokens
-        if tokenize.tok_name[token.type] in {"STRING", "COMMENT", "FSTRING_MIDDLE"}
+        if tokenize.tok_name[token.type]
+        in {"STRING", "COMMENT", "FSTRING_MIDDLE", "TSTRING_MIDDLE"}
     )
     if _SENSITIVE_ASSIGNMENT.search(literal_text) is not None:
         return True
@@ -2285,6 +2286,10 @@ def _python_source_contains_secret(text: str) -> bool:
             targets = [node.target]
             value = node.value
             annotation = node.annotation
+        elif isinstance(node, ast.NamedExpr):
+            targets = [node.target]
+            value = node.value
+            annotation = None
         else:
             if (
                 isinstance(node, ast.keyword)

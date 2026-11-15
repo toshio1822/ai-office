@@ -344,6 +344,15 @@ def test_sensitive_text_screen_allows_dynamic_python_password_assignment() -> No
         engineering_issue._reject_sensitive_text(
             "password = sk-abcdefghijklmnopqrstuvwxyz\n", python_source=True
         )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'if (password := "synthetic-test-secret"):\n    connect(password)\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'CONFIG = t"PASSWORD: synthetic-test-secret"\n', python_source=True
+        )
 
 
 def test_issue_body_send_must_be_explicit_and_stops_before_get(
