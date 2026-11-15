@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
-import io
 import json
 import os
 import re
@@ -13,7 +11,6 @@ import shutil
 import stat
 import subprocess
 import time
-import tokenize
 from bisect import bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -23,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from ai_office.engine.local_execution import (
     LocalExecutionLimits,
     LocalExecutionPolicy,
+    _python_source_contains_sensitive,
 )
 from ai_office.engine.workflow_run_manifest import (
     WorkflowRunManifestStore,
@@ -2225,132 +2223,9 @@ def _reject_sensitive_text(
 
 
 def _python_source_contains_secret(text: str) -> bool:
-    """Check Python literals and comments separately from secret-name syntax."""
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return _SENSITIVE_ASSIGNMENT.search(text) is not None
-    tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
-    literal_text = "\n".join(
-        token.string
-        for token in tokens
-        if tokenize.tok_name[token.type]
-        in {"STRING", "COMMENT", "FSTRING_MIDDLE", "TSTRING_MIDDLE"}
+    return _python_source_contains_sensitive(
+        text, _SENSITIVE_ASSIGNMENT, _SENSITIVE_ASSIGNMENT_NAME
     )
-    if _SENSITIVE_ASSIGNMENT.search(literal_text) is not None:
-        return True
-
-    for arguments in ast.walk(tree):
-        if not isinstance(arguments, ast.arguments):
-            continue
-        positional = arguments.posonlyargs + arguments.args
-        defaulted = list(
-            zip(
-                positional[len(positional) - len(arguments.defaults) :],
-                arguments.defaults,
-            )
-        ) + [
-            (argument, default)
-            for argument, default in zip(
-                arguments.kwonlyargs, arguments.kw_defaults
-            )
-            if default is not None
-        ]
-        for argument in (
-            positional
-            + arguments.kwonlyargs
-            + ([arguments.vararg] if arguments.vararg is not None else [])
-            + ([arguments.kwarg] if arguments.kwarg is not None else [])
-        ):
-            if _SENSITIVE_ASSIGNMENT_NAME.fullmatch(argument.arg) is None:
-                continue
-            if argument.annotation is not None and any(
-                isinstance(child, ast.Constant)
-                for child in ast.walk(argument.annotation)
-            ):
-                return True
-        for argument, default in defaulted:
-            if _SENSITIVE_ASSIGNMENT_NAME.fullmatch(argument.arg) is None:
-                continue
-            if any(
-                isinstance(child, ast.Constant) for child in ast.walk(default)
-            ) and not _is_dynamic_secret_lookup(default):
-                return True
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-            value = node.value
-            annotation = None
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-            value = node.value
-            annotation = node.annotation
-        elif isinstance(node, ast.NamedExpr):
-            targets = [node.target]
-            value = node.value
-            annotation = None
-        else:
-            if (
-                isinstance(node, ast.keyword)
-                and node.arg is not None
-                and _SENSITIVE_ASSIGNMENT_NAME.fullmatch(node.arg) is not None
-                and any(
-                    isinstance(child, ast.Constant) for child in ast.walk(node.value)
-                )
-                and not _is_dynamic_secret_lookup(node.value)
-            ):
-                return True
-            continue
-        if not any(
-            _SENSITIVE_ASSIGNMENT_NAME.fullmatch(name) is not None
-            for target in targets
-            for name in _assignment_target_names(target)
-        ):
-            continue
-        if annotation is not None and any(
-            isinstance(child, ast.Constant) for child in ast.walk(annotation)
-        ):
-            return True
-        if value is not None and any(
-            isinstance(child, ast.Constant) for child in ast.walk(value)
-        ) and not _is_dynamic_secret_lookup(value):
-            return True
-    return False
-
-
-def _assignment_target_names(target: ast.expr) -> tuple[str, ...]:
-    if isinstance(target, ast.Name):
-        return (target.id,)
-    if isinstance(target, ast.Attribute):
-        return (target.attr,)
-    if isinstance(target, (ast.Tuple, ast.List)):
-        return tuple(
-            name
-            for element in target.elts
-            for name in _assignment_target_names(element)
-        )
-    return ()
-
-
-def _is_dynamic_secret_lookup(value: ast.expr) -> bool:
-    if (
-        not isinstance(value, ast.Call)
-        or not isinstance(value.func, ast.Attribute)
-        or value.func.attr != "getenv"
-        or not isinstance(value.func.value, ast.Name)
-        or value.func.value.id != "os"
-        or len(value.args) != 1
-        or value.keywords
-    ):
-        return False
-    key = value.args[0]
-    return (
-        isinstance(key, ast.Constant)
-        and type(key.value) is str
-        and _SENSITIVE_ASSIGNMENT_NAME.fullmatch(key.value) is not None
-    )
-
 
 def _with_provider_usage(value: dict[str, object], *, previous_bytes: int) -> str:
     value["provider_input_bytes_used"] = previous_bytes

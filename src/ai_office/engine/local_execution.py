@@ -62,17 +62,14 @@ _SENSITIVE = re.compile(
     r"|\b[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
     r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\s*[:=]\s*\S+)"
 )
-_SENSITIVE_LITERAL_VALUE = re.compile(
-    r"(?i)(?:\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})"
-    r"|\bBearer\s+[A-Za-z0-9._~+/=-]{12,})"
-)
 _ASSIGNMENT = re.compile(
     r"(?i)(\b[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
     r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\s*[:=]\s*)\S+"
 )
-_SECRET_NAME = (
+_SECRET_NAME = re.compile(
     r"[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
-    r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)"
+    r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)",
+    re.IGNORECASE,
 )
 _MAX_ARTIFACT_BYTES = 1_048_576
 _MAX_SOURCE_BYTES = 2_097_152
@@ -981,118 +978,181 @@ def _read_sources(
 
 
 def _source_contains_secret(relative: str, text: str) -> bool:
-    """Check Python literals/comments separately from secret-name syntax."""
+    """Scan Python with AST exemptions and other files with the broad matcher."""
     if PurePosixPath(relative).suffix != ".py":
         return _SENSITIVE.search(text) is not None
+    return _python_source_contains_sensitive(text, _SENSITIVE, _SECRET_NAME)
+
+
+def _python_source_contains_sensitive(
+    text: str,
+    sensitive_pattern: re.Pattern[str],
+    secret_name_pattern: re.Pattern[str],
+) -> bool:
+    """Keep broad secret matches unless AST proves them to be safe syntax."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return _SENSITIVE.search(text) is not None
-    if _SENSITIVE_LITERAL_VALUE.search(text) is not None:
-        return True
-    tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
-    if any(_SENSITIVE.search(token.string) is not None for token in tokens):
-        return True
-    literal_text = "\n".join(
-        token.string
-        for token in tokens
-        if tokenize.tok_name[token.type]
-        in {"STRING", "COMMENT", "FSTRING_MIDDLE", "TSTRING_MIDDLE"}
-    )
-    if _SENSITIVE.search(literal_text) is not None:
-        return True
+        return sensitive_pattern.search(text) is not None
+    lines = text.splitlines(keepends=True)
+    line_starts = [0]
+    for line in lines:
+        line_starts.append(line_starts[-1] + len(line))
 
-    for arguments in ast.walk(tree):
-        if not isinstance(arguments, ast.arguments):
-            continue
-        positional = arguments.posonlyargs + arguments.args
-        defaulted = list(
-            zip(
-                positional[len(positional) - len(arguments.defaults) :],
-                arguments.defaults,
-            )
-        ) + [
-            (argument, default)
-            for argument, default in zip(
-                arguments.kwonlyargs, arguments.kw_defaults
-            )
-            if default is not None
-        ]
-        for argument in (
-            positional
-            + arguments.kwonlyargs
-            + ([arguments.vararg] if arguments.vararg is not None else [])
-            + ([arguments.kwarg] if arguments.kwarg is not None else [])
+    def offset(row: int, column: int, *, ast_column: bool = False) -> int | None:
+        if row < 1 or row > len(lines):
+            return None
+        if ast_column:
+            column = len(lines[row - 1].encode("utf-8")[:column].decode("utf-8"))
+        return line_starts[row - 1] + column
+
+    def node_offset(node: ast.AST, *, end: bool = False) -> int | None:
+        row = getattr(node, "end_lineno" if end else "lineno", None)
+        column = getattr(node, "end_col_offset" if end else "col_offset", None)
+        if not isinstance(row, int) or not isinstance(column, int):
+            return None
+        return offset(row, column, ast_column=True)
+
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tokenize.tok_name[token.type] in {
+                "STRING",
+                "COMMENT",
+                "FSTRING_MIDDLE",
+                "TSTRING_MIDDLE",
+            } and sensitive_pattern.search(token.string):
+                return True
+    except (tokenize.TokenError, IndentationError):
+        return sensitive_pattern.search(text) is not None
+
+    safe_spans: dict[int, int] = {}
+
+    def has_literal(node: ast.AST | None) -> bool:
+        return node is not None and any(
+            isinstance(child, ast.Constant) for child in ast.walk(node)
+        )
+
+    def dynamic_value(node: ast.expr) -> bool:
+        return not has_literal(node) or _is_dynamic_secret_lookup(node)
+
+    def add_safe_span(start_node: ast.AST, end_node: ast.AST) -> None:
+        start = node_offset(start_node)
+        end = node_offset(end_node, end=True)
+        if start is not None and end is not None:
+            safe_spans[start] = max(safe_spans.get(start, end), end)
+
+    def target_parts(target: ast.expr) -> list[tuple[str, int | None]]:
+        if isinstance(target, ast.Name):
+            return [(target.id, node_offset(target))]
+        if isinstance(target, ast.Attribute):
+            end = node_offset(target, end=True)
+            return [(target.attr, end - len(target.attr) if end is not None else None)]
+        if isinstance(target, ast.Starred):
+            return target_parts(target.value)
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return [part for element in target.elts for part in target_parts(element)]
+        return []
+
+    def add_safe_targets(targets: list[ast.expr], statement: ast.AST) -> None:
+        end = node_offset(statement, end=True)
+        if end is None:
+            return
+        for target in targets:
+            for name, start in target_parts(target):
+                if start is not None and secret_name_pattern.fullmatch(name):
+                    safe_spans[start] = max(safe_spans.get(start, end), end)
+
+    def reference_offset(expression: ast.expr) -> int | None:
+        while isinstance(expression, ast.UnaryOp) and isinstance(
+            expression.op, ast.Not
         ):
-            if re.fullmatch(_SECRET_NAME, argument.arg, re.IGNORECASE) is None:
-                continue
-            if argument.annotation is not None and any(
-                isinstance(child, ast.Constant)
-                for child in ast.walk(argument.annotation)
-            ):
-                return True
-        for argument, default in defaulted:
-            if re.fullmatch(_SECRET_NAME, argument.arg, re.IGNORECASE) is None:
-                continue
-            if any(
-                isinstance(child, ast.Constant) for child in ast.walk(default)
-            ) and not _is_dynamic_secret_lookup(default):
-                return True
+            expression = expression.operand
+        if isinstance(expression, ast.Name) and isinstance(expression.ctx, ast.Load):
+            return node_offset(expression)
+        if isinstance(expression, ast.Attribute) and isinstance(
+            expression.ctx, ast.Load
+        ):
+            end = node_offset(expression, end=True)
+            return end - len(expression.attr) if end is not None else None
+        return None
+
+    safe_reference_starts: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.While)):
+            reference = reference_offset(node.test)
+        elif isinstance(node, ast.Match):
+            reference = reference_offset(node.subject)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            references = [reference_offset(item.context_expr) for item in node.items]
+            safe_reference_starts.update(
+                start for start in references if start is not None
+            )
+            continue
+        else:
+            continue
+        if reference is not None:
+            safe_reference_starts.add(reference)
+
+    def contained_in_safe_span(start: int, end: int) -> bool:
+        safe_end = safe_spans.get(start)
+        return safe_end is not None and (
+            end <= safe_end
+            or re.fullmatch(r"[)\]},;]+", text[safe_end:end]) is not None
+        )
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-            value = node.value
-            annotation = None
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-            value = node.value
-            annotation = node.annotation
-        elif isinstance(node, ast.NamedExpr):
-            targets = [node.target]
-            value = node.value
-            annotation = None
-        else:
-            if (
-                isinstance(node, ast.keyword)
-                and node.arg is not None
-                and re.fullmatch(_SECRET_NAME, node.arg, re.IGNORECASE) is not None
-                and any(
-                    isinstance(child, ast.Constant) for child in ast.walk(node.value)
-                )
-                and not _is_dynamic_secret_lookup(node.value)
+        if isinstance(node, ast.arguments):
+            positional = node.posonlyargs + node.args
+            defaults: dict[int, ast.expr] = {}
+            for argument, default in zip(
+                positional[len(positional) - len(node.defaults) :], node.defaults
             ):
-                return True
+                defaults[id(argument)] = default
+            for argument, default in zip(node.kwonlyargs, node.kw_defaults):
+                if default is not None:
+                    defaults[id(argument)] = default
+            arguments = (
+                positional
+                + node.kwonlyargs
+                + ([node.vararg] if node.vararg is not None else [])
+                + ([node.kwarg] if node.kwarg is not None else [])
+            )
+            for argument in arguments:
+                default = defaults.get(id(argument))
+                if (
+                    secret_name_pattern.fullmatch(argument.arg) is not None
+                    and not has_literal(argument.annotation)
+                    and (argument.annotation is not None or default is not None)
+                    and (default is None or dynamic_value(default))
+                ):
+                    add_safe_span(argument, default or argument)
+        elif isinstance(node, ast.keyword):
+            if (
+                node.arg is not None
+                and secret_name_pattern.fullmatch(node.arg) is not None
+                and dynamic_value(node.value)
+            ):
+                add_safe_span(node, node)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            if isinstance(node, ast.Assign):
+                targets, value, annotation = node.targets, node.value, None
+            elif isinstance(node, ast.AnnAssign):
+                targets, value, annotation = [node.target], node.value, node.annotation
+            else:
+                targets, value, annotation = [node.target], node.value, None
+            if not has_literal(annotation) and (
+                value is None or dynamic_value(value)
+            ):
+                add_safe_targets(targets, node)
+
+    position = 0
+    while match := sensitive_pattern.search(text, position):
+        start, end = match.span()
+        if contained_in_safe_span(start, end) or start in safe_reference_starts:
+            position = start + 1
             continue
-        if not any(
-            re.fullmatch(_SECRET_NAME, name, re.IGNORECASE) is not None
-            for target in targets
-            for name in _assignment_target_names(target)
-        ):
-            continue
-        if annotation is not None and any(
-            isinstance(child, ast.Constant) for child in ast.walk(annotation)
-        ):
-            return True
-        if value is not None and any(
-            isinstance(child, ast.Constant) for child in ast.walk(value)
-        ) and not _is_dynamic_secret_lookup(value):
-            return True
+        return True
     return False
-
-
-def _assignment_target_names(target: ast.expr) -> tuple[str, ...]:
-    if isinstance(target, ast.Name):
-        return (target.id,)
-    if isinstance(target, ast.Attribute):
-        return (target.attr,)
-    if isinstance(target, (ast.Tuple, ast.List)):
-        return tuple(
-            name
-            for element in target.elts
-            for name in _assignment_target_names(element)
-        )
-    return ()
 
 
 def _is_dynamic_secret_lookup(value: ast.expr) -> bool:
@@ -1110,7 +1170,7 @@ def _is_dynamic_secret_lookup(value: ast.expr) -> bool:
     return (
         isinstance(key, ast.Constant)
         and type(key.value) is str
-        and re.fullmatch(_SECRET_NAME, key.value, re.IGNORECASE) is not None
+        and _SECRET_NAME.fullmatch(key.value) is not None
     )
 
 
