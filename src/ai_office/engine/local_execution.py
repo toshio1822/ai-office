@@ -995,35 +995,60 @@ def _source_contains_secret(relative: str, text: str) -> bool:
         for token in tokenize.generate_tokens(io.StringIO(text).readline)
     ):
         return True
+    mask_argument_ids: set[int] = set()
+    for arguments in ast.walk(tree):
+        if not isinstance(arguments, ast.arguments):
+            continue
+        positional = arguments.posonlyargs + arguments.args
+        defaulted = list(
+            zip(
+                positional[len(positional) - len(arguments.defaults) :],
+                arguments.defaults,
+            )
+        ) + [
+            (argument, default)
+            for argument, default in zip(
+                arguments.kwonlyargs, arguments.kw_defaults
+            )
+            if default is not None
+        ]
+        for argument in (
+            positional
+            + arguments.kwonlyargs
+            + ([arguments.vararg] if arguments.vararg is not None else [])
+            + ([arguments.kwarg] if arguments.kwarg is not None else [])
+        ):
+            annotation = argument.annotation
+            if (
+                re.fullmatch(_SECRET_NAME, argument.arg, re.IGNORECASE) is not None
+                and annotation is not None
+                and not any(
+                    isinstance(child, ast.Constant)
+                    for child in ast.walk(annotation)
+                )
+            ):
+                mask_argument_ids.add(id(argument))
+        for argument, default in defaulted:
+            if re.fullmatch(_SECRET_NAME, argument.arg, re.IGNORECASE) is None:
+                continue
+            if any(
+                isinstance(child, ast.Constant) for child in ast.walk(default)
+            ) and not _is_dynamic_secret_lookup(default):
+                return True
+            if argument.annotation is None:
+                mask_argument_ids.add(id(argument))
     content = bytearray(text.encode("utf-8"))
     line_offsets = [0]
     for line in content.splitlines(keepends=True):
         line_offsets.append(line_offsets[-1] + len(line))
     for node in ast.walk(tree):
         if isinstance(node, ast.arg):
-            annotation = node.annotation
-            if (
-                annotation is None
-                or re.fullmatch(_SECRET_NAME, node.arg, re.IGNORECASE) is None
-                or any(
-                    isinstance(child, ast.Constant)
-                    for child in ast.walk(annotation)
-                )
-                or annotation.end_lineno is None
-            ):
+            if id(node) not in mask_argument_ids:
                 continue
-            start = (
-                line_offsets[node.lineno - 1]
-                + node.col_offset
-                + len(node.arg.encode("utf-8"))
-            )
-            end = (
-                line_offsets[annotation.end_lineno - 1]
-                + annotation.end_col_offset
-            )
+            start = line_offsets[node.lineno - 1] + node.col_offset
+            end = start + len(node.arg.encode("utf-8"))
             for index in range(start, end):
-                if content[index] not in (0x0A, 0x0D):
-                    content[index] = 0x20
+                content[index] = 0x20
             continue
         if isinstance(node, ast.Assign):
             targets = node.targets

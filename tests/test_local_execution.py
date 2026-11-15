@@ -194,6 +194,16 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
     )
     assert not _source_contains_secret(
         "module.py",
+        "def validate(password: (str) = get_password()) -> None:\n"
+        "    pass\n",
+    )
+    assert not _source_contains_secret(
+        "module.py",
+        'def validate(password: (str) = os.getenv("PASSWORD")) -> None:\n'
+        "    pass\n",
+    )
+    assert not _source_contains_secret(
+        "module.py",
         "def validate(password: str) -> None:\n"
         "    if not password:\n"
         "        raise ValueError(\"required\")\n",
@@ -212,6 +222,11 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
     assert _source_contains_secret(
         "module.py",
         'def validate(password: str = "synthetic-test-secret") -> None:\n'
+        "    pass\n",
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'def validate(password: (str) = "synthetic-test-secret") -> None:\n'
         "    pass\n",
     )
     assert _source_contains_secret(
