@@ -2238,8 +2238,7 @@ def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
     except SyntaxError:
         return None
     if any(
-        token.type in (tokenize.STRING, tokenize.COMMENT)
-        and _SENSITIVE_ASSIGNMENT.search(token.string) is not None
+        _SENSITIVE_ASSIGNMENT.search(token.string) is not None
         for token in tokenize.generate_tokens(io.StringIO(text).readline)
     ):
         return None
@@ -2276,55 +2275,35 @@ def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
         if isinstance(node, ast.Assign):
             targets = node.targets
             value = node.value
+            annotation = None
         elif isinstance(node, ast.AnnAssign):
             targets = [node.target]
             value = node.value
+            annotation = node.annotation
+        else:
+            continue
+        if annotation is not None and any(
+            isinstance(child, ast.Constant) for child in ast.walk(annotation)
+        ):
+            continue
+        if value is not None and any(
+            isinstance(child, ast.Constant) for child in ast.walk(value)
+        ) and not _is_dynamic_secret_lookup(value):
+            continue
+        for target in targets:
             if (
-                value is None
-                and not any(
-                    isinstance(child, ast.Constant)
-                    for child in ast.walk(node.annotation)
-                )
-                and any(
+                target.end_lineno is None
+                or not any(
                     _SENSITIVE_ASSIGNMENT_NAME.fullmatch(name) is not None
-                    for target in targets
                     for name in _assignment_target_names(target)
                 )
             ):
-                start = (
-                    line_offsets[node.target.end_lineno - 1]
-                    + node.target.end_col_offset
-                )
-                end = (
-                    line_offsets[node.annotation.end_lineno - 1]
-                    + node.annotation.end_col_offset
-                )
-                for index in range(start, end):
-                    if content[index] not in (0x0A, 0x0D):
-                        content[index] = 0x20
                 continue
-        else:
-            continue
-        if (
-            value is None
-            or node.end_lineno is None
-            or (
-                any(isinstance(child, ast.Constant) for child in ast.walk(value))
-                and not _is_dynamic_secret_lookup(value)
-            )
-        ):
-            continue
-        if not any(
-            _SENSITIVE_ASSIGNMENT_NAME.fullmatch(name) is not None
-            for target in targets
-            for name in _assignment_target_names(target)
-        ):
-            continue
-        start = line_offsets[node.lineno - 1] + node.col_offset
-        end = line_offsets[node.end_lineno - 1] + node.end_col_offset
-        for index in range(start, end):
-            if content[index] not in (0x0A, 0x0D):
-                content[index] = 0x20
+            start = line_offsets[target.lineno - 1] + target.col_offset
+            end = line_offsets[target.end_lineno - 1] + target.end_col_offset
+            for index in range(start, end):
+                if content[index] not in (0x0A, 0x0D):
+                    content[index] = 0x20
     return content.decode("utf-8")
 
 

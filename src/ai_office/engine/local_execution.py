@@ -991,8 +991,7 @@ def _source_contains_secret(relative: str, text: str) -> bool:
     except SyntaxError:
         return _SENSITIVE.search(text) is not None
     if any(
-        token.type in (tokenize.STRING, tokenize.COMMENT)
-        and _SENSITIVE.search(token.string) is not None
+        _SENSITIVE.search(token.string) is not None
         for token in tokenize.generate_tokens(io.StringIO(text).readline)
     ):
         return True
@@ -1029,80 +1028,55 @@ def _source_contains_secret(relative: str, text: str) -> bool:
         if isinstance(node, ast.Assign):
             targets = node.targets
             value = node.value
+            annotation = None
         elif isinstance(node, ast.AnnAssign):
             targets = [node.target]
             value = node.value
+            annotation = node.annotation
+        else:
             if (
-                value is None
-                and not any(
-                    isinstance(child, ast.Constant)
-                    for child in ast.walk(node.annotation)
+                not isinstance(node, ast.keyword)
+                or node.arg is None
+                or re.fullmatch(_SECRET_NAME, node.arg, re.IGNORECASE) is None
+            ):
+                continue
+            expression = tuple(ast.walk(node.value))
+            if (
+                not any(
+                    isinstance(child, ast.Name)
+                    and child.id.casefold() == node.arg.casefold()
+                    for child in expression
                 )
-                and any(
+                or any(isinstance(child, ast.Constant) for child in expression)
+            ):
+                continue
+            start = line_offsets[node.lineno - 1] + node.col_offset
+            end = start + len(node.arg.encode("utf-8"))
+            for index in range(start, end):
+                content[index] = 0x20
+            continue
+        if annotation is not None and any(
+            isinstance(child, ast.Constant) for child in ast.walk(annotation)
+        ):
+            continue
+        if value is not None and any(
+            isinstance(child, ast.Constant) for child in ast.walk(value)
+        ) and not _is_dynamic_secret_lookup(value):
+            continue
+        for target in targets:
+            if (
+                target.end_lineno is None
+                or not any(
                     re.fullmatch(_SECRET_NAME, name, re.IGNORECASE) is not None
-                    for target in targets
                     for name in _assignment_target_names(target)
                 )
             ):
-                start = (
-                    line_offsets[node.target.end_lineno - 1]
-                    + node.target.end_col_offset
-                )
-                end = (
-                    line_offsets[node.annotation.end_lineno - 1]
-                    + node.annotation.end_col_offset
-                )
-                for index in range(start, end):
-                    if content[index] not in (0x0A, 0x0D):
-                        content[index] = 0x20
                 continue
-        else:
-            targets = []
-            value = None
-        if (
-            targets
-            and value is not None
-            and node.end_lineno is not None
-            and (
-                not any(
-                    isinstance(child, ast.Constant) for child in ast.walk(value)
-                )
-                or _is_dynamic_secret_lookup(value)
-            )
-            and any(
-                re.fullmatch(_SECRET_NAME, name, re.IGNORECASE) is not None
-                for target in targets
-                for name in _assignment_target_names(target)
-            )
-        ):
-            start = line_offsets[node.lineno - 1] + node.col_offset
-            end = line_offsets[node.end_lineno - 1] + node.end_col_offset
+            start = line_offsets[target.lineno - 1] + target.col_offset
+            end = line_offsets[target.end_lineno - 1] + target.end_col_offset
             for index in range(start, end):
                 if content[index] not in (0x0A, 0x0D):
                     content[index] = 0x20
-            continue
-        if (
-            not isinstance(node, ast.keyword)
-            or node.arg is None
-            or re.fullmatch(_SECRET_NAME, node.arg, re.IGNORECASE) is None
-        ):
-            continue
-        expression = tuple(ast.walk(node.value))
-        if (
-            not any(
-                isinstance(child, ast.Name)
-                and child.id.casefold() == node.arg.casefold()
-                for child in expression
-            )
-            or any(isinstance(child, ast.Constant) for child in expression)
-            or node.end_lineno is None
-        ):
-            continue
-        start = line_offsets[node.lineno - 1] + node.col_offset
-        end = line_offsets[node.end_lineno - 1] + node.end_col_offset
-        for index in range(start, end):
-            if content[index] not in (0x0A, 0x0D):
-                content[index] = 0x20
     return _PYTHON_SENSITIVE.search(content.decode("utf-8")) is not None
 
 
