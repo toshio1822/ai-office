@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import base64
 import binascii
+import io
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import tokenize
 import uuid
 from dataclasses import dataclass
 from hashlib import sha256
@@ -988,6 +990,12 @@ def _source_contains_secret(relative: str, text: str) -> bool:
         tree = ast.parse(text)
     except SyntaxError:
         return _SENSITIVE.search(text) is not None
+    if any(
+        token.type in (tokenize.STRING, tokenize.COMMENT)
+        and _SENSITIVE.search(token.string) is not None
+        for token in tokenize.generate_tokens(io.StringIO(text).readline)
+    ):
+        return True
     content = bytearray(text.encode("utf-8"))
     line_offsets = [0]
     for line in content.splitlines(keepends=True):

@@ -222,6 +222,17 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
         "module.py", 'call(api_key=(\n    "literal-value"\n))\n'
     )
     assert _source_contains_secret("module.yaml", "API_KEY: literal-value\n")
+    assert _source_contains_secret(
+        "module.py",
+        'CONFIG = """\nPASSWORD:\n  synthetic-test-secret\n"""\n',
+    )
+    assert _source_contains_secret(
+        "module.py",
+        "password = (\n"
+        "    # API_KEY = synthetic-test-secret\n"
+        "    get_password()\n"
+        ")\n",
+    )
 
 
 def test_trusted_bundle_policy_requires_paired_pin_and_isolated_python(

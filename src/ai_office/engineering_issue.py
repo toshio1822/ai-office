@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import time
+import tokenize
 from bisect import bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -2234,6 +2236,12 @@ def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
     try:
         tree = ast.parse(text)
     except SyntaxError:
+        return None
+    if any(
+        token.type in (tokenize.STRING, tokenize.COMMENT)
+        and _SENSITIVE_ASSIGNMENT.search(token.string) is not None
+        for token in tokenize.generate_tokens(io.StringIO(text).readline)
+    ):
         return None
     content = bytearray(text.encode("utf-8"))
     line_offsets = [0]
