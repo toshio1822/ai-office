@@ -250,6 +250,12 @@ def test_sensitive_text_screen_allows_dynamic_python_password_assignment() -> No
         'password = os.getenv("PASSWORD")\n', python_source=True
     )
     engineering_issue._reject_sensitive_text(
+        "call(password=runtime_password)\n", python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
+        'call(password=os.getenv("PASSWORD"))\n', python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
         "password: str = get_password()\n", python_source=True
     )
     engineering_issue._reject_sensitive_text(
@@ -323,6 +329,20 @@ def test_sensitive_text_screen_allows_dynamic_python_password_assignment() -> No
             "    get_password()\n"
             ")\n",
             python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'call(password=\n    "synthetic-test-secret"\n)\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'connect(password="synthetic-test-secret").token = get_token()\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            "password = sk-abcdefghijklmnopqrstuvwxyz\n", python_source=True
         )
 
 

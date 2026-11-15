@@ -190,6 +190,12 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
         "module.py", 'password = os.getenv("PASSWORD")\n'
     )
     assert not _source_contains_secret(
+        "module.py", "call(password=runtime_password)\n"
+    )
+    assert not _source_contains_secret(
+        "module.py", 'call(password=os.getenv("PASSWORD"))\n'
+    )
+    assert not _source_contains_secret(
         "module.py", "password: str = get_password()\n"
     )
     assert not _source_contains_secret(
@@ -258,6 +264,16 @@ def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
         "    # API_KEY = synthetic-test-secret\n"
         "    get_password()\n"
         ")\n",
+    )
+    assert _source_contains_secret(
+        "module.py", 'call(password=\n    "synthetic-test-secret"\n)\n'
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'connect(password="synthetic-test-secret").token = get_token()\n',
+    )
+    assert _source_contains_secret(
+        "module.py", "password = sk-abcdefghijklmnopqrstuvwxyz\n"
     )
 
 

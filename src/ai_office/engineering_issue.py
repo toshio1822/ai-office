@@ -53,11 +53,6 @@ _SENSITIVE_ASSIGNMENT = re.compile(
     r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\s*[:=]\s*\S+|"
     r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,})"
 )
-_PYTHON_SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)(?:\b[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
-    r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)[ \t]*[:=][ \t]*\S+|"
-    r"\bBearer[ \t]+[A-Za-z0-9._~+/=-]{12,})"
-)
 _SENSITIVE_ASSIGNMENT_NAME = re.compile(
     r"(?i)\A[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
     r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\Z"
@@ -2220,29 +2215,30 @@ def _reject_sensitive_text(
         text.encode("utf-8")
     except UnicodeEncodeError:
         _fail("text_encoding_invalid")
-    checked = text
-    pattern = _SENSITIVE_ASSIGNMENT
+    if _redact(text, token=token) != text:
+        _fail("secret_suspected")
     if python_source:
-        masked = _mask_dynamic_python_secret_assignments(text)
-        if masked is not None:
-            checked = masked
-            pattern = _PYTHON_SENSITIVE_ASSIGNMENT
-    if _redact(text, token=token) != text or pattern.search(checked) is not None:
+        if _python_source_contains_secret(text):
+            _fail("secret_suspected")
+    elif _SENSITIVE_ASSIGNMENT.search(text) is not None:
         _fail("secret_suspected")
 
 
-def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
-    """Exclude dynamic Python assignments from the broad text secret check."""
+def _python_source_contains_secret(text: str) -> bool:
+    """Check Python literals and comments separately from secret-name syntax."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return None
-    if any(
-        _SENSITIVE_ASSIGNMENT.search(token.string) is not None
-        for token in tokenize.generate_tokens(io.StringIO(text).readline)
-    ):
-        return None
-    mask_argument_ids: set[int] = set()
+        return _SENSITIVE_ASSIGNMENT.search(text) is not None
+    tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    literal_text = "\n".join(
+        token.string
+        for token in tokens
+        if tokenize.tok_name[token.type] in {"STRING", "COMMENT", "FSTRING_MIDDLE"}
+    )
+    if _SENSITIVE_ASSIGNMENT.search(literal_text) is not None:
+        return True
+
     for arguments in ast.walk(tree):
         if not isinstance(arguments, ast.arguments):
             continue
@@ -2265,38 +2261,22 @@ def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
             + ([arguments.vararg] if arguments.vararg is not None else [])
             + ([arguments.kwarg] if arguments.kwarg is not None else [])
         ):
-            annotation = argument.annotation
-            if (
-                _SENSITIVE_ASSIGNMENT_NAME.fullmatch(argument.arg) is not None
-                and annotation is not None
-                and not any(
-                    isinstance(child, ast.Constant)
-                    for child in ast.walk(annotation)
-                )
+            if _SENSITIVE_ASSIGNMENT_NAME.fullmatch(argument.arg) is None:
+                continue
+            if argument.annotation is not None and any(
+                isinstance(child, ast.Constant)
+                for child in ast.walk(argument.annotation)
             ):
-                mask_argument_ids.add(id(argument))
+                return True
         for argument, default in defaulted:
             if _SENSITIVE_ASSIGNMENT_NAME.fullmatch(argument.arg) is None:
                 continue
             if any(
                 isinstance(child, ast.Constant) for child in ast.walk(default)
             ) and not _is_dynamic_secret_lookup(default):
-                _fail("secret_suspected")
-            if argument.annotation is None:
-                mask_argument_ids.add(id(argument))
-    content = bytearray(text.encode("utf-8"))
-    line_offsets = [0]
-    for line in content.splitlines(keepends=True):
-        line_offsets.append(line_offsets[-1] + len(line))
+                return True
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.arg):
-            if id(node) not in mask_argument_ids:
-                continue
-            start = line_offsets[node.lineno - 1] + node.col_offset
-            end = start + len(node.arg.encode("utf-8"))
-            for index in range(start, end):
-                content[index] = 0x20
-            continue
         if isinstance(node, ast.Assign):
             targets = node.targets
             value = node.value
@@ -2306,30 +2286,32 @@ def _mask_dynamic_python_secret_assignments(text: str) -> str | None:
             value = node.value
             annotation = node.annotation
         else:
+            if (
+                isinstance(node, ast.keyword)
+                and node.arg is not None
+                and _SENSITIVE_ASSIGNMENT_NAME.fullmatch(node.arg) is not None
+                and any(
+                    isinstance(child, ast.Constant) for child in ast.walk(node.value)
+                )
+                and not _is_dynamic_secret_lookup(node.value)
+            ):
+                return True
+            continue
+        if not any(
+            _SENSITIVE_ASSIGNMENT_NAME.fullmatch(name) is not None
+            for target in targets
+            for name in _assignment_target_names(target)
+        ):
             continue
         if annotation is not None and any(
             isinstance(child, ast.Constant) for child in ast.walk(annotation)
         ):
-            continue
+            return True
         if value is not None and any(
             isinstance(child, ast.Constant) for child in ast.walk(value)
         ) and not _is_dynamic_secret_lookup(value):
-            continue
-        for target in targets:
-            if (
-                target.end_lineno is None
-                or not any(
-                    _SENSITIVE_ASSIGNMENT_NAME.fullmatch(name) is not None
-                    for name in _assignment_target_names(target)
-                )
-            ):
-                continue
-            start = line_offsets[target.lineno - 1] + target.col_offset
-            end = line_offsets[target.end_lineno - 1] + target.end_col_offset
-            for index in range(start, end):
-                if content[index] not in (0x0A, 0x0D):
-                    content[index] = 0x20
-    return content.decode("utf-8")
+            return True
+    return False
 
 
 def _assignment_target_names(target: ast.expr) -> tuple[str, ...]:
