@@ -239,6 +239,127 @@ def test_initial_preparation_is_fixed_base_scoped_and_get_only(
     assert value["provider_input_bytes_used"] == summary["provider_input_bytes"]
 
 
+def test_sensitive_text_screen_allows_dynamic_python_password_assignment() -> None:
+    engineering_issue._reject_sensitive_text(
+        "password = self.luks_password_input.text()\n", python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
+        "class Config:\n    password: str\n", python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
+        'password = os.getenv("PASSWORD")\n', python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
+        "call(password=runtime_password)\n", python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
+        'call(password=os.getenv("PASSWORD"))\n', python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
+        "password: str = get_password()\n", python_source=True
+    )
+    engineering_issue._reject_sensitive_text(
+        "def validate(password: (str) = get_password()) -> None:\n"
+        "    pass\n",
+        python_source=True,
+    )
+    engineering_issue._reject_sensitive_text(
+        'def validate(password: (str) = os.getenv("PASSWORD")) -> None:\n'
+        "    pass\n",
+        python_source=True,
+    )
+    engineering_issue._reject_sensitive_text(
+        "def validate(password: str) -> None:\n"
+        "    if not password:\n"
+        "        raise ValueError(\"required\")\n",
+        python_source=True,
+    )
+
+    with pytest.raises(engineering_issue.EngineeringIssueError) as caught:
+        engineering_issue._reject_sensitive_text(
+            'password = "synthetic-test-secret"\n', python_source=True
+        )
+    assert caught.value.classification == "secret_suspected"
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'password: "synthetic-test-secret"\n', python_source=True
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'def validate(password: str = "synthetic-test-secret") -> None:\n'
+            "    pass\n",
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'def validate(password: (str) = "synthetic-test-secret") -> None:\n'
+            "    pass\n",
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'password = os.getenv("PASSWORD", "synthetic-test-secret")\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text("PASSWORD:\n synthetic-test-secret")
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            "PASSWORD:\n synthetic-test-secret", python_source=True
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'CONFIG = """\nPASSWORD:\n  synthetic-test-secret\n"""\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'CONFIG = f"""\nPASSWORD:\n  synthetic-test-secret\n{value}\n"""\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'password: "synthetic-test-secret" = get_password()\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            "password = (\n"
+            "    # API_KEY = synthetic-test-secret\n"
+            "    get_password()\n"
+            ")\n",
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'call(password=\n    "synthetic-test-secret"\n)\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'connect(password="synthetic-test-secret").token = get_token()\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            "password = sk-abcdefghijklmnopqrstuvwxyz\n", python_source=True
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'if (password := "synthetic-test-secret"):\n    connect(password)\n',
+            python_source=True,
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'CONFIG = t"PASSWORD: synthetic-test-secret"\n', python_source=True
+        )
+    with pytest.raises(engineering_issue.EngineeringIssueError):
+        engineering_issue._reject_sensitive_text(
+            'credentials = {Fields.PASSWORD: "synthetic-test-secret"}\n',
+            python_source=True,
+        )
+
+
 def test_issue_body_send_must_be_explicit_and_stops_before_get(
     fixed_repository: tuple[Path, str, dict[str, bytes]],
 ) -> None:

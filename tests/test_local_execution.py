@@ -181,14 +181,111 @@ def test_redaction_covers_common_secret_assignments() -> None:
 
 def test_python_secret_scan_allows_only_keyword_passthrough_syntax() -> None:
     assert not _source_contains_secret(
+        "module.py", "password = self.luks_password_input.text()\n"
+    )
+    assert not _source_contains_secret(
+        "module.py", "class Config:\n    password: str\n"
+    )
+    assert not _source_contains_secret(
+        "module.py", 'password = os.getenv("PASSWORD")\n'
+    )
+    assert not _source_contains_secret(
+        "module.py", "call(password=runtime_password)\n"
+    )
+    assert not _source_contains_secret(
+        "module.py", 'call(password=os.getenv("PASSWORD"))\n'
+    )
+    assert not _source_contains_secret(
+        "module.py", "password: str = get_password()\n"
+    )
+    assert not _source_contains_secret(
+        "module.py",
+        "def validate(password: (str) = get_password()) -> None:\n"
+        "    pass\n",
+    )
+    assert not _source_contains_secret(
+        "module.py",
+        'def validate(password: (str) = os.getenv("PASSWORD")) -> None:\n'
+        "    pass\n",
+    )
+    assert not _source_contains_secret(
+        "module.py",
+        "def validate(password: str) -> None:\n"
+        "    if not password:\n"
+        "        raise ValueError(\"required\")\n",
+    )
+    assert not _source_contains_secret(
         "module.py",
         "call(api_key=api_key)\ncall(api_key=(\n    api_key[slot.provider]\n))\n",
     )
     assert _source_contains_secret("module.py", 'API_KEY = "literal-value"\n')
     assert _source_contains_secret(
+        "module.py", 'password = "synthetic-test-secret"\n'
+    )
+    assert _source_contains_secret(
+        "module.py", 'password: "synthetic-test-secret"\n'
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'def validate(password: str = "synthetic-test-secret") -> None:\n'
+        "    pass\n",
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'def validate(password: (str) = "synthetic-test-secret") -> None:\n'
+        "    pass\n",
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'password = os.getenv("PASSWORD", "synthetic-test-secret")\n',
+    )
+    assert _source_contains_secret(
+        "module.py", "token = 'Bearer synthetic-bearer-value'\n"
+    )
+    assert _source_contains_secret(
         "module.py", 'call(api_key=(\n    "literal-value"\n))\n'
     )
     assert _source_contains_secret("module.yaml", "API_KEY: literal-value\n")
+    assert _source_contains_secret(
+        "module.py",
+        'CONFIG = """\nPASSWORD:\n  synthetic-test-secret\n"""\n',
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'CONFIG = f"""\nPASSWORD:\n  synthetic-test-secret\n{value}\n"""\n',
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'password: "synthetic-test-secret" = get_password()\n',
+    )
+    assert _source_contains_secret(
+        "module.py",
+        "password = (\n"
+        "    # API_KEY = synthetic-test-secret\n"
+        "    get_password()\n"
+        ")\n",
+    )
+    assert _source_contains_secret(
+        "module.py", 'call(password=\n    "synthetic-test-secret"\n)\n'
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'connect(password="synthetic-test-secret").token = get_token()\n',
+    )
+    assert _source_contains_secret(
+        "module.py", "password = sk-abcdefghijklmnopqrstuvwxyz\n"
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'if (password := "synthetic-test-secret"):\n    connect(password)\n',
+    )
+    assert _source_contains_secret(
+        "module.py", 'CONFIG = t"PASSWORD: synthetic-test-secret"\n'
+    )
+    assert _source_contains_secret(
+        "module.py",
+        'credentials = {Fields.PASSWORD: "synthetic-test-secret"}\n',
+    )
 
 
 def test_trusted_bundle_policy_requires_paired_pin_and_isolated_python(

@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from ai_office.engine.local_execution import (
     LocalExecutionLimits,
     LocalExecutionPolicy,
+    _python_source_contains_sensitive,
 )
 from ai_office.engine.workflow_run_manifest import (
     WorkflowRunManifestStore,
@@ -49,6 +50,10 @@ _SENSITIVE_ASSIGNMENT = re.compile(
     r"(?i)(?:\b[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
     r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\s*[:=]\s*\S+|"
     r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,})"
+)
+_SENSITIVE_ASSIGNMENT_NAME = re.compile(
+    r"(?i)\A[A-Z0-9_-]*(?:API[-_]?KEY|ACCESS[-_]?TOKEN|"
+    r"SECRET(?:[-_]?ACCESS[-_]?KEY)?|PASSWORD|TOKEN)\Z"
 )
 _SCHEMA = "engineering-issue-research.v1"
 _WORKFLOW_ID = "engineering-issue-investigation"
@@ -248,7 +253,7 @@ def prepare_engineering_issue_input(
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             _fail("source_is_not_utf8")
-        _reject_sensitive_text(text, github_token)
+        _reject_sensitive_text(text, github_token, python_source=True)
         source_context[entry.path] = text
         source_sha256[entry.path] = hashlib.sha256(content).hexdigest()
 
@@ -394,7 +399,7 @@ def prepare_next_engineering_issue_input(
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             _fail("source_is_not_utf8")
-        _reject_sensitive_text(text)
+        _reject_sensitive_text(text, python_source=True)
         source_context[path] = text
         source_sha256[path] = hashlib.sha256(content).hexdigest()
         used_bytes += len(content)
@@ -1744,7 +1749,7 @@ def _validate_input_sources(value: dict[str, object]) -> None:
             or hashlib.sha256(content).hexdigest() != source_hashes[path]
         ):
             _fail("research_input_source_binding_invalid")
-        _reject_sensitive_text(text)
+        _reject_sensitive_text(text, python_source=True)
     if source_total > _as_int(authorization.get("max_source_bytes")):
         _fail("source_read_budget_exhausted")
 
@@ -2201,17 +2206,26 @@ def _validate_path_member(path: str) -> None:
         _fail("source_path_invalid")
 
 
-def _reject_sensitive_text(text: str, token: str | None = None) -> None:
+def _reject_sensitive_text(
+    text: str, token: str | None = None, *, python_source: bool = False
+) -> None:
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:
         _fail("text_encoding_invalid")
-    if (
-        _redact(text, token=token) != text
-        or _SENSITIVE_ASSIGNMENT.search(text) is not None
-    ):
+    if _redact(text, token=token) != text:
+        _fail("secret_suspected")
+    if python_source:
+        if _python_source_contains_secret(text):
+            _fail("secret_suspected")
+    elif _SENSITIVE_ASSIGNMENT.search(text) is not None:
         _fail("secret_suspected")
 
+
+def _python_source_contains_secret(text: str) -> bool:
+    return _python_source_contains_sensitive(
+        text, _SENSITIVE_ASSIGNMENT, _SENSITIVE_ASSIGNMENT_NAME
+    )
 
 def _with_provider_usage(value: dict[str, object], *, previous_bytes: int) -> str:
     value["provider_input_bytes_used"] = previous_bytes
